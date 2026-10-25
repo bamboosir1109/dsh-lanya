@@ -59,7 +59,13 @@ if (-not (Test-Path $madeDir)) { New-Item -ItemType Directory -Path $madeDir -Fo
 # the DSH web server on 19387 refuses cross-origin writes.
 # ---------------------------------------------------------------------------
 $panelPort = [int](Get-ProjectConfValue 'panelPort' 19389)
+# The file got renamed at some point; a tree installed before that still
+# has the old name. Try both rather than silently falling back to plain
+# http.server, which serves the page but none of the API.
 $panelScript = Join-Path $PSScriptRoot 'dafeiyu-panel-server.py'
+if (-not (Test-Path $panelScript)) {
+  $panelScript = Join-Path $PSScriptRoot 'lanya-panel-server.py'
+}
 if (Test-Path $panelScript) {
   $panelBusy = (netstat -ano | Select-String (':' + $panelPort + ' .*LISTENING')).Count -gt 0
   if ($panelBusy) {
@@ -88,6 +94,7 @@ Write-Log ('serving ' + $madeDir + ' at http://' + $Bind + ':' + $Port + '/')
   # (translated above)
   # (translated above)
   $panel = Join-Path $PSScriptRoot 'dafeiyu-panel-server.py'
+if (-not (Test-Path $panel)) { $panel = Join-Path $PSScriptRoot 'lanya-panel-server.py' }
   if (Test-Path $panel) {
     Start-Process -FilePath 'python' -ArgumentList ('"' + $panel + '" --port ' + $Port) -WindowStyle Hidden
   }

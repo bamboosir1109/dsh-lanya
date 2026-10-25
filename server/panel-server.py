@@ -23,53 +23,21 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-# 集中配置：端口、目录名、各种次数都在 <repo>\config\project.json 里。
-# 读不到（或者 project_conf.py 没跟着装）就用 fallback 字面量，
-# 也就是改之前写死的那些值 —— 少一个文件不会少一条功能。
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _cand in (_HERE, os.path.join(os.path.dirname(_HERE), "scripts")):
-    if os.path.isdir(_cand) and _cand not in sys.path:
-        sys.path.insert(0, _cand)
-try:
-    import project_conf as _pc
-    _CONF = _pc.get
-except Exception:
-    def _CONF(_key, _default=None):
-        return _default
-
-
-def _find_dsh_root():
-    """找 DSH 装在哪。别写死盘符。"""
-    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = []
-    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
-        cands.append(os.path.join(base, "DSH"))
-    for d in "CDEFG":
-        cands.append(d + ":\\DSH")
-    for c in cands:
-        if os.path.isfile(os.path.join(c, rel)):
-            return c
-    return cands[0]
-
-
+ROOT = os.path.join(REPO, "\u5c9a\u5a05", "made")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAPCAT = os.path.join(REPO, "napcat")
-
-# 那个中文目录名（现在是"大肥鱼"）。从配置读，别在这里写死。
-DATA_DIR = _CONF("dataDirName", "\u5927\u80a5\u9c7c")
-
-ROOT = os.path.join(REPO, DATA_DIR, "made")
-PERSONA = os.path.join(NAPCAT, DATA_DIR + "-\u4eba\u8bbe\u6b63\u6587.md")
-CONFIG  = os.path.join(REPO, DATA_DIR, "lanya-config.json")
-TUNABLES = os.path.join(REPO, DATA_DIR, "lanya-tunables.json")
-MEMECFG  = os.path.join(REPO, DATA_DIR, "lanya-memes-config.json")
-MEME_TAGS = os.path.join(REPO, DATA_DIR, "lanya-memes-tags.json")
+PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05\u4eba\u8bbe\u6b63\u6587.md".replace("\u5c9a\u5a05", "\u5c9a\u5a05-"))
+# 上面这种拼法容易出错，直接用 os.path.join 拼真实文件名更稳
+PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05" + "-\u4eba\u8bbe\u6b63\u6587.md")
+CONFIG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-config.json")
+TUNABLES = os.path.join(REPO, "\u5c9a\u5a05", "lanya-tunables.json")
+MEMECFG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-config.json")
+MEME_TAGS = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
-DSH_CLI = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                       "resources", "runtime", "cli", "bin", "dsh.cmd")
+DSH_CLI = os.path.join(DSH_ROOT,
+                      "resources", "runtime", "cli", "bin", "dsh.cmd")
 
 SCRIPTS = {
     "groupwatch": "groupwatch.ps1",
@@ -99,8 +67,8 @@ def start_napcat_elevated():
         'taskkill /IM QQ.exe /F >nul 2>nul & timeout /t 4 /nobreak >nul & '
         'cd /d "' + os.path.join(NAPCAT, "framework") + '" && '
         'napimain.exe "C:\\software\\QQNT\\QQ.exe" '
-        '"D:\\DSH work\\napcat\\framework\\napiloader.dll" '
-        '" + os.path.join(NAPCAT, "framework", "nativeLoader.cjs") + "'
+        '"os.path.join(NAPCAT, "framework", "napiloader.dll")" '
+        'os.path.join(NAPCAT, "framework", "nativeLoader.cjs")'
     )
     ps = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -117,7 +85,7 @@ SPECIAL = {
     "tts": {
         "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
         "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
-        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", str(_CONF("ttsPort", 9880)),
+        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
                  "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
     },
 }
@@ -180,19 +148,18 @@ TASKS = {
 TOOLS = [
     {"key": "napcat", "name": "NapCat", "kind": "QQ 注入框架",
      "paths": [os.path.join(REPO, "napcat", "framework", "napimain.exe")],
-     "port": _CONF("onebotPort", 8720),
+     "port": 8720,
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
      "paths": [r"C:\software\QQNT\QQ.exe"],
      "proc": "QQ.exe",
      "note": "机器人小号登录的地方。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
-     "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(), "DeepSeek Harness.exe")],
+     "paths": [os.path.join(DSH_ROOT, "DeepSeek Harness.exe")],
      "port": 19387,
      "note": "整个系统跑在里面。插件都挂在它上面。"},
     {"key": "node", "name": "Node.js", "kind": "运行时",
-     "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                                     "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
+     "paths": [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
      "paths": [r"C:\Python314\python.exe", r"C:\code\anaconda\python.exe"],
@@ -302,7 +269,7 @@ def run_task(name):
 # ---------------------------------------------------------------------------
 # Extra data the multi-page console needs: budget, memes, notes/diary, works.
 # ---------------------------------------------------------------------------
-LANYA_DIR = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+LANYA_DIR = os.path.join(REPO, "\u5c9a\u5a05")
 BUDGET    = os.path.join(LANYA_DIR, "budget.json")
 MEME_ROOT = os.path.join(
     os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop",
@@ -311,15 +278,15 @@ MEME_ROOT = os.path.join(
 
 # 允许页面上浏览的目录。白名单，不接受任意路径 - 这是给浏览器用的接口，
 # 不能让它顺着 ../ 读到别处去。
-ACTIVITIES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "activities.json")
-ARCHIVE_ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863")
+ACTIVITIES = os.path.join(REPO, "\u5c9a\u5a05", "activities.json")
+ARCHIVE_ROOT = os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863")
 
 FILE_DIRS = {
     "diary":  os.path.join(LANYA_DIR, "diary"),
     "notes":  os.path.join(LANYA_DIR, "notes"),
     "made":   os.path.join(LANYA_DIR, "made"),
     "people": os.path.join(LANYA_DIR, "people"),
-    "archive": os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863"),
+    "archive": os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863"),
 }
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -783,7 +750,7 @@ def memory_overview():
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
 #   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
-#   大肥鱼/memes/...                        她自己的
+#   岚娅/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -796,7 +763,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-LANYA_MEMES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "memes")
+LANYA_MEMES = os.path.join(REPO, "\u5c9a\u5a05", "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
@@ -1046,7 +1013,7 @@ import json
 import os
 import subprocess
 
-LANYA_DIR_ = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+LANYA_DIR_ = os.path.join(REPO, "\u5c9a\u5a05")
 REMINDERS_ = os.path.join(LANYA_DIR_, "reminders.json")
 
 # 插件调度器已经接管的那些，在页面上标出来，免得用户以为重复的也需要留
@@ -1086,7 +1053,7 @@ def reminders_snapshot():
 
 
 def scheduled_tasks():
-    """Windows 计划任务里和大肥鱼有关的那些。"""
+    """Windows 计划任务里和岚娅有关的那些。"""
     try:
         p = subprocess.run(
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
@@ -1193,6 +1160,34 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/memory/search":
+            # 关键词 / 相似度检索（BM25 + 中文 bigram），不是子串过滤。
+            q = parse_qs(urlparse(self.path).query)
+            kw = (q.get("q") or [""])[0].strip()
+            try:
+                lim = int((q.get("limit") or ["8"])[0])
+            except Exception:
+                lim = 8
+            lim = max(1, min(50, lim))
+            try:
+                import memory_index as _mi
+                idx = _mi.Index()
+                hits = idx.search(kw, limit=lim) if kw else []
+                return self._json(200, {"ok": True, "q": kw,
+                                        "total": idx.n, "hits": hits})
+            except Exception as e:
+                return self._json(200, {"ok": False, "hits": [],
+                                        "error": str(e)[:200]})
+
+        if path == "/api/memory/graph":
+            try:
+                import memory_index as _mi
+                g = _mi.Index().graph()
+                return self._json(200, dict(ok=True, **g))
+            except Exception as e:
+                return self._json(200, {"ok": False, "nodes": [], "edges": [],
+                                        "error": str(e)[:200]})
+
         if path == "/api/bili/verify":
             # Ask Bilibili whether a comment we recorded is actually public yet.
             try:
@@ -1903,8 +1898,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     "bili-duty", "duty.md")
                 if not os.path.isfile(duty):
                     return self._json(200, {"ok": False, "error": "duty.md not found"})
-                dsh = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                                     "resources", "runtime", "cli", "bin", "dsh.cmd")
+                dsh = os.path.join(DSH_ROOT, "resources", "runtime", "cli", "bin", "dsh.cmd")
                 if not os.path.isfile(dsh):
                     return self._json(200, {"ok": False, "error": "dsh.cmd not found"})
                 with open(duty, "r", encoding="utf-8", errors="replace") as fhd:
@@ -2561,7 +2555,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("LANYA_PANEL_PORT", str(_CONF("panelPort", 19389))))
+    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])

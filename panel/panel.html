@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>大肥鱼 · 控制台</title>
+<title>岚娅 · 控制台</title>
 <style>
 :root{
   --bg:#0b0d13;
@@ -311,8 +311,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
 <aside>
   <div class="brand">
-    <div class="logo">🐟</div>
-    <div><b>大肥鱼</b><span>CONSOLE</span></div>
+    <div class="logo" id="brandIcon">◈</div>
+    <div><b id="brandName">控制台</b><span id="brandSub">CONSOLE</span></div>
   </div>
   <nav id="nav">
     <a class="navitem on" data-page="overview"><span class="ni">◈</span>概览</a>
@@ -372,7 +372,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-system">
-  <div class="phead"><h1>部件与插件</h1><p>大肥鱼的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
+  <div class="phead"><h1>部件与插件</h1><p>岚娅的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
 
   <div class="card">
     <h3>运行中的部件</h3>
@@ -409,7 +409,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="card">
     <h3>推荐插件</h3>
-    <p class="note">这些和大肥鱼配合得比较好。点一下会把安装地址填进下面的输入框。</p>
+    <p class="note">这些和岚娅配合得比较好。点一下会把安装地址填进下面的输入框。</p>
     <div class="presets" id="recGrid"></div>
     <div class="out" id="recOut"></div>
   </div>
@@ -638,8 +638,9 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <button class="pri" onclick="addMemory()">记住</button>
     </div>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
-      <input type="text" id="memSearch" placeholder="搜记忆…" style="flex:1;min-width:160px"
-             oninput="filterMem()">
+      <input type="text" id="memSearch" placeholder="搜记忆…（关键词/相似度）" style="flex:1;min-width:160px"
+             onkeydown="if(event.key==='Enter') memSmartSearch()">
+      <button class="pri" onclick="memSmartSearch()">搜</button>
       <div class="tabs" id="memFilter" style="margin:0">
         <div class="tab on" data-t="all">全部</div>
         <div class="tab" data-t="user">关于爸爸</div>
@@ -648,6 +649,12 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     </div>
     <div class="out" id="memOut"></div>
     <div class="filelist" id="memPropList"></div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button onclick="memGraph()">看关系图</button>
+      <span class="dsc" id="memGraphSub" style="align-self:center"></span>
+    </div>
+    <div id="memGraphBox" style="display:none;margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:10px;overflow:auto;max-height:420px"></div>
+    <div class="out" id="memHits"></div>
   </div>
 </div>
 
@@ -1021,11 +1028,11 @@ function clearSearch(){
 
 function setTheme(name){
   document.documentElement.setAttribute('data-theme', name);
-  try{ localStorage.setItem('dafeiyu-theme', name); }catch(e){}
+  try{ localStorage.setItem('lanya-theme', name); }catch(e){}
 }
 (function initTheme(){
   let saved = 'light';
-  try{ saved = localStorage.getItem('dafeiyu-theme') || 'light'; }catch(e){}
+  try{ saved = localStorage.getItem('lanya-theme') || 'light'; }catch(e){}
   document.documentElement.setAttribute('data-theme', saved);
 })();
 const $ = (id) => document.getElementById(id);
@@ -1036,6 +1043,7 @@ function goto(page){
   document.querySelectorAll('.page').forEach(el => el.classList.toggle('on', el.id === 'page-' + page));
   document.querySelectorAll('.navitem').forEach(el => el.classList.toggle('on', el.dataset.page === page));
   location.hash = '#/' + page;
+  loadBrand();
   const loaders = { talk:loadTunables, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
                     napcat:loadNapcat,
                     activity:() => { loadActivities(); loadLive(); },
@@ -1076,19 +1084,19 @@ function staticFor(path){
   // 读操作优先读同源静态快照：内嵌视图会挡跨端口 fetch，但同源文件不会。
   const bare = path.split('?')[0].replace(/^\/api/, '');
   const map = {
-    '/memes': './dafeiyu-memes.json',
-    '/budget': './dafeiyu-budget.json',
-    '/config': './dafeiyu-config.json',
-    '/tunables': './dafeiyu-tunables.json',
-    '/tools': './dafeiyu-tools.json',
-    '/schedule': './dafeiyu-schedule.json',
-    '/memory': './dafeiyu-memory.json',
-    '/bili': './dafeiyu-bili.json'
+    '/memes': './lanya-memes.json',
+    '/budget': './lanya-budget.json',
+    '/config': './lanya-config.json',
+    '/tunables': './lanya-tunables.json',
+    '/tools': './lanya-tools.json',
+    '/schedule': './lanya-schedule.json',
+    '/memory': './lanya-memory.json',
+    '/bili': './lanya-bili.json'
   };
   if(map[bare]) return map[bare];
   if(bare === '/files'){
     const m = path.match(/[?&]dir=([^&]+)/);
-    if(m) return './dafeiyu-files-' + decodeURIComponent(m[1]) + '.json';
+    if(m) return './lanya-files-' + decodeURIComponent(m[1]) + '.json';
   }
   return null;
 }
@@ -1149,7 +1157,7 @@ const PLUGIN = {
   'dsh-auto-memory':'重要的事自动写进记忆文件',
   'dsh-cost-meter':'统计花了多少 token，零花钱靠它',
   'dsh-automation':'DSH 自带的定时执行框架',
-  'dsh-dafeiyu':'桌面宠物，跟大肥鱼无关，想清静可以关',
+  'dsh-dafeiyu':'桌面宠物，跟岚娅无关，想清静可以关',
   'dsh-bili-scroll':'自动刷视频、看字幕、写评论，能把推荐发到你 B 站私信',
   'dsh-bili-whale':'B 站社区互动：点赞、评论、跟人聊',
   'dsh-plugin':'浏览和安装别的插件用的',
@@ -1158,22 +1166,35 @@ const PLUGIN = {
 };
 function pDesc(n){ for(const k in PLUGIN){ if(n===k || n.indexOf(k)===0) return PLUGIN[k]; } return ''; }
 
+// 品牌名和图标从配置读，默认中性。原来写死成「岚娅 / 🐺」，
+// 别人用这套东西就是别人的角色，不该顶着别人的名字和头像。
+async function loadBrand(){
+  try{
+    const j = await api('/config');
+    const c = (j && j.config) || {};
+    if(c.brandName){ $('brandName').textContent = c.brandName; }
+    if(c.brandSub){ $('brandSub').textContent = c.brandSub; }
+    if(c.brandIcon){ $('brandIcon').textContent = c.brandIcon; }
+    if(c.brandName){ document.title = c.brandName + ' · 控制台'; }
+  }catch(e){ }
+}
+
 async function refreshOverview(){
   try{
-    const r = await fetch('./dafeiyu-state.json?t=' + Date.now(), { cache:'no-store' });
+    const r = await fetch('./lanya-state.json?t=' + Date.now(), { cache:'no-store' });
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const s = await r.json();
     const m = s.memory;
     setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
-    setHtml('sMem', m.dafeiyuMb + '<small>MB</small>');
+    setHtml('sMem', m.lanyaMb + '<small>MB</small>');
     $('sMem').style.color = m.over ? 'var(--bad)' : 'var(--fg)';
     setText('sMemSub', '上限 ' + m.limitMb + ' MB');
     setHtml('sFree', m.freeGb + '<small>GB</small>');
     setText('sFreeSub', '共 ' + m.totalGb + ' GB');
-    $('memFill').style.width = Math.min(100, m.dafeiyuMb/m.limitMb*100) + '%';
+    $('memFill').style.width = Math.min(100, m.lanyaMb/m.limitMb*100) + '%';
     $('memBar').className = 'bar' + (m.over ? ' hot' : '');
-    setText('memLeft', m.dafeiyuMb + ' MB 已用');
-    setText('memRight', m.over ? '⚠ 超过上限' : (m.limitMb - m.dafeiyuMb).toFixed(0) + ' MB 余量');
+    setText('memLeft', m.lanyaMb + ' MB 已用');
+    setText('memRight', m.over ? '⚠ 超过上限' : (m.limitMb - m.lanyaMb).toFixed(0) + ' MB 余量');
 
     const comps = s.components || [];
     let alive = 0;
@@ -1205,7 +1226,7 @@ async function refreshOverview(){
     pb.innerHTML = '';
     const plugins = s.plugins || [];
     setText('navPlugins', plugins.length);   // 导航项已合并，加了 null 安全
-    window.__dafeiyuPlugins = plugins.map(function(p){ return p.name; });
+    window.__lanyaPlugins = plugins.map(function(p){ return p.name; });
 
     // 渲染每个插件一行。这段之前被绑定补丁整段覆盖掉了，只剩表头——
     // 表现就是"插件看不到了"。
@@ -1243,10 +1264,10 @@ async function refreshOverview(){
       ['dsh-meme', 'memes', null],
       ['dsh-memento', 'memory', null]
     ];
-    window.__dafeiyuBound = {};
+    window.__lanyaBound = {};
     bind.forEach(function(row){
       const ok = has(row[0]);
-      window.__dafeiyuBound[row[1]] = ok;
+      window.__lanyaBound[row[1]] = ok;
       const pg = $('page-' + row[1]);
       if(pg) pg.style.display = ok ? '' : 'none';
       const nav = document.querySelector('.navitem[data-page="' + row[1] + '"]');
@@ -1258,7 +1279,7 @@ async function refreshOverview(){
       $('banner').classList.add('show');
       setText('bannerTitle', '还有 ' + tasks.redundant + ' 个重复的计划任务');
       setHtml('bannerText', '这些活插件已经在做了，旧任务还在会重复跑一遍（每个一闪就退，不占内存）。<br>'
-        + '想清掉：双击 <code><WORKDIR>\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
+        + '想清掉：双击 <code>E:\\DSH work\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
     }else{ $('banner').classList.remove('show'); }
       try{
       const bud = await api('/budget');
@@ -1285,7 +1306,7 @@ async function togglePlugin(el, name){
 
 const RECOMMENDED = [
   { name: 'dsh-bili-scroll', desc: '刷 B 站：看视频、读字幕、写评论，能私信推给你',
-    repo: 'https://github.com/upstream-author/dsh-bili-scroll' },
+    repo: 'https://github.com/c1overzz/dsh-bili-scroll' },
   { name: 'dsh-bili-whale', desc: 'B 站社区互动：点赞、评论、跟人聊',
     repo: 'https://github.com/Alterssss/dsh-bili-whale' },
   { name: 'dsh-meme', desc: '表情包图库。没它就没法斗图',
@@ -1296,7 +1317,7 @@ const RECOMMENDED = [
     repo: 'https://github.com/PerryLink/dsh-memento' },
   { name: 'dsh-auto-memory', desc: 'Claude Code 风格的自动记忆，会维护 MEMORY.md 索引',
     repo: 'https://github.com/AskTheWay/dsh-auto-memory' },
-  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟大肥鱼无关，图个乐）',
+  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟岚娅无关，图个乐）',
     repo: 'https://github.com/QCYTSN/dsh-dafeiyu' }
 ];
 
@@ -1305,7 +1326,7 @@ function renderRecommended(){
   if(!grid) return;
   grid.innerHTML = '';
   RECOMMENDED.forEach(function(r){
-    const installed = (window.__dafeiyuPlugins || []).some(function(p){
+    const installed = (window.__lanyaPlugins || []).some(function(p){
       return p === r.name;
     });
     const b = document.createElement('button');
@@ -2456,6 +2477,95 @@ async function deleteMemory(id, text){
     show('memOut', '删掉了：' + String(text).slice(0, 30));
     loadMemoryOverview();
   }catch(e){ show('memOut', '删不掉：' + e.message); }
+}
+
+// 服务端检索：BM25 + 中文 bigram，比子串过滤准得多。
+// 搜"看过什么"能命中"在 B 站看了…"，搜"白饭"能按相关度排序。
+async function memSmartSearch(){
+  const box = $('memHits');
+  const kw = ($('memSearch') || {}).value || '';
+  if(!kw.trim()){ if(box) box.textContent = ''; return; }
+  if(box) box.textContent = '搜中…';
+  try{
+    const j = await api('/memory/search?q=' + encodeURIComponent(kw) + '&limit=12',
+                        null, true);
+    if(!j.ok){ if(box) box.textContent = '搜不了：' + (j.error || ''); return; }
+    if(!j.hits.length){
+      if(box) box.textContent = '没搜到「' + kw + '」（库里有 ' + j.total + ' 条）';
+      return;
+    }
+    if(box) box.innerHTML = '';
+    j.hits.forEach(function(h){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.style.cursor = 'default';
+      d.innerHTML = '<div class="fmain">'
+        + '<span class="fname">' + (h.text || '')
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0, 120) + '</span>'
+        + '<span class="fprev">分数 ' + h.score
+        + '　' + (h.source || '') + '　' + ((h.tags || []).join(' ') || '') + '</span>'
+        + '</div>';
+      box.appendChild(d);
+    });
+  }catch(e){ if(box) box.textContent = '搜不了：' + e.message; }
+}
+
+// 关系图：记忆 ↔ 实体（人 / 书名 / BV / 标签），用 SVG 画个二部图。
+async function memGraph(){
+  const bx = $('memGraphBox');
+  const sub = $('memGraphSub');
+  if(!bx) return;
+  if(bx.style.display !== 'none'){ bx.style.display = 'none'; if(sub) sub.textContent=''; return; }
+  bx.style.display = 'block';
+  if(sub) sub.textContent = '画中…';
+  try{
+    const g = await api('/memory/graph', null, true);
+    if(!g.ok){ bx.textContent = '画不了：' + (g.error || ''); return; }
+    const W = Math.max(600, bx.clientWidth - 20), H = 400;
+    const nodes = g.nodes || [], edges = g.edges || [];
+    if(!nodes.length){ bx.textContent = '还没有记忆可以画。'; return; }
+
+    // 简单的力导向：实体放内圈，记忆放外圈
+    const byKind = {};
+    nodes.forEach(function(n){ (byKind[n.kind] = byKind[n.kind] || []).push(n); });
+    const kinds = Object.keys(byKind);
+    const pos = {};
+    kinds.forEach(function(k, ki){
+      const arr = byKind[k];
+      const radius = k === 'memory' ? Math.min(W, H) * 0.44 : Math.min(W, H) * (0.14 + ki * 0.09);
+      arr.forEach(function(n, i){
+        const a = (i / arr.length) * Math.PI * 2 + ki * 0.7;
+        pos[n.id] = [W/2 + Math.cos(a) * radius, H/2 + Math.sin(a) * radius];
+      });
+    });
+
+    const color = { memory: '#5b9dff', person: '#f59e0b', book: '#8b5cf6',
+                    bili: '#10b981', tag: '#ef4444' };
+    let svg = '<svg width="' + W + '" height="' + H + '" '
+      + 'style="background:transparent">';
+    edges.forEach(function(e){
+      const a = pos[e.from], b2 = pos[e.to];
+      if(!a || !b2) return;
+      svg += '<line x1="' + a[0] + '" y1="' + a[1] + '" x2="' + b2[0]
+        + '" y2="' + b2[1] + '" stroke="rgba(120,140,180,.28)" stroke-width="1"/>';
+    });
+    nodes.forEach(function(n){
+      const p2 = pos[n.id];
+      if(!p2) return;
+      const r = n.kind === 'memory' ? 3.5 : 4 + Math.min(6, n.weight);
+      svg += '<circle cx="' + p2[0] + '" cy="' + p2[1] + '" r="' + r
+        + '" fill="' + (color[n.kind] || '#888') + '"><title>'
+        + (n.label || '').replace(/[<>&]/g, '') + '</title></circle>';
+      if(n.kind !== 'memory'){
+        svg += '<text x="' + (p2[0] + r + 3) + '" y="' + (p2[1] + 3)
+          + '" font-size="9" fill="currentColor" opacity=".75">'
+          + (n.label || '').slice(0, 14).replace(/[<>&]/g, '') + '</text>';
+      }
+    });
+    svg += '</svg>';
+    bx.innerHTML = svg;
+    if(sub) sub.textContent = nodes.length + ' 个点 / ' + edges.length + ' 条线';
+  }catch(e){ bx.textContent = '画不了：' + e.message; }
 }
 
 async function loadMemoryOverview(){
