@@ -1,4 +1,4 @@
-# Dafeiyu panel server - serves the control panel AND its API from ONE origin.
+# Lanya panel server - serves the control panel AND its API from ONE origin.
 #
 # Why this exists: the panel used to live on the works server (19388) and talk to
 # the DSH host on 19387. Every write failed with "Failed to fetch":
@@ -9,17 +9,23 @@
 #
 # Static files come from her made/ folder, so existing game links keep working.
 #
-#   python dafeiyu-panel-server.py            run on 19389
-#   python dafeiyu-panel-server.py --port N
+#   python lanya-panel-server.py            run on 19389
+#   python lanya-panel-server.py --port N
 #
 # ASCII-only source.
 
 import json
-def _find_dsh_root():
-    """找 DSH 装在哪。
+import re
+import os
+import subprocess
+import sys
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
-    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
-    """
+
+def _find_dsh_root():
+    """找 DSH 装在哪。别写死盘符。"""
     rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
     here = os.path.dirname(os.path.abspath(__file__))
     cands = []
@@ -33,40 +39,32 @@ def _find_dsh_root():
     return cands[0]
 
 
-import re
-import os
-import subprocess
-import sys
-import threading
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
-
 ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c", "made")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAPCAT = os.path.join(REPO, "napcat")
 PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c\u4eba\u8bbe\u6b63\u6587.md".replace("\u5927\u80a5\u9c7c", "\u5927\u80a5\u9c7c-"))
 # 上面这种拼法容易出错，直接用 os.path.join 拼真实文件名更稳
 PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c" + "-\u4eba\u8bbe\u6b63\u6587.md")
-CONFIG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-config.json")
-TUNABLES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-tunables.json")
-MEMECFG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json")
-MEME_TAGS = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-memes-tags.json")
+CONFIG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-config.json")
+TUNABLES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-tunables.json")
+MEMECFG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-memes-config.json")
+MEME_TAGS = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
 DSH_CLI = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                   "resources", "runtime", "cli", "bin", "dsh.cmd")
+                       "resources", "runtime", "cli", "bin", "dsh.cmd")
 
 SCRIPTS = {
     "groupwatch": "groupwatch.ps1",
     "lifeloop": "lifeloop.ps1",
     "voicedaemon": "voicedaemon.ps1",
-    "supervisor": "dafeiyu-supervisor.ps1",
+    "supervisor": "lanya-supervisor.ps1",
     "napcat-heal": "napcat-heal.ps1",
     "kill-strays": "kill-strays.ps1",
     "settings-guard": "settings-guard.py",
-    "state": "dafeiyu-state.ps1",
-    "tick": "dafeiyu-tick.ps1",
+    "state": "lanya-state.ps1",
+    "tick": "lanya-tick.ps1",
     # 面板上每个部件都应该有自己的启动按钮，不然显示"0 个"就不知道怎么办。
     "browserd": "browserd.py",
     # tts 不是普通脚本：它跑在单独的 conda 环境里、有自己的工作目录，\n    # 交给下面的 SPECIAL 分支处理。
@@ -84,9 +82,9 @@ def start_napcat_elevated():
     inner = (
         'taskkill /IM QQ.exe /F >nul 2>nul & timeout /t 4 /nobreak >nul & '
         'cd /d "' + os.path.join(NAPCAT, "framework") + '" && '
-        'napimain.exe os.environ.get("QQNT_EXE", r"C:\\Program Files\\Tencent\\QQNT\\QQ.exe") '
-        '"<WORKDIR>\\napcat\\framework\\napiloader.dll" '
-        '"<WORKDIR>/napcat/framework/nativeLoader.cjs"'
+        'napimain.exe "C:\\software\\QQNT\\QQ.exe" '
+        '"D:\\DSH work\\napcat\\framework\\napiloader.dll" '
+        '" + os.path.join(NAPCAT, "framework", "nativeLoader.cjs") + "'
     )
     ps = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -101,7 +99,7 @@ def start_napcat_elevated():
 # 有些部件不能当普通脚本起：解释器不同、工作目录不同、还要带参数。
 SPECIAL = {
     "tts": {
-        "exe": os.environ.get("SOXVITS_PY", r"C:\Python310\python.exe"),
+        "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
         "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
         "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
                  "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
@@ -150,11 +148,11 @@ def run_script(name):
 # 不会有窗口；schtasks /run 也不需要管理员。
 TASKS = {
     "groupwatch":  "DSH-GroupWatch",
-    "lifeloop":    "DSH-Dafeiyu-Life",
-    "voicedaemon": "DSH-Dafeiyu-Voice",
-    "browserd":    "DSH-Dafeiyu-Browser",
-    "works":       "DSH-Dafeiyu-Works",
-    "tts":         "DSH-Dafeiyu-TTS",
+    "lifeloop":    "DSH-Lanya-Life",
+    "voicedaemon": "DSH-Lanya-Voice",
+    "browserd":    "DSH-Lanya-Browser",
+    "works":       "DSH-Lanya-Works",
+    "tts":         "DSH-Lanya-TTS",
 }
 
 
@@ -169,25 +167,25 @@ TOOLS = [
      "port": 8720,
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
-     "paths": [os.environ.get("QQNT_EXE", r"C:\Program Files\Tencent\QQNT\QQ.exe")],
+     "paths": [r"C:\software\QQNT\QQ.exe"],
      "proc": "QQ.exe",
-     "note": "QQ 客户端本身。"},
+     "note": "机器人小号登录的地方。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
      "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(), "DeepSeek Harness.exe")],
      "port": 19387,
      "note": "整个系统跑在里面。插件都挂在它上面。"},
     {"key": "node", "name": "Node.js", "kind": "运行时",
      "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                           "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
+                                     "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
-     "paths": [os.environ.get("PY314", r"C:\Python314\python.exe"), os.environ.get("CONDA_PY", r"C:\Python310\python.exe")],
+     "paths": [r"C:\Python314\python.exe", r"C:\code\anaconda\python.exe"],
      "note": "面板服务、表情包处理、刷 B 站都靠它。"},
     {"key": "python-tts", "name": "Python (语音环境)", "kind": "专用环境",
-     "paths": [os.environ.get("SOXVITS_PY", r"C:\Python310\python.exe")],
+     "paths": [r"C:\code\anaconda\envs\gptsovits\python.exe"],
      "note": "语音合成单独一个环境，因为依赖版本和主环境冲突。"},
     {"key": "git", "name": "Git", "kind": "版本控制",
-     "paths": [os.environ.get("GIT_EXE", r"C:\Program Files\Git\cmd\git.exe")],
+     "paths": [r"C:\code\Git\cmd\git.exe"],
      "note": "拉插件、更新插件用。"},
 ]
 
@@ -255,7 +253,7 @@ def check_upstream(key):
     try:
         import urllib.request, json as _json
         req = urllib.request.Request(url, headers={
-            "User-Agent": "dafeiyu-panel",
+            "User-Agent": "lanya-panel",
             "Accept": "application/vnd.github+json",
         })
         with urllib.request.urlopen(req, timeout=12) as r:
@@ -288,8 +286,8 @@ def run_task(name):
 # ---------------------------------------------------------------------------
 # Extra data the multi-page console needs: budget, memes, notes/diary, works.
 # ---------------------------------------------------------------------------
-DAFEIYU_DIR = os.path.join(REPO, "\u5927\u80a5\u9c7c")
-BUDGET    = os.path.join(DAFEIYU_DIR, "budget.json")
+LANYA_DIR = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+BUDGET    = os.path.join(LANYA_DIR, "budget.json")
 MEME_ROOT = os.path.join(
     os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop",
                             "node_modules", "dsh-meme", "memes"),
@@ -301,10 +299,10 @@ ACTIVITIES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "activities.json")
 ARCHIVE_ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863")
 
 FILE_DIRS = {
-    "diary":  os.path.join(DAFEIYU_DIR, "diary"),
-    "notes":  os.path.join(DAFEIYU_DIR, "notes"),
-    "made":   os.path.join(DAFEIYU_DIR, "made"),
-    "people": os.path.join(DAFEIYU_DIR, "people"),
+    "diary":  os.path.join(LANYA_DIR, "diary"),
+    "notes":  os.path.join(LANYA_DIR, "notes"),
+    "made":   os.path.join(LANYA_DIR, "made"),
+    "people": os.path.join(LANYA_DIR, "people"),
     "archive": os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863"),
 }
 
@@ -380,9 +378,9 @@ def list_dir_files(key, with_preview=False, limit=0):
             st = os.stat(p)
         except OSError:
             continue
-        # 面板自己的快照（dafeiyu-*.json / dafeiyu-persona.txt）不是她的作品，
+        # 面板自己的快照（lanya-*.json / lanya-persona.txt）不是她的作品，
         # 列在作品页里只会让人更看不懂。
-        if f.startswith("dafeiyu-") or f.startswith("theme-"):
+        if f.startswith("lanya-") or f.startswith("theme-"):
             continue
         row = {"name": f, "size": st.st_size, "mtime": int(st.st_mtime)}
         if with_preview:
@@ -724,7 +722,7 @@ def memento_rows(sql, args=(), limit=200):
 
 
 def memory_overview():
-    # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，它们每轮都写一条、内容全是同一句话，把真正
+    # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，341 条把真正
     # 有价值的记忆操作淹没了。只在实在没有其它记录时才退回显示它们。
     audit = memento_rows(
         "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
@@ -782,7 +780,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-DAFEIYU_MEMES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "memes")
+LANYA_MEMES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
@@ -841,9 +839,9 @@ def sources():
         out.append(("plugin", "大肥鱼", DSH_MEME, True))
 
     # 3. 她自己的
-    out.append(("stolen", "收回来的", os.path.join(DAFEIYU_MEMES, "stolen"), True))
-    out.append(("mine", "自己做的", DAFEIYU_MEMES, False))
-    out.append(("received", "别人给的", os.path.join(DAFEIYU_MEMES, "received"), False))
+    out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
+    out.append(("mine", "自己做的", LANYA_MEMES, False))
+    out.append(("firefly", "firefly 那批", os.path.join(LANYA_MEMES, "firefly-2026-10-16"), False))
     return out
 
 
@@ -1032,16 +1030,16 @@ import json
 import os
 import subprocess
 
-DAFEIYU_DIR_ = os.path.join(REPO, "\u5927\u80a5\u9c7c")
-REMINDERS_ = os.path.join(DAFEIYU_DIR_, "reminders.json")
+LANYA_DIR_ = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+REMINDERS_ = os.path.join(LANYA_DIR_, "reminders.json")
 
 # 插件调度器已经接管的那些，在页面上标出来，免得用户以为重复的也需要留
 COVERED_BY_PLUGIN = {
     "DSH-Reminders": "插件每 30 秒查提醒",
-    "DSH-Dafeiyu-Budget": "插件每 5 分钟算花销",
-    "DSH-Dafeiyu-Chats": "插件每 10 分钟导记录",
-    "DSH-Dafeiyu-Steal": "插件每 10 分钟收表情",
-    "DSH-Dafeiyu-Greet": "插件每 60 分钟问好",
+    "DSH-Lanya-Budget": "插件每 5 分钟算花销",
+    "DSH-Lanya-Chats": "插件每 10 分钟导记录",
+    "DSH-Lanya-Steal": "插件每 10 分钟收表情",
+    "DSH-Lanya-Greet": "插件每 60 分钟问好",
     "NapCat-DSH-Bridge": "插件每 10 分钟查 QQ",
 }
 
@@ -1124,7 +1122,7 @@ def scheduled_tasks():
 
 
 class Handler(SimpleHTTPRequestHandler):
-    server_version = "DafeiyuPanel/1.0"
+    server_version = "LanyaPanel/1.0"
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
@@ -1386,7 +1384,7 @@ class Handler(SimpleHTTPRequestHandler):
             # 把每项活动绑到的部件状态查出来，页面才知道"能不能真干"
             st3 = {}
             try:
-                snap = os.path.join(ROOT, "dafeiyu-state.json")
+                snap = os.path.join(ROOT, "lanya-state.json")
                 with open(snap, "r", encoding="utf-8") as fhs3:
                     st3 = dict((c.get("tag"), c) for c in
                                (json.load(fhs3).get("components") or []))
@@ -1428,12 +1426,12 @@ class Handler(SimpleHTTPRequestHandler):
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
             out = {"log": [], "last": "", "lastAt": "", "nextIn": ""}
             try:
-                lf = tail_file(os.path.join(DAFEIYU_DIR_, "lifeloop.log"), 12)
+                lf = tail_file(os.path.join(LANYA_DIR_, "lifeloop.log"), 12)
                 out["log"] = [x.strip() for x in (lf or "").splitlines() if x.strip()]
             except Exception:
                 pass
             try:
-                with open(os.path.join(DAFEIYU_DIR_, "lifeloop.state.json"), "r",
+                with open(os.path.join(LANYA_DIR_, "lifeloop.state.json"), "r",
                           encoding="utf-8") as fhs2:
                     st2 = json.load(fhs2)
                 out["last"] = st2.get("lastShare", "")
@@ -1441,7 +1439,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
             try:
-                with open(os.path.join(DAFEIYU_DIR_, "budget.json"), "r",
+                with open(os.path.join(LANYA_DIR_, "budget.json"), "r",
                           encoding="utf-8") as fhb:
                     b = json.load(fhb)
                 out["money"] = {"spent": b.get("spent", 0), "limit": b.get("limit", 0),
@@ -1701,12 +1699,67 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(404, {"ok": False, "error": "no meme"})
 
         if path in ("/", ""):
-            self.path = "/dafeiyu-panel.html"
+            self.path = "/lanya-panel.html"
         return super().do_GET()
 
     def do_POST(self):
         path = urlparse(self.path).path
         body = self._read()
+
+        if path == "/api/budget":
+            # 真写。之前这里有两条只读的分支，点保存只会把当前值读回来。
+            try:
+                with open(BUDGET, "r", encoding="utf-8") as fh:
+                    b = json.load(fh)
+                want = body.get("budget") or {}
+                if not isinstance(want, dict):
+                    return self._json(400, {"ok": False, "error": "budget must be an object"})
+
+                def numv(k, lo, hi, default):
+                    v = want.get(k)
+                    if v is None:
+                        return default
+                    try:
+                        v = float(v)
+                    except (TypeError, ValueError):
+                        return default
+                    return max(lo, min(hi, v))
+
+                old_limit = float(b.get("limit") or 1.0)
+                old_spent = float(b.get("spent") or 0.0)
+                spent = float(b.get("spent") or 0.0)
+
+                new_limit = numv("limit", 0.0, 100000.0, old_limit)
+                b["limit"] = round(new_limit, 4)
+                # 改了上限就按新上限重算余量，不然页面上数字对不上
+                b["remaining"] = round(max(0.0, b["limit"] - spent), 4)
+                b["exhausted"] = bool(spent >= b["limit"] and b["limit"] > 0)
+
+                if want.get("dmLimit") is not None:
+                    b["dmLimit"] = numv("dmLimit", 0.0, 100000.0, b.get("dmLimit", 0))
+                if want.get("groupLimit") is not None:
+                    b["groupLimit"] = numv("groupLimit", 0.0, 100000.0,
+                                           b.get("groupLimit", 0))
+                if "askWhenExhausted" in want:
+                    b["askWhenExhausted"] = bool(want["askWhenExhausted"])
+
+                import uuid as _u7
+                bp = os.path.join(LANYA_DIR_, "budget.json")
+                tmp = bp + "." + _u7.uuid4().hex[:8] + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(b, fh, ensure_ascii=False, indent=1)
+                for _k in range(6):
+                    try:
+                        os.replace(tmp, bp)
+                        break
+                    except OSError:
+                        if _k == 5:
+                            raise
+                        import time as _t7
+                        _t7.sleep(0.05)
+                return self._json(200, {"ok": True, "budget": b})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/bili/reply/delete":
             # 直接发请求，不起子进程 —— 光 python 启动就要一两秒。
@@ -1835,7 +1888,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not os.path.isfile(duty):
                     return self._json(200, {"ok": False, "error": "duty.md not found"})
                 dsh = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                   "resources", "runtime", "cli", "bin", "dsh.cmd")
+                                     "resources", "runtime", "cli", "bin", "dsh.cmd")
                 if not os.path.isfile(dsh):
                     return self._json(200, {"ok": False, "error": "dsh.cmd not found"})
                 with open(duty, "r", encoding="utf-8", errors="replace") as fhd:
@@ -1887,13 +1940,6 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
 
-        if path == "/api/schedule":
-            return self._json(200, {
-                "ok": True,
-                "reminders": reminders_snapshot(),
-                "tasks": scheduled_tasks(),
-            })
-
         if path == "/api/memory":
             return self._json(200, {"ok": True, "memory": memory_overview()})
 
@@ -1913,23 +1959,6 @@ class Handler(SimpleHTTPRequestHandler):
             latest = check_upstream(key)
             return self._json(200, {"ok": True, "key": key, "latest": latest,
                                     "reachable": latest is not None})
-
-        if path == "/api/tools":
-            return self._json(200, {"ok": True, "tools": tools_snapshot()})
-
-        if path == "/api/budget":
-            try:
-                with open(BUDGET, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "budget": json.load(fh)})
-            except Exception as e:
-                return self._json(200, {"ok": False, "budget": {}, "error": str(e)})
-
-        if path == "/api/memes/config":
-            try:
-                with open(MEMECFG, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "config": json.load(fh)})
-            except Exception as e:
-                return self._json(200, {"ok": False, "config": {}, "error": str(e)})
 
         if path == "/api/memes":
             groups = meme_groups()
@@ -1989,27 +2018,6 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/tools":
             return self._json(200, {"ok": True, "tools": tools_snapshot()})
-
-        if path == "/api/budget":
-            b = body.get("budget")
-            if not isinstance(b, dict):
-                return self._json(400, {"ok": False, "error": "budget must be an object"})
-            try:
-                with open(BUDGET, "r", encoding="utf-8") as fh:
-                    cur = json.load(fh)
-            except Exception:
-                cur = {}
-            if isinstance(cur, dict):
-                cur.update(b)
-                b = cur
-            try:
-                tmp = BUDGET + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(b, fh, ensure_ascii=False, indent=2)
-                os.replace(tmp, BUDGET)
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/bili/duty":
             text = body.get("text")
@@ -2104,7 +2112,7 @@ class Handler(SimpleHTTPRequestHandler):
             safe_tag = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", to_tag)[:32]
             if not safe_tag:
                 return self._json(400, {"ok": False, "error": "bad tag"})
-            dst_dir = os.path.join(DAFEIYU_MEMES, "stolen", safe_tag)
+            dst_dir = os.path.join(LANYA_MEMES, "stolen", safe_tag)
             try:
                 os.makedirs(dst_dir, exist_ok=True)
                 os.replace(full, os.path.join(dst_dir, os.path.basename(full)))
@@ -2156,14 +2164,50 @@ class Handler(SimpleHTTPRequestHandler):
                         return json.loads(r6.read().decode("utf-8"))
 
                 did = []
+                warn = []
+                # 本地那份档案（页面读的就是它）
+                pf0 = os.path.join(NAPCAT, "qq-profile.json")
+                saved0 = {}
+                if os.path.isfile(pf0):
+                    try:
+                        with open(pf0, "r", encoding="utf-8") as fhr0:
+                            saved0 = json.load(fhr0)
+                    except Exception:
+                        saved0 = {}
+
                 nick = str(body.get("nickname") or "").strip()
                 if nick:
-                    _ob("set_qq_profile", {"nickname": nick})
+                    try:
+                        rn = _ob("set_qq_profile", {"nickname": nick})
+                        if rn.get("status") == "failed" or rn.get("retcode") not in (None, 0, 1):
+                            warn.append("nickname: " + str(rn)[:80])
+                    except Exception as e:
+                        warn.append("nickname: " + str(e)[:80])
+                    saved0["nickname"] = nick
                     did.append("nickname")
+
                 sig = str(body.get("signature") or "").strip()
                 if sig:
-                    _ob("set_self_longnick", {"longNick": sig})
+                    # set_self_longnick 经常返回 result=999 / errMsg="set longnick Fail"，
+                    # 不检查就当成功了，页面上看着像没生效。
+                    try:
+                        rs = _ob("set_self_longnick", {"longNick": sig})
+                        bad = (rs.get("result") not in (None, 0)
+                               or rs.get("status") == "failed")
+                        if bad:
+                            warn.append("signature: " + str(rs)[:90])
+                    except Exception as e:
+                        warn.append("signature: " + str(e)[:80])
+                    # 不管 OneBot 认不认，本地先记下来 —— 那个是"最后一次设的值"
+                    saved0["signature"] = sig
                     did.append("signature")
+
+                if did:
+                    try:
+                        with open(pf0, "w", encoding="utf-8") as fhw0:
+                            json.dump(saved0, fhw0, ensure_ascii=False, indent=1)
+                    except Exception:
+                        pass
                 av = str(body.get("avatarBase64") or "").strip()
                 if av:
                     if av.startswith("data:"):
@@ -2190,14 +2234,15 @@ class Handler(SimpleHTTPRequestHandler):
                         saved3["avatarFile"] = ap
                         with open(pf3, "w", encoding="utf-8") as fhr:
                             json.dump(saved3, fhr, ensure_ascii=False)
-                return self._json(200, {"ok": True, "did": did})
+                return self._json(200, {"ok": True, "did": did,
+                                        "warn": warn})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/update":
             # 从 GitHub 拉最新代码。--ff-only：有本地改动就失败，不会把东西搅乱。
             import subprocess as _sp3
-            repo = os.environ.get("DAFEIYU_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
+            repo = os.environ.get("LANYA_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
             try:
                 before = _sp3.run(["git", "-C", repo, "rev-parse", "HEAD"],
                                   capture_output=True, text=True, timeout=20).stdout.strip()
@@ -2320,7 +2365,7 @@ class Handler(SimpleHTTPRequestHandler):
                 amt = float(body.get("amount") or 0)
                 if amt == 0:
                     return self._json(400, {"ok": False, "error": "amount is 0"})
-                bp = os.path.join(DAFEIYU_DIR_, "budget.json")
+                bp = os.path.join(LANYA_DIR_, "budget.json")
                 with open(bp, "r", encoding="utf-8") as fhb2:
                     b = json.load(fhb2)
                 # amount > 0 加额度；< 0 直接记一笔花费
@@ -2500,7 +2545,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("DAFEIYU_PANEL_PORT", "19389"))
+    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])
@@ -2508,7 +2553,7 @@ def main():
             pass
     os.makedirs(ROOT, exist_ok=True)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print("dafeiyu panel server on http://127.0.0.1:%d/dafeiyu-panel.html" % port, flush=True)
+    print("lanya panel server on http://127.0.0.1:%d/lanya-panel.html" % port, flush=True)
     srv.serve_forever()
 
 
