@@ -1,7 +1,7 @@
 {
   "name": "dsh-lanya",
-  "version": "1.0.0",
-  "description": "\u4e00\u53ea\u4f4f\u5728 QQ \u7fa4\u91cc\u7684\u72fc\uff1a\u4eba\u8bbe\u6ce8\u5165 + \u957f\u671f\u8bb0\u5fc6 + \u8868\u60c5\u5305\u60c5\u7eea\u5206\u7c7b + \u81ea\u4e3b\u5237 B \u7ad9 + 14 \u9875\u53ef\u89c6\u5316\u63a7\u5236\u53f0\u3002",
+  "version": "1.0.1",
+  "description": "一只住在 QQ 群里的狼：人设注入 + 长期记忆 + 表情包情绪分类 + 自主刷 B 站 + 14 页可视化控制台。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
