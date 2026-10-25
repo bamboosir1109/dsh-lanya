@@ -16,7 +16,7 @@ const PANEL = 'http://127.0.0.1:19388/lanya-panel.html'
 const API = 'http://127.0.0.1:19388'
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
 const PORT = 9336
-const OUT = 'E:\\DSH work\\大肥鱼\\made\\_effect'
+const OUT = join(process.env.TEMP || '.', 'dafeiyu-effect')
 mkdirSync(OUT, { recursive: true })
 
 const proc = spawn(EDGE, [
