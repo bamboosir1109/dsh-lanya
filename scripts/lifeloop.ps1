@@ -1,4 +1,4 @@
-# Lanya's "own life" loop.
+# Dafeiyu's "own life" loop.
 #
 # Gives her time to herself: periodically wakes a headless agent with an open
 # brief ("go find something to do"), lets it actually work (it has tools: web
@@ -38,15 +38,15 @@ $ErrorActionPreference = 'Stop'
 
 $root       = Join-Path (Split-Path -Parent $PSScriptRoot) 'napcat'
 $workDir    = Split-Path -Parent $root
-$lanyaDir   = Join-Path $workDir ([string][char]0x5C9A + [char]0x5A05)
-$notesDir   = Join-Path $lanyaDir 'notes'
-$madeDir    = Join-Path $lanyaDir 'made'
+$dafeiyuDir   = Join-Path $workDir ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$notesDir   = Join-Path $dafeiyuDir 'notes'
+$madeDir    = Join-Path $dafeiyuDir 'made'
 $promptPath = Join-Path $root 'lifeloop.prompt.txt'
-$activitiesPath = Join-Path $lanyaDir 'activities.json'
+$activitiesPath = Join-Path $dafeiyuDir 'activities.json'
 
-$statePath  = Join-Path $lanyaDir 'lifeloop.state.json'
-$logPath    = Join-Path $lanyaDir 'lifeloop.log'
-$budgetPath = Join-Path $lanyaDir 'budget.json'
+$statePath  = Join-Path $dafeiyuDir 'lifeloop.state.json'
+$logPath    = Join-Path $dafeiyuDir 'lifeloop.log'
+$budgetPath = Join-Path $dafeiyuDir 'budget.json'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
 $groupId    = 'YOUR_GROUP_ID'
@@ -87,7 +87,7 @@ function Get-SleepPlan([int]$BaseMinutes) {
 function Save-Mood([string]$Mood, [int]$Secs) {
     try {
         $obj = @{ mood = $Mood; nextSeconds = $Secs; at = (Get-Date).ToString('o') }
-        $jp = Join-Path $lanyaDir 'lifeloop.mood.json'
+        $jp = Join-Path $dafeiyuDir 'lifeloop.mood.json'
         ($obj | ConvertTo-Json -Compress) | Set-Content -Path $jp -Encoding UTF8
     } catch { }
 }
@@ -377,7 +377,7 @@ try {
       # that thing you said", she has no idea what he means. This log is the
       # workaround: she can open it when the conversation references something
       # she does not remember saying.
-      $sentLog = Join-Path $lanyaDir 'sent-log.txt'
+      $sentLog = Join-Path $dafeiyuDir 'sent-log.txt'
       $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm')
       $entry = '[' + $stamp + '] -> ' + $target + ': ' + $textToSend + "`r`n"
       [System.IO.File]::AppendAllText($sentLog, $entry, (New-Object System.Text.UTF8Encoding($false)))
@@ -385,10 +385,10 @@ try {
       # Also feed the cross-chat log, which the plugin injects into EVERY chat's
       # next turn. Without this she could send something here and then not know
       # about it when the same person replies in a private chat.
-      $crossLog = Join-Path $lanyaDir 'cross-chat.md'
+      $crossLog = Join-Path $dafeiyuDir 'cross-chat.md'
       $time = (Get-Date).ToString('HH:mm:ss')
       $who = if ($target -eq 'group') { 'group' } else { $target }
-      $crossEntry = '[' + $time + '] ' + $who + ' | Lanya(sent): ' + $textToSend + "`n"
+      $crossEntry = '[' + $time + '] ' + $who + ' | Dafeiyu(sent): ' + $textToSend + "`n"
       [System.IO.File]::AppendAllText($crossLog, $crossEntry, (New-Object System.Text.UTF8Encoding($false)))
     }
   } catch {

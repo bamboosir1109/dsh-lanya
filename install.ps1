@@ -22,8 +22,8 @@ if (-not $Target) {
 }
 
 $napcat = Join-Path $Target 'napcat'
-$LanyaName = [string][char]0x5C9A + [char]0x5A05
-$lanya = Join-Path $Target $LanyaName
+$DafeiyuName = [string][char]0x5927 + [char]0x80A5 + [char]0x9C7C
+$dafeiyu = Join-Path $Target $DafeiyuName
 
 Write-Host "repo   : $Repo"
 Write-Host "target : $Target"
@@ -33,7 +33,7 @@ $map = @(
     @{ From = 'server'; To = $napcat },
     @{ From = 'scripts'; To = $napcat },
     @{ From = 'prompts'; To = $napcat },
-    @{ From = 'panel'; To = $lanya }
+    @{ From = 'panel'; To = $dafeiyu }
 )
 
 $copied = 0
@@ -62,10 +62,10 @@ foreach ($m in $map) {
 
 $docs = Join-Path $Repo 'docs'
 if (Test-Path $docs) {
-    if (-not $WhatIf -and -not (Test-Path $lanya)) {
-        New-Item -ItemType Directory -Path $lanya -Force | Out-Null
+    if (-not $WhatIf -and -not (Test-Path $dafeiyu)) {
+        New-Item -ItemType Directory -Path $dafeiyu -Force | Out-Null
     }
-    $cfg = Join-Path $lanya 'lanya-config.json'
+    $cfg = Join-Path $dafeiyu 'dafeiyu-config.json'
     if (-not (Test-Path $cfg)) {
         $src = Join-Path $docs 'config.example.json'
         if (Test-Path $src) {
@@ -80,5 +80,5 @@ Write-Host ""
 Write-Host "$copied file(s)."
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  1. edit $(Join-Path $lanya 'lanya-config.json') and set adminQQ"
-Write-Host "  2. python `"$(Join-Path $napcat 'lanya-panel-server.py')`" --port 19388"
+Write-Host "  1. edit $(Join-Path $dafeiyu 'dafeiyu-config.json') and set adminQQ"
+Write-Host "  2. python `"$(Join-Path $napcat 'dafeiyu-panel-server.py')`" --port 19388"

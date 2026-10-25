@@ -11,7 +11,7 @@ import io
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 import os
 
-STOLEN = os.path.join(ROOT, "\u5c9a\u5a05", "memes", "stolen")
+STOLEN = os.path.join(ROOT, "\u5927\u80a5\u9c7c", "memes", "stolen")
 
 # 官方包的分类名 -> 情绪
 MAP = {

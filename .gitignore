@@ -3,5 +3,5 @@ node_modules/
 .DS_Store
 
 # 本机的身份配置（管理员 QQ、笔名、真实身份）绝不能提交
-lanya-config.json
+dafeiyu-config.json
 *.local.json

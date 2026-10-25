@@ -14,7 +14,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(ROOT, "\u5c9a\u5a05", "made")
+OUT = os.path.join(ROOT, "\u5927\u80a5\u9c7c", "made")
 
 sys.path.insert(0, HERE)
 
@@ -22,7 +22,7 @@ sys.path.insert(0, HERE)
 import importlib.util
 
 spec = importlib.util.spec_from_file_location(
-    "lps", os.path.join(HERE, "lanya-panel-server.py"))
+    "lps", os.path.join(HERE, "dafeiyu-panel-server.py"))
 lps = importlib.util.module_from_spec(spec)
 try:
     spec.loader.exec_module(lps)
@@ -31,7 +31,7 @@ except SystemExit:
 
 
 def dump(name, obj):
-    path = os.path.join(OUT, "lanya-" + name + ".json")
+    path = os.path.join(OUT, "dafeiyu-" + name + ".json")
     try:
         with io.open(path, "w", encoding="utf-8", newline="") as fh:
             json.dump(obj, fh, ensure_ascii=False)
@@ -102,7 +102,7 @@ def main():
         print("  bili:", e)
 
     try:
-        with io.open(os.path.join(ROOT, "\u5c9a\u5a05", "lanya-memes-config.json"),
+        with io.open(os.path.join(ROOT, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json"),
                      "r", encoding="utf-8") as fh:
             if dump("memes-config", {"ok": True, "config": json.load(fh)}):
                 ok += 1
@@ -128,7 +128,7 @@ def main():
         print("  files-made:", e)
 
     # 归档目录也要快照，否则作品页的「归档」标签会去读一个不存在的
-    # lanya-files-archive.json，表现就是 404。
+    # dafeiyu-files-archive.json，表现就是 404。
     try:
         af = lps.list_dir_files("archive", with_preview=False, limit=0)
         dump("files-archive", {"ok": True, "dir": "archive", "files": af})

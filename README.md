@@ -1,6 +1,6 @@
 # dsh-lanya
 
-> 一只住在 QQ 群里的狼 —— 会看群、会插话、会自己找事做，还有一个总控台看住她的手脚。
+> 一条住在 QQ 群里的鱼 —— 会看群、会插话、会自己找事做，还有一个总控台看住她的手脚。
 
 <p align="center">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A520-339933?style=flat-square&logo=node.js&logoColor=white">
@@ -23,6 +23,9 @@
 ## 这是什么
 
 一个跑在 Windows 上的「数字生命」实现：**DeepSeek Harness 插件 + 本地 HTTP 控制台**。
+
+> 仓库名 `dsh-lanya` 是历史原因留下的，内容跟这个名字已经没关系了。
+> 角色的名字、外形、说话方式全在 `persona.md` 里，换个文件就是另一个人。
 
 她有一个 QQ 号（走 NapCat），有自己的日记、随笔、人物档案、表情包库；
 会盯着粉丝群决定要不要插话，有每天 1 块钱的零花钱，也会自己刷 B 站、写评论。
@@ -53,7 +56,7 @@ QQ 群 ──┐
 
 | 模块 | 做什么 |
 |:---:|---|
-| 🎭 **人设注入** | 黑毛狼亚人「岚娅」，从 `persona.md` 读；身份信息独立配置，不进人设 |
+| 🎭 **人设注入** | 「大肥鱼」，从 `persona.md` 读；身份信息独立配置，不进人设 |
 | 👀 **群监听** | 长驻进程盯着群，决定要不要插话（冷场判定 + 频率上限） |
 | 🧠 **长期记忆** | 本地 SQLite，能加、能改、能删、能搜索、能按人筛选 |
 | 😀 **表情包** | 从群里收图 → 视觉模型判情绪 → 按 `happy/sad/angry/...` 分类 |
@@ -79,7 +82,7 @@ QQ 群 ──┐
 ### 从 GitHub 装
 
 ```bash
-git clone https://github.com/your-github-name/dsh-lanya
+git clone https://github.com/bamboosir1109/dsh-lanya
 cd dsh-lanya
 .\install.ps1
 ```
@@ -88,7 +91,7 @@ cd dsh-lanya
 
 ```
 server/  scripts/  prompts/   ──►  <工作目录>\napcat\
-panel/                        ──►  <工作目录>\岚娅\
+panel/                        ──►  <工作目录>\大肥鱼\
 ```
 
 **已存在的文件默认跳过**：
@@ -102,7 +105,7 @@ panel/                        ──►  <工作目录>\岚娅\
 ### 装成 DSH 插件
 
 ```powershell
-dsh plugin --profile desktop add https://github.com/your-github-name/dsh-lanya
+dsh plugin --profile desktop add https://github.com/bamboosir1109/dsh-lanya
 ```
 
 装完**重启 DSH**。
@@ -113,7 +116,7 @@ dsh plugin --profile desktop add https://github.com/your-github-name/dsh-lanya
 
 ```bash
 # 面板（必须）
-python napcat\lanya-panel-server.py --port 19388
+python napcat\dafeiyu-panel-server.py --port 19388
 
 # 群监听（可选）
 powershell -File napcat\groupwatch.ps1
@@ -122,7 +125,7 @@ powershell -File napcat\groupwatch.ps1
 powershell -File napcat\lifeloop.ps1
 ```
 
-打开 <http://127.0.0.1:19388/lanya-panel.html>
+打开 <http://127.0.0.1:19388/dafeiyu-panel.html>
 
 > 端口是 **19388**（面板服务），不是 DSH 默认的 19387。
 
@@ -164,9 +167,9 @@ dsh-lanya/
 │   ├─ voicedaemon.ps1          语音队列 → 合成 → 发送
 │   ├─ browserd.py              她自己的浏览器
 │   ├─ ── 定时（插件调度）──
-│   ├─ lanya-state.ps1          状态汇总 + 快照 + 分类调度
-│   ├─ lanya-tick.ps1           到期作业（挂在 reminders 上）
-│   ├─ lanya-supervisor.ps1     总管：看住别的进程，挂了拉起来
+│   ├─ dafeiyu-state.ps1          状态汇总 + 快照 + 分类调度
+│   ├─ dafeiyu-tick.ps1           到期作业（挂在 reminders 上）
+│   ├─ dafeiyu-supervisor.ps1     总管：看住别的进程，挂了拉起来
 │   ├─ kill-strays.ps1          清理卡住的无头 agent
 │   ├─ settings-guard.py        守住关键设置，被人改回去
 │   ├─ napcat-heal.ps1          NapCat 断了自动重连
@@ -355,7 +358,7 @@ node tests/test_memory_crud.mjs  # 记忆打字 → 加 → 改 → 删
 仓库里**没有任何** QQ 号、token、真实用户名、绝对路径。
 所有敏感值都是占位符，需要你在本地配置里填。
 
-人设正文（`persona.md`）可以公开 —— **身份信息在 `lanya-config.json` 里，不在人设里**，
+人设正文（`persona.md`）可以公开 —— **身份信息在 `dafeiyu-config.json` 里，不在人设里**，
 所以别人拿去用也不会带出你的隐私。
 
 ---

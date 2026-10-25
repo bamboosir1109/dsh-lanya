@@ -28,10 +28,10 @@ from bili_mcp import BiliMCP
 WORK = os.path.dirname(HERE)
 SEEN = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty", "seen.md")
 PERSONA_FILE = os.path.join(WORK, "napcat", "persona.md")
-LANYA_DIR = os.path.join(WORK, "\u5c9a\u5a05")
-INTEREST_FILE = os.path.join(LANYA_DIR, "bili-interests.json")
-CHAT_DIR = os.path.join(LANYA_DIR, "chats")
-CONFIG_FILE = os.path.join(LANYA_DIR, "lanya-config.json")
+DAFEIYU_DIR = os.path.join(WORK, "\u5927\u80a5\u9c7c")
+INTEREST_FILE = os.path.join(DAFEIYU_DIR, "bili-interests.json")
+CHAT_DIR = os.path.join(DAFEIYU_DIR, "chats")
+CONFIG_FILE = os.path.join(DAFEIYU_DIR, "dafeiyu-config.json")
 def _find_dsh():
     """找 dsh.cmd。
 
@@ -76,7 +76,7 @@ def admin_bili():
     """管理员的 B 站账号，用来在评论里 @ 他。
 
     以前写死在源码里 —— 那是别人的账号，不该出现在公开仓库。
-    现在从 lanya-config.json 读，没配就返回空（也就不 @ 了）。
+    现在从 dafeiyu-config.json 读，没配就返回空（也就不 @ 了）。
     """
     c = _cfg()
     return (str(c.get("adminBiliName") or "").strip(),
@@ -334,7 +334,7 @@ def save_interests(up, topic):
     if topic:
         topics = [topic] + [t for t in topics if t != topic]
     try:
-        os.makedirs(LANYA_DIR, exist_ok=True)
+        os.makedirs(DAFEIYU_DIR, exist_ok=True)
         with open(INTEREST_FILE, "w", encoding="utf-8") as fh:
             json.dump({"ups": ups[:20], "topics": topics[:30]},
                       fh, ensure_ascii=False, indent=1)

@@ -1,4 +1,4 @@
-# Lanya supervisor - one long-lived process that drives every periodic job.
+# Dafeiyu supervisor - one long-lived process that drives every periodic job.
 #
 # Why: nine scheduled tasks fired at 1/5/10 minute intervals. Task Scheduler
 # launching a task costs far more than the script itself (taskeng + a fresh
@@ -12,7 +12,7 @@
 #   made-server / TTS server / browserd  servers, not timers
 #
 # Usage:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File lanya-supervisor.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File dafeiyu-supervisor.ps1
 #   ... -Once          run every job once and exit (for testing)
 #   ... -List          print the schedule and exit
 #
@@ -26,8 +26,8 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $root  = '<WORKDIR>\napcat'
-$lanya = Join-Path '<WORKDIR>' ([string][char]0x5C9A + [char]0x5A05)
-$logPath = Join-Path $root 'lanya-supervisor.log'
+$dafeiyu = Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$logPath = Join-Path $root 'dafeiyu-supervisor.log'
 $py = 'python'
 $ps = 'powershell.exe'
 

@@ -1,7 +1,7 @@
 # Proactive greetings, restricted to people she ALREADY has a real memory of.
 #
 # Why the restriction: only greet people she already has a real memory of. So a candidate must have BOTH:
-#   - a profile file  <lanya>\people\<qq>.md  (this is what she writes after a real
+#   - a profile file  <dafeiyu>\people\<qq>.md  (this is what she writes after a real
 #     exchange), AND
 #   - an actual message from or to them somewhere in her readable history.
 # Having a profile is not enough on its own: she could have created one from a
@@ -10,7 +10,7 @@
 # Everything else - daytime only, a low daily cap, "do not repeat the same person
 # on consecutive days" - exists to keep this from becoming spam.
 #
-# Registered as DSH-Lanya-Greet (hourly; it decides for itself whether to act).
+# Registered as DSH-Dafeiyu-Greet (hourly; it decides for itself whether to act).
 
 # --- 隐藏控制台窗口 ---------------------------------------------------------
 # 由计划任务用 python.exe 启动时，Windows 会先弹一个黑框再跑脚本。用户看到的
@@ -70,13 +70,13 @@ NAPCAT = "http://127.0.0.1:8720"
 TOKEN = "<ONEBOT_TOKEN>"
 ADMIN = "YOUR_ADMIN_QQ"          # the owner; she should not "greet" him like a stranger
 
-LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")      # "Lanya"
-PEOPLE = os.path.join(LANYA, "people")
-CHATS = os.path.join(LANYA, "chats")
+DAFEIYU = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c")      # "Dafeiyu"
+PEOPLE = os.path.join(DAFEIYU, "people")
+CHATS = os.path.join(DAFEIYU, "chats")
 PROMPT = os.path.join(r"<WORKDIR>\napcat", "greet.prompt.txt")
-STATE = os.path.join(LANYA, "greet.state.json")
-LOG = os.path.join(LANYA, "greet.log")
-SENT = os.path.join(LANYA, "sent-log.txt")
+STATE = os.path.join(DAFEIYU, "greet.state.json")
+LOG = os.path.join(DAFEIYU, "greet.log")
+SENT = os.path.join(DAFEIYU, "sent-log.txt")
 
 DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
@@ -172,7 +172,7 @@ def ask_agent(task):
 
 
 def main():
-    os.makedirs(LANYA, exist_ok=True)
+    os.makedirs(DAFEIYU, exist_ok=True)
     now = time.localtime()
     if not (DAY_START <= now.tm_hour < DAY_END):
         log("outside daytime window; exit")

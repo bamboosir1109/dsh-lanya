@@ -1,11 +1,11 @@
-# Persistent browser for Lanya - the "look at the screen, then act" loop.
+# Persistent browser for Dafeiyu - the "look at the screen, then act" loop.
 #
 # Why a long-lived process: a game needs ONE browser session that keeps its state.
 # Launching a fresh browser per command would reload the page every time and lose
 # the game. So this stays alive, watches a command file, and answers with a fresh
 # screenshot.
 #
-# Protocol (files live in 岚娅\browser\):
+# Protocol (files live in 大肥鱼\browser\):
 #   cmd.json    <- she writes one action:  {"action": "goto", "url": "..."}
 #                                          {"action": "click", "x": 400, "y": 300}
 #                                          {"action": "key", "key": "ArrowLeft"}
@@ -57,8 +57,8 @@ import time
 from playwright.async_api import async_playwright
 
 BASE = r"<WORKDIR>"
-LANYA = os.path.join(BASE, "\u5c9a\u5a05")          # "Lanya"
-BROWSER_DIR = os.path.join(LANYA, "browser")
+DAFEIYU = os.path.join(BASE, "\u5927\u80a5\u9c7c")          # "Dafeiyu"
+BROWSER_DIR = os.path.join(DAFEIYU, "browser")
 CMD = os.path.join(BROWSER_DIR, "cmd.json")
 SHOT = os.path.join(BROWSER_DIR, "shot.png")
 RESULT = os.path.join(BROWSER_DIR, "result.json")
@@ -72,7 +72,7 @@ VIEWPORT = {"width": 1280, "height": 800}
 # task, so the proxy must be handed to it explicitly. Without this every page came
 # back as the browser's own "404 - page not found" error page: verified by loading
 # 4399 successfully with the proxy and failing on the same URL without it.
-PROXY = os.environ.get("LANYA_PROXY") or None
+PROXY = os.environ.get("DAFEIYU_PROXY") or None
 
 
 def log(msg):

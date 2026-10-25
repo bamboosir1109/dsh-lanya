@@ -1,4 +1,4 @@
-# Voice queue daemon for Lanya.
+# Voice queue daemon for Dafeiyu.
 #
 # The QQ session runs with sandbox=workspace-write and cannot initialise SAPI, so
 # she cannot synthesise speech inside a turn. Instead she WRITES a request into
@@ -22,9 +22,9 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $root      = '<WORKDIR>\napcat'
-$lanyaDir  = Join-Path '<WORKDIR>' ([string][char]0x5C9A + [char]0x5A05)   # "Lanya"
-$queuePath = Join-Path $lanyaDir 'voice-queue.json'
-$logPath   = Join-Path $lanyaDir 'voice.log'
+$dafeiyuDir  = Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
+$queuePath = Join-Path $dafeiyuDir 'voice-queue.json'
+$logPath   = Join-Path $dafeiyuDir 'voice.log'
 $sayScript = Join-Path $root 'say.ps1'
 # Local GPT-SoVITS engine, preferred. say.ps1 (edge-tts) stays as the fallback so
 # her voice never goes silent while the local model server is down.
@@ -40,7 +40,7 @@ function Write-Log([string]$m) {
   Write-Output $line
 }
 
-if (-not (Test-Path $lanyaDir)) { New-Item -ItemType Directory -Path $lanyaDir -Force | Out-Null }
+if (-not (Test-Path $dafeiyuDir)) { New-Item -ItemType Directory -Path $dafeiyuDir -Force | Out-Null }
 if (-not (Test-Path $queuePath)) {
   [System.IO.File]::WriteAllText($queuePath, '[]', (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -117,7 +117,7 @@ while ($true) {
         if ($wav -eq '' -or -not (Test-Path $wav)) {
           Write-Log ('synthesis FAILED, text was: ' + $text)
           Write-Log ('  detail: ' + $outStr)
-          [System.IO.File]::AppendAllText((Join-Path $lanyaDir 'voice-failed.log'), ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm') + '] ' + $target + ' (' + $mood + '): ' + $text + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+          [System.IO.File]::AppendAllText((Join-Path $dafeiyuDir 'voice-failed.log'), ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm') + '] ' + $target + ' (' + $mood + '): ' + $text + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
           continue
         }
         Write-Log ('synthesised ' + (Split-Path $wav -Leaf) + ' mood=' + $mood + ' for ' + $target)
@@ -137,7 +137,7 @@ while ($true) {
         Write-Log ('sent voice to ' + $target + ': ' + $res)
 
         # Keep a readable record of what she said out loud.
-        $sentLog = Join-Path $lanyaDir 'sent-log.txt'
+        $sentLog = Join-Path $dafeiyuDir 'sent-log.txt'
         $entry = '[' + (Get-Date).ToString('yyyy-MM-dd HH:mm') + '] -> ' + $target + ' (voice): ' + $text + "`r`n"
         [System.IO.File]::AppendAllText($sentLog, $entry, (New-Object System.Text.UTF8Encoding($false)))
       }

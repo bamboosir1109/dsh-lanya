@@ -11,9 +11,9 @@
 $ErrorActionPreference = 'Continue'
 
 $root     = $PSScriptRoot
-$lanyaDir = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5C9A + [char]0x5A05)
-$outDir   = Join-Path $lanyaDir 'made'
-$outFile  = Join-Path $outDir 'lanya-state.json'
+$dafeiyuDir = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$outDir   = Join-Path $dafeiyuDir 'made'
+$outFile  = Join-Path $outDir 'dafeiyu-state.json'
 
 $profDir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
 $nmDir   = Join-Path $profDir 'node_modules'
@@ -123,8 +123,8 @@ if (Test-Path $pkgFile) {
 # still registered and doing them a second time. Count them here so the panel can
 # say "N left to remove" instead of making the user go look.
 $redundantTasks = @(
-  'DSH-Reminders', 'DSH-Lanya-Budget', 'DSH-Lanya-Chats',
-  'DSH-Lanya-Steal', 'DSH-Lanya-Greet', 'NapCat-DSH-Bridge'
+  'DSH-Reminders', 'DSH-Dafeiyu-Budget', 'DSH-Dafeiyu-Chats',
+  'DSH-Dafeiyu-Steal', 'DSH-Dafeiyu-Greet', 'NapCat-DSH-Bridge'
 )
 $existing = @()
 try {
@@ -142,7 +142,7 @@ $os = Get-CimInstance Win32_OperatingSystem
 $state = [pscustomobject]@{
   at     = (Get-Date).ToString('o')
   memory = [pscustomobject]@{
-    lanyaMb = [math]::Round($total, 1)
+    dafeiyuMb = [math]::Round($total, 1)
     limitMb = $limitMb
     over    = ($total -gt $limitMb)
     freeGb  = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
@@ -157,12 +157,12 @@ $state = [pscustomobject]@{
 # same-origin relative path: reading it over the API from the 19388 origin fails,
 # because the browser sends an OPTIONS preflight and that route answers 400.
 try {
-  $personaPath = '' + [string][char]0x5C9A + [char]0x5A05 + '-' + [char]0x4EBA + [char]0x8BBE + [char]0x6B63 + [char]0x6587 + '.md'
+  $personaPath = '' + [string][char]0x5927 + [char]0x80A5 + [char]0x9C7C + '-' + [char]0x4EBA + [char]0x8BBE + [char]0x6B63 + [char]0x6587 + '.md'
 } catch { $personaPath = '' }
 try {
   New-Item -ItemType Directory -Path $outDir -Force | Out-Null
   if ($personaPath -and (Test-Path $personaPath)) {
-    Copy-Item $personaPath (Join-Path $outDir 'lanya-persona.txt') -Force
+    Copy-Item $personaPath (Join-Path $outDir 'dafeiyu-persona.txt') -Force
   }
 } catch { }
 
@@ -212,8 +212,8 @@ try {
       if ($mins -lt 2) { $due = $false }
     }
     if ($due) {
-      $lanyaMemes = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5C9A + [char]0x5A05)) 'memes'
-      $flat = @(Get-ChildItem (Join-Path $lanyaMemes 'stolen') -File -ErrorAction SilentlyContinue)
+      $dafeiyuMemes = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'memes'
+      $flat = @(Get-ChildItem (Join-Path $dafeiyuMemes 'stolen') -File -ErrorAction SilentlyContinue)
       if ($flat.Count -gt 0) {
         Set-Content -Path $cStamp -Value (Get-Date -Format 'o') -Encoding UTF8
         Start-Process -FilePath 'python' -ArgumentList ('"' + $cScript + '" --limit 20') -WindowStyle Hidden

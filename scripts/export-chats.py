@@ -1,15 +1,15 @@
-# Export dsh session transcripts into readable Markdown for Lanya.
+# Export dsh session transcripts into readable Markdown for Dafeiyu.
 #
-# Why: the raw transcripts live in 岚娅-inaccessible form - zstd-compressed JSONL
+# Why: the raw transcripts live in 大肥鱼-inaccessible form - zstd-compressed JSONL
 # under <dsh home>\sessions\<workspace>\<session>\session.v4.jsonl.zstd - so
 # "she can read every conversation" was true only in theory. This turns them into
 # plain Markdown she can actually open.
 #
-# What it writes: <lanya>\chats\<session-name>.md for every session in the QQ
+# What it writes: <dafeiyu>\chats\<session-name>.md for every session in the QQ
 # workspace, newest last. Each line is "HH:MM 角色: 文本"; tool noise is dropped,
 # because the point is what was SAID.
 #
-# Run by the DSH-Lanya-Chats scheduled task every 10 minutes.
+# Run by the DSH-Dafeiyu-Chats scheduled task every 10 minutes.
 
 # --- 隐藏控制台窗口 ---------------------------------------------------------
 # 由计划任务用 python.exe 启动时，Windows 会先弹一个黑框再跑脚本。用户看到的
@@ -24,7 +24,7 @@
 import os as _os
 def _config_path():
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "\u5c9a\u5a05", "lanya-config.json")
+                        "\u5927\u80a5\u9c7c", "dafeiyu-config.json")
 
 
 def _speaker_name():
@@ -84,8 +84,8 @@ import zstandard
 
 DSH_HOME = r"$env:USERPROFILE\.dsh"
 SESSIONS = _find_sessions_dir()
-LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")      # "Lanya"
-OUT_DIR = os.path.join(LANYA, "chats")
+DAFEIYU = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c")      # "Dafeiyu"
+OUT_DIR = os.path.join(DAFEIYU, "chats")
 
 # Session id -> friendly name. QQ sessions are the interesting ones; the others
 # are the owner's own dsh conversations (including the one where she was built).

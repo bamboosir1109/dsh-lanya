@@ -1,14 +1,14 @@
-# Keep Lanya's cross-chat memory bounded.
+# Keep Dafeiyu's cross-chat memory bounded.
 #
 # The problem this solves: dsh-onebot-qq appends every inbound and outbound
-# message to 岚娅\cross-chat.md and never prunes it. Only the last 15 lines are
+# message to 大肥鱼\cross-chat.md and never prunes it. Only the last 15 lines are
 # ever injected into a turn, but the file grows by roughly a thousand lines a week. Two costs, both growing forever:
 #   - the plugin reads the WHOLE file on every single message just to take the
 #     tail, so every reply gets slower as the file gets longer
 #   - the file itself is pure append, so nothing is ever reclaimed
 #
 # What this does: keeps the most recent KEEP lines in place and moves everything
-# older into 岚娅\chats\cross-chat-archive\<date>.md, so nothing is lost but the
+# older into 大肥鱼\chats\cross-chat-archive\<date>.md, so nothing is lost but the
 # live file stays small. Run daily.
 #
 # Before trimming, the long-term value is distilled into the people/ dossiers by
@@ -19,13 +19,13 @@ import os
 import time
 from datetime import datetime, timedelta
 
-LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")        # "Lanya"
-LOG = os.path.join(LANYA, "cross-chat.md")
-ARCHIVE_DIR = os.path.join(LANYA, "chats", "cross-chat-archive")
-MAINT_LOG = os.path.join(LANYA, "memory-maintenance.log")
+DAFEIYU = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c")        # "Dafeiyu"
+LOG = os.path.join(DAFEIYU, "cross-chat.md")
+ARCHIVE_DIR = os.path.join(DAFEIYU, "chats", "cross-chat-archive")
+MAINT_LOG = os.path.join(DAFEIYU, "memory-maintenance.log")
 # Her meal log. She wrote "keep 7 days, delete the row after that" into the file
 # herself, but nothing was enforcing it - the rule existed only as a sentence.
-MEAL_LOG = os.path.join(LANYA, "notes", "\u996d\u83dc\u8bb0\u5f55.md")
+MEAL_LOG = os.path.join(DAFEIYU, "notes", "\u996d\u83dc\u8bb0\u5f55.md")
 RETENTION_DAYS = 7
 
 KEEP = 400          # lines left in the live file (~a day of chatter)

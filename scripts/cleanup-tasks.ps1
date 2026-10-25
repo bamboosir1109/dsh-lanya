@@ -38,14 +38,14 @@ else {
 
 # These are the ones the plugin's own scheduler covers now. Servers and the three
 # long-lived daemons are deliberately NOT in this list:
-#   DSH-Lanya-Works / -TTS / -Browser  are servers, not timers
+#   DSH-Dafeiyu-Works / -TTS / -Browser  are servers, not timers
 #   DSH-GroupWatch / -Life / -Voice    are long-lived daemons
 $redundant = @(
   'DSH-Reminders',
-  'DSH-Lanya-Budget',
-  'DSH-Lanya-Chats',
-  'DSH-Lanya-Steal',
-  'DSH-Lanya-Greet',
+  'DSH-Dafeiyu-Budget',
+  'DSH-Dafeiyu-Chats',
+  'DSH-Dafeiyu-Steal',
+  'DSH-Dafeiyu-Greet',
   'NapCat-DSH-Bridge'
 )
 

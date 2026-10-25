@@ -1,8 +1,8 @@
 /**
- * dsh-lanya — 岚娅的统一插件 + 控制台。
+ * dsh-lanya — 大肥鱼的统一插件 + 控制台。
  *
  * 两件事合成一个包：
- *   1. 人设注入（取代 dsh-persona-dafeiyu 里岚娅那一路），好感度一并带上
+ *   1. 人设注入（取代 dsh-persona-dafeiyu 里大肥鱼那一路），好感度一并带上
  *   2. 总控页面 /dsh-lanya/ —— 看住所有部件、装/更新插件、以及内存闸
  *
  * 为什么要内存闸：无头 agent 卡住没人收尸时会一路堆积。原因是无头
@@ -24,16 +24,16 @@ const execFileAsync = promisify(execFile)
 export const name = 'dsh-lanya'
 export const inject = ['systemPrompt']
 
-export const PERSONA_SECTION = 'lanya:persona'
-export const AFFINITY_SECTION = 'lanya:affinity'
+export const PERSONA_SECTION = 'dafeiyu:persona'
+export const AFFINITY_SECTION = 'dafeiyu:affinity'
 
 // ESM 没有 __dirname，从 import.meta.url 推
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PERSONA = path.join(HERE, '..', 'napcat', 'persona.md')
-const DEFAULT_AFFINITY = '<WORKDIR>\\岚娅\\affinity.json'
+const DEFAULT_AFFINITY = '<WORKDIR>\\大肥鱼\\affinity.json'
 const NAPCAT_DIR = '<WORKDIR>\\napcat'
 
-// 常驻部件实测只有一百多 MB，3 GB 阈值足够松，岚娅的常驻部件实测只有一百多 MB，
+// 常驻部件实测只有一百多 MB，3 GB 阈值足够松，大肥鱼的常驻部件实测只有一百多 MB，
 // 一旦看到 3 GB 就说明有人在堆积了，不是正常波动。
 const MEMORY_LIMIT_MB = 3000
 const STRAY_AGE_MIN = 6
@@ -45,8 +45,8 @@ const COMPONENTS = [
   { tag: 'browserd',    kind: 'server', match: 'browserd\\.py',         desc: '她的浏览器' },
   { tag: 'works',       kind: 'server', match: 'http\\.server 19388',   desc: '作品站 (19388)' },
   { tag: 'tts',         kind: 'server', match: 'api_v2\\.py',           desc: '本地语音 (9880)' },
-  { tag: 'supervisor',  kind: 'timer',  match: 'lanya-supervisor\\.ps1', desc: '总管（若已注册任务）' },
-  { tag: 'tick',        kind: 'timer',  match: 'lanya-tick\\.ps1',      desc: '到期作业（挂在 reminders 上）' },
+  { tag: 'supervisor',  kind: 'timer',  match: 'dafeiyu-supervisor\\.ps1', desc: '总管（若已注册任务）' },
+  { tag: 'tick',        kind: 'timer',  match: 'dafeiyu-tick\\.ps1',      desc: '到期作业（挂在 reminders 上）' },
   { tag: 'napcat',      kind: 'bridge', match: 'napimain',              desc: 'NapCat 注入进程' },
   { tag: 'headless',    kind: 'agent',  match: '--profile headless',    desc: '无头 agent（堆积就是它）' }
 ]
@@ -55,7 +55,7 @@ const SCRIPTS = {
   groupwatch: 'groupwatch.ps1',
   lifeloop: 'lifeloop.ps1',
   voicedaemon: 'voicedaemon.ps1',
-  supervisor: 'lanya-supervisor.ps1',
+  supervisor: 'dafeiyu-supervisor.ps1',
   'napcat-heal': 'napcat-heal.ps1',
   'kill-strays': 'kill-strays.ps1',
   'settings-guard': 'settings-guard.py'
@@ -145,7 +145,7 @@ async function collectState() {
   return {
     at: new Date().toISOString(),
     memory: {
-      lanyaMb: Math.round(totalMb * 10) / 10,
+      dafeiyuMb: Math.round(totalMb * 10) / 10,
       limitMb: MEMORY_LIMIT_MB,
       over: totalMb > MEMORY_LIMIT_MB,
       freeGb: Math.round((os.freemem() / 1073741824) * 10) / 10,
@@ -182,7 +182,7 @@ async function stopComponent(tag) {
 const PAGE = String.raw`<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>岚娅控制台</title>
+<title>大肥鱼控制台</title>
 <style>
 :root{--bg:#12141a;--card:#1b1e27;--line:#2a2f3c;--fg:#e6e8ee;--dim:#8b93a7;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--accent:#7dd3fc}
 *{box-sizing:border-box}
@@ -213,7 +213,7 @@ pre{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10
 .muted{color:var(--dim);font-size:12px}
 </style></head><body>
 <header>
-  <h1>岚娅控制台</h1>
+  <h1>大肥鱼控制台</h1>
   <span class="sub" id="stamp">加载中…</span>
   <span style="flex:1"></span>
   <button class="primary" onclick="refresh()">刷新</button>
@@ -258,9 +258,9 @@ async function refresh(){
     const s = await r.json();
     $('stamp').textContent = '更新于 ' + new Date(s.at).toLocaleTimeString();
     const m = s.memory;
-    $('mem').textContent = m.lanyaMb + ' MB / 上限 ' + m.limitMb + ' MB';
+    $('mem').textContent = m.dafeiyuMb + ' MB / 上限 ' + m.limitMb + ' MB';
     $('mem').style.color = m.over ? 'var(--bad)' : 'var(--fg)';
-    $('meterBar').style.width = Math.min(100, m.lanyaMb / m.limitMb * 100) + '%';
+    $('meterBar').style.width = Math.min(100, m.dafeiyuMb / m.limitMb * 100) + '%';
     $('meterBox').className = 'meter' + (m.over ? ' over' : '');
     $('memNote').textContent = '系统可用 ' + m.freeGb + ' GB / 共 ' + m.totalGb + ' GB'
       + (m.over ? '　超阈值了，先清孤儿 agent' : '');
@@ -349,7 +349,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(
     () => ctx.systemPrompt.section({
-      name: 'lanya-identity',
+      name: 'dafeiyu-identity',
       order: 1,
       text: () => identityText(),
       interpolate: false
@@ -376,9 +376,9 @@ export function apply(ctx, config = {}) {
   // 同样的投递口径（target=group 发群，否则当 QQ 号发私聊），额外支持 image。
   // 已触发过的记录写进 state 文件，避免重启后同一条重复发。
   // 提醒清单在她自己的目录里，不在 napcat 下。
-  const LANYA_DIR = '<WORKDIR>/\u5c9a\u5a05'
-  const REMINDERS_FILE = path.join(LANYA_DIR, 'reminders.json')
-  const REMINDERS_STATE = path.join(LANYA_DIR, 'reminders-plugin-state.json')
+  const DAFEIYU_DIR = '<WORKDIR>/\u5927\u80a5\u9c7c'
+  const REMINDERS_FILE = path.join(DAFEIYU_DIR, 'reminders.json')
+  const REMINDERS_STATE = path.join(DAFEIYU_DIR, 'reminders-plugin-state.json')
   const ADMIN_QQ = '你的管理员QQ'
   const FAN_GROUP = '你的群号'
 
@@ -496,7 +496,7 @@ export function apply(ctx, config = {}) {
   // DSH 的 web 服务器直接拒掉。那个服务是普通进程，会死；这里每 30 秒探一次，
   // 死了就拉起来——不依赖任何计划任务，也就不会有窗口闪。
   const PANEL_PORT = 19389
-  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'lanya-panel-server.py')
+  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'dafeiyu-panel-server.py')
   let panelBusy = false
 
   async function ensurePanelServer() {
@@ -509,7 +509,7 @@ export function apply(ctx, config = {}) {
       try {
         const ac = new AbortController()
         const to = setTimeout(() => ac.abort(), 2000)
-        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/lanya-state.json', { signal: ac.signal })
+        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/dafeiyu-state.json', { signal: ac.signal })
         clearTimeout(to)
         ok = res.ok
       } catch { ok = false }
@@ -528,10 +528,10 @@ export function apply(ctx, config = {}) {
   // ---- 身份（从本地配置读，人设正文里不写死隐私） ---------------------------
   //
   // 人设正文是要能公开到 GitHub 的，所以里面没有任何 QQ 号、笔名、真实身份。
-  // 那些属于「这台机器上是谁在用」，放进 lanya-config.json，只在本机存在。
+  // 那些属于「这台机器上是谁在用」，放进 dafeiyu-config.json，只在本机存在。
   // 每次组装提示词时现读，改配置立刻生效。
-  // LANYA_DIR 在这个函数后面才定义，所以路径要惰性求值，别在模块层就拼。
-  const configFile = () => path.join(LANYA_DIR, 'lanya-config.json')
+  // DAFEIYU_DIR 在这个函数后面才定义，所以路径要惰性求值，别在模块层就拼。
+  const configFile = () => path.join(DAFEIYU_DIR, 'dafeiyu-config.json')
 
   function identityText() {
     const c = readJsonSafe(configFile(), null)
@@ -571,7 +571,7 @@ export function apply(ctx, config = {}) {
 
   // ---- 内置调度器 -------------------------------------------------------
   //
-  // 之前是这样一个链条：提醒任务每分钟拉一个 powershell -> 它再跑 lanya-tick
+  // 之前是这样一个链条：提醒任务每分钟拉一个 powershell -> 它再跑 dafeiyu-tick
   // -> tick 挑一个到期的作业。结果是每分钟一个控制台窗口闪一下，用户直接说
   // "不要反复弹出关闭"。
   //
@@ -580,7 +580,7 @@ export function apply(ctx, config = {}) {
   //
   // 用 setInterval 而不是 setTimeout 递归：间隔稳定，不会因为某次作业耗时长而漂移。
   const SCHEDULE = [
-    { name: 'state',          everySec: 30,   script: 'lanya-state.ps1' },
+    { name: 'state',          everySec: 30,   script: 'dafeiyu-state.ps1' },
     { name: 'strays',         everySec: 300,  script: 'kill-strays.ps1' },
     { name: 'settings',       everySec: 300,  script: 'settings-guard.py' },
     { name: 'bridge',         everySec: 600,  script: 'napcat-heal.ps1' },
@@ -593,7 +593,7 @@ export function apply(ctx, config = {}) {
 
   const MARKER = path.join(NAPCAT_DIR, 'scheduler-in-plugin.flag')
   try { fs.writeFileSync(MARKER, String(Date.now())) } catch { }
-  // 这个标记文件的作用：让 lanya-tick.ps1 知道自己不用再干活了，避免两套调度
+  // 这个标记文件的作用：让 dafeiyu-tick.ps1 知道自己不用再干活了，避免两套调度
   // 同时跑、把同一个作业做两遍。
 
   const lastRun = {}

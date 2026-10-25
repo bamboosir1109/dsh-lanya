@@ -52,7 +52,7 @@ try:
     import json
     import os as _mj
     _mroot = _mo.path.dirname(_mo.path.dirname(_mo.path.abspath(__file__)))
-    _mcfg = _mo.path.join(_mroot, "\u5c9a\u5a05", "lanya-memes-config.json")
+    _mcfg = _mo.path.join(_mroot, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json")
     with open(_mcfg, "r", encoding="utf-8") as _mfh:
         _mdata = _mj.load(_mfh)
     if _mdata.get("stealEnabled") is False:
@@ -103,14 +103,14 @@ TOKEN = os.environ.get("ONEBOT_TOKEN", "请改成你 NapCat 里配的 token")
 GROUP = "你的群号"
 LOOKBACK = 60
 
-LANYA = os.path.join(ROOT, "\u5c9a\u5a05")      # "Lanya"
-MEMES = os.path.join(LANYA, "memes")
+DAFEIYU = os.path.join(ROOT, "\u5927\u80a5\u9c7c")      # "Dafeiyu"
+MEMES = os.path.join(DAFEIYU, "memes")
 OUT = os.path.join(MEMES, "stolen")
 REJ = os.path.join(MEMES, "rejected")
 STAGE = os.path.join(MEMES, "_stage")
 INDEX = os.path.join(MEMES, "stolen-index.md")
 REJINDEX = os.path.join(MEMES, "rejected-index.md")
-LOG = os.path.join(LANYA, "steal.log")
+LOG = os.path.join(DAFEIYU, "steal.log")
 SEEN = os.path.join(MEMES, ".seen.json")
 PROMPT = os.path.join(ROOT, "napcat", "classify-meme.prompt.txt")
 

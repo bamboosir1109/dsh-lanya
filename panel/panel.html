@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>岚娅 · 控制台</title>
+<title>大肥鱼 · 控制台</title>
 <style>
 :root{
   --bg:#0b0d13;
@@ -311,8 +311,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
 <aside>
   <div class="brand">
-    <div class="logo">🐺</div>
-    <div><b>岚娅</b><span>Lanya Console</span></div>
+    <div class="logo">🐟</div>
+    <div><b>大肥鱼</b><span>CONSOLE</span></div>
   </div>
   <nav id="nav">
     <a class="navitem on" data-page="overview"><span class="ni">◈</span>概览</a>
@@ -372,7 +372,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-system">
-  <div class="phead"><h1>部件与插件</h1><p>岚娅的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
+  <div class="phead"><h1>部件与插件</h1><p>大肥鱼的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
 
   <div class="card">
     <h3>运行中的部件</h3>
@@ -409,7 +409,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="card">
     <h3>推荐插件</h3>
-    <p class="note">这些和岚娅配合得比较好。点一下会把安装地址填进下面的输入框。</p>
+    <p class="note">这些和大肥鱼配合得比较好。点一下会把安装地址填进下面的输入框。</p>
     <div class="presets" id="recGrid"></div>
     <div class="out" id="recOut"></div>
   </div>
@@ -1021,11 +1021,11 @@ function clearSearch(){
 
 function setTheme(name){
   document.documentElement.setAttribute('data-theme', name);
-  try{ localStorage.setItem('lanya-theme', name); }catch(e){}
+  try{ localStorage.setItem('dafeiyu-theme', name); }catch(e){}
 }
 (function initTheme(){
   let saved = 'light';
-  try{ saved = localStorage.getItem('lanya-theme') || 'light'; }catch(e){}
+  try{ saved = localStorage.getItem('dafeiyu-theme') || 'light'; }catch(e){}
   document.documentElement.setAttribute('data-theme', saved);
 })();
 const $ = (id) => document.getElementById(id);
@@ -1076,19 +1076,19 @@ function staticFor(path){
   // 读操作优先读同源静态快照：内嵌视图会挡跨端口 fetch，但同源文件不会。
   const bare = path.split('?')[0].replace(/^\/api/, '');
   const map = {
-    '/memes': './lanya-memes.json',
-    '/budget': './lanya-budget.json',
-    '/config': './lanya-config.json',
-    '/tunables': './lanya-tunables.json',
-    '/tools': './lanya-tools.json',
-    '/schedule': './lanya-schedule.json',
-    '/memory': './lanya-memory.json',
-    '/bili': './lanya-bili.json'
+    '/memes': './dafeiyu-memes.json',
+    '/budget': './dafeiyu-budget.json',
+    '/config': './dafeiyu-config.json',
+    '/tunables': './dafeiyu-tunables.json',
+    '/tools': './dafeiyu-tools.json',
+    '/schedule': './dafeiyu-schedule.json',
+    '/memory': './dafeiyu-memory.json',
+    '/bili': './dafeiyu-bili.json'
   };
   if(map[bare]) return map[bare];
   if(bare === '/files'){
     const m = path.match(/[?&]dir=([^&]+)/);
-    if(m) return './lanya-files-' + decodeURIComponent(m[1]) + '.json';
+    if(m) return './dafeiyu-files-' + decodeURIComponent(m[1]) + '.json';
   }
   return null;
 }
@@ -1149,7 +1149,7 @@ const PLUGIN = {
   'dsh-auto-memory':'重要的事自动写进记忆文件',
   'dsh-cost-meter':'统计花了多少 token，零花钱靠它',
   'dsh-automation':'DSH 自带的定时执行框架',
-  'dsh-dafeiyu':'桌面宠物，跟岚娅无关，想清静可以关',
+  'dsh-dafeiyu':'桌面宠物，跟大肥鱼无关，想清静可以关',
   'dsh-bili-scroll':'自动刷视频、看字幕、写评论，能把推荐发到你 B 站私信',
   'dsh-bili-whale':'B 站社区互动：点赞、评论、跟人聊',
   'dsh-plugin':'浏览和安装别的插件用的',
@@ -1160,20 +1160,20 @@ function pDesc(n){ for(const k in PLUGIN){ if(n===k || n.indexOf(k)===0) return 
 
 async function refreshOverview(){
   try{
-    const r = await fetch('./lanya-state.json?t=' + Date.now(), { cache:'no-store' });
+    const r = await fetch('./dafeiyu-state.json?t=' + Date.now(), { cache:'no-store' });
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const s = await r.json();
     const m = s.memory;
     setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
-    setHtml('sMem', m.lanyaMb + '<small>MB</small>');
+    setHtml('sMem', m.dafeiyuMb + '<small>MB</small>');
     $('sMem').style.color = m.over ? 'var(--bad)' : 'var(--fg)';
     setText('sMemSub', '上限 ' + m.limitMb + ' MB');
     setHtml('sFree', m.freeGb + '<small>GB</small>');
     setText('sFreeSub', '共 ' + m.totalGb + ' GB');
-    $('memFill').style.width = Math.min(100, m.lanyaMb/m.limitMb*100) + '%';
+    $('memFill').style.width = Math.min(100, m.dafeiyuMb/m.limitMb*100) + '%';
     $('memBar').className = 'bar' + (m.over ? ' hot' : '');
-    setText('memLeft', m.lanyaMb + ' MB 已用');
-    setText('memRight', m.over ? '⚠ 超过上限' : (m.limitMb - m.lanyaMb).toFixed(0) + ' MB 余量');
+    setText('memLeft', m.dafeiyuMb + ' MB 已用');
+    setText('memRight', m.over ? '⚠ 超过上限' : (m.limitMb - m.dafeiyuMb).toFixed(0) + ' MB 余量');
 
     const comps = s.components || [];
     let alive = 0;
@@ -1205,7 +1205,7 @@ async function refreshOverview(){
     pb.innerHTML = '';
     const plugins = s.plugins || [];
     setText('navPlugins', plugins.length);   // 导航项已合并，加了 null 安全
-    window.__lanyaPlugins = plugins.map(function(p){ return p.name; });
+    window.__dafeiyuPlugins = plugins.map(function(p){ return p.name; });
 
     // 渲染每个插件一行。这段之前被绑定补丁整段覆盖掉了，只剩表头——
     // 表现就是"插件看不到了"。
@@ -1243,10 +1243,10 @@ async function refreshOverview(){
       ['dsh-meme', 'memes', null],
       ['dsh-memento', 'memory', null]
     ];
-    window.__lanyaBound = {};
+    window.__dafeiyuBound = {};
     bind.forEach(function(row){
       const ok = has(row[0]);
-      window.__lanyaBound[row[1]] = ok;
+      window.__dafeiyuBound[row[1]] = ok;
       const pg = $('page-' + row[1]);
       if(pg) pg.style.display = ok ? '' : 'none';
       const nav = document.querySelector('.navitem[data-page="' + row[1] + '"]');
@@ -1296,7 +1296,7 @@ const RECOMMENDED = [
     repo: 'https://github.com/PerryLink/dsh-memento' },
   { name: 'dsh-auto-memory', desc: 'Claude Code 风格的自动记忆，会维护 MEMORY.md 索引',
     repo: 'https://github.com/AskTheWay/dsh-auto-memory' },
-  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟岚娅无关，图个乐）',
+  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟大肥鱼无关，图个乐）',
     repo: 'https://github.com/QCYTSN/dsh-dafeiyu' }
 ];
 
@@ -1305,7 +1305,7 @@ function renderRecommended(){
   if(!grid) return;
   grid.innerHTML = '';
   RECOMMENDED.forEach(function(r){
-    const installed = (window.__lanyaPlugins || []).some(function(p){
+    const installed = (window.__dafeiyuPlugins || []).some(function(p){
       return p === r.name;
     });
     const b = document.createElement('button');

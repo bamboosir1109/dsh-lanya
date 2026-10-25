@@ -4,7 +4,7 @@
 改完存盘就生效，不用重启。
 
 **人设正文是可以公开的** —— 里面不要写 QQ 号、真名、笔名这些。
-身份信息放在 `lanya-config.json` 里，插件会单独塞给别人看的那份提示词。
+身份信息放在 `dafeiyu-config.json` 里，插件会单独塞给别人看的那份提示词。
 
 ---
 
@@ -93,7 +93,7 @@ TIMEOUT_SIGNAL                ← 她卡住／走神时会说什么
 
 ## 六、身份（这段不要写进人设正文）
 
-放 `lanya-config.json`：
+放 `dafeiyu-config.json`：
 
 ```json
 {

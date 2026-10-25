@@ -5,7 +5,7 @@
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
 #   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
-#   岚娅/memes/...                        她自己的
+#   大肥鱼/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -20,7 +20,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-LANYA_MEMES = os.path.join(ROOT, "\u5c9a\u5a05", "memes")
+DAFEIYU_MEMES = os.path.join(ROOT, "\u5927\u80a5\u9c7c", "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
@@ -79,9 +79,9 @@ def sources():
         out.append(("plugin", "大肥鱼", DSH_MEME, True))
 
     # 3. 她自己的
-    out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
-    out.append(("mine", "自己做的", LANYA_MEMES, False))
-    out.append(("received", "别人给的", os.path.join(LANYA_MEMES, "received"), False))
+    out.append(("stolen", "收回来的", os.path.join(DAFEIYU_MEMES, "stolen"), True))
+    out.append(("mine", "自己做的", DAFEIYU_MEMES, False))
+    out.append(("received", "别人给的", os.path.join(DAFEIYU_MEMES, "received"), False))
     return out
 
 

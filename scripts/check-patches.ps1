@@ -1,4 +1,4 @@
-# Verify Lanya's local patches are still present in dsh-onebot-qq.
+# Verify Dafeiyu's local patches are still present in dsh-onebot-qq.
 #
 # Why this exists: seven behaviours she depends on are local edits to the plugin's
 # inbound.js / outbound.js. A routine plugin upgrade replaces those files and every

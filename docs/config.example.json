@@ -1,5 +1,5 @@
 {
-  "_说明": "复制成 lanya-config.json 再填。这个文件不会进 Git，属于本机配置。",
+  "_说明": "复制成 dafeiyu-config.json 再填。这个文件不会进 Git，属于本机配置。",
 
   "adminQQ": ["在这里填管理员的 QQ 号"],
   "adminCall": "爸爸",

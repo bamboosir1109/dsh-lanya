@@ -38,8 +38,8 @@ import time
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LANYA = os.path.join(ROOT, "\u5c9a\u5a05")
-STOLEN = os.path.join(LANYA, "memes", "stolen")
+DAFEIYU = os.path.join(ROOT, "\u5927\u80a5\u9c7c")
+STOLEN = os.path.join(DAFEIYU, "memes", "stolen")
 PROMPT = os.path.join(HERE, "classify-emotion.prompt.txt")
 LOG = os.path.join(HERE, "classify-emotion.log")
 DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
@@ -175,7 +175,7 @@ def main():
         for path, tag in verdict.items():
             if tag == "notmeme":
                 # 不是表情包：丢进 rejected，别再让它出现在表情墙里
-                dst_dir = os.path.join(LANYA, "memes", "rejected")
+                dst_dir = os.path.join(DAFEIYU, "memes", "rejected")
             else:
                 dst_dir = os.path.join(STOLEN, tag)
             if dry:

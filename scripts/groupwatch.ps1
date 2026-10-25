@@ -79,7 +79,7 @@ $root = Split-Path -Parent $PSScriptRoot
 #
 # Write-Log is defined further down, so this uses Write-Output directly.
 # ---------------------------------------------------------------------------
-$budgetPath = Join-Path (Join-Path $root ([string][char]0x5C9A + [char]0x5A05)) 'budget.json'
+$budgetPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
     $bud = Get-Content $budgetPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -92,7 +92,7 @@ if (Test-Path $budgetPath) {
 }
 
 # ---------------------------------------------------------------------------
-# Load tunables from lanya-tunables.json so the control panel can change them.
+# Load tunables from dafeiyu-tunables.json so the control panel can change them.
 #
 # They used to be param() defaults only, which meant editing this file to change
 # how often she speaks. Now the JSON wins when it has a value; param() stays as
@@ -100,7 +100,7 @@ if (Test-Path $budgetPath) {
 #
 # ASCII-only source.
 # ---------------------------------------------------------------------------
-$tunablesPath = Join-Path (Join-Path $root ([string][char]0x5C9A + [char]0x5A05)) 'lanya-tunables.json'
+$tunablesPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'dafeiyu-tunables.json'
 if (Test-Path $tunablesPath) {
   try {
     $tun = Get-Content $tunablesPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -118,7 +118,7 @@ $promptPath = Join-Path $root 'groupwatch.prompt.txt'
 $statePath  = Join-Path $root 'groupwatch.state.json'
 # Per-QQ affinity. level "avoid" means she does not answer that person at all.
 # The folder name is built from code points so this file stays ASCII-only.
-$affinityPath = Join-Path (Join-Path $root ([string][char]0x5C9A + [char]0x5A05)) 'affinity.json'
+$affinityPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'affinity.json'
 $logPath    = Join-Path $root 'groupwatch.log'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
@@ -144,10 +144,10 @@ $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 # model only has to name a mood and we pick a file from it.
 #
 # The first root is HER OWN collection: stickers she has taken from the group
-# (stealmemes.py drops them in <lanya>\memes\stolen). That is what makes mood
+# (stealmemes.py drops them in <dafeiyu>\memes\stolen). That is what makes mood
 # "stolen" work, so she can throw a groupmate's own joke back at them.
 $memeRoots = @(
-  (Join-Path $root ([string][char]0x5C9A + [char]0x5A05)),
+  (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)),
   '%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-meme\memes\dafeiyu-001',
   '%USERPROFILE%\.dsh\meme-packs\official-001',
   '%USERPROFILE%\.dsh\meme-packs\whale-girl-emoji'
@@ -308,7 +308,7 @@ while ($true) {
       }
       if ($mentionsMe -and $who -ne $selfId) { $addressedByOther = $true }
       if ($who -eq $selfId) {
-        $lines += ([string][char]0x6211 + '(' + [char]0x5C9A + [char]0x5A05 + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
+        $lines += ([string][char]0x6211 + '(' + [char]0x5927 + [char]0x80A5 + [char]0x9C7C + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
       } else {
         $lines += ($m.sender.nickname + ': ' + $t)
       }
@@ -549,7 +549,7 @@ while ($true) {
       # mood, a mood request only ever reached the stolen pile when she happened to
       # ask for "stolen", so in practice she kept sending the same prepackaged
       # dafeiyu shots. Now any request prefers what she took from the group.
-      $stolenDir = Join-Path (Join-Path (Join-Path $root ([string][char]0x5C9A + [char]0x5A05)) 'memes') 'stolen'
+      $stolenDir = Join-Path (Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'memes') 'stolen'
       $stolen = @()
       if (Test-Path $stolenDir) {
         $stolen = @(Get-ChildItem $stolenDir -File -ErrorAction SilentlyContinue |

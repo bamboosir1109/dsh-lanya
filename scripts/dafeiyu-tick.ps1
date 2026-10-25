@@ -1,4 +1,4 @@
-# Lanya tick - runs whatever periodic job is due, driven by an EXISTING task.
+# Dafeiyu tick - runs whatever periodic job is due, driven by an EXISTING task.
 #
 # Why this exists: registering a new scheduled task needs administrator rights on
 # this machine and the agent does not have them. But DSH-Reminders is already
@@ -29,8 +29,8 @@ if (Test-Path $marker) {
 }
 
 $root  = '<WORKDIR>\napcat'
-$state = Join-Path $root 'lanya-tick.state.json'
-$log   = Join-Path $root 'lanya-tick.log'
+$state = Join-Path $root 'dafeiyu-tick.state.json'
+$log   = Join-Path $root 'dafeiyu-tick.log'
 
 function Note([string]$m) {
   $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
@@ -40,7 +40,7 @@ function Note([string]$m) {
 # name, minutes, exe, argument list
 $jobs = @(
   @{ n = 'settings';   m = 5;    exe = 'python'; args = @((Join-Path $root 'settings-guard.py')) },
-  @{ n = 'state';      m = 1;    exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'lanya-state.ps1')) },
+  @{ n = 'state';      m = 1;    exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'dafeiyu-state.ps1')) },
   @{ n = 'strays';     m = 5;    exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'kill-strays.ps1')) },
   @{ n = 'bridge';     m = 10;   exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'napcat-heal.ps1')) },
   @{ n = 'chats';      m = 10;   exe = 'python'; args = @((Join-Path $root 'export-chats.py')) },

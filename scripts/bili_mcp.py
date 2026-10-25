@@ -59,7 +59,7 @@ class BiliMCP:
         self._rpc("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "lanya-panel", "version": "1"}})
+            "clientInfo": {"name": "dafeiyu-panel", "version": "1"}})
         self._notify("notifications/initialized", {})
         return self
 

@@ -1,4 +1,4 @@
-# Serve Lanya's works over HTTP so she can hand over a clickable link.
+# Serve Dafeiyu's works over HTTP so she can hand over a clickable link.
 #
 # Why: she writes little games into her made\ folder, and a link is far nicer than an
 # attachment - it opens in the browser, works from QQ, and cannot be mistaken for
@@ -22,9 +22,9 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
 
-$lanyaDir = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya"
-$madeDir  = Join-Path $lanyaDir 'made'
-$logPath  = Join-Path $lanyaDir 'made-server.log'
+$dafeiyuDir = Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
+$madeDir  = Join-Path $dafeiyuDir 'made'
+$logPath  = Join-Path $dafeiyuDir 'made-server.log'
 
 function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
@@ -45,7 +45,7 @@ if (-not (Test-Path $madeDir)) { New-Item -ItemType Directory -Path $madeDir -Fo
 # the DSH web server on 19387 refuses cross-origin writes.
 # ---------------------------------------------------------------------------
 $panelPort = 19389
-$panelScript = Join-Path '$root\napcat' 'lanya-panel-server.py'
+$panelScript = Join-Path '$root\napcat' 'dafeiyu-panel-server.py'
 if (Test-Path $panelScript) {
   $panelBusy = (netstat -ano | Select-String (':' + $panelPort + ' .*LISTENING')).Count -gt 0
   if ($panelBusy) {
@@ -73,7 +73,7 @@ Write-Log ('serving ' + $madeDir + ' at http://' + $Bind + ':' + $Port + '/')
 # script can exit and the server survives.
   # (translated above)
   # (translated above)
-  $panel = Join-Path '$root\napcat' 'lanya-panel-server.py'
+  $panel = Join-Path '$root\napcat' 'dafeiyu-panel-server.py'
   if (Test-Path $panel) {
     Start-Process -FilePath 'python' -ArgumentList ('"' + $panel + '" --port ' + $Port) -WindowStyle Hidden
   }

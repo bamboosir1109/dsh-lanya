@@ -48,11 +48,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-github-name/dsh-lanya.git"
+    "url": "git+https://github.com/bamboosir1109/dsh-lanya.git"
   },
-  "homepage": "https://github.com/your-github-name/dsh-lanya#readme",
+  "homepage": "https://github.com/bamboosir1109/dsh-lanya#readme",
   "bugs": {
-    "url": "https://github.com/your-github-name/dsh-lanya/issues"
+    "url": "https://github.com/bamboosir1109/dsh-lanya/issues"
   },
   "keywords": [
     "deepseek-harness",

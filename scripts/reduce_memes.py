@@ -14,11 +14,11 @@ import os
 import shutil
 import sys
 
-LANYA = os.path.join(ROOT, "\u5c9a\u5a05")
-MEMES = os.path.join(LANYA, "memes")
+DAFEIYU = os.path.join(ROOT, "\u5927\u80a5\u9c7c")
+MEMES = os.path.join(DAFEIYU, "memes")
 STOLEN = os.path.join(MEMES, "stolen")
 OVERFLOW = os.path.join(MEMES, "_overflow")
-TAGFILE = os.path.join(LANYA, "lanya-memes-tags.json")
+TAGFILE = os.path.join(DAFEIYU, "dafeiyu-memes-tags.json")
 
 IMG = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 

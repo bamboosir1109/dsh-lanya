@@ -27,7 +27,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 WORK = os.path.dirname(REPO)
-PANEL = os.path.join(WORK, "\u5c9a\u5a05", "made", "lanya-panel.html")
+PANEL = os.path.join(WORK, "\u5927\u80a5\u9c7c", "made", "dafeiyu-panel.html")
 BACKUP = PANEL + ".bak"
 
 

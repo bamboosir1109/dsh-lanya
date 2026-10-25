@@ -1,4 +1,4 @@
-# Lock Lanya's tunables so nobody can talk her into changing them.
+# Lock Dafeiyu's tunables so nobody can talk her into changing them.
 #
 # Why code and not a prompt rule: any "do not change the settings" instruction is
 # still just words to the model, and she can be talked into raising her own limits. This makes the change fail
@@ -20,8 +20,8 @@ import sys
 import time
 
 NAPCAT = r"<WORKDIR>\napcat"
-# Deliberately not under 岚娅\ - she works in there.
-LOCK_ROOT = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05-\u5f52\u6863")
+# Deliberately not under 大肥鱼\ - she works in there.
+LOCK_ROOT = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c-\u5f52\u6863")
 LOCK = os.path.join(LOCK_ROOT, "settings.lock.json")
 ALERT = os.path.join(LOCK_ROOT, "settings-alerts.log")
 

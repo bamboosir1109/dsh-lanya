@@ -1,4 +1,4 @@
-# Lanya panel server - serves the control panel AND its API from ONE origin.
+# Dafeiyu panel server - serves the control panel AND its API from ONE origin.
 #
 # Why this exists: the panel used to live on the works server (19388) and talk to
 # the DSH host on 19387. Every write failed with "Failed to fetch":
@@ -9,8 +9,8 @@
 #
 # Static files come from her made/ folder, so existing game links keep working.
 #
-#   python lanya-panel-server.py            run on 19389
-#   python lanya-panel-server.py --port N
+#   python dafeiyu-panel-server.py            run on 19389
+#   python dafeiyu-panel-server.py --port N
 #
 # ASCII-only source.
 
@@ -41,16 +41,16 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-ROOT = os.path.join(REPO, "\u5c9a\u5a05", "made")
+ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c", "made")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAPCAT = os.path.join(REPO, "napcat")
-PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05\u4eba\u8bbe\u6b63\u6587.md".replace("\u5c9a\u5a05", "\u5c9a\u5a05-"))
+PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c\u4eba\u8bbe\u6b63\u6587.md".replace("\u5927\u80a5\u9c7c", "\u5927\u80a5\u9c7c-"))
 # 上面这种拼法容易出错，直接用 os.path.join 拼真实文件名更稳
-PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05" + "-\u4eba\u8bbe\u6b63\u6587.md")
-CONFIG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-config.json")
-TUNABLES = os.path.join(REPO, "\u5c9a\u5a05", "lanya-tunables.json")
-MEMECFG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-config.json")
-MEME_TAGS = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-tags.json")
+PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c" + "-\u4eba\u8bbe\u6b63\u6587.md")
+CONFIG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-config.json")
+TUNABLES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-tunables.json")
+MEMECFG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json")
+MEME_TAGS = os.path.join(REPO, "\u5927\u80a5\u9c7c", "dafeiyu-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
@@ -61,12 +61,12 @@ SCRIPTS = {
     "groupwatch": "groupwatch.ps1",
     "lifeloop": "lifeloop.ps1",
     "voicedaemon": "voicedaemon.ps1",
-    "supervisor": "lanya-supervisor.ps1",
+    "supervisor": "dafeiyu-supervisor.ps1",
     "napcat-heal": "napcat-heal.ps1",
     "kill-strays": "kill-strays.ps1",
     "settings-guard": "settings-guard.py",
-    "state": "lanya-state.ps1",
-    "tick": "lanya-tick.ps1",
+    "state": "dafeiyu-state.ps1",
+    "tick": "dafeiyu-tick.ps1",
     # 面板上每个部件都应该有自己的启动按钮，不然显示"0 个"就不知道怎么办。
     "browserd": "browserd.py",
     # tts 不是普通脚本：它跑在单独的 conda 环境里、有自己的工作目录，\n    # 交给下面的 SPECIAL 分支处理。
@@ -150,11 +150,11 @@ def run_script(name):
 # 不会有窗口；schtasks /run 也不需要管理员。
 TASKS = {
     "groupwatch":  "DSH-GroupWatch",
-    "lifeloop":    "DSH-Lanya-Life",
-    "voicedaemon": "DSH-Lanya-Voice",
-    "browserd":    "DSH-Lanya-Browser",
-    "works":       "DSH-Lanya-Works",
-    "tts":         "DSH-Lanya-TTS",
+    "lifeloop":    "DSH-Dafeiyu-Life",
+    "voicedaemon": "DSH-Dafeiyu-Voice",
+    "browserd":    "DSH-Dafeiyu-Browser",
+    "works":       "DSH-Dafeiyu-Works",
+    "tts":         "DSH-Dafeiyu-TTS",
 }
 
 
@@ -255,7 +255,7 @@ def check_upstream(key):
     try:
         import urllib.request, json as _json
         req = urllib.request.Request(url, headers={
-            "User-Agent": "lanya-panel",
+            "User-Agent": "dafeiyu-panel",
             "Accept": "application/vnd.github+json",
         })
         with urllib.request.urlopen(req, timeout=12) as r:
@@ -288,8 +288,8 @@ def run_task(name):
 # ---------------------------------------------------------------------------
 # Extra data the multi-page console needs: budget, memes, notes/diary, works.
 # ---------------------------------------------------------------------------
-LANYA_DIR = os.path.join(REPO, "\u5c9a\u5a05")
-BUDGET    = os.path.join(LANYA_DIR, "budget.json")
+DAFEIYU_DIR = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+BUDGET    = os.path.join(DAFEIYU_DIR, "budget.json")
 MEME_ROOT = os.path.join(
     os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop",
                             "node_modules", "dsh-meme", "memes"),
@@ -297,15 +297,15 @@ MEME_ROOT = os.path.join(
 
 # 允许页面上浏览的目录。白名单，不接受任意路径 - 这是给浏览器用的接口，
 # 不能让它顺着 ../ 读到别处去。
-ACTIVITIES = os.path.join(REPO, "\u5c9a\u5a05", "activities.json")
-ARCHIVE_ROOT = os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863")
+ACTIVITIES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "activities.json")
+ARCHIVE_ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863")
 
 FILE_DIRS = {
-    "diary":  os.path.join(LANYA_DIR, "diary"),
-    "notes":  os.path.join(LANYA_DIR, "notes"),
-    "made":   os.path.join(LANYA_DIR, "made"),
-    "people": os.path.join(LANYA_DIR, "people"),
-    "archive": os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863"),
+    "diary":  os.path.join(DAFEIYU_DIR, "diary"),
+    "notes":  os.path.join(DAFEIYU_DIR, "notes"),
+    "made":   os.path.join(DAFEIYU_DIR, "made"),
+    "people": os.path.join(DAFEIYU_DIR, "people"),
+    "archive": os.path.join(REPO, "\u5927\u80a5\u9c7c-\u5f52\u6863"),
 }
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -380,9 +380,9 @@ def list_dir_files(key, with_preview=False, limit=0):
             st = os.stat(p)
         except OSError:
             continue
-        # 面板自己的快照（lanya-*.json / lanya-persona.txt）不是她的作品，
+        # 面板自己的快照（dafeiyu-*.json / dafeiyu-persona.txt）不是她的作品，
         # 列在作品页里只会让人更看不懂。
-        if f.startswith("lanya-") or f.startswith("theme-"):
+        if f.startswith("dafeiyu-") or f.startswith("theme-"):
             continue
         row = {"name": f, "size": st.st_size, "mtime": int(st.st_mtime)}
         if with_preview:
@@ -769,7 +769,7 @@ def memory_overview():
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
 #   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
-#   岚娅/memes/...                        她自己的
+#   大肥鱼/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -782,7 +782,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-LANYA_MEMES = os.path.join(REPO, "\u5c9a\u5a05", "memes")
+DAFEIYU_MEMES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
@@ -841,9 +841,9 @@ def sources():
         out.append(("plugin", "大肥鱼", DSH_MEME, True))
 
     # 3. 她自己的
-    out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
-    out.append(("mine", "自己做的", LANYA_MEMES, False))
-    out.append(("received", "别人给的", os.path.join(LANYA_MEMES, "received"), False))
+    out.append(("stolen", "收回来的", os.path.join(DAFEIYU_MEMES, "stolen"), True))
+    out.append(("mine", "自己做的", DAFEIYU_MEMES, False))
+    out.append(("received", "别人给的", os.path.join(DAFEIYU_MEMES, "received"), False))
     return out
 
 
@@ -1032,16 +1032,16 @@ import json
 import os
 import subprocess
 
-LANYA_DIR_ = os.path.join(REPO, "\u5c9a\u5a05")
-REMINDERS_ = os.path.join(LANYA_DIR_, "reminders.json")
+DAFEIYU_DIR_ = os.path.join(REPO, "\u5927\u80a5\u9c7c")
+REMINDERS_ = os.path.join(DAFEIYU_DIR_, "reminders.json")
 
 # 插件调度器已经接管的那些，在页面上标出来，免得用户以为重复的也需要留
 COVERED_BY_PLUGIN = {
     "DSH-Reminders": "插件每 30 秒查提醒",
-    "DSH-Lanya-Budget": "插件每 5 分钟算花销",
-    "DSH-Lanya-Chats": "插件每 10 分钟导记录",
-    "DSH-Lanya-Steal": "插件每 10 分钟收表情",
-    "DSH-Lanya-Greet": "插件每 60 分钟问好",
+    "DSH-Dafeiyu-Budget": "插件每 5 分钟算花销",
+    "DSH-Dafeiyu-Chats": "插件每 10 分钟导记录",
+    "DSH-Dafeiyu-Steal": "插件每 10 分钟收表情",
+    "DSH-Dafeiyu-Greet": "插件每 60 分钟问好",
     "NapCat-DSH-Bridge": "插件每 10 分钟查 QQ",
 }
 
@@ -1072,7 +1072,7 @@ def reminders_snapshot():
 
 
 def scheduled_tasks():
-    """Windows 计划任务里和岚娅有关的那些。"""
+    """Windows 计划任务里和大肥鱼有关的那些。"""
     try:
         p = subprocess.run(
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
@@ -1124,7 +1124,7 @@ def scheduled_tasks():
 
 
 class Handler(SimpleHTTPRequestHandler):
-    server_version = "LanyaPanel/1.0"
+    server_version = "DafeiyuPanel/1.0"
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
@@ -1386,7 +1386,7 @@ class Handler(SimpleHTTPRequestHandler):
             # 把每项活动绑到的部件状态查出来，页面才知道"能不能真干"
             st3 = {}
             try:
-                snap = os.path.join(ROOT, "lanya-state.json")
+                snap = os.path.join(ROOT, "dafeiyu-state.json")
                 with open(snap, "r", encoding="utf-8") as fhs3:
                     st3 = dict((c.get("tag"), c) for c in
                                (json.load(fhs3).get("components") or []))
@@ -1428,12 +1428,12 @@ class Handler(SimpleHTTPRequestHandler):
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
             out = {"log": [], "last": "", "lastAt": "", "nextIn": ""}
             try:
-                lf = tail_file(os.path.join(LANYA_DIR_, "lifeloop.log"), 12)
+                lf = tail_file(os.path.join(DAFEIYU_DIR_, "lifeloop.log"), 12)
                 out["log"] = [x.strip() for x in (lf or "").splitlines() if x.strip()]
             except Exception:
                 pass
             try:
-                with open(os.path.join(LANYA_DIR_, "lifeloop.state.json"), "r",
+                with open(os.path.join(DAFEIYU_DIR_, "lifeloop.state.json"), "r",
                           encoding="utf-8") as fhs2:
                     st2 = json.load(fhs2)
                 out["last"] = st2.get("lastShare", "")
@@ -1441,7 +1441,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
             try:
-                with open(os.path.join(LANYA_DIR_, "budget.json"), "r",
+                with open(os.path.join(DAFEIYU_DIR_, "budget.json"), "r",
                           encoding="utf-8") as fhb:
                     b = json.load(fhb)
                 out["money"] = {"spent": b.get("spent", 0), "limit": b.get("limit", 0),
@@ -1701,7 +1701,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(404, {"ok": False, "error": "no meme"})
 
         if path in ("/", ""):
-            self.path = "/lanya-panel.html"
+            self.path = "/dafeiyu-panel.html"
         return super().do_GET()
 
     def do_POST(self):
@@ -2104,7 +2104,7 @@ class Handler(SimpleHTTPRequestHandler):
             safe_tag = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", to_tag)[:32]
             if not safe_tag:
                 return self._json(400, {"ok": False, "error": "bad tag"})
-            dst_dir = os.path.join(LANYA_MEMES, "stolen", safe_tag)
+            dst_dir = os.path.join(DAFEIYU_MEMES, "stolen", safe_tag)
             try:
                 os.makedirs(dst_dir, exist_ok=True)
                 os.replace(full, os.path.join(dst_dir, os.path.basename(full)))
@@ -2197,7 +2197,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/update":
             # 从 GitHub 拉最新代码。--ff-only：有本地改动就失败，不会把东西搅乱。
             import subprocess as _sp3
-            repo = os.environ.get("LANYA_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
+            repo = os.environ.get("DAFEIYU_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
             try:
                 before = _sp3.run(["git", "-C", repo, "rev-parse", "HEAD"],
                                   capture_output=True, text=True, timeout=20).stdout.strip()
@@ -2320,7 +2320,7 @@ class Handler(SimpleHTTPRequestHandler):
                 amt = float(body.get("amount") or 0)
                 if amt == 0:
                     return self._json(400, {"ok": False, "error": "amount is 0"})
-                bp = os.path.join(LANYA_DIR_, "budget.json")
+                bp = os.path.join(DAFEIYU_DIR_, "budget.json")
                 with open(bp, "r", encoding="utf-8") as fhb2:
                     b = json.load(fhb2)
                 # amount > 0 加额度；< 0 直接记一笔花费
@@ -2500,7 +2500,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
+    port = int(os.environ.get("DAFEIYU_PANEL_PORT", "19389"))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])
@@ -2508,7 +2508,7 @@ def main():
             pass
     os.makedirs(ROOT, exist_ok=True)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print("lanya panel server on http://127.0.0.1:%d/lanya-panel.html" % port, flush=True)
+    print("dafeiyu panel server on http://127.0.0.1:%d/dafeiyu-panel.html" % port, flush=True)
     srv.serve_forever()
 
 

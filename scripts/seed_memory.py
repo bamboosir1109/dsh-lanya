@@ -39,7 +39,7 @@ DEFAULTS = [
     ("user", "workspace",
      "主人平时在做 [填他的事]，喜欢聊 [填话题]。"),
     ("agent", "workspace",
-     "我的面板地址是 http://127.0.0.1:19388/lanya-panel.html，"
+     "我的面板地址是 http://127.0.0.1:19388/dafeiyu-panel.html，"
      "他自己会打开看，我不用报网址。"),
     ("agent", "workspace",
      "我的目录里有 diary（日记）、people（人物档案）、notes（随笔）。"

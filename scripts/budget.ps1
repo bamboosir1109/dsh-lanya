@@ -1,4 +1,4 @@
-# Daily token budget for Lanya.
+# Daily token budget for Dafeiyu.
 #
 # Sums TODAY's cost of her own QQ sessions (ids starting with "onebot-") from the
 # dsh-cost-meter ledger, then writes a small status file she and the daemons can
@@ -8,7 +8,7 @@
 # own work (development sessions), which would eat her budget instantly. Only the
 # onebot-* sessions are hers.
 #
-# Output: <lanyaDir>\budget.json (her own folder next to reminders.json)
+# Output: <dafeiyuDir>\budget.json (her own folder next to reminders.json)
 #   { "date": "...", "limit": 1.0, "spent": 0.06, "remaining": 0.94,
 #     "exhausted": false, "notifiedFor": "" }
 #
@@ -25,10 +25,10 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
 
-$lanyaDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya"
+$dafeiyuDir  = Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
 $ledger    = '%USERPROFILE%\.dsh\storages\cost-meter\ledger.json'
-$outPath   = Join-Path $lanyaDir 'budget.json'
-$logPath   = Join-Path $lanyaDir 'budget.log'
+$outPath   = Join-Path $dafeiyuDir 'budget.json'
+$logPath   = Join-Path $dafeiyuDir 'budget.log'
 $cfgPath   = '$root\napcat\balance-alert.config.json'
 $adminQQ   = 'YOUR_ADMIN_QQ'
 
@@ -38,7 +38,7 @@ function Write-Log([string]$m) {
   Write-Output $line
 }
 
-if (-not (Test-Path $lanyaDir)) { New-Item -ItemType Directory -Path $lanyaDir -Force | Out-Null }
+if (-not (Test-Path $dafeiyuDir)) { New-Item -ItemType Directory -Path $dafeiyuDir -Force | Out-Null }
 if (-not (Test-Path $ledger)) { Write-Log 'ledger missing; nothing to do'; exit 0 }
 
 $today = (Get-Date).ToString('yyyy-MM-dd')
