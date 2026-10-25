@@ -15,6 +15,24 @@
 # ASCII-only source.
 
 import json
+def _find_dsh_root():
+    """找 DSH 装在哪。
+
+    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
+    """
+    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+        cands.append(os.path.join(base, "DSH"))
+    for d in "CDEFG":
+        cands.append(d + ":\\DSH")
+    for c in cands:
+        if os.path.isfile(os.path.join(c, rel)):
+            return c
+    return cands[0]
+
+
 import re
 import os
 import subprocess
@@ -36,7 +54,7 @@ MEME_TAGS = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
-DSH_CLI = os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+DSH_CLI = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
 
 SCRIPTS = {
@@ -155,11 +173,11 @@ TOOLS = [
      "proc": "QQ.exe",
      "note": "机器人小号登录的地方。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
-     "paths": [os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"), "DeepSeek Harness.exe")],
+     "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(), "DeepSeek Harness.exe")],
      "port": 19387,
      "note": "整个系统跑在里面。插件都挂在它上面。"},
     {"key": "node", "name": "Node.js", "kind": "运行时",
-     "paths": [os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+     "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                            "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
@@ -1816,7 +1834,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     "bili-duty", "duty.md")
                 if not os.path.isfile(duty):
                     return self._json(200, {"ok": False, "error": "duty.md not found"})
-                dsh = os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+                dsh = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
                 if not os.path.isfile(dsh):
                     return self._json(200, {"ok": False, "error": "dsh.cmd not found"})

@@ -31,6 +31,24 @@
 # 面板上可以关掉「偷表情包」和「自动分类」。这一段必须在任何逻辑之前跑，
 # 否则配置改了不生效。
 import os as _mo
+def _find_dsh_root():
+    """找 DSH 装在哪。
+
+    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
+    """
+    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+        cands.append(os.path.join(base, "DSH"))
+    for d in "CDEFG":
+        cands.append(d + ":\\DSH")
+    for c in cands:
+        if os.path.isfile(os.path.join(c, rel)):
+            return c
+    return cands[0]
+
+
 try:
     import json
     import os as _mj
@@ -97,7 +115,7 @@ LOG = os.path.join(LANYA, "steal.log")
 SEEN = os.path.join(MEMES, ".seen.json")
 PROMPT = os.path.join(ROOT, "napcat", "classify-meme.prompt.txt")
 
-DSH = os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
 OK_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 # Images per classifier call. Handing a few hundred paths to one call overflows the

@@ -24,6 +24,24 @@
 # 一看到它的标记文件就立刻退出——窗口存在的时间从"整个运行时长"缩到进程启动那
 # 一瞬。删除任务能彻底解决，但那需要管理员权限。
 import os as _os
+def _find_dsh_root():
+    """找 DSH 装在哪。
+
+    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
+    """
+    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+        cands.append(os.path.join(base, "DSH"))
+    for d in "CDEFG":
+        cands.append(d + ":\\DSH")
+    for c in cands:
+        if os.path.isfile(os.path.join(c, rel)):
+            return c
+    return cands[0]
+
+
 import time as _time
 try:
     _mk = _os.path.join(r"<WORKDIR>\napcat", "scheduler-in-plugin.flag")
@@ -61,7 +79,7 @@ STATE = os.path.join(LANYA, "greet.state.json")
 LOG = os.path.join(LANYA, "greet.log")
 SENT = os.path.join(LANYA, "sent-log.txt")
 
-DSH = os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
 MAX_PER_DAY = 2
 DAY_START, DAY_END = 10, 22

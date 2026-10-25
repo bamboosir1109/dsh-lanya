@@ -10,6 +10,24 @@
     python classify_emotion.py --dry      # 只看分类结果，不移动文件
 """
 import io
+def _find_dsh_root():
+    """找 DSH 装在哪。
+
+    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
+    """
+    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+        cands.append(os.path.join(base, "DSH"))
+    for d in "CDEFG":
+        cands.append(d + ":\\DSH")
+    for c in cands:
+        if os.path.isfile(os.path.join(c, rel)):
+            return c
+    return cands[0]
+
+
 # 根目录按脚本位置推算：<root>/napcat/xxx.py -> <root>
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 import json
@@ -24,7 +42,7 @@ LANYA = os.path.join(ROOT, "\u5c9a\u5a05")
 STOLEN = os.path.join(LANYA, "memes", "stolen")
 PROMPT = os.path.join(HERE, "classify-emotion.prompt.txt")
 LOG = os.path.join(HERE, "classify-emotion.log")
-DSH = os.path.join(os.environ.get("DSH_ROOT", r"D:\DSH"),
+DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
                    "resources", "runtime", "cli", "bin", "dsh.cmd")
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")

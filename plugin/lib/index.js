@@ -340,7 +340,7 @@ export function apply(ctx, config = {}) {
     () => ctx.systemPrompt.section({
       name: PERSONA_SECTION,
       order: 0,
-      text: () => readText(personaFile) || '\u3016PERSONA_LOAD\u3017\nLANG_ZH_CN_ONLY\nSELF_CLAIM_PLACEHOLDER\nPERSONALITY_PLACEHOLDER\n\n\uff08\u8fd8\u6ca1\u5199\u4eba\u8bbe\u3002\u628a docs/persona.example.md \u590d\u5236\u5230 napcat/persona.md \u7136\u540e\u6539\u3002\uff09'
+      text: () => readText(personaFile) || '\u3016PERSONA_LOAD\u3017\nLANG_ZH_CN_ONLY\nSELF_CLAIM_YOUR_NAME\nPERSONALITY_YOUR_TRAITS\n\n\uff08\u8fd8\u6ca1\u5199\u4eba\u8bbe\u3002\u628a docs/persona.example.md \u590d\u5236\u5230 napcat/persona.md \u7136\u540e\u6539\u3002\uff09'
       ,
       interpolate: false
     }),
