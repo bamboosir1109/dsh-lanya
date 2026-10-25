@@ -33,7 +33,7 @@
   name: "dsh-onebot-qq"
   config:
     accessToken: "请改成你自己的一个随机字符串"
-    workspacePath: "D:\\DSH work"
+    workspacePath: "C:\\Users\\YOUR_NAME\\DSH work"
     # 私聊准入（源码 chat.js 的 dmAllowed 决定）：
     #   dmPolicy=disabled  -> 全拒
     #   dmPolicy=allowlist -> 只查 allowFrom（**完全忽略 allowAllUsers**）
@@ -48,7 +48,7 @@
       - "你的管理员QQ"
       - "你的另一个QQ"
       - "朋友QQ"
-      - "640454103"
+      - "YOUR_OTHER_QQ"
       - "FRIEND_D"
       - "FRIEND_E"
       - "FRIEND_B"
@@ -62,7 +62,7 @@
     #   interimRecall   = 布尔开关（true=中间消息到点自动撤回；false=只发不撤）
     #   interimRecallMs = 毫秒数（配合上面的开关用）
     # 注意两者是两个东西，别混：曾经把 false 写进 interimRecallMs（schema 要求
-    # number），导致整个 dsh-onebot 插件无法激活、8643 不监听、QQ 消息全收不到。
+    # number），导致整个 dsh-onebot 插件无法激活、导致整个 dsh-onebot 插件无法激活、QQ 消息全收不到、QQ 消息全收不到。
     interimRecall: false
 - id: dsh-dafeiyu
   name: dsh-dafeiyu

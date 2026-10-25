@@ -78,7 +78,8 @@ if (-not $isAdmin) {
 $napimain = Join-Path $fw 'napimain.exe'
 $loader   = Join-Path $fw 'napiloader.dll'
 $native   = Join-Path $fw 'nativeLoader.cjs'
-$qqexe    = 'C:\software\QQNT\QQ.exe'
+$qqexe    = $env:QQNT_EXE
+if (-not $qqexe) { $qqexe = 'C:\Program Files\Tencent\QQNT\QQ.exe' }
 
 foreach ($f in @($napimain, $loader, $native, $qqexe)) {
   if (-not (Test-Path $f)) { Note ('cannot restart, missing: ' + $f); exit 1 }

@@ -84,7 +84,7 @@ def start_napcat_elevated():
     inner = (
         'taskkill /IM QQ.exe /F >nul 2>nul & timeout /t 4 /nobreak >nul & '
         'cd /d "' + os.path.join(NAPCAT, "framework") + '" && '
-        'napimain.exe "C:\\software\\QQNT\\QQ.exe" '
+        'napimain.exe os.environ.get("QQNT_EXE", r"C:\\Program Files\\Tencent\\QQNT\\QQ.exe") '
         '"<WORKDIR>\\napcat\\framework\\napiloader.dll" '
         '"<WORKDIR>/napcat/framework/nativeLoader.cjs"'
     )
@@ -101,7 +101,7 @@ def start_napcat_elevated():
 # 有些部件不能当普通脚本起：解释器不同、工作目录不同、还要带参数。
 SPECIAL = {
     "tts": {
-        "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
+        "exe": os.environ.get("SOXVITS_PY", r"C:\Python310\python.exe"),
         "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
         "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
                  "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
@@ -169,9 +169,9 @@ TOOLS = [
      "port": 8720,
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
-     "paths": [r"C:\software\QQNT\QQ.exe"],
+     "paths": [os.environ.get("QQNT_EXE", r"C:\Program Files\Tencent\QQNT\QQ.exe")],
      "proc": "QQ.exe",
-     "note": "机器人小号登录的地方。"},
+     "note": "QQ 客户端本身。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
      "paths": [os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(), "DeepSeek Harness.exe")],
      "port": 19387,
@@ -181,13 +181,13 @@ TOOLS = [
                            "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
-     "paths": [r"C:\Python314\python.exe", r"C:\code\anaconda\python.exe"],
+     "paths": [os.environ.get("PY314", r"C:\Python314\python.exe"), os.environ.get("CONDA_PY", r"C:\Python310\python.exe")],
      "note": "面板服务、表情包处理、刷 B 站都靠它。"},
     {"key": "python-tts", "name": "Python (语音环境)", "kind": "专用环境",
-     "paths": [r"C:\code\anaconda\envs\gptsovits\python.exe"],
+     "paths": [os.environ.get("SOXVITS_PY", r"C:\Python310\python.exe")],
      "note": "语音合成单独一个环境，因为依赖版本和主环境冲突。"},
     {"key": "git", "name": "Git", "kind": "版本控制",
-     "paths": [r"C:\code\Git\cmd\git.exe"],
+     "paths": [os.environ.get("GIT_EXE", r"C:\Program Files\Git\cmd\git.exe")],
      "note": "拉插件、更新插件用。"},
 ]
 
@@ -724,7 +724,7 @@ def memento_rows(sql, args=(), limit=200):
 
 
 def memory_overview():
-    # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，341 条把真正
+    # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，它们每轮都写一条、内容全是同一句话，把真正
     # 有价值的记忆操作淹没了。只在实在没有其它记录时才退回显示它们。
     audit = memento_rows(
         "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
@@ -843,7 +843,7 @@ def sources():
     # 3. 她自己的
     out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
     out.append(("mine", "自己做的", LANYA_MEMES, False))
-    out.append(("firefly", "firefly 那批", os.path.join(LANYA_MEMES, "firefly-2026-10-16"), False))
+    out.append(("received", "别人给的", os.path.join(LANYA_MEMES, "received"), False))
     return out
 
 

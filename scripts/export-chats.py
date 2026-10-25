@@ -22,6 +22,42 @@
 # 一看到它的标记文件就立刻退出——窗口存在的时间从"整个运行时长"缩到进程启动那
 # 一瞬。删除任务能彻底解决，但那需要管理员权限。
 import os as _os
+def _config_path():
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "\u5c9a\u5a05", "lanya-config.json")
+
+
+def _speaker_name():
+    """导出时怎么标"用户"那一侧。
+
+    以前写死成机主的笔名 —— 那是私事，而且这份文件是公开的。
+    现在读配置里的 ownerLabel，没配就用中性的 user。
+    """
+    try:
+        with open(_config_path(), "r", encoding="utf-8") as fh:
+            return str(json.load(fh).get("ownerLabel") or "user")
+    except Exception:
+        return "user"
+
+
+def _find_sessions_dir():
+    """找 DSH 的会话目录。
+
+    以前把工作目录编码进目录名里写死，
+    等于把绝对路径藏进了文件夹名。现在扫一遍挑可以用的。
+    """
+    root = os.path.join(DSH_HOME, "sessions")
+    try:
+        cands = [os.path.join(root, d) for d in os.listdir(root)
+                 if os.path.isdir(os.path.join(root, d))]
+    except Exception:
+        return root
+    if not cands:
+        return root
+    cands.sort(key=lambda d: os.path.getmtime(d), reverse=True)
+    return cands[0]
+
+
 import time as _time
 try:
     _mk = _os.path.join(r"<WORKDIR>\napcat", "scheduler-in-plugin.flag")
@@ -47,7 +83,7 @@ import time
 import zstandard
 
 DSH_HOME = r"$env:USERPROFILE\.dsh"
-SESSIONS = os.path.join(DSH_HOME, "sessions", "--E-DSH~0020work--")
+SESSIONS = _find_sessions_dir()
 LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")      # "Lanya"
 OUT_DIR = os.path.join(LANYA, "chats")
 
@@ -56,7 +92,7 @@ OUT_DIR = os.path.join(LANYA, "chats")
 FRIENDLY = {
     "onebot-group-YOUR_GROUP_ID": "群-粉丝群(YOUR_GROUP_ID)",
     "onebot-private-YOUR_ADMIN_QQ": "私聊-<OWNER_NAME>(YOUR_ADMIN_QQ)",
-    "onebot-private-FRIEND_QQ": "私聊-我欲乘风踏歌行(FRIEND_QQ)",
+    "onebot-private-FRIEND_QQ": "私聊-熟人(FRIEND_QQ)",
 }
 
 MAX_TEXT = 1200          # per message, keeps files skimmable
@@ -154,7 +190,7 @@ def export_one(zpath, name, session_id):
         body = strip_wrapper(body)[:MAX_TEXT]
         if not body:
             continue
-        who = "\u542c\u7af9\u5148\u751f" if typ == "user/message" else "\u5c9a\u5a05"
+        who = _speaker_name()
         out.append("[%s] %s: %s" % (hhmm(ev.get("time")), who, body.replace("\n", " / ")))
 
     if not out:
@@ -194,8 +230,7 @@ def main():
             continue
         # Skip one-shot daemon runs. A bare UUID session is a headless call from one
         # of her own timers (groupwatch, lifeloop, the meme collector...), not a
-        # conversation. Exporting those produced 156 near-empty files that only
-        # buried the three real chats. Real chats are onebot-*, and the owner's own
+        # conversation. Exporting those produced hundreds of near-empty files that buried the real conversations. Real chats are onebot-*, and the owner's own
         # GUI sessions start with "session-".
         if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", sub):
             skipped += 1

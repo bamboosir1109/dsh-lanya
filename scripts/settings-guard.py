@@ -1,8 +1,7 @@
 # Lock Lanya's tunables so nobody can talk her into changing them.
 #
 # Why code and not a prompt rule: any "do not change the settings" instruction is
-# still just words to the model, and she has already been talked into changing the
-# group rate limit by a friend ("放宽" -> 3 became 6). This makes the change fail
+# still just words to the model, and she can be talked into raising her own limits. This makes the change fail
 # regardless of what she agrees to.
 #
 # The baseline lives OUTSIDE her home directory, so a conversation with her cannot

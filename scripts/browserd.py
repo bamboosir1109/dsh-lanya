@@ -72,7 +72,7 @@ VIEWPORT = {"width": 1280, "height": 800}
 # task, so the proxy must be handed to it explicitly. Without this every page came
 # back as the browser's own "404 - page not found" error page: verified by loading
 # 4399 successfully with the proxy and failing on the same URL without it.
-PROXY = "http://127.0.0.1:17891"
+PROXY = os.environ.get("LANYA_PROXY") or None
 
 
 def log(msg):

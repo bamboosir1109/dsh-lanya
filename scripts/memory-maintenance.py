@@ -2,8 +2,7 @@
 #
 # The problem this solves: dsh-onebot-qq appends every inbound and outbound
 # message to 岚娅\cross-chat.md and never prunes it. Only the last 15 lines are
-# ever injected into a turn, but the file had already reached 1409 lines / 146 KB
-# after four days. Two costs, both growing forever:
+# ever injected into a turn, but the file grows by roughly a thousand lines a week. Two costs, both growing forever:
 #   - the plugin reads the WHOLE file on every single message just to take the
 #     tail, so every reply gets slower as the file gets longer
 #   - the file itself is pure append, so nothing is ever reclaimed
@@ -89,7 +88,7 @@ def prune_meal_log():
     kept, dropped = [], 0
     for line in lines:
         s = line.strip()
-        # Table rows look like: | 2026-10-19 | 早饭 | 小米粥 + 肉包 |
+        # Table rows look like: | YYYY-MM-DD | breakfast | what was eaten |
         if s.startswith("|") and not s.startswith("|---") and not s.startswith("| 日期"):
             cells = [c.strip() for c in s.strip("|").split("|")]
             if cells:

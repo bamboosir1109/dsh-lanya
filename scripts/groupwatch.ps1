@@ -40,7 +40,7 @@ param(
   [int]$MinGapMinutes = 1,           # when someone else is already talking
   # Self-started topics are NOT on a fixed interval. After she starts one, the next
   # allowed time is drawn at random from this range so the rhythm is not a metronome.
-  # Owner 2026-10-19: still too frequent, cut it by more than half - the average went
+  # 
   # from 90 minutes to 180 (3 hours).
   [int]$QuietGapMinMinutes = 180,
   [int]$QuietGapMaxMinutes = 300,
@@ -50,14 +50,13 @@ param(
   [int]$MaxQuietStartsPerDay = 6,
   # Self-started topics per 2-hour window. With a ~3h cadence this is a backstop,
   # not the thing that normally stops her.
-  # Soft 24h target (owner 2026-10-17). Not a hard cap: above it the chance of
+  # Soft 24h target . Not a hard cap: above it the chance of
   # speaking is lowered, below it the chance of starting something is raised.
   # This anchors the daily volume without freezing live conversation.
   [int]$MaxPer24Hours = 40,
   # Self-started topics per 2-hour window (hard stop for cold starts only).
   [int]$MaxPerHour = 1,
-  # Hard ceiling on ANY send within one clock hour (owner 2026-10-18: the daily
-  # 30 must be spread out, not dumped into one busy morning). When the hour is
+  # Hard ceiling on ANY send within one clock hour . When the hour is
   # full she stays silent until the hour rolls over - no catching up later.
   [int]$MaxPerHourAny = 6,
   # Runaway guard across ALL sends in the 2h window. Deliberately high: joining a
@@ -316,7 +315,7 @@ while ($true) {
     }
     if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
 
-    # Affinity gate (owner 2026-10-18, revised the same day).
+    # Affinity gate .
     #
     # She should not engage with people on the avoid list - but ONLY when that
     # person is the whole conversation. The first version skipped whenever the most
@@ -371,8 +370,7 @@ while ($true) {
     $quietCount = @($state.sendTimesQuiet | Where-Object { $_ }).Count
     $totalCount = @($state.sendTimes | Where-Object { $_ }).Count
 
-    # Hard daily ceiling on SELF-STARTED topics (owner 2026-10-19: cut her cold
-    # starts by more than half). Replies to someone addressing her are governed
+    # Hard daily ceiling on SELF-STARTED topics . Replies to someone addressing her are governed
     # separately and do not consume this - the owner's complaint was specifically
     # about her opening conversations on her own, not about answering people.
     if ($triggerKey -eq 'quiet') {
@@ -389,7 +387,7 @@ while ($true) {
       Write-Log ('quiet cap reached (' + $quietCount + '/' + $MaxPerHour + ' self-started per 2h) - but she may still join ongoing chat')
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
-    # Even-spread gate (owner 2026-10-18): the daily 30 must not land in one
+    # Even-spread gate : the daily 30 must not land in one
     # stretch. Hard ceiling on any single clock hour; when it is full she goes
     # quiet until the hour rolls over and never catches up afterwards.
     $hourAgo = (Get-Date).AddHours(-1).ToString('o')
@@ -399,14 +397,14 @@ while ($true) {
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
 
-    # Soft 24h target (owner 2026-10-17): not a hard cap. Above target the chance
+    # Soft 24h target : not a hard cap. Above target the chance
     # of speaking drops smoothly; below target she is a bit more willing to start
     # something. Keeps the daily volume near MaxPer24Hours without freezing a
     # live exchange.
     $dayAgo = (Get-Date).AddHours(-24).ToString('o')
     $dayCount = @($state.sendTimes | Where-Object { $_ -and ([string]$_ -ge $dayAgo) }).Count
     if ($dayCount -ge $MaxPer24Hours) {
-      # Owner 2026-10-18 (revised): 40 is NOT a cap. Past 40 the chance of
+      # 
       # speaking drops by 3 percentage points per extra message, and never
       # drops below a 10% chance of still speaking (skip is capped at 90%).
       $over = $dayCount - $MaxPer24Hours
@@ -515,7 +513,7 @@ while ($true) {
 
     # Guard: never post a stage direction.
     #
-    # She started emitting parentheticals like "(nothing for me here, not joining)"
+    # She started emitting parentheticals instead of just not replying.
     # as her way of saying she would not join in. That is a note to herself, not
     # something a person says out loud, and it reads bizarrely in a group. The
     # prompt now forbids it; this is the belt-and-braces check.

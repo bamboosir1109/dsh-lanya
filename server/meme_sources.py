@@ -81,7 +81,7 @@ def sources():
     # 3. 她自己的
     out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
     out.append(("mine", "自己做的", LANYA_MEMES, False))
-    out.append(("firefly", "firefly 那批", os.path.join(LANYA_MEMES, "firefly-2026-10-16"), False))
+    out.append(("received", "别人给的", os.path.join(LANYA_MEMES, "received"), False))
     return out
 
 

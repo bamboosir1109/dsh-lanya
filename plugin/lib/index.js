@@ -5,7 +5,7 @@
  *   1. 人设注入（取代 dsh-persona-dafeiyu 里岚娅那一路），好感度一并带上
  *   2. 总控页面 /dsh-lanya/ —— 看住所有部件、装/更新插件、以及内存闸
  *
- * 为什么要内存闸：曾经出现过十四个进程不断弹出、最后吃掉 20+ GB。原因是无头
+ * 为什么要内存闸：无头 agent 卡住没人收尸时会一路堆积。原因是无头
  * agent 卡住没人收尸，下一次调度又起一个，一路堆上去。所以这里不只显示内存，
  * 超阈值时还能一键清掉超龄的孤儿 agent。
  *
@@ -33,7 +33,7 @@ const DEFAULT_PERSONA = path.join(HERE, '..', 'napcat', 'persona.md')
 const DEFAULT_AFFINITY = '<WORKDIR>\\岚娅\\affinity.json'
 const NAPCAT_DIR = '<WORKDIR>\\napcat'
 
-// 阈值故意留得松：这台机器 64 GB，岚娅的常驻部件实测只有一百多 MB，
+// 常驻部件实测只有一百多 MB，3 GB 阈值足够松，岚娅的常驻部件实测只有一百多 MB，
 // 一旦看到 3 GB 就说明有人在堆积了，不是正常波动。
 const MEMORY_LIMIT_MB = 3000
 const STRAY_AGE_MIN = 6

@@ -341,10 +341,9 @@ try {
 
     if ($extraLine) { $textToSend = $textToSend.TrimEnd() + ' ' + $extraLine }
 
-    # Hard rule: never push a FILE into a group. The owner asked for this after a
-    # game landed in the 515-member fan group - a downloadable attachment in a busy
-    # group is intrusive (and unclickable for most members). Links and images stay
-    # fine in groups; files are private-chat only.
+    # Hard rule: never push a FILE into a group. A downloadable attachment in a
+    # busy group is intrusive (and unclickable for most members). Links and images
+    # stay fine in groups; files are private-chat only.
     if ($filePath -and $target -eq 'group') {
       Write-Log ('BLOCKED: file into group (' + (Split-Path $filePath -Leaf) + ') - files are private-only; sending text only')
       $filePath = $null

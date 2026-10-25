@@ -69,7 +69,7 @@ while ($true) {
     $list = @($raw | ConvertFrom-Json)
     # Claim the queue atomically RIGHT AFTER reading, so a second pass (or a
     # second daemon) can never deliver the same entry twice. This is the fix for
-    # the 2026-10-17 duplicate-voice incident.
+    # the duplicate-voice incident.
     if ($list.Count -gt 0) {
       [System.IO.File]::WriteAllText($queuePath, '[]', (New-Object System.Text.UTF8Encoding($false)))
     }

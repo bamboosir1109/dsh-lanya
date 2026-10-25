@@ -1,7 +1,6 @@
 # Proactive greetings, restricted to people she ALREADY has a real memory of.
 #
-# Why the restriction: the owner asked for "主动招呼，但是需要保证这个人是之前已经
-# 聊过有记忆的人". So a candidate must have BOTH:
+# Why the restriction: only greet people she already has a real memory of. So a candidate must have BOTH:
 #   - a profile file  <lanya>\people\<qq>.md  (this is what she writes after a real
 #     exchange), AND
 #   - an actual message from or to them somewhere in her readable history.
@@ -123,7 +122,7 @@ def save(path, obj):
 
 
 def profiles():
-    """QQ-number filenames only - she once saved one as admin.md and it never matched."""
+    """QQ-number filenames only - a nickname filename never matches."""
     out = {}
     for p in glob.glob(os.path.join(PEOPLE, "*.md")):
         stem = os.path.splitext(os.path.basename(p))[0]

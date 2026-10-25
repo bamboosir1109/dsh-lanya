@@ -1,7 +1,7 @@
 /**
  * 每个页面的每个按钮都真的点一遍。
  *
- * 用户要求：「我希望每个页面的每个按钮都操作电脑实际尝试」
+ * 覆盖：每个页面、每个按钮都真点一遍，抓控制台异常。
  *
  * 做法：
  *   1. 逐页导航
@@ -90,7 +90,7 @@ const errsSince = () => {
     || x.params.entry?.text
     || (x.params.args || []).map(a => a.description || a.value).join(' ')
     || '').slice(0, 160))
-    // 浏览器自带的扩展会往控制台写噪音（Gmail 的 Iterable 之类），不是我们的代码
+    // 浏览器扩展会往控制台写无关噪音，不是本页代码
     .filter(t => t && !/iterable|mailtrack|grm ERROR|chrome-extension/i.test(t))
 }
 

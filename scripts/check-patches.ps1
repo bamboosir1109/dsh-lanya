@@ -2,8 +2,7 @@
 #
 # Why this exists: seven behaviours she depends on are local edits to the plugin's
 # inbound.js / outbound.js. A routine plugin upgrade replaces those files and every
-# one of them disappears - silently. The symptoms look like personality bugs ("she
-# forgot what we said", "she posted brackets again") rather than a broken install,
+# one of them disappears - silently. The symptoms look like personality-looking symptoms rather than a broken install,
 # so the real cause is easy to miss.
 #
 # Run this after ANY plugin update, or on a timer:

@@ -1,8 +1,7 @@
 # Steal memes from the group, classified by a vision model.
 #
 # Why not size heuristics: the first attempt guessed from dimensions and let news
-# screenshots through - she re-posted one and a groupmate called it out
-# ("你发图不对，没有关联"). Why not a local VLM: a multimodal model can already
+# screenshots through - she re-posted one and a groupmate called it out. Why not a local VLM: a multimodal model can already
 # read images through the agent, so there is no reason to download several GB and
 # burn VRAM on a second model.
 #
