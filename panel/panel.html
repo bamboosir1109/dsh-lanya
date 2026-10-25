@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>岚娅 · 控制台</title>
+<title>大肥鱼 · 控制台</title>
 <style>
 :root{
   --bg:#0b0d13;
@@ -372,7 +372,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-system">
-  <div class="phead"><h1>部件与插件</h1><p>岚娅的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
+  <div class="phead"><h1>部件与插件</h1><p>大肥鱼的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
 
   <div class="card">
     <h3>运行中的部件</h3>
@@ -409,7 +409,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="card">
     <h3>推荐插件</h3>
-    <p class="note">这些和岚娅配合得比较好。点一下会把安装地址填进下面的输入框。</p>
+    <p class="note">这些和大肥鱼配合得比较好。点一下会把安装地址填进下面的输入框。</p>
     <div class="presets" id="recGrid"></div>
     <div class="out" id="recOut"></div>
   </div>
@@ -1157,7 +1157,7 @@ const PLUGIN = {
   'dsh-auto-memory':'重要的事自动写进记忆文件',
   'dsh-cost-meter':'统计花了多少 token，零花钱靠它',
   'dsh-automation':'DSH 自带的定时执行框架',
-  'dsh-dafeiyu':'桌面宠物，跟岚娅无关，想清静可以关',
+  'dsh-dafeiyu':'桌面宠物，跟大肥鱼无关，想清静可以关',
   'dsh-bili-scroll':'自动刷视频、看字幕、写评论，能把推荐发到你 B 站私信',
   'dsh-bili-whale':'B 站社区互动：点赞、评论、跟人聊',
   'dsh-plugin':'浏览和安装别的插件用的',
@@ -1166,7 +1166,7 @@ const PLUGIN = {
 };
 function pDesc(n){ for(const k in PLUGIN){ if(n===k || n.indexOf(k)===0) return PLUGIN[k]; } return ''; }
 
-// 品牌名和图标从配置读，默认中性。原来写死成「岚娅 / 🐺」，
+// 品牌名和图标从配置读，默认中性。原来写死成「大肥鱼 / 🐺」，
 // 别人用这套东西就是别人的角色，不该顶着别人的名字和头像。
 async function loadBrand(){
   try{
@@ -1317,7 +1317,7 @@ const RECOMMENDED = [
     repo: 'https://github.com/PerryLink/dsh-memento' },
   { name: 'dsh-auto-memory', desc: 'Claude Code 风格的自动记忆，会维护 MEMORY.md 索引',
     repo: 'https://github.com/AskTheWay/dsh-auto-memory' },
-  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟岚娅无关，图个乐）',
+  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟大肥鱼无关，图个乐）',
     repo: 'https://github.com/QCYTSN/dsh-dafeiyu' }
 ];
 

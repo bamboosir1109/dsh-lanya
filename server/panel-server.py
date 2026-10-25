@@ -750,7 +750,7 @@ def memory_overview():
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
 #   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
-#   岚娅/memes/...                        她自己的
+#   大肥鱼/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -1053,7 +1053,7 @@ def reminders_snapshot():
 
 
 def scheduled_tasks():
-    """Windows 计划任务里和岚娅有关的那些。"""
+    """Windows 计划任务里和大肥鱼有关的那些。"""
     try:
         p = subprocess.run(
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
