@@ -27,7 +27,7 @@
 **`bili_onerun.py` 被反复打补丁打成三份**
 
 `run_one`、`record_memory`、`verify_comment` 各有三份定义，还有个
-一个没填完的占位值（不是合法 Python，一调用就 NameError）。重写成一份。
+一个没填完的没填完的值（不是合法 Python，一调用就 NameError）。重写成一份。
 
 **脱敏时改坏的代码**
 
