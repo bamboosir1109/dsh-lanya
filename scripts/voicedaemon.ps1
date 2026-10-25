@@ -21,8 +21,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$root      = '<WORKDIR>\napcat'
-$dafeiyuDir  = Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
+$root      = $PSScriptRoot
+$dafeiyuDir  = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
 $queuePath = Join-Path $dafeiyuDir 'voice-queue.json'
 $logPath   = Join-Path $dafeiyuDir 'voice.log'
 $sayScript = Join-Path $root 'say.ps1'

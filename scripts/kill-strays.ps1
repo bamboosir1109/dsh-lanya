@@ -25,7 +25,16 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
 
-$root = '$root\napcat'
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+
+$root = $PSScriptRoot
 $log  = Join-Path $root 'strays.log'
 
 function Note([string]$m) {
@@ -43,7 +52,7 @@ $now = Get-Date
 # 2 -> 3: the meme classifier holds one agent per batch (30-60s each).
 # At 2 it kept getting trimmed alongside regular scheduled work and those
   # batches were wasted. 3 is still far below anything that strains memory.
-  $MaxConcurrent = 3
+  $MaxConcurrent = [int](Get-ProjectConfValue 'daemon.maxConcurrentAgents' 3)
 $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
 
 $strays = @()

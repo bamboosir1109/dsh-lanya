@@ -22,7 +22,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   exit 1
 }
 
-$marker = Join-Path '$root\napcat' 'scheduler-in-plugin.flag'
+$marker = Join-Path $PSScriptRoot 'scheduler-in-plugin.flag'
 
 Write-Host ''
 if (-not (Test-Path $marker)) {

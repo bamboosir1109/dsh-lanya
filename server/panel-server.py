@@ -23,6 +23,20 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+# 集中配置：端口、目录名、各种次数都在 <repo>\config\project.json 里。
+# 读不到（或者 project_conf.py 没跟着装）就用 fallback 字面量，
+# 也就是改之前写死的那些值 —— 少一个文件不会少一条功能。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _cand in (_HERE, os.path.join(os.path.dirname(_HERE), "scripts")):
+    if os.path.isdir(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
+try:
+    import project_conf as _pc
+    _CONF = _pc.get
+except Exception:
+    def _CONF(_key, _default=None):
+        return _default
+
 
 def _find_dsh_root():
     """找 DSH 装在哪。别写死盘符。"""
@@ -39,16 +53,18 @@ def _find_dsh_root():
     return cands[0]
 
 
-ROOT = os.path.join(REPO, "\u5927\u80a5\u9c7c", "made")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAPCAT = os.path.join(REPO, "napcat")
-PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c\u4eba\u8bbe\u6b63\u6587.md".replace("\u5927\u80a5\u9c7c", "\u5927\u80a5\u9c7c-"))
-# 上面这种拼法容易出错，直接用 os.path.join 拼真实文件名更稳
-PERSONA = os.path.join(NAPCAT, "\u5927\u80a5\u9c7c" + "-\u4eba\u8bbe\u6b63\u6587.md")
-CONFIG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-config.json")
-TUNABLES = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-tunables.json")
-MEMECFG  = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-memes-config.json")
-MEME_TAGS = os.path.join(REPO, "\u5927\u80a5\u9c7c", "lanya-memes-tags.json")
+
+# 那个中文目录名（现在是"大肥鱼"）。从配置读，别在这里写死。
+DATA_DIR = _CONF("dataDirName", "\u5927\u80a5\u9c7c")
+
+ROOT = os.path.join(REPO, DATA_DIR, "made")
+PERSONA = os.path.join(NAPCAT, DATA_DIR + "-\u4eba\u8bbe\u6b63\u6587.md")
+CONFIG  = os.path.join(REPO, DATA_DIR, "lanya-config.json")
+TUNABLES = os.path.join(REPO, DATA_DIR, "lanya-tunables.json")
+MEMECFG  = os.path.join(REPO, DATA_DIR, "lanya-memes-config.json")
+MEME_TAGS = os.path.join(REPO, DATA_DIR, "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
@@ -101,7 +117,7 @@ SPECIAL = {
     "tts": {
         "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
         "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
-        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
+        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", str(_CONF("ttsPort", 9880)),
                  "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
     },
 }
@@ -164,7 +180,7 @@ TASKS = {
 TOOLS = [
     {"key": "napcat", "name": "NapCat", "kind": "QQ 注入框架",
      "paths": [os.path.join(REPO, "napcat", "framework", "napimain.exe")],
-     "port": 8720,
+     "port": _CONF("onebotPort", 8720),
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
      "paths": [r"C:\software\QQNT\QQ.exe"],
@@ -2545,7 +2561,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
+    port = int(os.environ.get("LANYA_PANEL_PORT", str(_CONF("panelPort", 19389))))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])

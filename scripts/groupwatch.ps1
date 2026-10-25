@@ -69,6 +69,21 @@ param(
 # Repo root: <root>/napcat/xxx.ps1 -> <root>
 $root = Split-Path -Parent $PSScriptRoot
 
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+# An explicit -PollSeconds on the command line still wins; the config only
+# replaces the DEFAULT, which is the same 60 seconds either way.
+if (-not $PSBoundParameters.ContainsKey('PollSeconds')) {
+  $PollSeconds = [int](Get-ProjectConfValue 'daemon.pollSeconds' 60)
+}
+$dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
 
 # ---------------------------------------------------------------------------
 # Respect the group spending cap.
@@ -79,7 +94,7 @@ $root = Split-Path -Parent $PSScriptRoot
 #
 # Write-Log is defined further down, so this uses Write-Output directly.
 # ---------------------------------------------------------------------------
-$budgetPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'budget.json'
+$budgetPath = Join-Path (Join-Path $root $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
     $bud = Get-Content $budgetPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -100,7 +115,7 @@ if (Test-Path $budgetPath) {
 #
 # ASCII-only source.
 # ---------------------------------------------------------------------------
-$tunablesPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'dafeiyu-tunables.json'
+$tunablesPath = Join-Path (Join-Path $root $dataDirName) 'dafeiyu-tunables.json'
 if (Test-Path $tunablesPath) {
   try {
     $tun = Get-Content $tunablesPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -113,12 +128,12 @@ if (Test-Path $tunablesPath) {
   } catch { }
 }
 
-$root       = '$root\napcat'
+$root       = $PSScriptRoot
 $promptPath = Join-Path $root 'groupwatch.prompt.txt'
 $statePath  = Join-Path $root 'groupwatch.state.json'
 # Per-QQ affinity. level "avoid" means she does not answer that person at all.
 # The folder name is built from code points so this file stays ASCII-only.
-$affinityPath = Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'affinity.json'
+$affinityPath = Join-Path (Join-Path $root $dataDirName) 'affinity.json'
 $logPath    = Join-Path $root 'groupwatch.log'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
@@ -147,7 +162,7 @@ $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 # (stealmemes.py drops them in <dafeiyu>\memes\stolen). That is what makes mood
 # "stolen" work, so she can throw a groupmate's own joke back at them.
 $memeRoots = @(
-  (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)),
+  (Join-Path $root $dataDirName),
   '%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-meme\memes\dafeiyu-001',
   '%USERPROFILE%\.dsh\meme-packs\official-001',
   '%USERPROFILE%\.dsh\meme-packs\whale-girl-emoji'
@@ -549,7 +564,7 @@ while ($true) {
       # mood, a mood request only ever reached the stolen pile when she happened to
       # ask for "stolen", so in practice she kept sending the same prepackaged
       # dafeiyu shots. Now any request prefers what she took from the group.
-      $stolenDir = Join-Path (Join-Path (Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'memes') 'stolen'
+      $stolenDir = Join-Path (Join-Path (Join-Path $root $dataDirName) 'memes') 'stolen'
       $stolen = @()
       if (Test-Path $stolenDir) {
         $stolen = @(Get-ChildItem $stolenDir -File -ErrorAction SilentlyContinue |

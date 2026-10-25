@@ -21,14 +21,14 @@ $ErrorActionPreference = 'Continue'
 # If the plugin's built-in scheduler is running (it leaves a marker file on start),
 # do nothing here. Two schedulers running at once would do every job twice and spawn
 # twice as many processes - exactly what we are trying to remove.
-$marker = Join-Path '<WORKDIR>\napcat' 'scheduler-in-plugin.flag'
+$marker = Join-Path $PSScriptRoot 'scheduler-in-plugin.flag'
 if (Test-Path $marker) {
   $ageMin = ((Get-Date) - (Get-Item $marker).LastWriteTime).TotalMinutes
   # A marker untouched for 30+ minutes means the plugin is probably gone; fall back.
   if ($ageMin -lt 30) { exit 0 }
 }
 
-$root  = '<WORKDIR>\napcat'
+$root  = $PSScriptRoot
 $state = Join-Path $root 'dafeiyu-tick.state.json'
 $log   = Join-Path $root 'dafeiyu-tick.log'
 

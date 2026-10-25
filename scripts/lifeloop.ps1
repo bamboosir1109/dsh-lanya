@@ -36,9 +36,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+$dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
 $root       = Join-Path (Split-Path -Parent $PSScriptRoot) 'napcat'
 $workDir    = Split-Path -Parent $root
-$dafeiyuDir   = Join-Path $workDir ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$dafeiyuDir   = Join-Path $workDir $dataDirName
 $notesDir   = Join-Path $dafeiyuDir 'notes'
 $madeDir    = Join-Path $dafeiyuDir 'made'
 $promptPath = Join-Path $root 'lifeloop.prompt.txt'

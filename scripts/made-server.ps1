@@ -22,7 +22,21 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
 
-$dafeiyuDir = Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+# An explicit -Port still wins; the config only replaces the DEFAULT (19388).
+if (-not $PSBoundParameters.ContainsKey('Port')) {
+  $Port = [int](Get-ProjectConfValue 'panelStaticPort' 19388)
+}
+$dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
+$dafeiyuDir = Join-Path $root $dataDirName   # "Dafeiyu"
 $madeDir  = Join-Path $dafeiyuDir 'made'
 $logPath  = Join-Path $dafeiyuDir 'made-server.log'
 
@@ -44,8 +58,8 @@ if (-not (Test-Path $madeDir)) { New-Item -ItemType Directory -Path $madeDir -Fo
 # flashing. The panel server is what serves /api/* for the control page, because
 # the DSH web server on 19387 refuses cross-origin writes.
 # ---------------------------------------------------------------------------
-$panelPort = 19389
-$panelScript = Join-Path '$root\napcat' 'dafeiyu-panel-server.py'
+$panelPort = [int](Get-ProjectConfValue 'panelPort' 19389)
+$panelScript = Join-Path $PSScriptRoot 'dafeiyu-panel-server.py'
 if (Test-Path $panelScript) {
   $panelBusy = (netstat -ano | Select-String (':' + $panelPort + ' .*LISTENING')).Count -gt 0
   if ($panelBusy) {
@@ -73,7 +87,7 @@ Write-Log ('serving ' + $madeDir + ' at http://' + $Bind + ':' + $Port + '/')
 # script can exit and the server survives.
   # (translated above)
   # (translated above)
-  $panel = Join-Path '$root\napcat' 'dafeiyu-panel-server.py'
+  $panel = Join-Path $PSScriptRoot 'dafeiyu-panel-server.py'
   if (Test-Path $panel) {
     Start-Process -FilePath 'python' -ArgumentList ('"' + $panel + '" --port ' + $Port) -WindowStyle Hidden
   }

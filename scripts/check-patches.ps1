@@ -14,10 +14,10 @@
 
 $ErrorActionPreference = 'Continue'
 
-$lib = '$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-onebot-qq\lib'
+$lib = (Join-Path $env:USERPROFILE '.dsh\profiles\desktop\node_modules\dsh-onebot-qq\lib')
 $inbound = Join-Path $lib 'inbound.js'
 $outbound = Join-Path $lib 'outbound.js'
-$log = '<WORKDIR>\napcat\patch-check.log'
+$log = (Join-Path $PSScriptRoot 'patch-check.log')
 
 function Note([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
@@ -59,5 +59,5 @@ if ($missing.Count -eq 0) {
 }
 
 Note ('FAIL ' + $missing.Count + ' patch(es) missing after an upgrade: ' + ($missing -join '; '))
-Note 'Rebuild them from <WORKDIR>\napcat\plugin-patch-backup\inbound.js.orig (see the merge-plan doc)'
+Note ('Rebuild them from ' + (Join-Path $PSScriptRoot 'plugin-patch-backup\inbound.js.orig') + ' (see the merge-plan doc)')
 exit 1

@@ -4,6 +4,88 @@
 
 ---
 
+## v1.1.0 — 2026-10-26
+
+集中配置。端口、目录名、超时、并发、限额不再散落在二十几个文件里。
+
+### 加了什么
+
+**`config/project.json`** —— 一份配置管全部：
+
+```json
+{
+  "panelPort": 19389,
+  "panelStaticPort": 19388,
+  "onebotPort": 8720,
+  "ttsPort": 9880,
+  "dataDirName": "大肥鱼",
+  "daemon": { "pollSeconds": 60, "maxConcurrentAgents": 3, "autoUpdateMinutes": 360 },
+  "bili": { "commentMaxLen": 30, "watchCandidates": 4, "commentRetries": 3 },
+  "budget": { "dailyLimit": 1.0 }
+}
+```
+
+**两个读取器**：
+
+- `scripts/project_conf.py` —— `get("daemon.pollSeconds", 60)` 点号路径
+- `scripts/project_conf.ps1` —— `Get-ProjectConfValue 'daemon.pollSeconds' 60`
+
+两者都做了兜底：**配置文件丢了就用内置默认值，行为跟改之前一模一样**。
+两个读取器都按 `scripts同目录/config` → `上一级/config` → `上两级/config` 找，
+不写死盘符。`LANYA_PROJECT_CONFIG` 环境变量可以指定别的路径。
+
+**`install.ps1` 会把 `config/` 一起装过去** —— 否则装到机器上读不到，只能走默认值。
+
+### 接进配置的
+
+| 文件 | 什么 |
+|---|---|
+| `server/panel-server.py` | 面板端口、OneBot 端口、TTS 端口、数据目录名 |
+| `scripts/*-state.ps1` | 三个部件检测项（端口变了检测要跟着变）、自动更新节流、目录名 |
+| `scripts/groupwatch.ps1` | 轮询间隔（显式传参仍然优先） |
+| `scripts/lifeloop.ps1` | 数据目录名 |
+| `scripts/bili_onerun.py` | 评论长度上限、试几条、重试几次 |
+| `scripts/made-server.ps1` | 两个端口 |
+| `scripts/kill-strays.ps1` | 并发上限 3 |
+| `scripts/budget.ps1` | 每日额度（显式传参仍然优先） |
+
+### 修了什么
+
+**四个「功能是死的」bug**
+
+都是之前 `<WORKDIR>` 模板替换时把带插值的双引号写成了单引号，PowerShell 不展开，
+变成字面量：
+
+| 文件 | 症状 |
+|---|---|
+| `budget.ps1` | 余额提醒的配置和消息文件路径是字面 `'$root\napcat\...'`，永远读不到 |
+| `check-patches.ps1` | 插件目录是字面 `'$env:USERPROFILE\...'`，检查永远失败 |
+| `kill-strays.ps1` / `made-server.ps1` / `cleanup-tasks.ps1` | 根目录是字面 `'$root\napcat'` |
+| `dafeiyu-state.ps1` | 人设路径、分类脚本、快照脚本全是字面 `<WORKDIR>` |
+
+统一改成 `$PSScriptRoot`（这些脚本就住在 `<root>\napcat\` 里，它正好是那个目录）。
+
+**`panel-server.py` 一开始就 import 不了**
+
+`ROOT` 用了下一行才定义的 `REPO`，一 import 就 `NameError`。
+
+**读取器的 BOM bug**
+
+PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会加 BOM，`json.load` 见 BOM 直接抛异常
+→ Python 侧静默退回默认值，而 `.ps1` 侧照样读得到，两边不一致。改用 `utf-8-sig`。
+
+### 验证
+
+```
+POST 接口     9 个，全部真的写
+效果测试      7 项，全过
+全按钮        518 个，报错 0
+Python        20 个语法全过
+PowerShell    16 个语法全过 + 纯 ASCII + 无 BOM
+```
+
+---
+
 ## v1.0.1 — 2026-10-26
 
 全按钮 / 全接口的实际行为审查 + 隐私彻底清理。
@@ -33,7 +115,7 @@
 
 - `<WORKDIR>` 字面量留在源码里当路径（`<` `>` 在 Windows 路径里非法）
 - `'$root\napcat'` 单引号，PowerShell 不展开
-- `D:\DSH` 写死盘符 —— 改成按环境变量或自动搜索
+- 写死盘符 —— 改成按环境变量或自动搜索
 
 ### 加了什么
 

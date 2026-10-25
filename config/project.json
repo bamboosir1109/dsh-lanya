@@ -1,0 +1,27 @@
+{
+  "_note": "集中配置。改这一份，不用满仓库找。读取器：scripts/project_conf.py / scripts/project_conf.ps1。找不到本文件时两者都用各自的默认值（与这里的值一致）。",
+
+  "panelPort": 19389,
+  "panelStaticPort": 19388,
+  "onebotPort": 8720,
+  "ttsPort": 9880,
+  "panelFile": "panel.html",
+  "dataDirName": "大肥鱼",
+
+  "daemon": {
+    "pollSeconds": 60,
+    "headlessTimeoutSec": 360,
+    "maxConcurrentAgents": 3,
+    "autoUpdateMinutes": 360
+  },
+
+  "bili": {
+    "commentMaxLen": 30,
+    "watchCandidates": 4,
+    "commentRetries": 3
+  },
+
+  "budget": {
+    "dailyLimit": 1.0
+  }
+}

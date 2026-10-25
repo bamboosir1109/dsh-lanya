@@ -10,12 +10,26 @@
 
 $ErrorActionPreference = 'Continue'
 
-$root     = '<WORKDIR>\napcat'
-$dafeiyuDir = Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+$worksPort      = [int](Get-ProjectConfValue 'panelStaticPort' 19388)
+$napcatPort     = [int](Get-ProjectConfValue 'onebotPort' 8720)
+$ttsPort        = [int](Get-ProjectConfValue 'ttsPort' 9880)
+$autoUpdateMins = [int](Get-ProjectConfValue 'daemon.autoUpdateMinutes' 360)
+$dataDirName    = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
+$root     = $PSScriptRoot
+$dafeiyuDir = Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName
 $outDir   = Join-Path $dafeiyuDir 'made'
 $outFile  = Join-Path $outDir 'dafeiyu-state.json'
 
-$profDir = '$env:USERPROFILE\.dsh\profiles\desktop'
+$profDir = (Join-Path $env:USERPROFILE '.dsh\profiles\desktop')
 $nmDir   = Join-Path $profDir 'node_modules'
 $pkgFile = Join-Path $profDir 'package.json'
 
@@ -27,9 +41,9 @@ $components = @(
   @{ tag = 'lifeloop';    match = 'lifeloop\.ps1';      desc = 'free time loop' },
   @{ tag = 'voicedaemon'; match = 'voicedaemon\.ps1';   desc = 'voice queue' },
   @{ tag = 'browserd';    match = 'browserd\.py';       desc = 'browser' },
-  @{ tag = 'works';       match = 'http\.server 19388'; desc = 'works server 19388' },
-  @{ tag = 'tts';         match = 'api_v2\.py';         desc = 'local voice 9880' },
-  @{ tag = 'napcat';      match = '__PORT__:8720';      desc = 'napcat injection' },
+  @{ tag = 'works';       match = ('http\.server ' + $worksPort); desc = ('works server ' + $worksPort) },
+  @{ tag = 'tts';         match = 'api_v2\.py';         desc = ('local voice ' + $ttsPort) },
+  @{ tag = 'napcat';      match = ('__PORT__:' + $napcatPort);      desc = 'napcat injection' },
   @{ tag = 'headless';    match = '--profile headless'; desc = 'headless agent' }
 )
 
@@ -157,7 +171,7 @@ $state = [pscustomobject]@{
 # same-origin relative path: reading it over the API from the 19388 origin fails,
 # because the browser sends an OPTIONS preflight and that route answers 400.
 try {
-  $personaPath = '<WORKDIR>\napcat\' + [string][char]0x5927 + [char]0x80A5 + [char]0x9C7C + '-' + [char]0x4EBA + [char]0x8BBE + [char]0x6B63 + [char]0x6587 + '.md'
+  $personaPath = (Join-Path $PSScriptRoot ($dataDirName + '-' + [char]0x4EBA + [char]0x8BBE + [char]0x6B63 + [char]0x6587 + '.md'))
 } catch { $personaPath = '' }
 try {
   New-Item -ItemType Directory -Path $outDir -Force | Out-Null
@@ -179,13 +193,13 @@ catch {
 #
 # Throttled with a stamp file so the 30s tick does not hammer git.
 try {
-  $auScript = Join-Path '<WORKDIR>\napcat' 'auto-update.ps1'
-  $auStamp  = Join-Path '<WORKDIR>\napcat\auto-update.lastrun'
+  $auScript = Join-Path $PSScriptRoot 'auto-update.ps1'
+  $auStamp  = Join-Path $PSScriptRoot 'auto-update.lastrun'
   if (Test-Path $auScript) {
     $auDue = $true
     if (Test-Path $auStamp) {
       $auMins = ((Get-Date) - (Get-Item $auStamp).LastWriteTime).TotalMinutes
-      if ($auMins -lt 360) { $auDue = $false }
+      if ($auMins -lt $autoUpdateMins) { $auDue = $false }
     }
     if ($auDue) {
       Set-Content -Path $auStamp -Value (Get-Date -Format 'o') -Encoding UTF8
@@ -203,8 +217,8 @@ try {
 #
 # Throttled to once every 3 minutes so it does not run on every 30s tick.
 try {
-  $cScript = Join-Path '<WORKDIR>\napcat' 'classify_emotion.py'
-  $cStamp  = Join-Path '<WORKDIR>\napcat' 'classify.lastrun'
+  $cScript = Join-Path $PSScriptRoot 'classify_emotion.py'
+  $cStamp  = Join-Path $PSScriptRoot 'classify.lastrun'
   if (Test-Path $cScript) {
     $due = $true
     if (Test-Path $cStamp) {
@@ -212,7 +226,7 @@ try {
       if ($mins -lt 2) { $due = $false }
     }
     if ($due) {
-      $dafeiyuMemes = Join-Path (Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'memes'
+      $dafeiyuMemes = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName) 'memes'
       $flat = @(Get-ChildItem (Join-Path $dafeiyuMemes 'stolen') -File -ErrorAction SilentlyContinue)
       if ($flat.Count -gt 0) {
         Set-Content -Path $cStamp -Value (Get-Date -Format 'o') -Encoding UTF8
@@ -226,7 +240,7 @@ try {
 # which is what makes the panel work inside an embedded view that blocks
 # cross-port fetches. Cheap: it just re-serialises what is already in memory.
 try {
-  $snap = Join-Path '<WORKDIR>\napcat' 'make_snapshots.py'
+  $snap = Join-Path $PSScriptRoot 'make_snapshots.py'
   if (Test-Path $snap) {
     Start-Process -FilePath 'python' -ArgumentList ('"' + $snap + '"') -WindowStyle Hidden -Wait
   }

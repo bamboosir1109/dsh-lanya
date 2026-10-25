@@ -10,8 +10,22 @@
 
 $ErrorActionPreference = 'Continue'
 
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+$worksPort      = [int](Get-ProjectConfValue 'panelStaticPort' 19388)
+$napcatPort     = [int](Get-ProjectConfValue 'onebotPort' 8720)
+$ttsPort        = [int](Get-ProjectConfValue 'ttsPort' 9880)
+$autoUpdateMins = [int](Get-ProjectConfValue 'daemon.autoUpdateMinutes' 360)
+$dataDirName    = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
 $root     = $PSScriptRoot
-$dafeiyuDir = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$dafeiyuDir = Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName
 $outDir   = Join-Path $dafeiyuDir 'made'
 $outFile  = Join-Path $outDir 'dafeiyu-state.json'
 
@@ -27,9 +41,9 @@ $components = @(
   @{ tag = 'lifeloop';    match = 'lifeloop\.ps1';      desc = 'free time loop' },
   @{ tag = 'voicedaemon'; match = 'voicedaemon\.ps1';   desc = 'voice queue' },
   @{ tag = 'browserd';    match = 'browserd\.py';       desc = 'browser' },
-  @{ tag = 'works';       match = 'http\.server 19388'; desc = 'works server 19388' },
-  @{ tag = 'tts';         match = 'api_v2\.py';         desc = 'local voice 9880' },
-  @{ tag = 'napcat';      match = '__PORT__:8720';      desc = 'napcat injection' },
+  @{ tag = 'works';       match = ('http\.server ' + $worksPort); desc = ('works server ' + $worksPort) },
+  @{ tag = 'tts';         match = 'api_v2\.py';         desc = ('local voice ' + $ttsPort) },
+  @{ tag = 'napcat';      match = ('__PORT__:' + $napcatPort);      desc = 'napcat injection' },
   @{ tag = 'headless';    match = '--profile headless'; desc = 'headless agent' }
 )
 
@@ -185,7 +199,7 @@ try {
     $auDue = $true
     if (Test-Path $auStamp) {
       $auMins = ((Get-Date) - (Get-Item $auStamp).LastWriteTime).TotalMinutes
-      if ($auMins -lt 360) { $auDue = $false }
+      if ($auMins -lt $autoUpdateMins) { $auDue = $false }
     }
     if ($auDue) {
       Set-Content -Path $auStamp -Value (Get-Date -Format 'o') -Encoding UTF8
@@ -212,7 +226,7 @@ try {
       if ($mins -lt 2) { $due = $false }
     }
     if ($due) {
-      $dafeiyuMemes = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)) 'memes'
+      $dafeiyuMemes = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName) 'memes'
       $flat = @(Get-ChildItem (Join-Path $dafeiyuMemes 'stolen') -File -ErrorAction SilentlyContinue)
       if ($flat.Count -gt 0) {
         Set-Content -Path $cStamp -Value (Get-Date -Format 'o') -Encoding UTF8

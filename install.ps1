@@ -33,6 +33,9 @@ $map = @(
     @{ From = 'server'; To = $napcat },
     @{ From = 'scripts'; To = $napcat },
     @{ From = 'prompts'; To = $napcat },
+  # config/ must land where the readers look for it: the .ps1 and .py
+  # helpers probe <parent of scripts>\config\project.json.
+  @{ From = 'config'; To = (Join-Path $Target 'config') },
     @{ From = 'panel'; To = $dafeiyu }
 )
 

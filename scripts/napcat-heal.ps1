@@ -18,7 +18,7 @@
 
 $ErrorActionPreference = 'Continue'
 
-$root = '<WORKDIR>\napcat'
+$root = $PSScriptRoot
 $fw   = Join-Path $root 'framework'
 $log  = Join-Path $root 'napcat-heal.log'
 

@@ -25,11 +25,25 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
 
-$dafeiyuDir  = Join-Path $root ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+# An explicit -Limit still wins; the config only replaces the DEFAULT (1.0).
+if (-not $PSBoundParameters.ContainsKey('Limit')) {
+  $Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
+}
+$dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
+
+$dafeiyuDir  = Join-Path $root $dataDirName   # "Dafeiyu"
 $ledger    = '%USERPROFILE%\.dsh\storages\cost-meter\ledger.json'
 $outPath   = Join-Path $dafeiyuDir 'budget.json'
 $logPath   = Join-Path $dafeiyuDir 'budget.log'
-$cfgPath   = '$root\napcat\balance-alert.config.json'
+$cfgPath   = (Join-Path $PSScriptRoot 'balance-alert.config.json')
 $adminQQ   = 'YOUR_ADMIN_QQ'
 
 function Write-Log([string]$m) {
@@ -116,7 +130,7 @@ if ($Notify -and $exhausted -and $status.notifiedFor -ne $today) {
   # Message text comes from a JSON template: this script must stay pure ASCII,
   # because PowerShell 5.1 reads a BOM-less .ps1 with the ANSI codepage and would
   # mangle Chinese literals into a parse error (that happened once here already).
-  $msgFile = '$root\napcat\budget.messages.json'
+  $msgFile = (Join-Path $PSScriptRoot 'budget.messages.json')
   $tpl = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($msgFile)) | ConvertFrom-Json
   $msg = $tpl.exhausted -f $Limit
   $payload = @{ user_id = $adminQQ; message = $msg } | ConvertTo-Json -Compress

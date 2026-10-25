@@ -25,8 +25,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$root  = '<WORKDIR>\napcat'
-$dafeiyu = Join-Path '<WORKDIR>' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
+$root  = $PSScriptRoot
+$dafeiyu = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
 $logPath = Join-Path $root 'dafeiyu-supervisor.log'
 $py = 'python'
 $ps = 'powershell.exe'
@@ -79,7 +79,7 @@ function Invoke-Job($j) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   try {
     # Quote every argument that contains a space. Passing the array straight to
-    # -ArgumentList let Windows split "<WORKDIR>\napcat\reminders.ps1" at the
+    # -ArgumentList let Windows split "<reminders.ps1>" at the
     # space, so powershell got "-File $env:DSH_ROOT" and every job failed instantly.
     $quoted = @()
     foreach ($a in $j.args) {
