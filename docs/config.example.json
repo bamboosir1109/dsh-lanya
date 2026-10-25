@@ -1,0 +1,16 @@
+{
+  "_说明": "复制成 lanya-config.json 再填。这个文件不会进 Git，属于本机配置。",
+
+  "adminQQ": ["在这里填管理员的 QQ 号"],
+  "adminCall": "爸爸",
+  "adminCallVariants": ["爸爸", "老爸", "老爹", "老头儿"],
+
+  "_可选": "下面三项留空，她就不会主动提。填了才会出现在提示词里。",
+  "adminIdentity": "",
+  "novelTitle": "",
+  "penNames": [],
+
+  "fanGroupQQ": "",
+  "botQQ": "",
+  "maxReminderLen": 40
+}

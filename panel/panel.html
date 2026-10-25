@@ -1,0 +1,2956 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>岚娅 · 控制台</title>
+<style>
+:root{
+  --bg:#0b0d13;
+  --bg-grad:radial-gradient(1000px 600px at 15% -15%,rgba(91,157,255,.055),transparent 55%),
+            radial-gradient(800px 500px at 92% 0%,rgba(139,92,246,.045),transparent 50%);
+  --panel:rgba(17,20,28,.88);
+  --card:#151922;
+  --card2:#1b2130;
+  --line:#232938;
+  --line2:#2e3648;
+  --fg:#eceff6;
+  --fg2:#a4aec1;
+  --dim:#68738a;
+  --ok:#35d399;
+  --warn:#f3c451;
+  --bad:#ff6b6b;
+  --acc:#5b9dff;
+  --acc2:#8b5cf6;
+  --r:14px;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);background-image:var(--bg-grad);background-attachment:fixed;
+  color:var(--fg);
+  font:14.5px/1.62 "Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  display:flex;overflow:hidden;letter-spacing:.005em
+}
+::selection{background:rgba(91,157,255,.3)}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-thumb{background:#252c3b;border-radius:99px;border:3px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#333c50}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- 侧栏 ---------- */
+aside{
+  width:218px;flex:none;height:100vh;overflow-y:auto;
+  background:var(--panel);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  border-right:1px solid var(--line);display:flex;flex-direction:column;padding:20px 13px
+}
+.brand{display:flex;align-items:center;gap:11px;padding:0 9px 20px}
+.brand .logo{
+  width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(140deg,#5b9dff,#8b5cf6 85%);font-size:17px;
+  box-shadow:0 4px 18px rgba(91,157,255,.32), inset 0 1px 0 rgba(255,255,255,.22)
+}
+.brand b{font-size:15px;font-weight:660;display:block;line-height:1.15;letter-spacing:-.01em}
+.brand span{font-size:10.5px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+nav{display:flex;flex-direction:column;gap:3px;flex:1}
+.navitem{
+  display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;
+  color:var(--fg2);text-decoration:none;font-size:13.5px;font-weight:480;cursor:pointer;
+  border:1px solid transparent;transition:background .15s,color .15s,border-color .15s;
+  position:relative
+}
+.navitem:hover{background:rgba(255,255,255,.035);color:var(--fg)}
+.navitem.on{
+  background:linear-gradient(180deg,rgba(91,157,255,.16),rgba(91,157,255,.07));
+  color:#fff;border-color:rgba(91,157,255,.28);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06)
+}
+.navitem.on:before{
+  content:"";position:absolute;left:-13px;top:50%;transform:translateY(-50%);
+  width:3px;height:17px;border-radius:0 3px 3px 0;background:var(--acc);
+  box-shadow:0 0 12px rgba(91,157,255,.65)
+}
+.navitem .ni{font-size:14.5px;opacity:.7;width:17px;text-align:center;flex:none}
+.navitem.on .ni{opacity:1}
+.navitem .cnt{
+  margin-left:auto;font-size:10.5px;font-weight:560;color:var(--dim);
+  background:rgba(0,0,0,.35);padding:1px 7px;border-radius:20px;
+  font-variant-numeric:tabular-nums
+}
+.navitem.on .cnt{color:#9dc4ff;background:rgba(91,157,255,.16)}
+.sidefoot{padding:13px 9px 0;border-top:1px solid var(--line);margin-top:13px;font-size:10.5px;color:var(--dim);line-height:1.75}
+
+/* ---------- 主区 ---------- */
+main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
+.page{display:none;max-width:1020px;margin:0 auto}
+.page.on{display:block;animation:rise .26s cubic-bezier(.22,1,.36,1)}
+@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+
+.phead{margin-bottom:24px}
+.phead h1{font-size:23px;margin:0 0 5px;font-weight:700;letter-spacing:-.025em;line-height:1.2}
+.phead p{margin:0;color:var(--dim);font-size:13px;line-height:1.6}
+
+/* 卡片：靠阴影浮起来 */
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:22px 24px;margin-bottom:16px;box-shadow:var(--shadow);
+  transition:border-color .18s
+}
+.card:hover{border-color:var(--line2)}
+.card > h3{
+  font-size:12px;margin:0 0 16px;font-weight:640;color:var(--fg2);
+  letter-spacing:.07em;text-transform:uppercase
+}
+.card .note{color:var(--dim);font-size:12.5px;margin:-8px 0 16px;line-height:1.7}
+
+/* 指标卡 */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:13px;margin-bottom:16px}
+.stat{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:17px 19px;box-shadow:var(--shadow);position:relative;overflow:hidden
+}
+.stat:before{
+  content:"";position:absolute;inset:0 0 auto;height:2px;
+  background:linear-gradient(90deg,var(--acc),transparent);opacity:.5
+}
+.stat .k{font-size:11px;color:var(--dim);margin-bottom:7px;letter-spacing:.05em;text-transform:uppercase;font-weight:560}
+.stat .v{font-size:28px;font-weight:720;letter-spacing:-.035em;font-variant-numeric:tabular-nums;line-height:1.05}
+.stat .v small{font-size:12.5px;font-weight:520;color:var(--dim);margin-left:4px;letter-spacing:0}
+.stat .s{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5}
+
+.bar{height:9px;border-radius:99px;background:rgba(0,0,0,.45);border:1px solid var(--line);overflow:hidden}
+.bar > i{display:block;height:100%;width:0;border-radius:99px;
+  background:linear-gradient(90deg,#35d399,#22a877);
+  transition:width .55s cubic-bezier(.22,1,.36,1),background .3s}
+.bar.hot > i{background:linear-gradient(90deg,#f3c451,#ff6b6b)}
+
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:0 11px 11px;font-size:10.5px;color:var(--dim);font-weight:640;
+  letter-spacing:.08em;text-transform:uppercase}
+td{padding:12px 11px;border-top:1px solid var(--line);font-size:13px;vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,.016)}
+td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--fg2)}
+td.op{text-align:right;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:10px}
+.up{background:var(--ok);box-shadow:0 0 0 3px rgba(53,211,153,.13)}
+.down{background:#39414f}
+.multi{background:var(--warn);box-shadow:0 0 0 3px rgba(243,196,81,.14)}
+.nm{font-weight:580;letter-spacing:-.005em}
+.dsc{color:var(--dim);font-size:12.5px}
+
+button{
+  font:inherit;font-size:12.5px;font-weight:540;cursor:pointer;border-radius:9px;
+  border:1px solid var(--line2);background:var(--card2);color:var(--fg);padding:8px 14px;
+  transition:background .15s,border-color .15s,transform .07s,box-shadow .15s
+}
+button:hover{background:#242b3c;border-color:#3d4759;box-shadow:0 2px 10px -4px rgba(0,0,0,.6)}
+button:active{transform:scale(.982)}
+button.pri{
+  background:linear-gradient(180deg,#3a6fbb,#2b5391);
+  border-color:#4278c4;color:#e8f1ff;
+  box-shadow:0 2px 14px -4px rgba(58,111,187,.6), inset 0 1px 0 rgba(255,255,255,.12)
+}
+button.pri:hover{background:linear-gradient(180deg,#4480d1,#315c9e)}
+button.dan{color:#ffb3b3;border-color:#4a2b2b;background:#251a1a}
+button.dan:hover{background:#342020;border-color:#6b3636}
+button.sm{padding:4px 11px;font-size:11.5px;border-radius:7px}
+button:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+
+input[type=text],input[type=number],textarea{
+  width:100%;background:#080a0f;border:1px solid var(--line);color:var(--fg);
+  border-radius:10px;padding:10px 13px;font:inherit;font-size:13px;
+  transition:border-color .16s,box-shadow .16s,background .16s
+}
+input::placeholder,textarea::placeholder{color:#4d576a}
+input:focus,textarea:focus{outline:none;border-color:#4278c4;background:#0a0d13;
+  box-shadow:0 0 0 3px rgba(66,120,196,.14)}
+textarea{resize:vertical;min-height:190px;line-height:1.7;
+  font-family:ui-monospace,SFMono-Regular Consolas,monospace;font-size:12.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.field{margin-bottom:15px}
+.field label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:7px;font-weight:520;letter-spacing:.02em}
+.field .two-in{display:flex;gap:9px;align-items:center}
+.field .two-in span{color:var(--dim);font-size:12px;flex:none}
+
+.sw{position:relative;display:inline-block;width:40px;height:23px;flex:none}
+.sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:2}
+.sw i{position:absolute;inset:0;background:#333c4b;border-radius:99px;transition:.2s}
+.sw i:before{content:"";position:absolute;width:17px;height:17px;left:3px;top:3px;
+  background:#fff;border-radius:50%;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.45)}
+.sw input:checked + i{background:linear-gradient(180deg,#35d399,#22a877)}
+.sw input:checked + i:before{transform:translateX(17px)}
+
+.out{
+  margin-top:15px;background:#07090d;border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;font-size:12px;color:#b3bfd2;white-space:pre-wrap;word-break:break-word;
+  font-family:ui-monospace,Consolas,monospace;max-height:290px;overflow:auto;display:none;line-height:1.7
+}
+.url{color:var(--acc);text-decoration:none;font-size:12.5px;border-bottom:1px solid transparent;transition:.14s}
+.url:hover{border-bottom-color:var(--acc)}
+code{background:rgba(0,0,0,.4);border:1px solid var(--line);padding:1.5px 6px;border-radius:5px;
+  font-size:11.5px;font-family:ui-monospace,Consolas,monospace;color:#9fb4d0}
+
+.banner{
+  display:none;align-items:flex-start;gap:13px;margin-bottom:17px;
+  background:linear-gradient(180deg,rgba(243,196,81,.10),rgba(243,196,81,.03));
+  border:1px solid rgba(243,196,81,.26);border-radius:var(--r);padding:15px 19px;
+  box-shadow:var(--shadow)
+}
+.banner.show{display:flex}
+.banner .bi{font-size:18px;line-height:1.25;flex:none}
+.banner .bt{font-size:13px;font-weight:640;margin-bottom:4px}
+.banner .bd{font-size:12.5px;color:var(--fg2);line-height:1.65}
+
+.presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:11px}
+.preset{
+  text-align:left;padding:15px 17px;border-radius:11px;background:var(--card2);
+  border:1px solid var(--line);display:grid;gap:4px;transition:.15s
+}
+.preset:hover{border-color:rgba(91,157,255,.45);background:#1e2534;
+  box-shadow:0 4px 18px -8px rgba(91,157,255,.4)}
+.preset .t{font-size:13px;font-weight:600}
+.preset .d{font-size:11.5px;color:var(--dim);line-height:1.5}
+
+.memegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:11px;margin-top:8px}
+.meme{position:relative;aspect-ratio:1;border-radius:11px;overflow:hidden;
+  background:#080a0f;border:1px solid var(--line);transition:.15s}
+.meme img{width:100%;height:100%;object-fit:cover;display:block}
+.meme:hover{border-color:rgba(91,157,255,.5);transform:translateY(-2px);
+  box-shadow:0 8px 22px -10px rgba(0,0,0,.8)}
+.meme .del{
+  position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:7px;padding:0;
+  font-size:13px;line-height:1;display:grid;place-items:center;
+  background:rgba(0,0,0,.62);border:1px solid rgba(255,255,255,.3);color:#fff;
+  opacity:.85;transition:.15s;backdrop-filter:blur(4px);cursor:pointer;z-index:3
+}
+.meme:hover .del{opacity:1;background:rgba(200,40,40,.9);border-color:rgba(255,140,140,.75)}
+.meme .del:hover{transform:scale(1.1)}
+.meme .taglabel{
+  position:absolute;left:5px;bottom:5px;font-size:10px;padding:1px 6px;border-radius:5px;
+  background:rgba(0,0,0,.62);color:#dfe6f2;backdrop-filter:blur(4px);pointer-events:none
+}
+
+.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:15px}
+.tab{
+  padding:6px 13px;border-radius:99px;font-size:12px;cursor:pointer;font-weight:520;
+  background:var(--card2);border:1px solid var(--line);color:var(--fg2);transition:.14s
+}
+.tab:hover{border-color:var(--line2);color:var(--fg)}
+.tab.on{
+  background:linear-gradient(180deg,rgba(91,157,255,.22),rgba(91,157,255,.10));
+  border-color:rgba(91,157,255,.42);color:#dceaff
+}
+
+.filelist{display:flex;flex-direction:column;gap:2px}
+.frow{
+  display:flex;align-items:center;gap:13px;padding:11px 13px;border-radius:9px;
+  cursor:pointer;transition:.13s;border:1px solid transparent
+}
+.frow:hover{background:rgba(255,255,255,.028)}
+.frow.on{background:rgba(91,157,255,.10);border-color:rgba(91,157,255,.24)}
+.frow .fname{font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:520}
+.frow .fmeta{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums;flex:none}
+.frow .fmain{flex:1;min-width:0;display:grid;gap:2px}
+.frow .fprev{
+  font-size:11.5px;color:var(--dim);line-height:1.5;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%
+}
+.frow .fdel{
+  flex:none;width:24px;height:24px;border-radius:7px;padding:0;font-size:13px;line-height:1;
+  display:grid;place-items:center;background:transparent;border:1px solid transparent;
+  color:var(--dim);cursor:pointer;transition:.14s
+}
+.frow:hover .fdel{color:#ff9b9b;border-color:rgba(255,107,107,.3)}
+.frow .fdel:hover{background:rgba(200,40,40,.9);color:#fff;border-color:rgba(255,140,140,.7)}
+.morebtn{width:100%;margin-top:10px;padding:9px;border-radius:9px;font-size:12.5px}
+.fbody{
+  display:none;margin:0 13px 8px;padding:12px 14px;border-radius:9px;
+  background:rgba(0,0,0,.28);border:1px solid var(--line);
+  font-size:12.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;
+  font-family:ui-monospace,Consolas,monospace;color:#b9c5d8;max-height:420px;overflow:auto
+}
+html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
+.fbody.on{display:block}
+.fgroup{margin-top:14px}
+.fghead{
+  display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:8px;
+  background:rgba(255,255,255,.028);font-size:12px;font-weight:600;
+  color:var(--fg2);cursor:pointer;user-select:none
+}
+.fghead:hover{background:rgba(255,255,255,.05)}
+.fghead .caret{font-size:10px;opacity:.6;transition:transform .15s}
+.fghead.closed .caret{transform:rotate(-90deg)}
+.fghead .n{margin-left:auto;color:var(--dim);font-weight:400}
+.fchk{width:15px;height:15px;flex:none;margin-right:4px;cursor:pointer;accent-color:var(--acc)}
+.bulkbar{
+  display:none;align-items:center;gap:10px;padding:9px 13px;border-radius:9px;
+  background:rgba(91,157,255,.10);border:1px solid rgba(91,157,255,.26);
+  font-size:12.5px;margin-bottom:10px
+}
+.bulkbar.on{display:flex}
+.bulkbar b{color:#9dc4ff}
+
+.frow.open{background:rgba(91,157,255,.07);border-color:rgba(91,157,255,.22);border-radius:9px 9px 0 0}
+
+
+.viewer{
+  background:#07090d;border:1px solid var(--line);border-radius:11px;padding:16px 18px;
+  font-size:12.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;
+  max-height:480px;overflow:auto;font-family:ui-monospace,Consolas,monospace;
+  color:#bcc8da;margin-top:13px;display:none
+}
+.empty{color:var(--dim);font-size:13px;padding:26px 0;text-align:center}
+</style>
+<link rel="stylesheet" href="./theme-light.css">
+</head>
+<body>
+
+<aside>
+  <div class="brand">
+    <div class="logo">🐺</div>
+    <div><b>岚娅</b><span>Lanya Console</span></div>
+  </div>
+  <nav id="nav">
+    <a class="navitem on" data-page="overview"><span class="ni">◈</span>概览</a>
+    <a class="navitem" data-page="system"><span class="ni">⚙</span>部件与插件<span class="cnt" id="navParts">—</span></a>
+    <a class="navitem" data-page="talk"><span class="ni">💬</span>群发言</a>
+    <a class="navitem" data-page="money"><span class="ni">💰</span>零花钱</a>
+    <a class="navitem" data-page="memes"><span class="ni">😀</span>表情包<span class="cnt" id="navMemes">—</span></a>
+    <a class="navitem" data-page="schedule"><span class="ni">⏰</span>定时<span class="cnt" id="navSched">—</span></a>
+    <a class="navitem" data-page="activity"><span class="ni">🌤</span>她在干嘛</a>
+    <a class="navitem" data-page="napcat"><span class="ni">🐱</span>NapCatQ</a>
+    <a class="navitem" data-page="tools"><span class="ni">🔧</span>工具<span class="cnt" id="navTools">—</span></a>
+    <a class="navitem" data-page="bili" id="navBiliItem"><span class="ni">📺</span>刷 B 站</a>
+    <a class="navitem" data-page="memory"><span class="ni">📓</span>记忆日记</a>
+    <a class="navitem" data-page="works"><span class="ni">🎨</span>作品</a>
+    <a class="navitem" data-page="persona"><span class="ni">📝</span>人设</a>
+    <a class="navitem" data-page="identity"><span class="ni">👤</span>身份</a>
+  </nav>
+  <div class="sidefoot">
+    <div id="footStamp">读取中…</div>
+    <div style="margin-top:9px;display:flex;gap:6px">
+      <button class="sm" style="flex:1" onclick="setTheme('dark')">深色</button>
+      <button class="sm" style="flex:1" onclick="setTheme('light')">浅色</button>
+    </div>
+  </div>
+</aside>
+
+<main>
+
+<div class="page on" id="page-overview">
+  <div class="phead"><h1>概览</h1><p>她现在的状态。数字每 10 秒刷新一次。</p></div>
+  <div class="banner" id="banner">
+    <div class="bi">⚠️</div>
+    <div><div class="bt" id="bannerTitle">还有重复的计划任务</div><div class="bd" id="bannerText">—</div></div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">总内存占用</div><div class="v" id="sMem">—<small>MB</small></div><div class="s" id="sMemSub">上限 3000 MB</div></div>
+    <div class="stat"><div class="k">在跑部件</div><div class="v" id="sAlive">—</div><div class="s" id="sAliveSub">共 8 个</div></div>
+    <div class="stat"><div class="k">系统可用</div><div class="v" id="sFree">—<small>GB</small></div><div class="s" id="sFreeSub">—</div></div>
+    <div class="stat"><div class="k">今日零花钱</div><div class="v" id="sMoney">—<small>元</small></div><div class="s" id="sMoneySub">—</div></div>
+  </div>
+  <div class="card">
+    <h3>内存</h3>
+    <div class="bar" id="memBar"><i id="memFill"></i></div>
+    <div style="display:flex;justify-content:space-between;margin-top:9px;font-size:12px;color:var(--dim)">
+      <span id="memLeft">—</span><span id="memRight">—</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>一键操作</h3>
+    <div class="presets">
+      <button class="preset" onclick="doAction('kill-strays')"><div class="t">清理卡住的进程</div><div class="d">清掉卡住的后台任务</div></button>
+      <button class="preset" onclick="doAction('napcat-elevated')"><div class="t">确保 QQ 在线</div><div class="d">会弹 UAC，点「是」</div></button>
+      <button class="preset" onclick="doAction('settings-guard')"><div class="t">检查参数</div><div class="d">和基准值比对</div></button>
+    </div>
+    <div class="out" id="ovOut"></div>
+  </div>
+</div>
+
+<div class="page" id="page-system">
+  <div class="phead"><h1>部件与插件</h1><p>岚娅的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
+
+  <div class="card">
+    <h3>运行中的部件</h3>
+    <p class="note">
+      灰点＝没在跑，绿点＝正常，黄点＝开了多个。
+      <b>右边的按钮可以直接启动或重启</b>——QQ 没开的时候就在这儿点。
+    </p>
+    <table>
+      <thead><tr><th>部件</th><th>作用</th><th class="num">进程</th><th class="num">内存</th><th class="op"></th></tr></thead>
+      <tbody id="partsBody"></tbody>
+    </table>
+    <div class="btnrow">
+      <button class="pri" onclick="doAction('napcat-elevated','partsOut')">启动 / 重启 QQ</button>
+      <button onclick="doAction('kill-strays','partsOut')">清理卡住的进程</button>
+    </div>
+    <div class="out" id="partsOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>NapCat（QQ 那一层）</h3>
+    <p class="note">只读。token 打码显示，改配置请直接编辑 onebot11.json。</p>
+    <div id="napcatBody"></div>
+  </div>
+
+  <div class="card">
+    <h3>已装插件</h3>
+    <p class="note">点开关启用或停用，<b>改动要重启 DSH 才生效</b>。来源可以点开看原仓库。</p>
+    <table>
+      <thead><tr><th style="width:46px">启用</th><th>插件</th><th>作用</th><th>来源</th><th class="num">版本</th><th class="op"></th></tr></thead>
+      <tbody id="pluginsBody"></tbody>
+    </table>
+    <div class="out" id="plugOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>推荐插件</h3>
+    <p class="note">这些和岚娅配合得比较好。点一下会把安装地址填进下面的输入框。</p>
+    <div class="presets" id="recGrid"></div>
+    <div class="out" id="recOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>在这个仓库上更新</h3>
+    <p class="note">
+      面板本身是从 GitHub 仓库 <code>dsh-lanya</code> 来的。点下面拉最新代码，
+      拉完刷新页面。<b>不会覆盖你的配置和她的数据。</b>
+    </p>
+    <div class="btnrow">
+      <button class="pri" onclick="doUpdate()">检查并更新</button>
+      <span class="dsc" id="updState" style="align-self:center"></span>
+    </div>
+    <div class="out" id="updOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>安装 / 更新</h3>
+    <p class="note">填包名或 GitHub 地址。</p>
+    <input type="text" id="spec" placeholder="例如 dsh-meme，或者 https://github.com/用户名/仓库">
+    <div class="btnrow"><button class="pri" onclick="installPlugin()">安装 / 更新</button></div>
+    <div class="out" id="plugOut2"></div>
+  </div>
+</div>
+
+<div class="page" id="page-talk">
+  <div class="phead"><h1>群发言</h1><p>她多久说一次、一天最多几条。<b>改完点「保存并重启监听」。</b></p></div>
+  <div class="card">
+    <h3>频率</h3>
+    <div class="grid2">
+      <div class="field"><label>多久没人说话算冷场（分钟）</label><input type="number" id="tQuietMinutes"></div>
+      <div class="field"><label>别人在聊时，两条之间最少隔几分钟</label><input type="number" id="tMinGap"></div>
+      <div class="field"><label>自己起话头的间隔（最短 ~ 最长，分钟）</label>
+        <div class="two-in"><input type="number" id="tGapMin"><span>~</span><input type="number" id="tGapMax"></div>
+      </div>
+      <div class="field"><label>只在几点到几点说话</label>
+        <div class="two-in"><input type="number" id="tWinStart"><span>点到</span><input type="number" id="tWinEnd"><span>点</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>上限</h3>
+    <div class="grid2">
+      <div class="field"><label>一天总上限（条）</label><input type="number" id="tDay"></div>
+      <div class="field"><label>一小时内任何发言上限（条）</label><input type="number" id="tHourAny"></div>
+      <div class="field"><label>一天最多主动起几次话头</label><input type="number" id="tStarts"></div>
+      <div class="field"><label>轮询间隔（秒）</label><input type="number" id="tPoll"></div>
+    </div>
+    <div class="btnrow">
+      <button onclick="loadTunables()">重新读取</button>
+      <button class="pri" onclick="saveTunables(true)">保存并重启监听</button>
+      <button onclick="saveTunables(false)">只保存</button>
+    </div>
+    <div class="out" id="tunOut"></div>
+  </div>
+</div>
+
+<div class="page" id="page-money">
+  <div class="phead"><h1>零花钱</h1><p>她自己出去玩花的钱，和聊天花的上限分开算。</p></div>
+  <div class="stats">
+    <div class="stat"><div class="k">自己玩 · 已花</div><div class="v" id="mSpent">—<small>元</small></div><div class="s" id="mSpentSub">上限 —</div></div>
+    <div class="stat"><div class="k">自己玩 · 剩余</div><div class="v" id="mLeft">—<small>元</small></div><div class="s" id="mLeftSub">—</div></div>
+    <div class="stat"><div class="k">私聊 · 已花</div><div class="v" id="mDm">—<small>元</small></div><div class="s" id="mDmSub">上限 —</div></div>
+    <div class="stat"><div class="k">群聊 · 已花</div><div class="v" id="mGroup">—<small>元</small></div><div class="s" id="mGroupSub">上限 —</div></div>
+  </div>
+  <div class="card">
+    <h3>状态</h3>
+    <div style="display:flex;gap:14px;align-items:center;font-size:14px">
+      <b id="mState" style="font-size:18px">—</b>
+      <span class="dsc" id="mStateSub">—</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>加钱 / 记一笔</h3>
+    <p class="note">正数是给她加今天的额度，负数是手动记一笔花费。花超了这里加钱能立刻解封。</p>
+    <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
+      <input type="number" id="topupAmt" step="0.1" placeholder="0.5 或 -0.2" style="width:160px">
+      <button class="pri" onclick="topup()">确认</button>
+      <button onclick="topupQuick(0.5)">+0.5</button>
+      <button onclick="topupQuick(1)">+1</button>
+      <button onclick="topupQuick(5)">+5</button>
+    </div>
+    <div class="out" id="topupOut"></div>
+  </div>
+  <div class="card">
+    <h3>额度设置</h3>
+    <p class="note">「自己玩」是她上网、看东西、写东西花的钱——花完当天就不能再花，她会来找你要。「聊天」不算钱，那是社交。</p>
+    <div class="grid2">
+      <div class="field"><label>每天自己玩的额度（元）</label><input type="number" step="0.1" id="bLimit"></div>
+      <div class="field"><label>每天私聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bDmLimit"></div>
+      <div class="field"><label>每天群聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bGroupLimit"></div>
+      <div class="field"><label>花完了要不要主动要钱</label>
+        <div class="two-in" style="padding-top:2px">
+          <label class="sw"><input type="checkbox" id="bAsk"><i></i></label>
+          <span>花完主动找管理员开口</span>
+        </div>
+      </div>
+    </div>
+    <div class="btnrow">
+      <button class="pri" onclick="saveBudget()">保存额度</button>
+      <button onclick="resetBudget()">把今天的花销清零</button>
+    </div>
+    <div class="out" id="moneyOut"></div>
+  </div>
+</div>
+
+<div class="page" id="page-memes">
+  <div class="phead"><h1>表情包</h1><p>共 <b id="memeTotal">—</b> 张。点图右上角能删。</p></div>
+
+  <div class="card">
+    <h3>行为开关</h3>
+    <p class="note">控制她能不能从群里收图、收了之后要不要自动判断和分类。改完立刻生效。</p>
+    <div class="grid2">
+      <div class="field">
+        <label>允许偷表情包</label>
+        <div class="two-in" style="padding-top:2px">
+          <label class="sw"><input type="checkbox" id="mcfgSteal"><i></i></label>
+          <span>关掉之后一张都不收</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>自动判断 + 分类</label>
+        <div class="two-in" style="padding-top:2px">
+          <label class="sw"><input type="checkbox" id="mcfgClassify"><i></i></label>
+          <span>关掉就全收进「收回来的」不分类</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>每轮最多收几张</label>
+        <input type="number" id="mcfgMax" placeholder="12">
+      </div>
+    </div>
+    <div class="btnrow">
+      <button onclick="loadMemeConfig()">重新读取</button>
+      <button class="pri" onclick="saveMemeConfig()">保存开关</button>
+    </div>
+    <div class="out" id="mcfgOut"></div>
+  </div>
+
+  <div class="card">
+      <div class="card">
+    <h3>归类</h3>
+    <p class="note">
+      点图选中它，然后：<b>左边填分类名点 ⇄ 移过去</b>；<b>右边填几个标签点「改标签」</b>，
+      一张图可以同时挂在多个情绪下。<br>
+      包自带的图不能挪（动了会让插件找不到）。
+    </p>
+    <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="moveTarget" placeholder="分类名（点图上 ⇄ 移过去）" style="flex:1;min-width:160px">
+      <input type="text" id="tagInput" placeholder="多个标签，如 happy,cute" style="flex:1;min-width:160px">
+      <button class="sm" onclick="editTags()">改标签</button>
+      <button class="pri" onclick="startClassify()">按情绪自动归类</button>
+    </div>
+    <div class="out" id="classifyOut"></div>
+  </div>
+<div class="tabs" id="memeTabs"></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;font-size:12px;color:var(--dim)">
+      <span id="memeHint">—</span>
+    </div>
+    <div class="memegrid" id="memeGrid"></div>
+    <div class="empty" id="memeEmpty" style="display:none">这个分类里还没有图</div>
+    <div class="out" id="memeOut"></div>
+  </div>
+</div>
+
+<div class="page" id="page-memory">
+  <div class="phead">
+    <h1>记忆</h1>
+    <p>她记的人和事，都在这里。点一下就能看。</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat" style="cursor:pointer" onclick="switchFileTab('people')">
+      <div class="k">她认识的人</div>
+      <div class="v" id="memPeople">—</div>
+      <div class="s">点这里看人物档案</div>
+    </div>
+    <div class="stat" style="cursor:pointer" onclick="switchFileTab('diary')">
+      <div class="k">日记</div>
+      <div class="v" id="memDiary">—</div>
+      <div class="s">她每天写的</div>
+    </div>
+    <div class="stat" style="cursor:pointer" onclick="switchFileTab('notes')">
+      <div class="k">随笔</div>
+      <div class="v" id="memNotes">—</div>
+      <div class="s">随手记下来的东西</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;gap:9px;margin-bottom:14px">
+      <input type="text" id="fileSearch" placeholder="搜关键词…（在日记 / 随笔 / 人物档案里找）"
+             style="flex:1" onkeydown="if(event.key==='Enter') doSearch()">
+      <button class="pri" onclick="doSearch()">搜索</button>
+      <button onclick="clearSearch()">清空</button>
+    </div>
+
+    <div class="tabs" id="fileTabs">
+      <div class="tab" data-dir="people">人物档案</div>
+      <div class="tab on" data-dir="diary">日记</div>
+      <div class="tab" data-dir="notes">随笔</div>
+    </div>
+
+    <div class="filelist" id="searchResults" style="display:none"></div>
+    <div class="filelist" id="fileList"></div>
+    <div class="empty" id="fileEmpty" style="display:none">这里还是空的</div>
+    <div class="out" id="fileOut"></div>
+    <div class="bulkbar" id="bulkBar">
+      <span>已选 <b id="bulkN">0</b> 个</span>
+      <button class="sm dan" onclick="bulkDelete()">删除选中的</button>
+      <button class="sm" onclick="clearSel()">取消选择</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>长期记忆</h3>
+    <p class="note" id="memLongNote">读取中…</p>
+    <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
+      <input type="text" id="memNew" placeholder="让她记住一件事（短句，别写作文）"
+             style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')addMemory()">
+      <select id="memTrack" style="width:110px">
+        <option value="agent">我自己的</option>
+        <option value="user">关于爸爸</option>
+      </select>
+      <button class="pri" onclick="addMemory()">记住</button>
+    </div>
+    <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
+      <input type="text" id="memSearch" placeholder="搜记忆…" style="flex:1;min-width:160px"
+             oninput="filterMem()">
+      <div class="tabs" id="memFilter" style="margin:0">
+        <div class="tab on" data-t="all">全部</div>
+        <div class="tab" data-t="user">关于爸爸</div>
+        <div class="tab" data-t="agent">我自己的</div>
+      </div>
+    </div>
+    <div class="out" id="memOut"></div>
+    <div class="filelist" id="memPropList"></div>
+  </div>
+</div>
+
+<div class="page" id="page-works">
+  <div class="phead"><h1>作品</h1><p>她做的小游戏和画。列表模式下不读内容，点「预览」才加载。</p></div>
+  <div class="card">
+    <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <div class="tabs" id="workTabs" style="margin:0">
+        <div class="tab on" data-ext="all">作品</div>
+        <div class="tab" data-ext=".html">网页</div>
+        <div class="tab" data-ext=".png">图</div>
+        <div class="tab" data-ext=".gif">动图</div>
+        <div class="tab" data-ext=".js">脚本</div>
+        <div class="tab" data-ext=".dep">依赖</div>
+        <div class="tab" data-ext=".archive">归档</div>
+      </div>
+      <span class="dsc" id="workCount" style="margin-left:auto">—</span>
+      <button class="sm" onclick="toggleAllWork()">全选/取消</button>
+    </div>
+    <div class="bulkbar" id="workBulk">
+      <span>已选 <b id="workN">0</b> 个</span>
+      <button class="sm dan" onclick="bulkDeleteWork()">删除选中的</button>
+      <button class="sm" onclick="clearWorkSel()">取消选择</button>
+    </div>
+    <table>
+      <thead><tr><th style="width:38px"></th><th>文件</th><th class="num">大小</th><th class="num">时间</th><th class="op"></th></tr></thead>
+      <tbody id="worksBody"></tbody>
+    </table>
+    <div class="empty" id="worksEmpty" style="display:none">她还没做东西</div>
+    <div class="viewer" id="worksViewer"></div>
+    <div class="out" id="worksOut"></div>
+  </div>
+</div>
+
+<div class="page" id="page-persona">
+  <div class="phead"><h1>人设</h1><p>她的性格。改完 <b>保存后下一个回复生效</b>，不用重启。</p></div>
+  <div class="card">
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px;font-size:12.5px;color:var(--dim)">
+      <span>当前字数 <b id="pChars" style="color:var(--fg2)">—</b></span>
+      <span>状态 <b id="pState" style="color:var(--fg2)">未读取</b></span>
+    </div>
+    <textarea id="personaBox" placeholder="点下面的「读取最新内容」"></textarea>
+    <div class="btnrow">
+      <button onclick="loadPersona()">读取最新内容</button>
+      <button class="pri" onclick="savePersona()">保存并生效</button>
+    </div>
+    <div class="out" id="personaOut"></div>
+  </div>
+  <div class="card">
+    <h3>改法提示</h3>
+    <p class="note" style="margin:0">
+      想让她话少一点 → 改「短，而且要不匀」<br>
+      想让她别那么顺从 → 改「别人让你干什么，先顶回去」<br>
+      想换称呼 → 去「身份」那页改，不用动人设正文
+    </p>
+  </div>
+</div>
+
+<div class="page" id="page-bili">
+  <div class="phead"><h1>刷 B 站</h1><p>她刷什么、怎么写评论，都在下面这份「值班说明」里。</p></div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">插件状态</div><div class="v" id="bState" style="font-size:17px">—</div><div class="s" id="bStateSub">—</div></div>
+    <div class="stat"><div class="k">值班说明</div><div class="v" id="bDuty">—<small>字</small></div><div class="s">决定了刷什么</div></div>
+    <div class="stat"><div class="k">看过的视频</div><div class="v" id="bWatched">—</div><div class="s">判重表记录</div></div>
+  </div>
+
+  <div class="card">
+    <h3>她刷过什么</h3>
+    <p class="note">判重表里的记录。每刷一轮都会追加。</p>
+    <div class="filelist" id="biliVideos" style="max-height:340px;overflow:auto"></div>
+    <div class="out" id="biliVideosOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>她发过的评论</h3>
+    <p class="note">B 站账号下真实发出去的。发一条就会记一笔。</p>
+    <div class="filelist" id="biliComments"></div>
+  </div>
+
+  <div class="card">
+    <h3>立刻刷一条</h3>
+    <p class="note">
+      点一下：她自己去推荐/热门里挑一个没刷过的视频，写一句像人话的评论，
+      <b>真发到 B 站上</b>，然后记进判重表。<b>算她的零花钱。</b>
+    </p>
+    <div class="btnrow">
+      <button class="pri" onclick="doOneRun(true, true)">刷一条 + 评论 @二两酥肉</button>
+      <button onclick="doOneRun(true, false)">刷一条 + 评论</button>
+      <button onclick="doOneRun(false)">只刷不评论</button>
+      <span class="dsc" id="oneRunState" style="align-self:center"></span>
+    </div>
+    <div class="out" id="oneRunOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>登录</h3>
+    <p class="note">没登录刷不了——B 站不认匿名。点下面出二维码，用手机 B 站扫一下。</p>
+    <div class="btnrow">
+      <button class="pri" onclick="startBiliLogin()">扫码登录</button>
+      <span class="dsc" id="biliLoginState" style="align-self:center"></span>
+    </div>
+    <div id="biliQrBox" style="display:none;margin-top:14px">
+      <img id="biliQrImg" src="" alt="二维码"
+           style="width:220px;height:220px;border-radius:12px;background:#fff;padding:8px">
+      <div class="dsc" style="margin-top:8px">手机上打开 B 站 → 我的 → 扫一扫</div>
+    </div>
+    <div class="out" id="biliLoginOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>值班说明（改这个真的会改变她的行为）</h3>
+    <p class="note">
+      这份文字就是她刷 B 站时的作业指导——看什么类型、怎么判断值不值得看、
+      评论写多长、哪些不碰。改完<b>下一轮就按新的来</b>。<br>
+      保存会自动备份一份 <code>duty.md.bak</code>。
+    </p>
+    <textarea id="biliDuty" placeholder="点下面的「读取」"></textarea>
+    <div class="btnrow">
+      <button onclick="loadBiliDuty()">读取</button>
+      <button class="pri" onclick="saveBiliDuty()">保存</button>
+    </div>
+    <div class="out" id="biliOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>最近日志</h3>
+    <pre class="out" id="biliLog" style="display:block;margin-top:0"></pre>
+  </div>
+
+  <div class="card">
+    <h3>判重表（看过的视频 / 评论过的）</h3>
+    <pre class="out" id="biliSeen" style="display:block;margin-top:0"></pre>
+  </div>
+
+  <div class="card">
+    <h3>怎么跑一轮</h3>
+    <p class="note" style="margin:0">
+      这个插件没有网页接口，跑一轮要从对话里叫我：<code>bili_run</code>。<br>
+      面板这里能看状态、改值班说明，但触发还是走对话——因为跑一轮要花时间和 token，
+      不适合挂个按钮乱点。
+    </p>
+  </div>
+</div>
+<div class="page" id="page-schedule">
+  <div class="phead"><h1>定时</h1><p>她自己的提醒，和系统里的计划任务，都在这里看。</p></div>
+
+  <div class="card">
+    <h3>她自己的提醒</h3>
+    <p class="note">
+      这些是她用「明天九点叫我」这种方式加的。<b>文字会原样发出去</b>——
+      写的是她会说的话，不是她要做的动作。
+    </p>
+    <table>
+      <thead><tr><th>内容</th><th>时间</th><th>发给</th><th class="op"></th></tr></thead>
+      <tbody id="remBody"></tbody>
+    </table>
+    <div class="empty" id="remEmpty" style="display:none">还没有提醒</div>
+    <div class="out" id="schedOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>系统计划任务</h3>
+    <p class="note">
+      「已由插件接管」的那些，其实插件里已经在做了，留着只是重复跑一遍——
+      留着不出错，删掉更干净。
+    </p>
+    <table>
+      <thead><tr><th>任务</th><th>状态</th><th>下次</th><th>说明</th></tr></thead>
+      <tbody id="taskBody"></tbody>
+    </table>
+    <div class="empty" id="taskEmpty" style="display:none">没有相关计划任务</div>
+  </div>
+</div>
+
+<div class="page" id="page-activity">
+  <div class="phead">
+    <h1>她在干嘛</h1>
+    <p>她能自己干哪些事，以及现在在做什么。开着的事会花她自己的零花钱。</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">今天花的</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">上限 —</div></div>
+    <div class="stat"><div class="k">最近说过</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
+  </div>
+
+  <div class="card">
+    <h3>她可以自己干的事</h3>
+    <p class="note">关掉就真的不会去干。标「花零花钱」的会算进每天 1 块里。</p>
+    <div id="actList"></div>
+    <div class="btnrow"><button class="pri" onclick="saveActivities()">保存开关</button></div>
+
+    <div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="actNewName" placeholder="新活动的名字" style="flex:1;min-width:150px">
+      <input type="text" id="actNewDesc" placeholder="她想拿它干嘛（一句话）" style="flex:2;min-width:200px">
+      <label class="sw" title="算不算零花钱" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="actNewCost" checked><i></i>
+      </label>
+      <span class="dsc">花零花钱</span>
+      <button onclick="addActivity()">添加</button>
+    </div>
+    <div class="out" id="actOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>她刚才在做什么</h3>
+    <p class="note">最近 12 条记录，倒序。每 15 分钟她会醒一次。</p>
+    <div class="filelist" id="liveLog"></div>
+    <div class="btnrow"><button onclick="loadLive()">刷新</button></div>
+  </div>
+</div>
+
+<div class="page" id="page-napcat">
+  <div class="phead">
+    <h1>NapCatQ</h1>
+    <p>QQ 那一层。改资料、看连接配置，都在这页。</p>
+  </div>
+
+  <div class="card">
+    <h3>她的资料</h3>
+    <p class="note">改完立刻生效（走 OneBot 的 set_qq_profile / set_self_longnick / set_qq_avatar）。</p>
+    <div class="grid2">
+      <div class="field">
+        <label>昵称</label>
+        <input type="text" id="ncNick" placeholder="改完点保存">
+      </div>
+      <div class="field">
+        <label>签名</label>
+        <input type="text" id="ncSign" placeholder="一句话">
+      </div>
+    </div>
+    <div class="field">
+      <label>头像</label>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <img id="ncAvPrev" src="" alt="" style="width:64px;height:64px;border-radius:50%;display:none;background:#eee;object-fit:cover">
+        <input type="file" id="ncAvFile" accept="image/*" style="flex:1">
+        <span class="dsc">选一张图，保存时一起提交</span>
+      </div>
+    </div>
+    <div class="btnrow">
+      <button class="pri" onclick="saveNapcatProfile()">保存</button>
+      <button onclick="loadNapcatProfile()">重新读取</button>
+    </div>
+    <div class="out" id="ncOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>好友</h3>
+    <p class="note">
+      <b>能看、能审批，不能主动加</b>——主动加好友是 QQ 客户端的行为，
+      OneBot 协议层没有这个接口。别人加她的话，在这里能看到并放行。
+    </p>
+    <div class="btnrow">
+      <button onclick="loadQQFriends()">刷新好友</button>
+      <span class="dsc" id="qqFriendCount" style="align-self:center"></span>
+    </div>
+    <div class="filelist" id="qqFriendList" style="max-height:340px;overflow:auto"></div>
+    <div class="out" id="qqFriendOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>群</h3>
+    <p class="note">她加的群。同样只读。</p>
+    <div class="btnrow">
+      <button onclick="loadQQGroups()">刷新群列表</button>
+      <span class="dsc" id="qqGroupCount" style="align-self:center"></span>
+    </div>
+    <div class="filelist" id="qqGroupList" style="max-height:340px;overflow:auto"></div>
+    <div class="out" id="qqGroupOut"></div>
+  </div>
+
+  <div class="card">
+    <h3>连接</h3>
+    <p class="note">只读。改配置请直接编辑 <code>framework/config/onebot11.json</code>。</p>
+    <div id="napcatBody2"></div>
+  </div>
+</div>
+
+<div class="page" id="page-tools">
+  <div class="phead"><h1>工具</h1><p>这些插件背后要用的东西。看版本、在不在、跑没跑，不用开命令行。</p></div>
+  <div class="card">
+    <table>
+      <thead><tr><th>工具</th><th>作用</th><th>状态</th><th class="op"></th></tr></thead>
+      <tbody id="toolsBody"></tbody>
+    </table>
+    <div class="out" id="toolsOut"></div>
+    <div class="btnrow">
+      <button onclick="loadTools()">重新检查</button>
+      <button class="pri" onclick="doAction('napcat-elevated','toolsOut')">启动 / 重启 NapCat</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3>更新说明</h3>
+    <p class="note" style="margin:0">
+      <b>NapCat</b> 和 <b>QQ</b> 的升级要把注入器整个换掉，命令行做不干净——
+      去 <a class="url" href="https://github.com/NapNeko/NapCatQQ/releases" target="_blank">NapCatQQ releases</a> 下新包，
+      解压后覆盖 <code>&lt;你的仓库&gt;\napcat\framework</code>，然后点上面那个按钮重启。<br><br>
+      <b>Python 插件</b>靠 <code>pip install -U</code>，<b>DSH 插件</b>在「插件」页点安装就行。
+    </p>
+  </div>
+</div>
+<div class="page" id="page-identity">
+  <div class="phead"><h1>身份</h1><p>本机信息，不写进人设正文——所以人设可以公开，别人拿去用也不会带出你的隐私。</p></div>
+  <div class="card">
+    <h3>基本信息</h3>
+    <p class="note">只有「管理员 QQ」是必填的，其余全部可以留空。</p>
+    <div class="field"><label>管理员 QQ（多个用英文逗号隔开）</label><input type="text" id="cfgAdminQQ" placeholder="例如 123456789"></div>
+    <div class="grid2">
+      <div class="field"><label>你怎么称呼他</label><input type="text" id="cfgCall" placeholder="爸爸"></div>
+      <div class="field"><label>换着叫（多个用逗号隔开）</label><input type="text" id="cfgVariants" placeholder="爸爸,老爸,老爹"></div>
+    </div>
+    <div class="btnrow">
+      <button onclick="loadConfig()">重新读取</button>
+      <button class="pri" onclick="saveConfig()">保存</button>
+    </div>
+    <div class="out" id="cfgOut"></div>
+  </div>
+  <div class="card">
+    <h3>她不会主动说出去的</h3>
+    <p class="note" style="margin:0">QQ 号、你的真实身份、你在做什么——这些都会在提示词里被标成「只有你知道」。别人直接问，她会岔开。</p>
+  </div>
+</div>
+
+</main>
+
+<script>
+let searchOn = false;
+
+async function doSearch(){
+  const inp = $('fileSearch');
+  const kw = inp ? inp.value.trim() : '';
+  if(!kw){ show('fileOut', '先输个关键词。'); return; }
+  searchOn = true;
+  hide('fileOut');
+  const box = $('searchResults');
+  if(!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<div class="empty">搜索中…</div>';
+  try{
+    const j = await api('/files/search?dir=' + encodeURIComponent(currentDir)
+      + '&q=' + encodeURIComponent(kw));
+    if(!j.ok) throw new Error(j.error || '搜索失败');
+    const hits = j.hits || [];
+    box.innerHTML = '';
+    if(!hits.length){ box.innerHTML = '<div class="empty">没找到「' + kw + '」</div>'; return; }
+    const head = document.createElement('div');
+    head.className = 'dsc';
+    head.style.padding = '4px 13px 8px';
+    head.textContent = '在 ' + hits.length + ' 个文件里找到（点开看全文）';
+    box.appendChild(head);
+    hits.forEach(function(it){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.innerHTML = '<div class="fmain"><span class="fname">' + it.name + '</span>'
+        + '<span class="fprev">' + (it.snippet || '').replace(/</g, '&lt;') + '</span></div>';
+      d.onclick = function(){ openFile(currentDir, it.name, d); };
+      box.appendChild(d);
+    });
+  }catch(e){ box.innerHTML = '<div class="empty">搜索失败：' + e.message + '</div>'; }
+}
+
+function clearSearch(){
+  searchOn = false;
+  const box = $('searchResults');
+  if(box){ box.style.display = 'none'; box.innerHTML = ''; }
+  const inp = $('fileSearch');
+  if(inp) inp.value = '';
+  loadFiles(currentDir);
+}
+
+
+function setTheme(name){
+  document.documentElement.setAttribute('data-theme', name);
+  try{ localStorage.setItem('lanya-theme', name); }catch(e){}
+}
+(function initTheme(){
+  let saved = 'light';
+  try{ saved = localStorage.getItem('lanya-theme') || 'light'; }catch(e){}
+  document.documentElement.setAttribute('data-theme', saved);
+})();
+const $ = (id) => document.getElementById(id);
+const API  = 'http://127.0.0.1:19389';
+const APIX = '/api';
+
+function goto(page){
+  document.querySelectorAll('.page').forEach(el => el.classList.toggle('on', el.id === 'page-' + page));
+  document.querySelectorAll('.navitem').forEach(el => el.classList.toggle('on', el.dataset.page === page));
+  location.hash = '#/' + page;
+  const loaders = { talk:loadTunables, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
+                    napcat:loadNapcat,
+                    activity:() => { loadActivities(); loadLive(); },
+                    memory:() => loadFiles(currentDir), works:loadWorks,
+                    persona:loadPersona, identity:loadConfig };
+  if(loaders[page]) loaders[page]();
+  if(page === 'memory') loadMemoryOverview();
+  if(page === 'memes') loadMemeConfig();
+  if(page === 'bili') loadBiliCred();
+  document.querySelector('main').scrollTop = 0;
+}
+$('nav').addEventListener('click', (e) => {
+  const item = e.target.closest('.navitem');
+  if(item) goto(item.dataset.page);
+});
+window.addEventListener('hashchange', () => {
+  let p = (location.hash || '').replace('#/','') || 'overview';
+  if(p === 'parts' || p === 'plugins') p = 'system';
+  const el = document.getElementById('page-' + p);
+  if(el && !el.classList.contains('on')) goto(p);
+});
+
+function setHtml(id, val){
+  const el = $(id);
+  if(el) el.innerHTML = val;
+}
+
+function setText(id, val){
+  // 元素不存在就安静跳过。合并页面时删过元素但忘了改 JS，
+  // 一句 null.textContent 就能让整个渲染函数崩掉，表现是"页面一片空"。
+  const el = $(id);
+  if(el) el.textContent = val;
+}
+
+function show(id, text){ const el=$(id); if(el){ el.style.display='block'; el.textContent=text; } }
+function hide(id){ const el=$(id); if(el) el.style.display='none'; }
+function staticFor(path){
+  // 读操作优先读同源静态快照：内嵌视图会挡跨端口 fetch，但同源文件不会。
+  const bare = path.split('?')[0].replace(/^\/api/, '');
+  const map = {
+    '/memes': './lanya-memes.json',
+    '/budget': './lanya-budget.json',
+    '/config': './lanya-config.json',
+    '/tunables': './lanya-tunables.json',
+    '/tools': './lanya-tools.json',
+    '/schedule': './lanya-schedule.json',
+    '/memory': './lanya-memory.json',
+    '/bili': './lanya-bili.json'
+  };
+  if(map[bare]) return map[bare];
+  if(bare === '/files'){
+    const m = path.match(/[?&]dir=([^&]+)/);
+    if(m) return './lanya-files-' + decodeURIComponent(m[1]) + '.json';
+  }
+  return null;
+}
+// live=true 时跳过静态快照，直接问服务端。
+// 记忆页写完要立刻看到结果，而快照 30 秒才刷一次，不跳过就会显示旧数据。
+async function api(path, opts, live){
+  const isGet = !opts || !opts.method || opts.method === 'GET';
+  if(isGet && !live){
+    const st = staticFor(path);
+    if(st){
+      try{
+        const r = await fetch(st + '?t=' + Date.now(), { cache:'no-store' });
+        if(r.ok) return await r.json();
+      }catch(e){ /* 快照还没生成，退回接口 */ }
+    }
+  }
+  const r = await fetch(API + APIX + path, opts);
+  return r.json(); }
+function num(id){
+  const v = $(id).value.trim();
+  if(!v) return null;
+  const n = parseFloat(v);
+  return Number.isNaN(n) ? null : n;
+}
+function fmtSize(n){ return n<1024 ? n+' B' : (n<1048576 ? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(1)+' MB'); }
+function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+
+async function doAction(target, outId){
+  const oid = outId || 'ovOut';
+  show(oid, '正在执行：' + target + ' …');
+  try{
+    const j = await api('/action', { method:'POST', headers:{'content-type':'application/json'},
+                                     body: JSON.stringify({ target }) });
+    if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
+    else if(j.ok && j.task) show(oid, '已触发：' + j.task + '\n几秒后状态会刷新。');
+    else if(j.ok) show(oid, '已启动：' + target + '（进程 ' + j.pid + '）');
+    else show(oid, '失败：' + (j.error || j.log || '未知原因'));
+  }catch(e){ show(oid, '发不出去：' + e.message); }
+  setTimeout(refreshOverview, 3000);
+}
+
+const PART = {
+  groupwatch:['群监听','盯着群，决定要不要插话'],
+  lifeloop:['自主活动','自己玩、上网、写东西'],
+  voicedaemon:['语音守护','把要说的话合成语音发出去'],
+  browserd:['浏览器','她上网用的浏览器'],
+  works:['作品站','她的游戏和小工具挂在这里'],
+  tts:['语音引擎','本地合成的声音来源'],
+  napcat:['QQ 注入','NapCat 注入进 QQ 的那一层'],
+  headless:['后台任务','每次临时算一下就跑，堆积就是它']
+};
+const PLUGIN = {
+  'dsh-onebot-qq':'她怎么上 QQ：收消息、发消息、发图发语音',
+  'dsh-lanya':'人设 + 这个控制台',
+  'dsh-meme':'图库、挑图、发图，斗图靠它',
+  'dsh-memento':'记住聊过的事，关掉会明显健忘',
+  'dsh-mnemon':'另一种记忆组织方式，和上面互补',
+  'dsh-auto-memory':'重要的事自动写进记忆文件',
+  'dsh-cost-meter':'统计花了多少 token，零花钱靠它',
+  'dsh-automation':'DSH 自带的定时执行框架',
+  'dsh-dafeiyu':'桌面宠物，跟岚娅无关，想清静可以关',
+  'dsh-bili-scroll':'自动刷视频、看字幕、写评论，能把推荐发到你 B 站私信',
+  'dsh-bili-whale':'B 站社区互动：点赞、评论、跟人聊',
+  'dsh-plugin':'浏览和安装别的插件用的',
+  'dsh-base':'基础能力，不能关',
+  'dsh-web-app':'你现在看到的网页界面，不能关'
+};
+function pDesc(n){ for(const k in PLUGIN){ if(n===k || n.indexOf(k)===0) return PLUGIN[k]; } return ''; }
+
+async function refreshOverview(){
+  try{
+    const r = await fetch('./lanya-state.json?t=' + Date.now(), { cache:'no-store' });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const s = await r.json();
+    const m = s.memory;
+    setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
+    setHtml('sMem', m.lanyaMb + '<small>MB</small>');
+    $('sMem').style.color = m.over ? 'var(--bad)' : 'var(--fg)';
+    setText('sMemSub', '上限 ' + m.limitMb + ' MB');
+    setHtml('sFree', m.freeGb + '<small>GB</small>');
+    setText('sFreeSub', '共 ' + m.totalGb + ' GB');
+    $('memFill').style.width = Math.min(100, m.lanyaMb/m.limitMb*100) + '%';
+    $('memBar').className = 'bar' + (m.over ? ' hot' : '');
+    setText('memLeft', m.lanyaMb + ' MB 已用');
+    setText('memRight', m.over ? '⚠ 超过上限' : (m.limitMb - m.lanyaMb).toFixed(0) + ' MB 余量');
+
+    const comps = s.components || [];
+    let alive = 0;
+    comps.forEach(c => { if(c.count > 0) alive++; });
+    setText('sAlive', alive);
+    setText('sAliveSub', '共 ' + comps.length + ' 个');
+    setText('navParts',alive + '/' + comps.length);
+
+    const tb = $('partsBody');
+    tb.innerHTML = '';
+    comps.forEach(c => {
+      const meta = PART[c.tag] || [c.tag, ''];
+      const cls = c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
+      const canStart = ['groupwatch','lifeloop','voicedaemon','browserd','works','tts'].indexOf(c.tag) >= 0;
+      const btn = canStart
+        ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')">' + (c.count>0?'重启':'启动') + '</button>'
+        : '<span class="dsc">—</span>';
+      const aging = c.aging > 0 ? ' <span style="color:#ff9b9b;font-size:11px">卡住 ' + c.aging + '</span>' : '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><span class="dot ' + cls + '"></span><span class="nm">' + meta[0] + '</span>' + aging + '</td>'
+        + '<td class="dsc">' + meta[1] + '</td>'
+        + '<td class="num">' + c.count + '</td>'
+        + '<td class="num">' + c.mb + ' MB</td>'
+        + '<td class="op">' + btn + '</td>';
+      tb.appendChild(tr);
+    });
+
+    const pb = $('pluginsBody');
+    pb.innerHTML = '';
+    const plugins = s.plugins || [];
+    setText('navPlugins', plugins.length);   // 导航项已合并，加了 null 安全
+    window.__lanyaPlugins = plugins.map(function(p){ return p.name; });
+
+    // 渲染每个插件一行。这段之前被绑定补丁整段覆盖掉了，只剩表头——
+    // 表现就是"插件看不到了"。
+    plugins.forEach(function(p){
+      const src = p.source
+        ? '<a class="url" href="' + p.source + '" target="_blank" rel="noreferrer">'
+          + p.source.replace('https://github.com/', '') + '</a>'
+        : '<span class="dsc">内置</span>';
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><label class="sw"><input type="checkbox" checked data-n="'
+        + p.name + '"><i></i></label></td>'
+        + '<td><span class="nm">' + p.name + '</span></td>'
+        + '<td class="dsc">' + pDesc(p.name) + '</td>'
+        + '<td>' + src + '</td>'
+        + '<td class="num">' + p.version + '</td>'
+        + '<td class="op"></td>';
+      pb.appendChild(tr);
+    });
+    pb.querySelectorAll('input[type=checkbox]').forEach(function(cb){
+      cb.addEventListener('change', function(){ togglePlugin(cb, cb.dataset.n); });
+    });
+    try{ renderRecommended(); }catch(e){}
+
+    // 页面跟插件绑定：没装 dsh-bili-scroll 就不要显示「刷 B 站」——
+    // 否则点进去一片空白，看着像坏了。
+    // 页面跟插件绑定：没装对应插件就不要显示那一页，
+    // 否则点进去一堆接口失败，看着像坏了。
+    function has(prefix){
+      return plugins.some(function(p){
+        return (p.name || '').indexOf(prefix) === 0;
+      });
+    }
+    const bind = [
+      ['dsh-bili', 'bili',  'navBiliItem'],
+      ['dsh-meme', 'memes', null],
+      ['dsh-memento', 'memory', null]
+    ];
+    window.__lanyaBound = {};
+    bind.forEach(function(row){
+      const ok = has(row[0]);
+      window.__lanyaBound[row[1]] = ok;
+      const pg = $('page-' + row[1]);
+      if(pg) pg.style.display = ok ? '' : 'none';
+      const nav = document.querySelector('.navitem[data-page="' + row[1] + '"]');
+      if(nav) nav.style.display = ok ? '' : 'none';
+    });
+
+    const tasks = s.tasks || {};
+    if(tasks.redundant > 0){
+      $('banner').classList.add('show');
+      setText('bannerTitle', '还有 ' + tasks.redundant + ' 个重复的计划任务');
+      setHtml('bannerText', '这些活插件已经在做了，旧任务还在会重复跑一遍（每个一闪就退，不占内存）。<br>'
+        + '想清掉：双击 <code><WORKDIR>\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
+    }else{ $('banner').classList.remove('show'); }
+      try{
+      const bud = await api('/budget');
+      if(bud && bud.ok && bud.budget){
+        const b = bud.budget;
+        setHtml('sMoney', (b.spent ?? 0) + '<small>元</small>');
+        setText('sMoneySub', '上限 ' + (b.limit ?? '-') + ' 元');
+      }
+    }catch(eB){ }
+    }catch(e){ setText('footStamp', '读取失败：' + e.message); }
+}
+
+async function togglePlugin(el, name){
+  el.disabled = true;
+  const want = el.checked;
+  try{
+    const j = await api('/plugin-toggle', { method:'POST', headers:{'content-type':'application/json'},
+                                            body: JSON.stringify({ name, enabled: want }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('plugOut', '已记录：' + name + ' → ' + (want?'启用':'停用') + '\n\n重启 DSH 后生效。');
+  }catch(e){ show('plugOut', '失败：' + e.message); el.checked = !want; }
+  el.disabled = false;
+}
+
+const RECOMMENDED = [
+  { name: 'dsh-bili-scroll', desc: '刷 B 站：看视频、读字幕、写评论，能私信推给你',
+    repo: 'https://github.com/upstream-author/dsh-bili-scroll' },
+  { name: 'dsh-bili-whale', desc: 'B 站社区互动：点赞、评论、跟人聊',
+    repo: 'https://github.com/Alterssss/dsh-bili-whale' },
+  { name: 'dsh-meme', desc: '表情包图库。没它就没法斗图',
+    repo: '' },
+  { name: 'dsh-cost-meter', desc: '统计花了多少 token，零花钱制度靠它',
+    repo: 'https://github.com/Han-1413141/dsh-cost-meter' },
+  { name: 'dsh-memento', desc: '跨会话长期记忆',
+    repo: 'https://github.com/PerryLink/dsh-memento' },
+  { name: 'dsh-auto-memory', desc: 'Claude Code 风格的自动记忆，会维护 MEMORY.md 索引',
+    repo: 'https://github.com/AskTheWay/dsh-auto-memory' },
+  { name: 'dsh-dafeiyu', desc: '桌面大肥鱼桌宠（跟岚娅无关，图个乐）',
+    repo: 'https://github.com/QCYTSN/dsh-dafeiyu' }
+];
+
+function renderRecommended(){
+  const grid = $('recGrid');
+  if(!grid) return;
+  grid.innerHTML = '';
+  RECOMMENDED.forEach(function(r){
+    const installed = (window.__lanyaPlugins || []).some(function(p){
+      return p === r.name;
+    });
+    const b = document.createElement('button');
+    b.className = 'preset';
+    b.style.textAlign = 'left';
+    b.innerHTML = '<div class="t">' + r.name + (installed ? ' ✓' : '') + '</div>'
+      + '<div class="d">' + r.desc + '</div>'
+      + '<div class="d" style="margin-top:4px;color:'
+      + (installed ? 'var(--ok)' : 'var(--acc)') + '">'
+      + (installed ? '已安装' : '点这里安装') + '</div>';
+    if(!installed){
+      b.onclick = function(){
+        $('spec').value = r.repo || r.name;
+        show('recOut', '已把安装地址填进下面的输入框：' + ($('spec').value)
+          + '\n\n确认后点「安装 / 更新」。');
+        $('spec').scrollIntoView({ behavior:'smooth', block:'center' });
+      };
+    }
+    grid.appendChild(b);
+  });
+}
+
+async function installPlugin(){
+  const spec = $('spec').value.trim();
+  if(!spec){ show('plugOut2', '先填一个包名或 GitHub 地址。'); return; }
+  show('plugOut2', '正在安装 ' + spec + ' …\n可能要一两分钟。');
+  try{
+    const j = await api('/plugin', { method:'POST', headers:{'content-type':'application/json'},
+                                     body: JSON.stringify({ op:'add', spec }) });
+    show('plugOut2', (j.log || '') + '\n\n装完要重启 DSH 才生效。');
+  }catch(e){ show('plugOut2', '失败：' + e.message); }
+}
+
+async function loadTunables(){
+  hide('tunOut');
+  try{
+    const j = await api('/tunables');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const c = j.tunables || {};
+    $('tQuietMinutes').value = c.QuietMinutes ?? '';
+    $('tMinGap').value = c.MinGapMinutes ?? '';
+    $('tGapMin').value = c.QuietGapMinMinutes ?? '';
+    $('tGapMax').value = c.QuietGapMaxMinutes ?? '';
+    $('tDay').value = c.MaxPer24Hours ?? '';
+    $('tHourAny').value = c.MaxPerHourAny ?? '';
+    $('tStarts').value = c.MaxQuietStartsPerDay ?? '';
+    $('tWinStart').value = c.WindowStart ?? '';
+    $('tWinEnd').value = c.WindowEnd ?? '';
+    $('tPoll').value = c.PollSeconds ?? '';
+  }catch(e){ show('tunOut', '读取失败：' + e.message); }
+}
+
+async function saveTunables(restart){
+  const tun = {
+    QuietMinutes: num('tQuietMinutes'), MinGapMinutes: num('tMinGap'),
+    QuietGapMinMinutes: num('tGapMin'), QuietGapMaxMinutes: num('tGapMax'),
+    MaxPer24Hours: num('tDay'), MaxPerHourAny: num('tHourAny'),
+    MaxQuietStartsPerDay: num('tStarts'), WindowStart: num('tWinStart'),
+    WindowEnd: num('tWinEnd'), PollSeconds: num('tPoll')
+  };
+  for(const k of Object.keys(tun)){ if(tun[k] === null) delete tun[k]; }
+  if(!Object.keys(tun).length){ show('tunOut', '全都是空的，没保存。'); return; }
+  show('tunOut', '保存中…');
+  try{
+    const j = await api('/tunables', { method:'POST', headers:{'content-type':'application/json'},
+                                       body: JSON.stringify({ tunables: tun }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    if(restart){
+      await api('/action', { method:'POST', headers:{'content-type':'application/json'},
+                             body: JSON.stringify({ target:'groupwatch' }) });
+      show('tunOut', '已保存，监听已重启。\n\n下一条消息就按新规则判断。');
+    }else{
+      show('tunOut', '已保存。\n\n没重启监听——它下次启动才用新值。');
+    }
+  }catch(e){ show('tunOut', '保存失败：' + e.message); }
+}
+
+async function loadBudget(){
+  hide('moneyOut');
+  try{
+    const j = await api('/budget');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const b = j.budget || {};
+    $('bLimit').value = b.limit ?? '';
+    $('bDmLimit').value = b.dmLimit ?? '';
+    $('bGroupLimit').value = b.groupLimit ?? '';
+    $('bAsk').checked = b.askWhenExhausted !== false;
+    setHtml('mSpent', (b.spent ?? 0) + '<small>元</small>');
+    setText('mSpentSub', '上限 ' + (b.limit ?? '—') + ' 元');
+    const left = (b.limit ?? 0) - (b.spent ?? 0);
+    setHtml('mLeft', (left>0 ? left.toFixed(3) : 0) + '<small>元</small>');
+    $('mLeft').style.color = left>0 ? 'var(--fg)' : 'var(--bad)';
+    setText('mLeftSub', b.date || '—');
+    setText('mState', b.exhausted ? '花完了' : '还有');
+    $('mState').style.color = b.exhausted ? 'var(--bad)' : 'var(--ok)';
+    setText('mStateSub', b.exhausted ? '她会来找你要' : '可以继续玩');
+
+    // 三笔账分开显示：自己玩、私聊、群聊各走各的上限
+    const fmt = (v) => (v ?? 0).toFixed ? (v ?? 0).toFixed(3) : (v ?? 0);
+    setHtml('mDm', fmt(b.dmSpent) + '<small>元</small>');
+    $('mDm').style.color = b.dmMuted ? 'var(--bad)' : 'var(--fg)';
+    setText('mDmSub', b.dmMuted
+      ? ('⚠ 已达上限，私聊已静音')
+      : ((b.dmLimit > 0) ? ('上限 ' + b.dmLimit + ' 元') : '不限'));
+    setHtml('mGroup', fmt(b.groupSpent) + '<small>元</small>');
+    $('mGroup').style.color = b.groupMuted ? 'var(--bad)' : 'var(--fg)';
+    setText('mGroupSub', b.groupMuted
+      ? ('⚠ 已达上限，群聊已静音')
+      : ((b.groupLimit > 0) ? ('上限 ' + b.groupLimit + ' 元') : '不限'));
+    setHtml('sMoney', (b.spent ?? 0) + '<small>元</small>');
+    setText('sMoneySub', '上限 ' + (b.limit ?? '—') + ' 元');
+  }catch(e){ show('moneyOut', '读取失败：' + e.message); }
+}
+
+async function saveBudget(){
+  const b = { limit: num('bLimit'), dmLimit: num('bDmLimit'),
+              groupLimit: num('bGroupLimit'), askWhenExhausted: $('bAsk').checked };
+  if(b.limit === null) b.limit = 0;
+  show('moneyOut', '保存中…');
+  try{
+    const j = await api('/budget', { method:'POST', headers:{'content-type':'application/json'},
+                                     body: JSON.stringify({ budget: b }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('moneyOut', '已保存。\n\n每天自己玩的额度：' + b.limit + ' 元');
+    loadBudget();
+  }catch(e){ show('moneyOut', '保存失败：' + e.message); }
+}
+
+async function resetBudget(){
+  show('moneyOut', '清零中…');
+  try{
+    const j = await api('/budget', { method:'POST', headers:{'content-type':'application/json'},
+                                     body: JSON.stringify({ budget:{ spent:0, exhausted:false, notifiedFor:'' } }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('moneyOut', '今天的花销已清零，她可以继续花了。');
+    loadBudget();
+  }catch(e){ show('moneyOut', '失败：' + e.message); }
+}
+
+let memeData = [], memeCur = 0;
+
+function loadSystem(){ refreshOverview(); }
+
+async function loadTools(){
+  hide('toolsOut');
+  setHtml('toolsBody', '');
+  try{
+    const j = await api('/tools');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const list = j.tools || [];
+    let ok = 0;
+    list.forEach(x => { if(x.installed) ok++; });
+    setText('navTools', ok + '/' + list.length);
+    list.forEach(x => {
+      const st = !x.installed
+        ? '<span class="dsc" style="color:var(--bad)">未安装</span>'
+        : (x.running
+            ? '<span class="dsc" style="color:var(--ok)">● 运行中</span>'
+            : '<span class="dsc">○ 没在跑</span>');
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><span class="nm">' + x.name + '</span><br>'
+        + '<span class="dsc" style="font-size:11px">' + (x.path || '找不到路径') + '</span></td>'
+        + '<td class="dsc">' + x.note + '</td>'
+        + '<td>' + st + '</td>'
+        + '<td class="op"><button class="sm">详情</button> <button class="sm">查更新</button></td>';
+      const b = tr.querySelectorAll('button');
+      b[0].onclick = function(){
+        show('toolsOut', x.name + '\n\n类型：' + x.kind
+          + '\n路径：' + (x.path || '（没找到）')
+          + '\n已安装：' + (x.installed ? '是' : '否')
+          + '\n正在运行：' + (x.running ? '是' : '否')
+          + (x.port ? '\n监听端口：' + x.port : ''));
+      };
+      b[1].onclick = async function(){
+        b[1].disabled = true;
+        show('toolsOut', '正在查 ' + x.name + ' 的最新版本…');
+        try{
+          const u = await api('/tools/check?key=' + encodeURIComponent(x.key));
+          if(u.reachable) show('toolsOut', x.name + '\n\n上游最新版本：' + u.latest
+            + '\n\n这里只查版本，不自动下载——升级 NapCat/QQ 要手动换文件，'
+            + '步骤见本页底部。');
+          else show('toolsOut', x.name + '\n\n查不到（网络不通，或者没有公开仓库）。\n不影响使用。');
+        }catch(e){ show('toolsOut', '查询失败：' + e.message); }
+        b[1].disabled = false;
+      };
+      $('toolsBody').appendChild(tr);
+    });
+  }catch(e){ show('toolsOut', '读取失败：' + e.message); }
+}
+async function loadSchedule(){
+  hide('schedOut');
+  try{
+    const j = await api('/schedule');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const rems = j.reminders || [];
+    const tasks = j.tasks || [];
+
+    setText('navSched',rems.length + '');
+    const rb = $('remBody');
+    rb.innerHTML = '';
+    $('remEmpty').style.display = rems.length ? 'none' : 'block';
+    rems.forEach(function(r){
+      const when = r.at ? ('一次性 ' + r.at.replace('T', ' '))
+                        : (r.daily ? ('每天 ' + r.daily) : '—');
+      const to = r.target === 'group' ? '群里' : (r.target || '你');
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><span class="nm">' + (r.text || '') + '</span>'
+        + (r.mention ? '<br><span class="dsc">会 @ ' + r.mention + '</span>' : '')
+        + (r.image ? '<br><span class="dsc">附带一张图</span>' : '') + '</td>'
+        + '<td class="dsc">' + when + '</td>'
+        + '<td class="dsc">' + to + '</td>'
+        + '<td class="op"><button class="sm dan" data-i="' + r.i + '">删</button></td>';
+      tr.querySelector('button').onclick = function(){ deleteReminder(r.i); };
+      rb.appendChild(tr);
+    });
+
+    const tb = $('taskBody');
+    tb.innerHTML = '';
+    $('taskEmpty').style.display = tasks.length ? 'none' : 'block';
+    tasks.forEach(function(t){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><span class="nm">' + t.name + '</span><br>'
+        + '<span class="dsc" style="font-size:11px">' + (t.action || '') + '</span></td>'
+        + '<td class="dsc">' + (t.status || '') + '</td>'
+        + '<td class="dsc">' + (t.next || '') + '</td>'
+        + '<td class="dsc">' + (t.plugin
+            ? '<span style="color:var(--warn)">已由插件接管</span> — ' + t.plugin
+            : '') + '</td>';
+      tb.appendChild(tr);
+    });
+  }catch(e){ show('schedOut', '读取失败：' + e.message); }
+}
+
+async function deleteReminder(idx){
+  // 不用 confirm（内置浏览器不支持）
+  try{
+    const j = await api('/reminders/delete', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ i: idx })
+    });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('schedOut', '已删除这条提醒。');
+    loadSchedule();
+  }catch(e){ show('schedOut', '删除失败：' + e.message); }
+}
+
+async function runBiliNow(){
+  show('biliRunOut', '正在起一轮…');
+  try{
+    const j = await api('/bili/run', { method:'POST',
+      headers:{'content-type':'application/json'}, body: '{}' });
+    if(!j.ok){ show('biliRunOut', '起不来：' + (j.error || '')); return; }
+    show('biliRunOut', '开始跑了（进程 ' + j.pid + '）。它会刷一会儿，'
+      + '几分钟后回到这页刷新，就能看到浏览记录和评论。');
+  }catch(e){ show('biliRunOut', '起不来：' + e.message); }
+}
+
+function renderBiliVideos(vids, covers){
+  const box = $('biliVideos');
+  if(!box) return;
+  covers = covers || {};
+  box.innerHTML = '';
+  if(!vids || !vids.length){
+    box.innerHTML = '<div class="empty">还没有记录——她一轮都还没刷过</div>';
+    return;
+  }
+  vids.forEach(function(v){
+    const bv = v.bv || '';
+    const link = bv ? ('https://www.bilibili.com/video/' + bv) : '';
+    const cover = covers[bv] || '';
+    const d = document.createElement('div');
+    d.className = 'frow';
+    d.style.cursor = 'default';
+    d.style.alignItems = 'center';
+    d.innerHTML = (cover
+        ? '<img src="/api/bili/cover?bv=' + encodeURIComponent(bv) + '" style="width:96px;height:54px;object-fit:cover;'
+          + 'border-radius:6px;flex:none;margin-right:10px" loading="lazy">'
+        : '<div style="width:96px;height:54px;border-radius:6px;flex:none;'
+          + 'margin-right:10px;background:rgba(255,255,255,.06)"></div>')
+      + '<div class="fmain">'
+      + '<span class="fname">' + (link
+          ? '<a class="url" href="' + link + '" target="_blank" rel="noreferrer">'
+            + (v.title || bv) + '</a>'
+          : (v.title || bv)) + '</span>'
+      + '<span class="fprev">' + (v.date || '') + '　' + (v.up || '')
+      + '　' + bv + '　<b>' + (v.status || '') + '</b></span>'
+      + '</div>'
+      + '<button class="fdel" title="从本地记录里删掉">×</button>';
+    d.querySelector('.fdel').onclick = function(ev){
+      ev.stopPropagation();
+      deleteBiliRecord('video', bv, v.date || '');
+    };
+    box.appendChild(d);
+  });
+}
+
+async function deleteBiliRecord(kind, bv, date){
+  try{
+    const j = await api('/bili/seen/delete', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ kind: kind, bv: bv, date: date }) });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('biliVideosOut', '删掉了本地记录：' + bv);
+    loadBili();
+  }catch(e){ show('biliVideosOut', '删不掉：' + e.message); }
+}
+
+// 删 B 站评论。
+// 不用 confirm()/alert()（DSH 内嵌浏览器里点不到），也不做二次确认——
+// 一次点击就删。删错了还能再发一条，别为了这点事多一次点击。
+async function deleteOnBili(bv, rpid, row, btn){
+  const tag = row ? row.querySelector('[data-vs]') : null;
+  if(!rpid){
+    if(tag){ tag.textContent = '先点核对拿 rpid'; tag.style.color = 'var(--warn)'; }
+    return;
+  }
+  if(tag) tag.textContent = '删中…';
+  if(btn) btn.disabled = true;
+  try{
+    const j = await api('/bili/reply/delete', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ bv: bv, rpid: rpid }) });
+    if(!j.ok){
+      if(tag){ tag.textContent = '删不掉：' + (j.error || j.note || '').slice(0,20); tag.style.color = 'var(--bad)'; }
+      if(btn) btn.disabled = false;
+      return;
+    }
+    // 只把自己这一行从 DOM 里拿掉。整页 loadBili() 会重拉所有封面，
+    // 删一条要等好几秒，看着像卡死了。
+    if(row && row.parentNode) row.parentNode.removeChild(row);
+  }catch(e){
+    if(tag){ tag.textContent = '删不掉'; tag.style.color = 'var(--bad)'; }
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function verifyComment(bv, text, row){
+  const tag = row ? row.querySelector('[data-vs]') : null;
+  if(tag) tag.textContent = '查中…';
+  try{
+    const j = await api('/bili/verify?bv=' + encodeURIComponent(bv)
+      + '&text=' + encodeURIComponent(text), null, true);
+    if(!j.ok || !j.result){
+      if(tag) tag.textContent = '查不到';
+      return;
+    }
+    const st = j.result.state;
+    if(tag){
+      tag.textContent = st === 'public' ? '✅ 已公开'
+        : st === 'pending' ? '⏳ 待审' : '❔ 未知';
+      tag.title = j.result.why || '';
+    }
+  }catch(e){ if(tag) tag.textContent = '查不到'; }
+}
+
+function renderBiliComments(cms){
+  const box = $('biliComments');
+  if(!box) return;
+  box.innerHTML = '';
+  if(!cms || !cms.length){
+    box.innerHTML = '<div class="empty">还没发过评论</div>';
+    return;
+  }
+  cms.forEach(function(c){
+    const bv = c.bv || '';
+    const link = bv ? ('https://www.bilibili.com/video/' + bv) : '';
+    const d = document.createElement('div');
+    d.className = 'frow';
+    d.style.cursor = 'default';
+    d.innerHTML = '<div class="fmain">'
+      + '<span class="fname">' + (c.text || '') + '</span>'
+      + '<span class="fprev">' + (c.time || '') + '　'
+      + (link ? '<a class="url" href="' + link + '" target="_blank" rel="noreferrer">'
+        + bv + '</a>' : bv) + '</span>'
+      + '</div>'
+      + '<span class="dsc" data-vs="' + bv + '" style="margin-right:8px"></span>'
+      + '<button class="sm" style="margin-right:6px">核对</button>'
+      + '<button class="sm" style="margin-right:6px">删B站</button>'
+      + '<button class="fdel" title="只删本地记录">×</button>';
+    const btns = d.querySelectorAll('.sm');
+    btns[0].onclick = function(ev){
+      ev.stopPropagation();
+      verifyComment(bv, c.text || '', d);
+    };
+    btns[1].onclick = function(ev){
+      ev.stopPropagation();
+      deleteOnBili(bv, c.rpid || '', d, btns[1]);
+    };
+    d.querySelector('.fdel').onclick = function(ev){
+      ev.stopPropagation();
+      deleteBiliRecord('comment', bv, c.time || '');
+    };
+    box.appendChild(d);
+  });
+}
+
+async function doOneRun(withComment, withMention){
+  const st = $('oneRunState');
+  if(st) st.textContent = '正在刷…（挑视频 + 写评论，要一两分钟）';
+  show('oneRunOut', '开始了，别关页面。');
+  try{
+    const j = await api('/bili/onerun', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ comment: withComment, mention: withMention === true }) });
+    if(!j.ok){
+      if(st) st.textContent = '没成';
+      show('oneRunOut', '没成：' + (j.error || '未知原因'));
+      return;
+    }
+    if(st) st.textContent = '刷完了';
+    show('oneRunOut', '刷了一条：' + (j.title || j.bv)
+      + (j.comment ? ('\n评论：' + j.comment + (j.rpid ? ('（rpid ' + j.rpid + '）') : '')) : '')
+      + '\n\n下面列表刷新一下就能看到。');
+    loadBili();
+  }catch(e){
+    if(st) st.textContent = '没成';
+    show('oneRunOut', '没成：' + e.message);
+  }
+}
+
+async function startBiliLogin(){
+  show('biliLoginOut', '正在生成二维码…');
+  try{
+    const j = await api('/bili/login/start', { method:'POST',
+      headers:{'content-type':'application/json'}, body: '{}' });
+    if(!j.ok) throw new Error(j.error || '失败');
+    pollBiliLogin(0);
+  }catch(e){ show('biliLoginOut', '起不来：' + e.message); }
+}
+
+function pollBiliLogin(n){
+  if(n > 90) { show('biliLoginOut', '等太久了，重新点一次吧。'); return; }
+  (async function(){
+    try{
+      const j = await api('/bili/login/status', null, true);
+      const st = (j.state && j.state.state) || '';
+      // 服务端每一步都写 msg（等你扫码 / 扫到了点确认 / 过期 / 成功），
+      // 直接显示它，比映射状态名准确。
+      const msg = (j.state && j.state.msg) || '';
+      setText('biliLoginState', msg || (st === 'done' ? '已登录'
+        : st === 'waiting' ? '等你扫码' : st === 'expired' ? '二维码过期' : '准备中'));
+      if(j.hasImage){
+        const box = $('biliQrBox'); if(box) box.style.display = 'block';
+        const img = $('biliQrImg');
+        if(img) img.src = '/bili-qr.png?t=' + (j.mtime || Date.now());
+      }
+      if(st === 'done'){
+        show('biliLoginOut', '登录成功，凭证存好了。');
+        return;
+      }
+      if(st === 'expired' || st === 'failed'){
+        show('biliLoginOut', (j.state && j.state.msg) || '没成');
+        return;
+      }
+    }catch(e){}
+    setTimeout(function(){ pollBiliLogin(n + 1); }, 2000);
+  })();
+}
+
+async function loadQQFriends(){
+  const box = $('qqFriendList');
+  if(!box) return;
+  box.innerHTML = '<div class="empty">读取中…</div>';
+  try{
+    const j = await api('/qq/friends', null, true);
+    if(!j.ok){ box.innerHTML = '<div class="empty">读不到：' + (j.error || '') + '</div>'; return; }
+    const list = j.friends || [];
+    setText('qqFriendCount', list.length + ' 个好友');
+    box.innerHTML = '';
+    if(!list.length){ box.innerHTML = '<div class="empty">没有好友</div>'; return; }
+    list.forEach(function(f){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.style.cursor = 'default';
+      d.innerHTML = '<div class="fmain">'
+        + '<span class="fname">' + (f.remark || f.nickname || '?') + '</span>'
+        + '<span class="fprev">' + (f.qq || f.user_id || '') + '　'
+        + (f.nickname || '') + '</span></div>';
+      box.appendChild(d);
+    });
+  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
+}
+
+async function loadQQGroups(){
+  const box = $('qqGroupList');
+  if(!box) return;
+  box.innerHTML = '<div class="empty">读取中…</div>';
+  try{
+    const j = await api('/qq/groups', null, true);
+    if(!j.ok){ box.innerHTML = '<div class="empty">读不到：' + (j.error || '') + '</div>'; return; }
+    const list = j.groups || [];
+    setText('qqGroupCount', list.length + ' 个群');
+    box.innerHTML = '';
+    if(!list.length){ box.innerHTML = '<div class="empty">没加群</div>'; return; }
+    list.forEach(function(g){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.style.cursor = 'default';
+      d.innerHTML = '<div class="fmain">'
+        + '<span class="fname">' + (g.group_name || '?') + '</span>'
+        + '<span class="fprev">' + (g.group_id || '') + '　'
+        + (g.member_count || '') + ' 人</span></div>';
+      box.appendChild(d);
+    });
+  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
+}
+
+async function loadBiliCred(){
+  try{
+    const j = await api('/bili/login/credential', null, true);
+    setText('biliLoginState', j.loggedIn ? ('已登录' + (j.uid ? '（UID ' + j.uid + '）' : ''))
+      : '还没登录');
+    return j.loggedIn;
+  }catch(e){ return false; }
+}
+
+let actData = null;
+
+async function loadActivities(){
+  const box = $('actList');
+  if(!box) return;
+  try{
+    const j = await api('/activities', null, true);
+    actData = j.data || { activities: [] };
+    const acts = actData.activities || [];
+    box.innerHTML = '';
+    if(!acts.length){ box.innerHTML = '<div class="empty">还没配置</div>'; return; }
+    acts.forEach(function(a){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.style.cursor = 'default';
+      d.innerHTML = '<label class="sw"><input type="checkbox" data-id="' + a.id + '"'
+        + (a.enabled ? ' checked' : '') + '><i></i></label>'
+        const dot = a.ready === true ? '🟢' : a.ready === false ? '⚪' : '·';
+        const why = a.why ? ('<span class="dsc">　' + dot + ' ' + a.why + '</span>') : '';
+        d.innerHTML = '<label class="sw"><input type="checkbox" data-id="' + a.id + '"'
+          + (a.enabled ? ' checked' : '') + '><i></i></label>'
+          + '<div class="fmain" style="margin-left:10px">'
+          + '<span class="fname">' + a.name
+          + (a.cost ? ' <span class="dsc">花零花钱</span>' : '') + '</span>'
+          + '<span class="fprev">' + (a.desc || '') + why + '</span>'
+          + '</div>'
+          + '<button class="fdel" title="删掉这个活动">×</button>';
+      d.querySelector('.fdel').onclick = function(){ deleteActivity(a.id, a.name); };
+      box.appendChild(d);
+    });
+  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
+}
+
+async function addActivity(){
+  const nm = ($('actNewName') || {}).value || '';
+  const ds = ($('actNewDesc') || {}).value || '';
+  const cost = $('actNewCost') ? $('actNewCost').checked : true;
+  if(!nm.trim()){ show('actOut', '先给活动起个名字。'); return; }
+  try{
+    const j = await api('/activities/add', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ name: nm.trim(), desc: ds.trim(), cost: cost }) });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('actOut', '加了：' + nm.trim());
+    if($('actNewName')) $('actNewName').value = '';
+    if($('actNewDesc')) $('actNewDesc').value = '';
+    loadActivities();
+  }catch(e){ show('actOut', '没加上：' + e.message); }
+}
+
+async function deleteActivity(id, name){
+  try{
+    const j = await api('/activities/delete', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id: id }) });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('actOut', '删了：' + name);
+    loadActivities();
+  }catch(e){ show('actOut', '没删掉：' + e.message); }
+}
+
+function topupQuick(v){
+  const el = $('topupAmt'); if(el) el.value = String(v);
+  topup();
+}
+
+async function topup(){
+  const v = parseFloat(($('topupAmt') || {}).value || '');
+  if(!v || Number.isNaN(v)){ show('topupOut', '填个数字，比如 0.5。'); return; }
+  try{
+    const j = await api('/budget/topup', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ amount: v }) });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('topupOut', (v > 0 ? '加了 ' + v + ' 元额度' : '记了一笔 ' + Math.abs(v) + ' 元花费')
+      + '\n现在：花 ' + j.budget.spent + ' / 上限 ' + j.budget.limit + ' 元');
+    if($('topupAmt')) $('topupAmt').value = '';
+    loadLive(); loadBudget();
+  }catch(e){ show('topupOut', '没成：' + e.message); }
+}
+
+async function saveActivities(){
+  const want = {};
+  document.querySelectorAll('#actList input[type=checkbox]').forEach(function(cb){
+    want[cb.dataset.id] = cb.checked;
+  });
+  try{
+    const j = await api('/activities', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ enabled: want }) });
+    show('actOut', j.ok ? '保存好了。' : ('没存上：' + (j.error || '')));
+  }catch(e){ show('actOut', '没存上：' + e.message); }
+}
+
+async function loadLive(){
+  try{
+    const j = await api('/live', null, true);
+    const l = j.live || {};
+    if(l.money){
+      setHtml('liveMoney', (l.money.spent ?? 0) + '<small>元</small>');
+      setText('liveMoneySub', l.money.exhausted ? '今天花完了' : ('上限 ' + (l.money.limit ?? '—') + ' 元'));
+    }
+    setText('liveLast', (l.last || '还没说过什么').slice(0, 40));
+    setText('liveLastAt', l.lastAt ? String(l.lastAt).slice(0, 16).replace('T', ' ') : '');
+    const box = $('liveLog');
+    if(box){
+      const rows = (l.log || []).slice().reverse();
+      box.innerHTML = '';
+      if(!rows.length){ box.innerHTML = '<div class="empty">还没有记录</div>'; return; }
+      rows.forEach(function(t){
+        const d = document.createElement('div');
+        d.className = 'frow';
+        d.style.cursor = 'default';
+        d.innerHTML = '<div class="fmain"><span class="fprev">'
+          + String(t).replace(/</g, '&lt;') + '</span></div>';
+        box.appendChild(d);
+      });
+    }
+  }catch(e){}
+}
+
+async function loadNapcatProfile(){
+  try{
+    const j = await api('/napcat/profile', null, true);
+    if(!j.ok){ show('ncOut', '读不到：' + (j.error || '')); return; }
+    const p = j.profile || {};
+    const n = $('ncNick'); if(n && p.nickname) n.value = p.nickname;
+    const sg = $('ncSign'); if(sg && p.signature) sg.value = p.signature;
+    // OneBot 读不回头像，用本地存的那张
+    const prev = $('ncAvPrev');
+    if(prev){
+      if(p.hasAvatar){ prev.src = '/qq-avatar.png?t=' + Date.now(); prev.style.display = 'block'; }
+      else { prev.style.display = 'none'; }
+    }
+    setText('ncOut', '当前 QQ：' + (p.user_id || '?')
+      + '　昵称：' + (p.nickname || '（未设）')
+      + '　签名：' + (p.signature || '（未设）'));
+  }catch(e){ show('ncOut', '读不到：' + e.message); }
+}
+
+async function saveNapcatProfile(){
+  const nick = ($('ncNick') || {}).value || '';
+  const sig = ($('ncSign') || {}).value || '';
+  const f = $('ncAvFile');
+  const payload = { nickname: nick.trim(), signature: sig.trim() };
+  const send = async function(){
+    try{
+      const j = await api('/napcat/profile', { method:'POST',
+        headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+      if(!j.ok){ show('ncOut', '没改成：' + (j.error || '')); return; }
+      show('ncOut', '改了：' + (j.did || []).join('、'));
+      loadNapcatProfile();
+    }catch(e){ show('ncOut', '没改成：' + e.message); }
+  };
+  if(f && f.files && f.files[0]){
+    const rd = new FileReader();
+    rd.onload = function(){ payload.avatarBase64 = rd.result; send(); };
+    rd.readAsDataURL(f.files[0]);
+  }else{
+    send();
+  }
+}
+
+document.addEventListener('change', function(ev){
+  if(ev.target && ev.target.id === 'ncAvFile' && ev.target.files && ev.target.files[0]){
+    const img = $('ncAvPrev');
+    if(img){ img.src = URL.createObjectURL(ev.target.files[0]); img.style.display = 'block'; }
+  }
+});
+
+async function loadNapcat2(){
+  const box = $('napcatBody2');
+  if(!box) return;
+  try{
+    const j = await api('/napcat', null, true);
+    const n = j.napcat || {};
+    if(!n.found){ box.innerHTML = '<div class="dsc">没找到 onebot11.json</div>'; return; }
+    const http = (n.http || []).map(function(x){ return x.host + ':' + x.port; }).join('、') || '没开';
+    const ws = (n.wsClient || []).map(function(x){ return x.url; }).join('、') || '没开';
+    box.innerHTML = '<table>'
+      + '<tr><td class="dsc" style="width:140px">HTTP</td><td>' + http + '</td></tr>'
+      + '<tr><td class="dsc">反向 WS</td><td>' + ws + '</td></tr>'
+      + '<tr><td class="dsc">token</td><td><code>' + (n.tokenMasked || '（空）') + '</code></td></tr>'
+      + '</table>';
+  }catch(e){ box.innerHTML = '<div class="dsc">读不到：' + e.message + '</div>'; }
+}
+
+async function loadNapcat(){
+  loadNapcat2();
+  loadQQFriends();
+  loadQQGroups();
+  const box = $('napcatBody');
+  if(!box) return;
+  try{
+    const j = await api('/napcat', null, true);
+    const n = j.napcat || {};
+    if(!n.found){
+      box.innerHTML = '<div class="dsc">没找到 onebot11.json'
+        + (n.error ? '：' + n.error : '') + '</div>';
+      return;
+    }
+    const http = (n.http || []).map(function(x){
+      return '<span class="pkg">' + x.host + ':' + x.port + '</span>';
+    }).join(' ') || '<span class="dsc">没开</span>';
+    const ws = (n.wsClient || []).map(function(x){
+      return '<span class="pkg">' + (x.url || '?') + '</span>';
+    }).join(' ') || '<span class="dsc">没开</span>';
+    box.innerHTML = '<table>'
+      + '<tr><td class="dsc" style="width:150px">HTTP 服务</td><td>' + http + '</td></tr>'
+      + '<tr><td class="dsc">反向 WS 客户端</td><td>' + ws + '</td></tr>'
+      + '<tr><td class="dsc">连接 token</td><td><code>' + (n.tokenMasked || '（空）')
+      + '</code> <span class="dsc">（只露头尾）</span></td></tr>'
+      + '</table>';
+  }catch(e){
+    box.innerHTML = '<div class="dsc">读不到：' + e.message + '</div>';
+  }
+}
+
+async function doUpdate(){
+  show('updOut', '正在拉取…');
+  setText('updState', '');
+  try{
+    const j = await api('/update', { method:'POST',
+      headers:{'content-type':'application/json'}, body: '{}' });
+    if(!j.ok){
+      show('updOut', '更新失败：' + (j.error || '未知原因'));
+      return;
+    }
+    show('updOut', (j.message || '已更新。')
+      + (j.changed ? ('\n\n改了这些：\n' + (j.changed || []).join('\n')) : '')
+      + '\n\n刷新一下页面（Ctrl+Shift+R）。');
+    setText('updState', j.changed ? '' : '已经是最新');
+  }catch(e){ show('updOut', '更新失败：' + e.message); }
+}
+
+async function loadBili(){
+  loadNapcat();
+  loadBiliCred();
+  hide('biliOut');
+  try{
+    const j = await api('/bili');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const b = j.bili || {};
+    setText('bState', b.installed ? '已安装' : '没找到');
+    $('bState').style.color = b.installed ? 'var(--ok)' : 'var(--bad)';
+    setText('bStateSub', b.home || '');
+    setHtml('bDuty', (b.dutyChars || 0) + '<small>字</small>');
+    setText('bWatched', b.watched || 0);
+    renderBiliVideos(b.videos || [], b.covers || {});
+    renderBiliComments(b.comments || []);
+    setText('biliLog', b.log || '（还没有日志）');
+    setText('biliSeen', b.seen || '（判重表是空的，说明还没刷过）');
+  }catch(e){ show('biliOut', '读取失败：' + e.message); }
+}
+
+async function loadBiliDuty(){
+  show('biliOut', '读取中…');
+  try{
+    const j = await api('/bili/duty');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    $('biliDuty').value = j.text || '';
+    hide('biliOut');
+  }catch(e){ show('biliOut', '读取失败：' + e.message); }
+}
+
+async function saveBiliDuty(){
+  const text = $('biliDuty').value;
+  if(!text.trim()){ show('biliOut', '内容是空的，没保存。'); return; }
+  show('biliOut', '保存中…');
+  try{
+    const j = await api('/bili/duty', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ text })
+    });
+    show('biliOut', j.ok
+      ? ('已保存，' + (j.chars || text.length) + ' 字。下一轮刷 B 站就按这个来。\n（旧的备份成 duty.md.bak 了）')
+      : ('保存失败：' + (j.error || '未知原因')));
+  }catch(e){ show('biliOut', '保存失败：' + e.message); }
+}
+
+async function loadMemeConfig(){
+  hide('mcfgOut');
+  try{
+    const j = await api('/memes/config');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const c = j.config || {};
+    $('mcfgSteal').checked    = c.stealEnabled !== false;
+    $('mcfgClassify').checked = c.autoClassify !== false;
+    $('mcfgMax').value        = c.maxPerRun || 12;
+  }catch(e){ show('mcfgOut', '读取失败：' + e.message); }
+}
+
+async function saveMemeConfig(){
+  const n = parseInt($('mcfgMax').value.trim(), 10);
+  const cfg = {
+    stealEnabled: $('mcfgSteal').checked,
+    autoClassify: $('mcfgClassify').checked,
+    maxPerRun: Number.isNaN(n) ? 12 : n
+  };
+  show('mcfgOut', '保存中…');
+  try{
+    const j = await api('/memes/config', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ config: cfg })
+    });
+    show('mcfgOut', j.ok
+      ? ('已保存。\n\n偷表情包：' + (cfg.stealEnabled ? '开' : '关')
+         + '\n自动分类：' + (cfg.autoClassify ? '开' : '关')
+         + '\n每轮上限：' + cfg.maxPerRun + ' 张')
+      : ('保存失败：' + (j.error || '未知原因')));
+  }catch(e){ show('mcfgOut', '保存失败：' + e.message); }
+}
+
+async function loadMemes(){
+  hide('memeOut');
+  try{
+    const j = await api('/memes');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const groups = j.groups || [];
+    // 最前面放一个「全部」——把每个来源的图都摊在一起，
+    // 免得 514 张那种大分类要自己点进去才发现。
+    const allFiles = [];
+    groups.forEach(function(g){
+      g.files.forEach(function(f){ allFiles.push({ g: g, f: f }); });
+    });
+    memeData = [{ source: '__all__', name: '全部', tag: '__all__',
+                  count: allFiles.length, files: [], all: allFiles }].concat(groups);
+    setText('memeTotal', j.total || 0);
+    setText('navMemes',j.total || 0);
+    if(!memeData.length){ $('memeEmpty').style.display = 'block'; return; }
+    if(memeCur < 0 || memeCur >= memeData.length) memeCur = 0;
+    const tabs = $('memeTabs');
+    tabs.innerHTML = '';
+    // 同一个包下面有很多情绪分类，光显示包名会重名（"官方表情包 15" "官方表情包 2"…）
+    // 所以带上分类名：happy 就显示成「官方 · happy」。
+    // 标签只要情绪名——「收回来的 · cute」这种还是看不出场景，
+    // 用户要的是「cute 18」：这张图什么时候用，一眼就明白。
+    function tabLabel(g){
+      if(g.source === '__all__') return '全部';
+      return g.tag || g.name;
+    }
+    memeData.forEach(function(g, i){
+      const d = document.createElement('div');
+      d.className = 'tab' + (i === memeCur ? ' on' : '');
+      d.textContent = tabLabel(g) + ' ' + g.count;
+      d.title = g.name + ' / ' + g.tag;
+      d.onclick = function(){ memeCur = i; renderMemes(); };
+      tabs.appendChild(d);
+    });
+    setText('memeHint', '共 ' + memeData.length + ' 组，一次最多显示 ' + MEME_PAGE + ' 张，往下滚自动加载');
+    renderMemes();
+  }catch(e){ show('memeOut', '读取失败：' + e.message); }
+}
+
+const MEME_PAGE = 120;
+let memeShown = 0;
+
+function renderMemes(){
+  document.querySelectorAll('#memeTabs .tab').forEach(function(el, i){
+    el.classList.toggle('on', i === memeCur);
+  });
+  const g = memeData[memeCur];
+  const grid = $('memeGrid');
+  grid.innerHTML = '';
+  if(!g){ $('memeEmpty').style.display = 'block'; return; }
+  $('memeEmpty').style.display = 'none';
+  memeShown = 0;
+  appendMemes();
+  const more = document.createElement('button');
+  more.className = 'morebtn';
+  more.id = 'memeMore';
+  more.textContent = '加载更多';
+  more.onclick = function(){ appendMemes(); };
+  grid.parentNode.insertBefore(more, grid.nextSibling);
+}
+
+function memeList(){
+  const g = memeData[memeCur];
+  if(!g) return [];
+  if(g.all) return g.all;
+  return g.files.map(function(f){ return { g: g, f: f }; });
+}
+
+function appendMemes(){
+  const items = memeList();
+  const grid = $('memeGrid');
+  const upto = Math.min(items.length, memeShown + MEME_PAGE);
+  for(let i = memeShown; i < upto; i++){
+    const it = items[i];
+    const div = document.createElement('div');
+    div.className = 'meme';
+    const url = API + '/memes/' + encodeURIComponent(it.g.source) + '/'
+      + encodeURIComponent(it.g.tag) + '/' + encodeURIComponent(it.f);
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = it.f;
+    img.src = url;
+    img.onerror = function(){
+      div.innerHTML = '<div style="display:grid;place-items:center;height:100%;'
+        + 'font-size:11px;color:#ff9b9b;text-align:center;padding:6px">加载失败<br>'
+        + it.f.slice(0, 14) + '</div>';
+    };
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.title = '删除这张';
+    del.textContent = '×';
+    del.onclick = function(ev){
+      ev.stopPropagation();
+      ev.preventDefault();
+      deleteMeme(it.g.source, it.g.tag, it.f);
+    };
+    const lab = document.createElement('span');
+    lab.className = 'taglabel';
+    lab.textContent = it.g.name;
+    div.appendChild(img);
+    div.appendChild(del);
+    div.appendChild(lab);
+    grid.appendChild(div);
+  }
+  memeShown = upto;
+  const more = $('memeMore');
+  if(more){
+    if(memeShown >= items.length){
+      more.textContent = '已经到底了（' + items.length + ' 张）';
+      more.disabled = true;
+    }else{
+      more.textContent = '加载更多（已显示 ' + memeShown + ' / ' + items.length + '）';
+      more.disabled = false;
+    }
+  }
+}
+
+let memeSel = null;
+
+function editTags(){
+  if(!memeSel){ show('memeOut', '先在下面点一张图选中它。'); return; }
+  const box = $('tagInput');
+  if(!box){ show('memeOut', '页面缺少标签输入框。'); return; }
+  const raw = box.value.trim();
+  if(!raw){ show('memeOut', '在标签框里写上要挂的标签，用逗号分隔。'); return; }
+  const tags = raw.split(/[,，\s]+/).filter(Boolean);
+  const name = memeSel.file;
+  (async function(){
+    try{
+      const j = await api('/memes/tag', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ source: memeSel.source, tag: memeSel.tag,
+                              file: name, tags: tags })
+      });
+      show('memeOut', j.ok
+        ? ('已设置：' + name + '\n标签：' + (j.tags || []).join(' / '))
+        : ('失败：' + (j.error || '未知原因')));
+      setTimeout(loadMemes, 800);
+    }catch(e){ show('memeOut', '失败：' + e.message); }
+  })();
+}
+
+async function startClassify(){
+  show('classifyOut', '正在启动归类…');
+  try{
+    const j = await api('/memes/classify', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({})
+    });
+    show('classifyOut', j.ok
+      ? ('已经开始在后台归类了。\n\n它会把每张图看一遍，判断是什么情绪'
+         + '（开心/无语/生气/困/要钱…），然后分到对应目录。\n'
+         + '500 多张大概要跑一阵。跑完刷新这页就能看到新分类。')
+      : ('启动失败：' + (j.error || '未知原因')));
+  }catch(e){ show('classifyOut', '启动失败：' + e.message); }
+}
+
+async function moveMeme(source, tag, file){
+  // 不用 prompt：内嵌视图里弹不出来（和 confirm 一个毛病）。
+  // 页面顶部有个「目标分类」输入框，读它。
+  const box = $('moveTarget');
+  const to = box ? box.value.trim() : '';
+  if(!to){ show('memeOut', '先在表情包页顶部填一个「目标分类」，再点 ⇄。'); return; }
+  try{
+    const j = await api('/memes/move', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ source, tag, file, toTag: to.trim() })
+    });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('memeOut', '已移到「' + j.toTag + '」：' + file
+      + '\n\n刷新一下就能在新分类里看到它。');
+    setTimeout(function(){ loadMemes(); }, 900);
+  }catch(e){ show('memeOut', '移动失败：' + e.message); }
+}
+
+async function deleteMeme(source, tag, file){
+  // confirm 在 DSH 内置浏览器里弹不出来，会把删除卡死，所以直接删。
+  try{
+    const j = await api('/memes/delete', { method:'POST', headers:{'content-type':'application/json'},
+                                           body: JSON.stringify({ source, tag, file }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('memeOut', '已删除：' + file);
+    const g = memeData.find(x => x.source === source && x.tag === tag);
+    if(g){ g.files = g.files.filter(x => x !== file); g.count = g.files.length; }
+    setText('memeTotal', memeData.reduce((a, b) => a + b.count, 0));
+    // 牌面数量变了，标签上的数字也要跟着变
+    // 「全部」那一份也要同步删掉，否则切回去还能看到已删的图
+    if(memeData[0] && memeData[0].all){
+      memeData[0].all = memeData[0].all.filter(function(it){
+        return !(it.g.source === source && it.g.tag === tag && it.f === file);
+      });
+      memeData[0].count = memeData[0].all.length;
+    }
+    document.querySelectorAll('#memeTabs .tab').forEach(function(el, i){
+      if(memeData[i]) el.textContent = memeData[i].name + ' ' + memeData[i].count;
+    });
+    renderMemes();
+  }catch(e){ show('memeOut', '删除失败：' + e.message); }
+}
+
+let currentDir = 'diary';
+$('fileTabs').addEventListener('click', (e) => {
+  const t = e.target.closest('.tab');
+  if(!t) return;
+  currentDir = t.dataset.dir;
+  document.querySelectorAll('#fileTabs .tab').forEach(x => x.classList.toggle('on', x === t));
+  
+  loadFiles(currentDir);
+});
+
+let fileCache = [];
+let fileShown = 0;
+const FILE_PAGE = 60;
+
+// 记忆总览：把 memento 的审计流水、待审提议，和其他记忆来源的计数拉到一页。
+// 只读——写记忆要走 memento 自己的流程，别在这儿绕过它。
+function startEditMemory(row, e){
+  if(row.dataset.editing === '1') return;
+  row.dataset.editing = '1';
+  const old = e.text || '';
+  row.innerHTML = '<div class="fmain" style="flex:1">'
+    + '<textarea class="fchk" style="width:100%;height:60px;padding:8px;'
+    + 'border-radius:8px;border:1px solid var(--line);background:var(--bg);'
+    + 'color:var(--fg);font-size:12.5px;font-family:inherit">'
+    + old.replace(/</g, '&lt;') + '</textarea>'
+    + '</div>'
+    + '<button class="sm" style="margin-left:6px">存</button>'
+    + '<button class="fdel">×</button>';
+  const ta = row.querySelector('textarea');
+  row.querySelector('.sm').onclick = function(){
+    saveMemoryEdit(e.id, ta.value);
+  };
+  row.querySelector('.fdel').onclick = function(){
+    deleteMemory(e.id, old);
+  };
+  ta.focus();
+}
+
+async function saveMemoryEdit(id, text){
+  const t = String(text || '').trim();
+  if(!t){ show('memOut', '不能存空的。'); return; }
+  try{
+    const j = await api('/memory/edit', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id: id, text: t })
+    });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('memOut', '改好了。');
+    loadMemoryOverview();
+  }catch(e){ show('memOut', '没改成：' + e.message); }
+}
+
+// 记忆搜索/筛选：纯前端过滤已有的行，不改渲染逻辑。
+// 每行记着自己的 track 和文本，过滤时直接看这两个。
+function filterMem(){
+  const kw = (($('memSearch') || {}).value || '').trim().toLowerCase();
+  const ft = window.__memFilter || 'all';
+  const box = $('memPropList');
+  if(!box) return;
+  let shown = 0;
+  box.querySelectorAll('.frow').forEach(function(row){
+    const t = row.dataset.track || '';
+    const txt = (row.innerText || '').toLowerCase();
+    const okT = (ft === 'all') || (t === ft);
+    const okK = !kw || txt.indexOf(kw) >= 0;
+    const show = okT && okK;
+    row.style.display = show ? '' : 'none';
+    if(show) shown++;
+  });
+  let tip = $('memFilterTip');
+  if(!tip){
+    tip = document.createElement('div');
+    tip.id = 'memFilterTip';
+    tip.className = 'dsc';
+    tip.style.padding = '4px 12px 8px';
+    box.parentNode.insertBefore(tip, box);
+  }
+  const total = box.querySelectorAll('.frow').length;
+  tip.textContent = (kw || ft !== 'all')
+    ? ('筛出 ' + shown + ' / ' + total + ' 条') : '';
+}
+
+document.addEventListener('click', function(ev){
+  const t = ev.target.closest('#memFilter .tab');
+  if(!t) return;
+  document.querySelectorAll('#memFilter .tab').forEach(function(x){
+    x.classList.toggle('on', x === t);
+  });
+  window.__memFilter = t.dataset.t;
+  filterMem();
+});
+
+async function addMemory(){
+  const inp = $('memNew');
+  const text = inp ? inp.value.trim() : '';
+  if(!text){ show('memOut', '先写点什么。'); return; }
+  const track = $('memTrack') ? $('memTrack').value : 'agent';
+  try{
+    const j = await api('/memory/add', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ text: text, track: track })
+    });
+    if(!j.ok) throw new Error(j.error || '失败');
+    if(inp) inp.value = '';
+    show('memOut', '记住了：' + text);
+    loadMemoryOverview();
+  }catch(e){ show('memOut', '没记住：' + e.message); }
+}
+
+async function deleteMemory(id, text){
+  try{
+    const j = await api('/memory/delete', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id: id })
+    });
+    if(!j.ok) throw new Error(j.error || '失败');
+    show('memOut', '删掉了：' + String(text).slice(0, 30));
+    loadMemoryOverview();
+  }catch(e){ show('memOut', '删不掉：' + e.message); }
+}
+
+async function loadMemoryOverview(){
+  try{
+    const j = await api('/memory', null, true);
+    if(!j.ok) return;
+    const m = j.memory || {};
+    const c = m.counts || {};
+
+    setText('memPeople', c.people || 0);
+    setText('memDiary', c.diary || 0);
+    setText('memNotes', c.notes || 0);
+
+    // 用中文说清楚长期记忆到底是什么状态，不再甩英文技术日志
+    const note = $('memLongNote');
+    if(note){
+      if((c.active || 0) > 0){
+        note.textContent = '她已经沉淀了 ' + c.active + ' 条长期记忆。';
+      }else if((c.proposals || 0) > 0){
+        note.textContent = '还没有真正写进长期记忆的条目，但有 '
+          + c.proposals + ' 条待审的会话摘要在排队。下面列出来了，'
+          + '内容可能带着隐私，建议直接驳回。';
+      }else{
+        note.textContent = '她目前没有沉淀下来的长期记忆——'
+          + '聊天记录和日记在管用，但自动记忆这一层还空着。';
+      }
+    }
+
+    // 真正的记忆条目：这是「长期记忆能用」的核心，必须列出来
+    const pl = $('memPropList');
+    if(pl){
+      const ents = m.entries || [];
+      pl.innerHTML = '';
+      if(ents.length){
+        // 还有提议的话先提示一句
+        const np = (m.proposals || []).length;
+        if(np){
+          const n = document.createElement('div');
+          n.className = 'dsc';
+          n.style.padding = '4px 12px 8px';
+          n.textContent = '另外有 ' + np + ' 条待审的会话摘要在排队（带隐私，建议驳回）';
+          pl.appendChild(n);
+        }
+        ents.forEach(function(e){
+          const d = document.createElement('div');
+          d.className = 'frow';
+          d.style.cursor = 'default';
+          d.dataset.track = e.track || 'agent';
+          const who = e.track === 'user' ? '关于爸爸' : '我自己的';
+          // 不再截断：记忆本来就是一两句话，全显示出来
+          d.innerHTML = '<div class="fmain">'
+            + '<span class="fname">' + who + '</span>'
+            + '<span class="fprev" style="white-space:normal;overflow:visible">'
+            + (e.text || '').replace(/</g, '&lt;') + '</span>'
+            + '</div>'
+            + '<button class="sm" style="margin-left:6px">改</button>'
+            + '<button class="fdel" title="忘掉这条">×</button>';
+          d.querySelector('.sm').onclick = function(ev){
+            ev.stopPropagation();
+            startEditMemory(d, e);
+          };
+          d.querySelector('.fdel').onclick = function(ev){
+            ev.stopPropagation();
+            deleteMemory(e.id, e.text);
+          };
+          pl.appendChild(d);
+        });
+      }else{
+        const n = document.createElement('div');
+        n.className = 'empty';
+        n.textContent = '还没有沉淀下来的记忆。';
+        pl.appendChild(n);
+      }
+    }
+  }catch(e){ }
+}
+
+async function loadFiles(dir){
+  hide('fileOut');
+  setHtml('fileList', '');
+  fileCache = []; fileShown = 0; selected = {};
+  updateBulk();
+  try{
+    const j = await api('/files?dir=' + encodeURIComponent(dir)
+      + '&preview=1&limit=' + FILE_PAGE);
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    fileCache = j.files || [];
+    $('fileEmpty').style.display = fileCache.length ? 'none' : 'block';
+    renderFileRows(dir);
+  }catch(e){ show('fileOut', '读取失败：' + e.message); }
+}
+
+const GROUPS = [
+  { key: 'today', label: '今天',   days: 1 },
+  { key: 'week',  label: '这周',   days: 7 },
+  { key: 'month', label: '这个月', days: 31 },
+  { key: 'old',   label: '更早',   days: 99999 }
+];
+
+function groupOf(ts){
+  const d = (Date.now() / 1000 - ts) / 86400;
+  for(const g of GROUPS){ if(d <= g.days) return g; }
+  return GROUPS[GROUPS.length - 1];
+}
+
+function renderFileRows(dir){
+  const list = $('fileList');
+  list.innerHTML = '';
+  const slice = fileCache.slice(0, FILE_PAGE);
+
+  // 按时间分组，每组一个可折叠的头
+  const buckets = {};
+  slice.forEach(function(f){
+    const g = groupOf(f.mtime);
+    (buckets[g.key] = buckets[g.key] || { g: g, items: [] }).items.push(f);
+  });
+
+  const order = GROUPS.map(g => g.key);
+  order.forEach(function(k, gi){
+    const b = buckets[k];
+    if(!b) return;
+    const head = document.createElement('div');
+    head.className = 'fghead' + (gi > 0 ? ' closed' : '');
+    head.innerHTML = '<span class="caret">▼</span>' + b.g.label
+      + '<span class="n">' + b.items.length + ' 个</span>';
+    list.appendChild(head);
+
+    const wrap = document.createElement('div');
+    wrap.style.display = gi > 0 ? 'none' : '';
+    head.onclick = function(){
+      const closed = head.classList.toggle('closed');
+      wrap.style.display = closed ? 'none' : '';
+    };
+
+    b.items.forEach(function(f){
+      const d = document.createElement('div');
+      d.className = 'frow';
+      d.innerHTML = '<input type="checkbox" class="fchk" data-name="' + f.name + '">'
+        + '<div class="fmain">'
+        + '<span class="fname">' + f.name + '</span>'
+        + (f.preview ? '<span class="fprev">' + f.preview.replace(/</g, '&lt;') + '</span>' : '')
+        + '</div>'
+        + '<span class="fmeta">' + fmtSize(f.size) + '</span>'
+        + '<span class="fmeta">' + fmtTime(f.mtime) + '</span>'
+        + '<button class="fdel" title="删除">×</button>';
+      d.onclick = function(ev){
+        if(ev.target.classList.contains('fchk')) return;
+        if(ev.target.classList.contains('fdel')) return;
+        openFile(dir, f.name, d);
+      };
+      d.querySelector('.fchk').onchange = function(ev){
+        if(ev.target.checked) selected[f.name] = true;
+        else delete selected[f.name];
+        updateBulk();
+      };
+      d.querySelector('.fdel').onclick = function(ev){
+        ev.stopPropagation();
+        deleteFile(dir, f.name);
+      };
+      wrap.appendChild(d);
+    });
+    list.appendChild(wrap);
+  });
+
+  fileShown = slice.length;
+  if(fileCache.length > FILE_PAGE){
+    const more = document.createElement('button');
+    more.className = 'morebtn';
+    more.textContent = '还有 ' + (fileCache.length - FILE_PAGE) + ' 个没显示';
+    more.onclick = function(){ show('fileOut', '预览快照一次只取前 ' + FILE_PAGE + ' 个文件，先删掉或搜索一下更好找。'); };
+    list.appendChild(more);
+  }
+}
+
+function updateBulk(){
+  const n = Object.keys(selected).length;
+  setText('bulkN', n);
+  $('bulkBar').classList.toggle('on', n > 0);
+}
+
+function switchFileTab(dir){
+  const tab = document.querySelector('#fileTabs .tab[data-dir="' + dir + '"]');
+  if(tab) tab.click();
+  const el = document.querySelector('#page-memory');
+  if(el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+function clearSel(){
+  selected = {};
+  document.querySelectorAll('#fileList .fchk').forEach(c => { c.checked = false; });
+  updateBulk();
+}
+
+async function bulkDelete(){
+  const names = Object.keys(selected);
+  if(!names.length) return;
+  // 不用 confirm（内嵌视图弹不出来）。删完在提示条里报告结果。
+  let ok = 0, fail = 0;
+  for(const n of names){
+    try{
+      const j = await api('/files/delete', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ dir: currentDir, name: n })
+      });
+      if(j.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  selected = {};
+  show('fileOut', '批量删除完成：成功 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : ''));
+  loadFiles(currentDir);
+}
+
+async function deleteFile(dir, name){
+  // confirm 在 DSH 内置浏览器里弹不出来，直接删。
+  try{
+    const j = await api('/files/delete', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ dir, name })
+    });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('fileOut', '已删除：' + name);
+    fileCache = fileCache.filter(x => x.name !== name);
+    setHtml('fileList', '');
+    fileShown = 0;
+    
+    renderFileRows(dir);
+  }catch(e){ show('fileOut', '删除失败：' + e.message); }
+}
+
+async function openFile(dir, name, row){
+  // 内容直接展开在这一行下面，不再跳到页面底部——那样每次都要往下翻。
+  const list = $('fileList');
+  const existing = list.querySelector('.fbody.open');
+  if(existing) existing.classList.remove('on');
+  const prevOpen = list.querySelector('.frow.open');
+  if(prevOpen) prevOpen.classList.remove('open');
+
+  let body = row.nextElementSibling;
+  if(body && body.classList.contains('fbody')){
+    const wasOpen = body.classList.contains('on');
+    body.classList.toggle('on', !wasOpen);
+    row.classList.toggle('open', !wasOpen);
+    if(!wasOpen && !body.dataset.loaded){
+      body.textContent = '读取中…';
+      try{
+        const j = await api('/files/read?dir=' + encodeURIComponent(dir)
+          + '&name=' + encodeURIComponent(name));
+        body.textContent = j.ok ? (j.text || '（空文件）') : ('读取失败：' + (j.error || ''));
+        body.dataset.loaded = '1';
+      }catch(e){ body.textContent = '读取失败：' + e.message; }
+    }
+    return;
+  }
+  // 第一次点：在行后面插一个内容块
+  body = document.createElement('div');
+  body.className = 'fbody on';
+  body.textContent = '读取中…';
+  row.classList.add('open');
+  row.parentNode.insertBefore(body, row.nextSibling);
+  try{
+    const j = await api('/files/read?dir=' + encodeURIComponent(dir)
+      + '&name=' + encodeURIComponent(name));
+    body.textContent = j.ok ? (j.text || '（空文件）') : ('读取失败：' + (j.error || ''));
+    body.dataset.loaded = '1';
+  }catch(e){ body.textContent = '读取失败：' + e.message; }
+}
+
+let currentWorkDir = 'made';
+let workData = [];
+let workSel = {};
+let workExt = 'all';
+
+async function loadWorks(){
+  hide('worksOut'); hide('worksViewer');
+  $('worksBody').innerHTML = '';
+  workSel = {};
+  updateWorkBulk();
+  // 「归档」标签读归档目录，其它读 made/
+  currentWorkDir = (workExt === '.archive') ? 'archive' : 'made';
+  try{
+    const j = await api('/files?dir=' + currentWorkDir);
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    // 大的排前面：大文件通常是真做过的成品，小的多半是练手
+    workData = (j.files || []).slice().sort((a, b) => b.size - a.size);
+    renderWorks();
+  }catch(e){ show('worksOut', '读取失败：' + e.message); }
+}
+
+function renderWorks(){
+  const tb = $('worksBody');
+  tb.innerHTML = '';
+  const DEP = ['.js', '.py', '.ps1', '.json', '.db', '.txt', '.md', '.wav'];
+  const isDep = (n) => DEP.some(e => n.toLowerCase().endsWith(e));
+  const list = workExt === '.archive'
+    ? workData
+    : workExt === 'all'
+    ? workData.filter(f => !isDep(f.name))          // 全部 = 真正的作品，不含依赖
+    : (workExt === '.dep'
+        ? workData.filter(f => isDep(f.name))
+        : workData.filter(f => f.name.toLowerCase().endsWith(workExt)));
+
+  const totalMb = (list.reduce((s, f) => s + f.size, 0) / 1048576).toFixed(1);
+  setText('workCount', list.length + ' 个，共 ' + totalMb + ' MB');
+  $('worksEmpty').style.display = list.length ? 'none' : 'block';
+
+  list.forEach(function(f){
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><input type="checkbox" class="fchk" data-f="' + f.name + '"></td>'
+      + '<td><span class="nm">' + f.name + '</span></td>'
+      + '<td class="num">' + fmtSize(f.size) + '</td>'
+      + '<td class="num">' + fmtTime(f.mtime) + '</td>'
+      + '<td class="op"><button class="sm">预览</button></td>';
+    tr.querySelector('.fchk').checked = !!workSel[f.name];
+    tr.querySelector('.fchk').onchange = function(ev){
+      if(ev.target.checked) workSel[f.name] = true;
+      else delete workSel[f.name];
+      updateWorkBulk();
+    };
+    tr.querySelector('button').onclick = function(){ previewWork(f.name); };
+    tb.appendChild(tr);
+  });
+}
+
+function updateWorkBulk(){
+  const n = Object.keys(workSel).length;
+  setText('workN', n);
+  const bar = $('workBulk');
+  if(bar) bar.classList.toggle('on', n > 0);
+}
+
+function toggleAllWork(){
+  const DEP = ['.js', '.py', '.ps1', '.json', '.db', '.txt', '.md', '.wav'];
+  const isDep = (n) => DEP.some(e => n.toLowerCase().endsWith(e));
+  const list = workExt === 'all'
+    ? workData.filter(f => !isDep(f.name))          // 全部 = 真正的作品，不含依赖
+    : (workExt === '.dep'
+        ? workData.filter(f => isDep(f.name))
+        : workData.filter(f => f.name.toLowerCase().endsWith(workExt)));
+  const allOn = list.every(f => workSel[f.name]);
+  list.forEach(function(f){
+    if(allOn) delete workSel[f.name];
+    else workSel[f.name] = true;
+  });
+  renderWorks();
+}
+
+function clearWorkSel(){
+  workSel = {};
+  renderWorks();
+}
+
+async function bulkDeleteWork(){
+  const names = Object.keys(workSel);
+  if(!names.length) return;
+  // 不用 confirm（内嵌视图弹不出来）
+  let ok = 0, fail = 0;
+  for(const n of names){
+    try{
+      const j = await api('/files/delete', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ dir: 'made', name: n })
+      });
+      if(j.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  workSel = {};
+  show('worksOut', '已删除 ' + ok + ' 个' + (fail ? ('，失败 ' + fail + ' 个') : '')
+    + '\n\n（文件是先移到归档目录，没有直接销毁）');
+  setTimeout(loadWorks, 600);
+}
+
+
+// 图片直接在页面里看。之前只有 HTML 会预览，点图片没反应。
+function showImage(url, name){
+  const v = $('worksViewer');
+  if(!v) return;
+  v.classList.add('on');
+  v.innerHTML = '<div style="padding:10px 0">'
+    + '<div class="dsc" style="margin-bottom:10px">' + name + '</div>'
+    + '<img src="' + url + '" style="max-width:100%;border-radius:10px;display:block" '
+    + '>'
+    + '</div>';
+}
+
+async function previewWork(name){
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const IMG = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
+  if(IMG.indexOf(ext) >= 0){
+    showImage('/api/files/raw?dir=' + encodeURIComponent(currentWorkDir)
+      + '&name=' + encodeURIComponent(name), name);
+    return;
+  }
+  try{
+    const j = await api('/files/read?dir=' + encodeURIComponent(currentWorkDir)
+      + '&name=' + encodeURIComponent(name));
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const v = $('worksViewer');
+    v.classList.add('on');
+    const body = String(j.text || '').replace(/</g, '&lt;');
+    v.innerHTML = '<div style="padding:10px 0">'
+      + '<div class="dsc" style="margin-bottom:10px">' + name + '</div>'
+      + '<pre style="white-space:pre-wrap;font-size:12.5px;line-height:1.7">'
+      + body.slice(0, 20000) + '</pre></div>';
+  }catch(e){ show('worksOut', '读取失败：' + e.message); }
+}
+
+async function deleteWork(name){
+  // confirm 在 DSH 内置浏览器里弹不出来，直接删。
+  try{
+    const j = await api('/files/delete', { method:'POST', headers:{'content-type':'application/json'},
+                                           body: JSON.stringify({ dir:'made', name }) });
+    if(!j.ok) throw new Error(j.error || '未知原因');
+    show('worksOut', '已删除：' + name);
+    loadWorks();
+  }catch(e){ show('worksOut', '删除失败：' + e.message); }
+}
+
+async function loadPersona(){
+  show('personaOut', '读取中…');
+  try{
+    const j = await api('/persona');
+    const text = j.text || '';
+    $('personaBox').value = text;
+    setText('pChars', text.length + ' 字');
+    setText('pState', text ? '已读取' : '读不到');
+    hide('personaOut');
+    if(!text) show('personaOut', '接口返回空：' + (j.error || ''));
+  }catch(e){ show('personaOut', '读取失败：' + e.message); }
+}
+
+async function savePersona(){
+  const text = $('personaBox').value;
+  if(!text.trim()){ show('personaOut', '内容是空的，没保存。'); return; }
+  show('personaOut', '保存中…');
+  try{
+    const j = await api('/persona', { method:'POST', headers:{'content-type':'application/json'},
+                                      body: JSON.stringify({ text }) });
+    show('personaOut', j.ok ? ('已保存，' + (j.chars || text.length) + ' 字。下一个回复就生效。')
+                            : ('保存失败：' + (j.error || '未知原因')));
+    if(j.ok) setText('pChars', (j.chars || text.length) + ' 字');
+  }catch(e){ show('personaOut', '保存失败：' + e.message); }
+}
+
+async function loadConfig(){
+  hide('cfgOut');
+  try{
+    const j = await api('/config');
+    if(!j.ok) throw new Error(j.error || '读取失败');
+    const c = j.config || {};
+    $('cfgAdminQQ').value  = (c.adminQQ || []).join(',');
+    $('cfgCall').value     = c.adminCall || '';
+    $('cfgVariants').value = (c.adminCallVariants || []).join(',');
+  }catch(e){ show('cfgOut', '读取失败：' + e.message); }
+}
+
+async function saveConfig(){
+  const split = (v) => v.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const cfg = {
+    adminQQ: split($('cfgAdminQQ').value),
+    adminCall: $('cfgCall').value.trim() || '爸爸',
+    adminCallVariants: split($('cfgVariants').value),
+    adminIdentity: '', novelTitle: '', penNames: [],
+    fanGroupQQ: 'YOUR_GROUP_ID', botQQ: 'BOT_QQ', maxReminderLen: 40
+  };
+  if(!cfg.adminQQ.length){ show('cfgOut', '管理员 QQ 不能空——不然她不知道谁说话算数。'); return; }
+  show('cfgOut', '保存中…');
+  try{
+    const j = await api('/config', { method:'POST', headers:{'content-type':'application/json'},
+                                     body: JSON.stringify({ config: cfg }) });
+    show('cfgOut', j.ok ? ('已保存。下一个回复就生效。\n\n她叫你：「' + cfg.adminCall + '」')
+                        : ('保存失败：' + (j.error || '未知原因')));
+  }catch(e){ show('cfgOut', '保存失败：' + e.message); }
+}
+
+// workTabs 绑定
+document.addEventListener('click', function(ev){
+  const t = ev.target.closest('#workTabs .tab');
+  if(!t) return;
+  document.querySelectorAll('#workTabs .tab').forEach(x => x.classList.toggle('on', x === t));
+  workExt = t.dataset.ext;
+  if(workExt === '.archive' || currentWorkDir === 'archive'){
+    if(workExt !== '.archive') currentWorkDir = 'made';
+    loadWorks();
+  }else{
+    renderWorks();
+  }
+});
+
+(async function boot(){
+  let p = (location.hash || '').replace('#/','') || 'overview';
+  if(p === 'parts' || p === 'plugins') p = 'system';
+  if(document.getElementById('page-' + p)) goto(p);
+  await refreshOverview();
+  setInterval(refreshOverview, 10000);
+})();
+</script>
+</body>
+</html>

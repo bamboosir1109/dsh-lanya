@@ -1,0 +1,7 @@
+﻿# 统一用 LF，避免 Windows 上提交后 diff 满屏变红
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.jpg binary
+*.gif binary

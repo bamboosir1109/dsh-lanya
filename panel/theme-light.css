@@ -1,0 +1,54 @@
+/* 浅色主题。给不喜欢深色的人一个选择，右上角切换，选择记在浏览器里。 */
+
+html[data-theme="light"]{
+  --bg:#f7f8fa;
+  --bg-grad:radial-gradient(900px 500px at 12% -12%,rgba(91,157,255,.10),transparent 58%),
+            radial-gradient(700px 400px at 94% 0%,rgba(139,92,246,.07),transparent 52%);
+  --panel:rgba(255,255,255,.86);
+  --card:#ffffff;
+  --card2:#f2f4f8;
+  --line:#e3e7ee;
+  --line2:#d0d6e0;
+  --fg:#141821;
+  --fg2:#4a5568;
+  --dim:#8792a5;
+  --ok:#12b981;
+  --warn:#e0a800;
+  --bad:#e5484d;
+  --acc:#2f6fed;
+  --acc2:#7c3aed;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 6px 20px -10px rgba(16,24,40,.14);
+}
+html[data-theme="light"] body{color:var(--fg)}
+html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#d5dae3;border-color:var(--bg)}
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#c0c7d3}
+html[data-theme="light"] input,
+html[data-theme="light"] textarea{background:#fbfcfd;color:var(--fg)}
+html[data-theme="light"] input:focus,
+html[data-theme="light"] textarea:focus{background:#fff}
+html[data-theme="light"] .out,
+html[data-theme="light"] .viewer{background:#f4f6f9;color:#3d4759}
+html[data-theme="light"] code{background:#eef1f5;border-color:#e3e7ee;color:#3d4759}
+html[data-theme="light"] .navitem.on{color:var(--acc)}
+html[data-theme="light"] .navitem.on .cnt{color:#1f4fb8;background:rgba(47,111,237,.12)}
+html[data-theme="light"] .navitem .cnt{background:rgba(0,0,0,.045)}
+html[data-theme="light"] button{background:#fff;border-color:var(--line2);color:var(--fg)}
+html[data-theme="light"] button:hover{background:#f6f8fb}
+html[data-theme="light"] button.pri{
+  background:linear-gradient(180deg,#3b7af5,#2f6fed);border-color:#2f6fed;color:#fff;
+  box-shadow:0 2px 12px -4px rgba(47,111,237,.5)
+}
+html[data-theme="light"] button.dan{background:#fff5f5;color:#c53030;border-color:#f3c2c2}
+html[data-theme="light"] .bar{background:#e8ecf2}
+html[data-theme="light"] .meme{background:#f0f2f6}
+html[data-theme="light"] .stat:before{opacity:.75}
+html[data-theme="light"] .banner{
+  background:linear-gradient(180deg,rgba(224,168,0,.10),rgba(224,168,0,.04));
+  border-color:rgba(224,168,0,.30)
+}
+html[data-theme="light"] .tab.on{
+  background:linear-gradient(180deg,rgba(47,111,237,.14),rgba(47,111,237,.06));
+  border-color:rgba(47,111,237,.35);color:#1f4fb8
+}
+html[data-theme="light"] .frow.on{background:rgba(47,111,237,.07);border-color:rgba(47,111,237,.22)}
+html[data-theme="light"] .dot.down{background:#c3cad6}

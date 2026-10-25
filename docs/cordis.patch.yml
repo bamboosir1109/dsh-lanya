@@ -1,0 +1,93 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-account
+    model: deepseek-flash
+    reasoningEffort: high
+- id: ui-settings-account
+  name: "@deepseek-ai/dsh-client-ui-settings-account"
+  config:
+    version: 1
+    step: done
+    purpose: null
+    process: standard
+    completion: skipped
+    usage: compact
+    developerTools: false
+- id: ui-chat
+  name: "@deepseek-ai/dsh-client-ui-chat"
+  config:
+    transcriptView: standard
+    performanceUsage: compact
+- id: ui-settings
+  name: "@deepseek-ai/dsh-client-ui-settings"
+  config:
+    enabled: false
+# dsh-onebot-qq: reverse-WS 监听既需要非空 accessToken（空值会让插件拒绝启动监听），
+# 也需要一个明确的会话工作目录（否则 QQ 会话会落在宿主启动目录）。
+# 此 token 必须与 NapCat 的 config/onebot11.json 里 websocketClients[].token 完全一致。
+- id: dsh-onebot
+  name: "dsh-onebot-qq"
+  config:
+    accessToken: "请改成你自己的一个随机字符串"
+    workspacePath: "D:\\DSH work"
+    # 私聊准入（源码 chat.js 的 dmAllowed 决定）：
+    #   dmPolicy=disabled  -> 全拒
+    #   dmPolicy=allowlist -> 只查 allowFrom（**完全忽略 allowAllUsers**）
+    #   dmPolicy=open      -> allowAllUsers || adminUsers
+    # 要"所有加好友的人都能私聊"，必须用 open + allowAllUsers=true；
+    # 用 allowlist 会把 allowAllUsers 顶掉，只放行 allowFrom 里的号。
+    dmPolicy: open
+    allowAllUsers: true
+    adminUsers:
+      - "你的管理员QQ"
+    allowFrom:
+      - "你的管理员QQ"
+      - "你的另一个QQ"
+      - "朋友QQ"
+      - "640454103"
+      - "FRIEND_D"
+      - "FRIEND_E"
+      - "FRIEND_B"
+      - "FRIEND_C"
+    # 中间回复：interimMessages=false 表示【只发最终回复】。
+    # 默认 true 会把模型每一步的中间文本（包括工具调用前后的叙述，如"让我找张图"）
+    # 当成独立 QQ 消息发出去；真人聊天不会把自己思考的中间过程一条条发出来，
+    # 这是"不像人"的主要来源。关掉后对方只看到一条干净的回复。
+    interimMessages: false
+    # 下面两项只在 interimMessages=true 时才有意义，保留只是为了表达清楚：
+    #   interimRecall   = 布尔开关（true=中间消息到点自动撤回；false=只发不撤）
+    #   interimRecallMs = 毫秒数（配合上面的开关用）
+    # 注意两者是两个东西，别混：曾经把 false 写进 interimRecallMs（schema 要求
+    # number），导致整个 dsh-onebot 插件无法激活、8643 不监听、QQ 消息全收不到。
+    interimRecall: false
+- id: dsh-dafeiyu
+  name: dsh-dafeiyu
+  config:
+    enabled: true
+    scale: 0.6
+    bubbleScale: 0.8
+    activityLevel: normal
+    reducedMotion: false
+    soundEnabled: true
+    bubbleMode: always
+    bubbleStates:
+      - SUCCESS
+      - ERROR
+      - WAITING
+    includeSubagents: false
+    webOverlay: false
+    clientTarget: auto
+    balanceEnabled: true
+    balanceSource: auto
+
+# dsh-memento: writePolicy 默认 ask，但这个环境审批提示是关的，每次写记忆
+# 都被自动驳回 —— entries 一直是 0 条，长期记忆形同虚设。auto = 插件自己
+# 裁决放行（仍然写审计行），记忆才真的存得下来。
+- id: dsh-memento
+  name: "dsh-memento"
+  config:
+    writePolicy: auto

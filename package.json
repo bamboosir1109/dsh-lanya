@@ -1,0 +1,70 @@
+{
+  "name": "dsh-lanya",
+  "version": "1.0.0",
+  "description": "\u4e00\u53ea\u4f4f\u5728 QQ \u7fa4\u91cc\u7684\u72fc\uff1a\u4eba\u8bbe\u6ce8\u5165 + \u957f\u671f\u8bb0\u5fc6 + \u8868\u60c5\u5305\u60c5\u7eea\u5206\u7c7b + \u81ea\u4e3b\u5237 B \u7ad9 + 14 \u9875\u53ef\u89c6\u5316\u63a7\u5236\u53f0\u3002",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "panel.html",
+    "panel-server.py",
+    "state.ps1",
+    "budget.ps1",
+    "cleanup-tasks.ps1",
+    "cleanup-tasks.cmd",
+    "tunables.example.json",
+    "config.example.json",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-github-name/dsh-lanya.git"
+  },
+  "homepage": "https://github.com/your-github-name/dsh-lanya#readme",
+  "bugs": {
+    "url": "https://github.com/your-github-name/dsh-lanya/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "persona",
+    "qq-bot",
+    "onebot",
+    "napcat",
+    "bilibili",
+    "llm-agent",
+    "digital-life",
+    "control-panel"
+  ]
+}

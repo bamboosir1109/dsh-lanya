@@ -1,0 +1,20 @@
+{
+  "_说明": "群发言的可调参数。改完重启群监听生效（面板上点「重启」）。",
+  "_分组_频率": "她多久说一次话",
+  "QuietMinutes": 180,
+  "MinGapMinutes": 1,
+  "QuietGapMinMinutes": 180,
+  "QuietGapMaxMinutes": 300,
+  "_分组_额度": "上限，防止她刷屏",
+  "MaxPerHour": 1,
+  "MaxPerHourAny": 6,
+  "MaxPer24Hours": 40,
+  "MaxQuietStartsPerDay": 6,
+  "MaxTotal": 200,
+  "_分组_时间": "只在几点到几点说话",
+  "WindowStart": 9,
+  "WindowEnd": 23,
+  "_分组_其他": "轮询间隔和群号",
+  "PollSeconds": 60,
+  "GroupId": "你的群号"
+}

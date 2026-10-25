@@ -1,0 +1,66 @@
+{
+ "_note": "她能自己干的事。每项绑到真实部件：bound=组件 tag。enabled=false 就不会去干。",
+ "activities": [
+  {
+   "id": "group",
+   "name": "自己水群",
+   "desc": "盯着粉丝群，觉得该说话就插一句。",
+   "enabled": true,
+   "cost": false,
+   "bound": "groupwatch",
+   "noteOn": "群监听在跑",
+   "noteOff": "群监听没开"
+  },
+  {
+   "id": "bili",
+   "name": "玩B站",
+   "desc": "刷视频、看评论、偶尔发一条。要先登录。",
+   "enabled": true,
+   "cost": true,
+   "bound": "bili-duty",
+   "credFile": "bili_credential.json",
+   "noteOn": "B 站已登录",
+   "noteOff": "还没登录 B 站"
+  },
+  {
+   "id": "browser",
+   "name": "上网逛",
+   "desc": "用浏览器看网页、读文章。",
+   "enabled": true,
+   "cost": true,
+   "bound": "browserd",
+   "noteOn": "浏览器在跑",
+   "noteOff": "浏览器没起"
+  },
+  {
+   "id": "create",
+   "name": "创作",
+   "desc": "写随笔、画东西、做小页面。一周最多一件。",
+   "enabled": true,
+   "cost": true,
+   "bound": "works",
+   "noteOn": "作品站开着",
+   "noteOff": "作品站没起"
+  },
+  {
+   "id": "diary",
+   "name": "写日记",
+   "desc": "往 diary 里记今天的事。不花钱，算作息。",
+   "enabled": true,
+   "cost": false,
+   "dir": "diary",
+   "noteOn": "每天都会写",
+   "noteOff": "不写日记"
+  },
+  {
+   "id": "notes",
+   "name": "记随笔",
+   "desc": "想到什么记下来。不花钱。",
+   "enabled": true,
+   "cost": false,
+   "dir": "notes",
+   "noteOn": "随笔目录挂着",
+   "noteOff": "不记随笔"
+  }
+ ]
+}
