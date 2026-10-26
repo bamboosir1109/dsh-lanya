@@ -10,6 +10,7 @@
     python classify_emotion.py --dry      # 只看分类结果，不移动文件
 """
 import io
+import os
 def _find_dsh_root():
     """找 DSH 装在哪。
 
@@ -29,7 +30,7 @@ def _find_dsh_root():
 
 
 # 根目录按脚本位置推算：<root>/napcat/xxx.py -> <root>
-ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import json
 import os
 import re
@@ -154,9 +155,17 @@ def main():
         release_lock()
         return
 
-    # 只处理平铺在 stolen 根下的，已经是子目录的跳过
+    # 只处理平铺在 stolen 根下的（已经是子目录的跳过），再加上 other/ 里的。
+    # other 是"没认出来"的桶，堆了六百多张；不重扫它，那些图永远停在 other。
     files = sorted(f for f in os.listdir(STOLEN)
-                   if f.lower().endswith(IMG_EXT) and not f.startswith("."))
+                   if os.path.isfile(os.path.join(STOLEN, f))
+                   and f.lower().endswith(IMG_EXT) and not f.startswith("."))
+    other_dir = os.path.join(STOLEN, "other")
+    if os.path.isdir(other_dir):
+        for f in sorted(os.listdir(other_dir)):
+            full = os.path.join(other_dir, f)
+            if os.path.isfile(full) and f.lower().endswith(IMG_EXT):
+                files.append("other/" + f)
     if limit:
         files = files[:limit]
 
@@ -168,7 +177,8 @@ def main():
     done = 0
     moved = 0
     for start in range(0, total, BATCH):
-        chunk = [os.path.join(STOLEN, f) for f in files[start:start + BATCH]]
+        chunk = [os.path.join(STOLEN, f.replace("/", os.sep))
+             for f in files[start:start + BATCH]]
         log("批次 %d-%d / %d" % (start + 1, start + len(chunk), total))
         verdict = classify_batch(chunk)
         done += len(verdict)

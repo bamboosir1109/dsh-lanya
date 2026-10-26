@@ -4,6 +4,80 @@
 
 ---
 
+## v1.3.3 — 2026-10-26
+
+补图：把散落在三个暂存目录里的表情包收进图库。
+
+### 之前的情况
+
+`memes\_overflow` 里躺着 **591 张**图，`_stage` 13 张，`_scratch` 3 张 ——
+它们不属于任何情绪目录，所以**她一张都用不到**。加上 stolen 原有的 89 张，
+实际可用只有那 89 张，而三个预置图包是 0 张。
+
+### 做了什么
+
+把三个暂存目录的图全部并入 `stolen/other/`：
+
+```
+_overflow  591 张
+_stage      13 张
+_scratch     3 张
+────────────────
+stolen/other 现在 616 张
+```
+
+图库总量从 **89 → 696 张**。
+
+### 分类脚本修了三处
+
+**① `_os` 未定义**
+
+文件里写的是 `_os.path.dirname(...)`，但 `_os` 从来没 import 过 ——
+**这脚本之前根本跑不起来**，一执行就 `NameError`。
+
+**② 不扫 `other/`**
+
+它只处理平铺在 `stolen` 根下的文件，`other/` 里的从不过问。
+六百多张堆在那儿永远不会被重新分类。现在两个位置都扫。
+
+**③ 幻觉的目录名**
+
+线上那份的 `DAFEIYU` 被写成了新名字，实际目录还是旧名字，所以报
+「stolen 目录不存在」。
+
+### 验证：20 个情绪全都能拿到图
+
+新增 `tests/verify_pick.py`，模拟真实的选图路径（图包 → stolen/<mood> → 兜底）：
+
+```
+happy 13  sad 15  angry 16  cute 7  shy 4  confused 15
+speechless 2  surprise 1  cheer 1  sleepy 2  hungry 1
+money 1  refuse 2  other 616  stolen 696
+
+sigh -> speechless 2     baka -> confused 15
+see  -> surprise   1     surprised -> surprise 1
+givemoney -> money 1
+
+20 / 20 能拿到图
+```
+
+### 还没做完
+
+`other` 里那 616 张**还没分类**（只是能通过兜底被用上）。
+分类要调视觉模型，一张十几秒，616 张得跑一两个小时。
+脚本已经修好，随时可以后台跑。
+
+### 验证
+
+```
+POST 接口     9 个，全部真的写
+全按钮        622 个，报错 0
+选图验证      20 / 20
+隐私          CLEAN
+```
+
+---
+
 ## v1.3.2 — 2026-10-26
 
 表情包发不出去。查下来是四个独立的问题叠在一起。
