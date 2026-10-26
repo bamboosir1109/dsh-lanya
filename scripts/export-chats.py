@@ -1,6 +1,6 @@
 # Export dsh session transcripts into readable Markdown for Dafeiyu.
 #
-# Why: the raw transcripts live in 大肥鱼-inaccessible form - zstd-compressed JSONL
+# Why: the raw transcripts live in an inaccessible form - zstd-compressed JSONL
 # under <dsh home>\sessions\<workspace>\<session>\session.v4.jsonl.zstd - so
 # "she can read every conversation" was true only in theory. This turns them into
 # plain Markdown she can actually open.

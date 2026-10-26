@@ -20,7 +20,7 @@ import sys
 import time
 
 NAPCAT = r"<WORKDIR>\napcat"
-# Deliberately not under 大肥鱼\ - she works in there.
+# Deliberately not under the data dir - she works in there.
 LOCK_ROOT = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c-\u5f52\u6863")
 LOCK = os.path.join(LOCK_ROOT, "settings.lock.json")
 ALERT = os.path.join(LOCK_ROOT, "settings-alerts.log")

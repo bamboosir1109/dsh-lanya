@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 const URL_BASE = process.argv[2] || 'http://127.0.0.1:19388/dafeiyu-panel.html'
-const OUT = '<WORKDIR>\\大肥鱼\\made\\_uitest'
+const OUT = '<WORKDIR>\\dafeiyu\\made\\_uitest'
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
 const PORT = 9334
 

@@ -5,7 +5,7 @@
 # the game. So this stays alive, watches a command file, and answers with a fresh
 # screenshot.
 #
-# Protocol (files live in 大肥鱼\browser\):
+# Protocol (files live in the data dir, browser\):
 #   cmd.json    <- she writes one action:  {"action": "goto", "url": "..."}
 #                                          {"action": "click", "x": 400, "y": 300}
 #                                          {"action": "key", "key": "ArrowLeft"}

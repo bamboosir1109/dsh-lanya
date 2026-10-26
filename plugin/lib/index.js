@@ -1,8 +1,8 @@
 /**
- * dsh-lanya — 大肥鱼的统一插件 + 控制台。
+ * dsh-lanya — 一个人设注入 + 控制台的 DSH 插件。
  *
  * 两件事合成一个包：
- *   1. 人设注入（取代 dsh-persona-dafeiyu 里大肥鱼那一路），好感度一并带上
+ *   1. 人设注入（取代 dsh-persona-dafeiyu 那一路），好感度一并带上
  *   2. 总控页面 /dsh-lanya/ —— 看住所有部件、装/更新插件、以及内存闸
  *
  * 为什么要内存闸：无头 agent 卡住没人收尸时会一路堆积。原因是无头
@@ -30,10 +30,10 @@ export const AFFINITY_SECTION = 'dafeiyu:affinity'
 // ESM 没有 __dirname，从 import.meta.url 推
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PERSONA = path.join(HERE, '..', 'napcat', 'persona.md')
-const DEFAULT_AFFINITY = '<WORKDIR>\\大肥鱼\\affinity.json'
+const DEFAULT_AFFINITY = '<WORKDIR>\\<dataDir>\\affinity.json'
 const NAPCAT_DIR = '<WORKDIR>\\napcat'
 
-// 常驻部件实测只有一百多 MB，3 GB 阈值足够松，大肥鱼的常驻部件实测只有一百多 MB，
+// 常驻部件实测只有一百多 MB，3 GB 阈值足够松。
 // 一旦看到 3 GB 就说明有人在堆积了，不是正常波动。
 const MEMORY_LIMIT_MB = 3000
 const STRAY_AGE_MIN = 6
@@ -182,7 +182,7 @@ async function stopComponent(tag) {
 const PAGE = String.raw`<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>大肥鱼控制台</title>
+<title>控制台</title>
 <style>
 :root{--bg:#12141a;--card:#1b1e27;--line:#2a2f3c;--fg:#e6e8ee;--dim:#8b93a7;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--accent:#7dd3fc}
 *{box-sizing:border-box}
@@ -213,7 +213,7 @@ pre{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10
 .muted{color:var(--dim);font-size:12px}
 </style></head><body>
 <header>
-  <h1>大肥鱼控制台</h1>
+  <h1>控制台</h1>
   <span class="sub" id="stamp">加载中…</span>
   <span style="flex:1"></span>
   <button class="primary" onclick="refresh()">刷新</button>

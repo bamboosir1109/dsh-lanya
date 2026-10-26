@@ -4,8 +4,8 @@
 # 之前只扫了 dafeiyu-001 一个包，所以 815 张里只显示 107 张。
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
-#   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
-#   大肥鱼/memes/...                        她自己的
+#   dsh-meme/memes/dafeiyu-001/memes/<tag>/  角色目录那个包
+#   <dataDir>/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -29,7 +29,7 @@ SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
 PACK_LABELS = {
     "official-001": "官方表情包",
     "whale-girl-emoji": "鲸鱼娘",
-    "dafeiyu-001": "大肥鱼",
+    "dafeiyu-001": "角色目录",
 }
 
 
@@ -74,9 +74,9 @@ def sources():
             if os.path.isdir(memes_dir) and _imgs_count(memes_dir) > 0:
                 out.append((pid, _pack_label(pid), memes_dir, True))
 
-    # 2. 大肥鱼那个包（在插件目录下，不在 meme-packs）
+    # 2. 角色目录那个包（在插件目录下，不在 meme-packs）
     if os.path.isdir(DSH_MEME):
-        out.append(("plugin", "大肥鱼", DSH_MEME, True))
+        out.append(("plugin", "角色目录", DSH_MEME, True))
 
     # 3. 她自己的
     out.append(("stolen", "收回来的", os.path.join(DAFEIYU_MEMES, "stolen"), True))

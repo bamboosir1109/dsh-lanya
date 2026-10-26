@@ -1,14 +1,14 @@
 # Keep Dafeiyu's cross-chat memory bounded.
 #
 # The problem this solves: dsh-onebot-qq appends every inbound and outbound
-# message to 大肥鱼\cross-chat.md and never prunes it. Only the last 15 lines are
+# message to the data dir, cross-chat.md and never prunes it. Only the last 15 lines are
 # ever injected into a turn, but the file grows by roughly a thousand lines a week. Two costs, both growing forever:
 #   - the plugin reads the WHOLE file on every single message just to take the
 #     tail, so every reply gets slower as the file gets longer
 #   - the file itself is pure append, so nothing is ever reclaimed
 #
 # What this does: keeps the most recent KEEP lines in place and moves everything
-# older into 大肥鱼\chats\cross-chat-archive\<date>.md, so nothing is lost but the
+# older into the data dir, chats\cross-chat-archive\<date>.md, so nothing is lost but the
 # live file stays small. Run daily.
 #
 # Before trimming, the long-term value is distilled into the people/ dossiers by
