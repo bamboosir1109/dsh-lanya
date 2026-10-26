@@ -749,8 +749,8 @@ def memory_overview():
 # 之前只扫了 dafeiyu-001 一个包，所以 815 张里只显示 107 张。
 # 现在扫三个位置：
 #   .dsh/meme-packs/<pack>/memes/<tag>/   插件市场装的包（official-001 / whale-girl-emoji）
-#   dsh-meme/memes/dafeiyu-001/memes/<tag>/  角色目录那个包
-#   <dataDir>/memes/...                        她自己的
+#   dsh-meme/memes/dafeiyu-001/memes/<tag>/  大肥鱼那个包
+#   大肥鱼/memes/...                        她自己的
 #
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
@@ -772,7 +772,7 @@ SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
 PACK_LABELS = {
     "official-001": "官方表情包",
     "whale-girl-emoji": "鲸鱼娘",
-    "dafeiyu-001": "角色目录",
+    "dafeiyu-001": "大肥鱼",
 }
 
 
@@ -817,9 +817,9 @@ def sources():
             if os.path.isdir(memes_dir) and _imgs_count(memes_dir) > 0:
                 out.append((pid, _pack_label(pid), memes_dir, True))
 
-    # 2. 角色目录那个包（在插件目录下，不在 meme-packs）
+    # 2. 大肥鱼那个包（在插件目录下，不在 meme-packs）
     if os.path.isdir(DSH_MEME):
-        out.append(("plugin", "角色目录", DSH_MEME, True))
+        out.append(("plugin", "大肥鱼", DSH_MEME, True))
 
     # 3. 她自己的
     out.append(("stolen", "收回来的", os.path.join(LANYA_MEMES, "stolen"), True))
@@ -1053,7 +1053,7 @@ def reminders_snapshot():
 
 
 def scheduled_tasks():
-    """Windows 计划任务里和她有关的那些。"""
+    """Windows 计划任务里和大肥鱼有关的那些。"""
     try:
         p = subprocess.run(
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
@@ -1160,6 +1160,24 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/memory/corpus":
+            # 三个来源各多少条：数据库 / 日记 / 判重表（刷过哪些视频）
+            try:
+                import memory_plastic as _mp
+                cp = _mp.Corpus()
+                st = cp.stats()
+                groups = _mp.cluster(cp.db)
+                mergeable = sum(1 for g in groups if _mp.merge_group(g))
+                return self._json(200, {
+                    "ok": True, "stats": st,
+                    "mergeable": mergeable,
+                    "dbAfterMerge": len(groups),
+                    "thresholds": {"merge": _mp.COMPRESS_OVER,
+                                   "target": _mp.COMPRESS_TO},
+                })
+            except Exception as e:
+                return self._json(200, {"ok": False, "error": str(e)[:200]})
+
         if path == "/api/memory/search":
             # 关键词 / 相似度检索（BM25 + 中文 bigram），不是子串过滤。
             q = parse_qs(urlparse(self.path).query)
@@ -1716,6 +1734,24 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         body = self._read()
+
+        if path == "/api/memory/consolidate":
+            try:
+                import memory_plastic as _mp
+                dry = body.get("dry") is True
+                r = _mp.consolidate(dry=dry)
+                return self._json(200, dict(ok=True, **r))
+            except Exception as e:
+                return self._json(200, {"ok": False, "error": str(e)[:200]})
+
+        if path == "/api/memory/compress":
+            try:
+                import memory_plastic as _mp
+                dry = body.get("dry") is True
+                r = _mp.compress(dry=dry)
+                return self._json(200, dict(ok=True, **r))
+            except Exception as e:
+                return self._json(200, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/budget":
             # 真写。之前这里有两条只读的分支，点保存只会把当前值读回来。

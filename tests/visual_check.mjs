@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 const URL_BASE = 'http://127.0.0.1:19388/lanya-panel.html'
-const OUT = '<WORKDIR>\dafeiyu\\made\\_uitest'
+const OUT = 'E:\\DSH work\\大肥鱼\\made\\_uitest'
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
 const PORT = 9336
 
@@ -196,6 +196,19 @@ try {
              l: svg ? svg.querySelectorAll('line').length : 0 };
   })()`)
   console.log('关系图=' + JSON.stringify(gr))
+  const pl = await ev(`(async function(){
+    const b = [...document.querySelectorAll('#page-memory button')]
+      .find(x => x.textContent.indexOf('\u770b\u770b\u6709\u591a\u5c11') >= 0);
+    if (!b) return 'no btn';
+    b.click();
+    await new Promise(r => setTimeout(r, 2000));
+    const box = document.getElementById('memCorpus');
+    const out = document.getElementById('memCorpusOut');
+    return { rows: box ? box.children.length : -1,
+             txt: out ? out.innerText.slice(0,60) : '' };
+  })()`)
+  console.log('plastic=' + JSON.stringify(pl))
+
   const mem = await ev(`(function(){
     const list = document.getElementById('memPropList');
     return { rows: list.querySelectorAll('.frow').length,

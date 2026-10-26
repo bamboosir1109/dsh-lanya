@@ -115,7 +115,28 @@ def load_entries():
 # ---------------------------------------------------------------------------
 class Index:
     def __init__(self, entries=None):
-        self.entries = entries if entries is not None else load_entries()
+        if entries is not None:
+            self.entries = entries
+        else:
+            # 有 memory_plastic 就用它拼的完整语料（数据库 + 日记 + 判重表），
+            # 这样"我上个月看过什么"能搜到，而不是只剩数据库里那几条。
+            try:
+                import memory_plastic as _mp
+                self.entries = _mp.Corpus().all()
+                # Corpus 来的条目没切过词，补齐；顺便统一 tags 字段
+                for e in self.entries:
+                    if "tok" not in e:
+                        e["tok"] = tokens(e.get("text") or "")
+                    if "ent" not in e:
+                        # 图要按实体连边，Corpus 来的条目得补上
+                        e["ent"] = entities(e.get("text") or "")
+                    if "taglist" not in e:
+                        try:
+                            e["taglist"] = json.loads(e.get("tags") or "[]")
+                        except Exception:
+                            e["taglist"] = []
+            except Exception:
+                self.entries = load_entries()
         self.n = len(self.entries)
         self.df = {}
         self.avgdl = 0.0
