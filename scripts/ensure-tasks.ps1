@@ -12,7 +12,13 @@
 # ASCII-only source.
 
 $ErrorActionPreference = 'Stop'
-$root = 'E:\DSH work'
+# Find the work directory from this script's own location: it lives in
+# <root>\napcat\, so the parent of the parent is <root>.
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if (-not (Test-Path (Join-Path $root 'napcat'))) {
+  # Fallback for a copy sitting directly under <root>.
+  $root = Split-Path -Parent $PSScriptRoot
+}
 $napcat = Join-Path $root 'napcat'
 
 function Note([string]$m) { Write-Host ('  ' + $m) }
