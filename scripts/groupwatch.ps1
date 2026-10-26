@@ -107,6 +107,15 @@ $workDir = Split-Path -Parent $PSScriptRoot
 # almost never does, so this is the real mechanism.
 $MemeEvery = 1
 
+# Being @-ed is a direct question, not ambient chatter, so it must not compete
+# with the hourly conversation budget. Fresh means "within this many minutes,
+# and after my own last line" - otherwise the same old mention would keep
+# waking her up after she already answered it.
+$mentionFreshMin = 3
+# Separate ceiling so a spam wave cannot machine-gun her. Well above anything a
+# normal group produces.
+$mentionCapPerHour = 12
+
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
@@ -249,7 +258,7 @@ function Invoke-NapCat([string]$action, $bodyObj) {
   # When NapCat is dead (QQ closed, injection lost) PostAsync never yields a
   # response, and .Result hands back $null instead of throwing. The old code
   # then called $resp.Content.* and the loop died with
-  # "cannot call a method on a null-valued expression" — once a minute, with
+  # "cannot call a method on a null-valued expression" - once a minute, with
   # nothing in the log to say the bridge was down. Say it plainly instead.
   $resp = $client.PostAsync($url, $content).Result
   if ($null -eq $resp -or $null -eq $resp.Content) {
@@ -389,6 +398,9 @@ while ($true) {
     # current speaker @-ed her.
     $recentSpeakers = New-Object System.Collections.ArrayList
     $addressedByOther = $false
+    # Newest time anyone @-ed her, so the trigger decision can tell a fresh
+    # mention from one buried in the 30-message window.
+    $lastMentionTime = [DateTime]::MinValue
     foreach ($m in $hj.data.messages) {
       $t = ''
       $mentionsMe = $false
@@ -417,7 +429,10 @@ while ($true) {
         [void]$recentSpeakers.Add($who)
         while ($recentSpeakers.Count -gt 6) { $recentSpeakers.RemoveAt(0) }
       }
-      if ($mentionsMe -and $who -ne $selfId) { $addressedByOther = $true }
+      if ($mentionsMe -and $who -ne $selfId) {
+        $addressedByOther = $true
+        if ($mt -gt $lastMentionTime) { $lastMentionTime = $mt }
+      }
       if ($who -eq $selfId) {
         $lines += ([string][char]0x6211 + '(' + [char]0x5927 + [char]0x80A5 + [char]0x9C7C + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
       } else {
@@ -466,7 +481,21 @@ while ($true) {
     # Determine WHY she is being woken BEFORE applying any cap: the two cases
     # deserve completely different budgets.
     $triggerKey = ''
-    if ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
+    # A fresh @-mention outranks everything: someone is asking her directly.
+    $freshMention = $false
+    if ($lastMentionTime -ne [DateTime]::MinValue) {
+      $mentionAge = ($now - $lastMentionTime).TotalMinutes
+      $lastSelf = $null
+      if ($state.lastSendAt) {
+        try { $lastSelf = [DateTime]::Parse([string]$state.lastSendAt) } catch { }
+      }
+      # Fresh = recent, and not already answered (the mention came after her last line).
+      if ($mentionAge -le $mentionFreshMin -and (-not $lastSelf -or $lastMentionTime -gt $lastSelf)) {
+        $freshMention = $true
+      }
+    }
+    if ($freshMention) { $triggerKey = 'mention' }
+    elseif ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
     else { $triggerKey = 'active' }
 
     # Rate limits, counted separately per trigger type.
@@ -503,7 +532,18 @@ while ($true) {
     # quiet until the hour rolls over and never catches up afterwards.
     $hourAgo = (Get-Date).AddHours(-1).ToString('o')
     $hourCount = @($state.sendTimes | Where-Object { $_ -and ([string]$_ -ge $hourAgo) }).Count
-    if ($hourCount -ge $MaxPerHourAny) {
+    if ($freshMention) {
+      # Named directly: the conversation budget does not apply. Only the
+      # anti-spam ceiling does.
+      if ($hourCount -ge $mentionCapPerHour) {
+        Write-Log ('mention but spam ceiling reached (' + $hourCount + '/' + $mentionCapPerHour + ' per hour) - skip')
+        if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
+      }
+      else {
+        Write-Log ('mention detected (' + [math]::Round(($now - $lastMentionTime).TotalMinutes,1) + 'min ago) - bypassing hourly cap (' + $hourCount + '/' + $MaxPerHourAny + ')')
+      }
+    }
+    elseif ($hourCount -ge $MaxPerHourAny) {
       Write-Log ('hourly cap reached (' + $hourCount + '/' + $MaxPerHourAny + ' per hour) - silent until next hour')
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
@@ -514,7 +554,7 @@ while ($true) {
     # live exchange.
     $dayAgo = (Get-Date).AddHours(-24).ToString('o')
     $dayCount = @($state.sendTimes | Where-Object { $_ -and ([string]$_ -ge $dayAgo) }).Count
-    if ($dayCount -ge $MaxPer24Hours) {
+    if ($dayCount -ge $MaxPer24Hours -and -not $freshMention) {
       # 
       # speaking drops by 3 percentage points per extra message, and never
       # drops below a 10% chance of still speaking (skip is capped at 90%).
@@ -569,14 +609,20 @@ while ($true) {
         if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
       }
     }
-    elseif ($sinceMine -lt $MinGapMinutes) {
+    elseif ($triggerKey -ne 'mention' -and $sinceMine -lt $MinGapMinutes) {
       Write-Log ('min gap not met (' + [math]::Round($sinceMine,1) + 'min), skip')
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
 
-    $triggerText = if ($triggerKey -eq 'quiet') {
+    $triggerText = if ($triggerKey -eq 'mention') {
+      'SOMEONE @-ED YOU ' + [math]::Round(($now - $lastMentionTime).TotalMinutes,1) +
+      ' minutes ago and is waiting for your answer. Reply to them. Do not go SILENT, ' +
+      'do not change the subject, do not answer someone else - answer the person who @-ed you.'
+    }
+    elseif ($triggerKey -eq 'quiet') {
       'group has been silent for ' + [math]::Round($idleMin,0) + ' minutes - you may start a topic'
-    } else {
+    }
+    else {
       'someone is chatting right now - you may join if it fits'
     }
 
