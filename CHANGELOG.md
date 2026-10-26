@@ -75,6 +75,16 @@ loop error: 不能对 Null 值表达式调用方法。
 memory/memes/tools/schedule/budget/config/bili/tunables/files-*`），
 `lanya-nai-01.png` 这种回得到页面上。改名前后两代前缀都认。
 
+### ⑥ 两个群监听同时在跑
+
+`DSH-GroupWatch` 计划任务按点重拉 `groupwatch.ps1`，它分不清活着的那份和
+死掉的那份，于是同一时刻能有两个监听。**两条都发**，而且只有一份在更新
+`groupwatch.state.json` —— 频率上限等于被绕过了。
+
+现在启动第一件事是抢 `groupwatch.lock`：独占句柄，抢不到就写一行
+`another groupwatch already holds the lock - exiting` 直接退出。
+进程一死句柄自动释放，残留的锁文件不碍事。
+
 ---
 
 ## v1.3.6 — 2026-10-26

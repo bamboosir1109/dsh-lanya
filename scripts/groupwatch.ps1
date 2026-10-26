@@ -348,6 +348,19 @@ function Save-State() {
 
 Write-Log ('groupwatch start: group=' + $GroupId + ' poll=' + $PollSeconds + 's quietAfter=' + $QuietMinutes + 'min minGap=' + $MinGapMinutes + 'min quietGap=' + $QuietGapMinMinutes + '-' + $QuietGapMaxMinutes + 'min/day=' + $MaxQuietStartsPerDay + ' maxPerHour=' + $MaxPerHour + ' window=' + $WindowStart + '-' + $WindowEnd + ' dryRun=' + [bool]$DryRun)
 
+# Single instance, enforced by an exclusive file handle. The DSH-GroupWatch task
+# re-launches this script on a schedule and cannot tell a live watcher from a
+# dead one, so two of them end up posting the same line twice - and only one
+# process ever updates the state file, so the rate limits get bypassed.
+# The lock dies with the process; a stale lock costs nothing.
+$lockPath = Join-Path $root 'groupwatch.lock'
+try {
+  $script:lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch {
+  Write-Log 'another groupwatch already holds the lock - exiting'
+  return
+}
+
 $stopFlag = Join-Path $root 'GROUPWATCH_OFF.flag'
 # Throttle for the "NapCat is down" line. Without this the loop writes the same
 # sentence every poll and the real cause scrolls away.
