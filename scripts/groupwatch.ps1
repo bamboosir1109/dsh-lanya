@@ -379,11 +379,13 @@ while ($true) {
   $now = Get-Date
   $hour = $now.Hour
 
-  # quiet hours
-  if ($hour -lt $WindowStart -or $hour -ge $WindowEnd) {
-    if (-not $Once) { Start-Sleep -Seconds 300; continue }
-    else { Write-Log 'outside window, exit'; break }
-  }
+  # Quiet hours are a soft flag now, not an early exit.
+  #
+  # The window used to be checked before the history was fetched, so at
+  # night she could not see an @-mention at all and stayed silent. The rule
+  # is narrower: do not START conversations at night, but do answer someone
+  # who calls her by name. So keep polling and decide once we know.
+  $outsideWindow = ($hour -lt $WindowStart -or $hour -ge $WindowEnd)
 
   try {
     $hj = (Invoke-NapCat 'get_group_msg_history' @{ group_id = $GroupId; count = 30 }) | ConvertFrom-Json
@@ -497,6 +499,17 @@ while ($true) {
     if ($freshMention) { $triggerKey = 'mention' }
     elseif ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
     else { $triggerKey = 'active' }
+
+    # Night: only a direct @ gets through. Everything else waits for the window.
+    if ($outsideWindow -and $triggerKey -ne 'mention') {
+      if ($Once) { Write-Log ('outside window (' + $hour + 'h) and not addressed - exit'); break }
+      Write-Log ('outside window (' + $hour + 'h) and not addressed - quiet for 5min')
+      Start-Sleep -Seconds 300
+      continue
+    }
+    if ($outsideWindow -and $triggerKey -eq 'mention') {
+      Write-Log ('outside window (' + $hour + 'h) but addressed - answering anyway')
+    }
 
     # Rate limits, counted separately per trigger type.
     #
