@@ -519,6 +519,56 @@ while ($true) {
     }
     if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
 
+    # Per-person dossiers. Without this she treats a regular like a stranger and
+    # a newcomer like an old friend - the dossiers existed but were never fed
+    # into the group prompt.
+    #
+    # Only the last few distinct speakers, and only the head of each file: the
+    # point is orientation, not a data dump.
+    $peopleText = ''
+    try {
+      $peopleDir = Join-Path (Join-Path $workDir $dataDirName) 'people'
+      if (Test-Path $peopleDir) {
+        $uniq = @($recentSpeakers | Select-Object -Unique)
+        $take = @($uniq | Select-Object -Last 6)
+        $blocks = @()
+        foreach ($q in $take) {
+          $fp = Join-Path $peopleDir ([string]$q + '.md')
+          $hasFile = Test-Path $fp
+          $body = ''
+          if ($hasFile) { $body = Get-Content $fp -Raw -Encoding UTF8 }
+          # Name first: needed both for a dossier block and for the stranger note.
+          $nm = ''
+          foreach ($mid in $msgNick.Keys) {
+            if ($msgOwner[$mid] -eq [string]$q) { $nm = $msgNick[$mid]; break }
+          }
+          if (-not $nm) { $nm = [string]$q }
+          if (-not $body) {
+            # No dossier yet. Say so, otherwise she guesses and either treats a
+            # stranger like an old friend or a regular like a stranger.
+            $blocks += ('- ' + $nm + ' (' + $q + ')' + "`n" +
+              '  ' + [char]0x6CA1 + [char]0x6253 + [char]0x8FC7 + [char]0x4EA4 + [char]0x9053 + ',' + [char]0x4E0D + [char]0x8BA4 + [char]0x8BC6 + '.' +
+              '  ' + [char]0x5BF9 + [char]0x4ED6 + [char]0x5C31 + [char]0x50CF + [char]0x5BF9 + [char]0x7FA4 + [char]0x91CC + [char]0x5176 + [char]0x4ED6 + [char]0x4EBA + [char]0x4E00 + [char]0x6837 + [char]0xFF0C + [char]0x5C11 + [char]0x70B9 + [char]0x719F + [char]0x7EDC + '.')
+            continue
+          }
+          $keep = @($body -split "`r?`n" |
+            Where-Object { $_.Trim() } |
+            Select-Object -First 12)
+          $excerpt = ($keep -join "`n").Trim()
+          if ($excerpt.Length -gt 600) { $excerpt = $excerpt.Substring(0, 600) + '...' }
+          # The display name as it appears in the transcript, so the two line up.
+          $nm = ''
+          foreach ($mid in $msgNick.Keys) {
+            if ($msgOwner[$mid] -eq [string]$q) { $nm = $msgNick[$mid]; break }
+          }
+          if (-not $nm) { $nm = [string]$q }
+          $blocks += ('- ' + $nm + ' (' + $q + ')' + "`n" + $excerpt)
+        }
+        if ($blocks.Count -gt 0) { $peopleText = ($blocks -join "`n`n") }
+      }
+    }
+    catch { }
+
     # Affinity gate .
     #
     # She should not engage with people on the avoid list - but ONLY when that
@@ -736,15 +786,15 @@ while ($true) {
   # "baka" that no folder had, so half the IMG requests resolved to nothing.
   $tagLines = @()
   $tagDesc = @{
-    'happy' = '\u5f00\u5fc3\u3001\u5356\u840c'; 'sad' = '\u96be\u8fc7\u3001\u65e0\u8bed';
-    'angry' = '\u751f\u6c14\u3001\u5acc\u5f03'; 'speechless' = '\u65e0\u8bed';
-    'cute' = '\u53ef\u7231'; 'shy' = '\u5bb3\u7f9e';
-    'surprise' = '\u9707\u60ca'; 'confused' = '\u56f0\u60d1';
-    'refuse' = '\u62d2\u7edd'; 'cheer' = '\u52a0\u6cb9';
-    'sleepy' = '\u56f0'; 'hungry' = '\u997f';
-    'money' = '\u8981\u94b1'; 'other' = '\u5176\u5b83';
-    'work' = '\u52a0\u73ed'; 'lazy' = '\u6446\u70c2';
-    'pray' = '\u7948\u7977'; 'cool' = '\u9177'
+    'happy' = '[char]0x5f00 + [char]0x5fc3 + [char]0x3001 + [char]0x5356 + [char]0x840c'; 'sad' = '[char]0x96be + [char]0x8fc7 + [char]0x3001 + [char]0x65e0 + [char]0x8bed';
+    'angry' = '[char]0x751f + [char]0x6c14 + [char]0x3001 + [char]0x5acc + [char]0x5f03'; 'speechless' = '[char]0x65e0 + [char]0x8bed';
+    'cute' = '[char]0x53ef + [char]0x7231'; 'shy' = '[char]0x5bb3 + [char]0x7f9e';
+    'surprise' = '[char]0x9707 + [char]0x60ca'; 'confused' = '[char]0x56f0 + [char]0x60d1';
+    'refuse' = '[char]0x62d2 + [char]0x7edd'; 'cheer' = '[char]0x52a0 + [char]0x6cb9';
+    'sleepy' = '[char]0x56f0'; 'hungry' = '[char]0x997f';
+    'money' = '[char]0x8981 + [char]0x94b1'; 'other' = '[char]0x5176 + [char]0x5b83';
+    'work' = '[char]0x52a0 + [char]0x73ed'; 'lazy' = '[char]0x6446 + [char]0x70c2';
+    'pray' = '[char]0x7948 + [char]0x7977'; 'cool' = '[char]0x9177'
   }
   $allTags = @('happy','sad','angry','speechless','cute','shy','surprise',
                'confused','refuse','cheer','sleepy','hungry','money','other',
@@ -759,7 +809,7 @@ while ($true) {
       }
     }
     if ($cnt -gt 0) {
-      $tagLines += ('- ' + $tg + ' ' + $tagDesc[$tg] + '\uff08' + $cnt + ' \u5f20\uff09')
+      $tagLines += ('- ' + $tg + ' ' + $tagDesc[$tg] + '[char]0xff08' + $cnt + ' [char]0x5f20 + [char]0xff09')
     }
   }
   $stCount = 0
@@ -770,7 +820,7 @@ while ($true) {
   }
   $memeTags = ($tagLines -join "`n")
   if ($stCount -gt 0) {
-    $memeTags += ("`n`n**\u8fd8\u6709\u4e00\u4e2a\u4f60\u81ea\u5df1\u7684\u6536\u85cf\u5939**\uff1a`n`n- **stolen \u7fa4\u53cb\u8868\u60c5\u5305**\uff08" + $stCount + " \u5f20\uff09")
+    $memeTags += ("`n`n**[char]0x8fd8 + [char]0x6709 + [char]0x4e00 + [char]0x4e2a + [char]0x4f60 + [char]0x81ea + [char]0x5df1 + [char]0x7684 + [char]0x6536 + [char]0x85cf + [char]0x5939**[char]0xff1a`n`n- **stolen [char]0x7fa4 + [char]0x53cb + [char]0x8868 + [char]0x60c5 + [char]0x5305**[char]0xff08" + $stCount + " [char]0x5f20 + [char]0xff09")
   }
 
   $tpl = Read-AnyText $promptPath
@@ -780,6 +830,7 @@ while ($true) {
       Replace('{{MINE}}', $myRecent).
       Replace('{{TRIGGER}}', $triggerText).
   Replace('{{MEME_TAGS}}', $memeTags).
+  Replace('{{PEOPLE}}', $peopleText).
   Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
@@ -956,7 +1007,7 @@ while ($true) {
   # picture should not depend on it remembering a third line: after $MemeEvery
   # speeches without one, pick a neutral mood here instead.
   if (-not $imgPath -and [int]$state.speakSinceMeme -ge $MemeEvery) {
-      $seriousWords = @('\u751f\u75c5','\u533b\u9662','\u96be\u53d7','\u60f3\u54ed','\u5d29\u6e83','\u53bb\u4e16','\u5206\u624b','\u5435\u67b6','\u5931\u4e1a','\u5de5\u8d44')
+      $seriousWords = @('[char]0x751f + [char]0x75c5','[char]0x533b + [char]0x9662','[char]0x96be + [char]0x53d7','[char]0x60f3 + [char]0x54ed','[char]0x5d29 + [char]0x6e83','[char]0x53bb + [char]0x4e16','[char]0x5206 + [char]0x624b','[char]0x5435 + [char]0x67b6','[char]0x5931 + [char]0x4e1a','[char]0x5de5 + [char]0x8d44')
       $serious = $false
       foreach ($w in $seriousWords) {
         if ($reply -and $reply.Contains([string]([regex]::Unescape($w)))) { $serious = $true }
