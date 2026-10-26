@@ -246,7 +246,15 @@ function Invoke-NapCat([string]$action, $bodyObj) {
   $json = $bodyObj | ConvertTo-Json -Compress -Depth 10
   $content = New-Object System.Net.Http.StringContent($json, [System.Text.Encoding]::UTF8, 'application/json')
   $url = ([string]$napcat.napcatHttp).TrimEnd('/') + '/' + $action
+  # When NapCat is dead (QQ closed, injection lost) PostAsync never yields a
+  # response, and .Result hands back $null instead of throwing. The old code
+  # then called $resp.Content.* and the loop died with
+  # "cannot call a method on a null-valued expression" — once a minute, with
+  # nothing in the log to say the bridge was down. Say it plainly instead.
   $resp = $client.PostAsync($url, $content).Result
+  if ($null -eq $resp -or $null -eq $resp.Content) {
+    throw ('napcat-unreachable: ' + $action)
+  }
   return [System.Text.Encoding]::UTF8.GetString($resp.Content.ReadAsByteArrayAsync().Result)
 }
 
@@ -341,6 +349,9 @@ function Save-State() {
 Write-Log ('groupwatch start: group=' + $GroupId + ' poll=' + $PollSeconds + 's quietAfter=' + $QuietMinutes + 'min minGap=' + $MinGapMinutes + 'min quietGap=' + $QuietGapMinMinutes + '-' + $QuietGapMaxMinutes + 'min/day=' + $MaxQuietStartsPerDay + ' maxPerHour=' + $MaxPerHour + ' window=' + $WindowStart + '-' + $WindowEnd + ' dryRun=' + [bool]$DryRun)
 
 $stopFlag = Join-Path $root 'GROUPWATCH_OFF.flag'
+# Throttle for the "NapCat is down" line. Without this the loop writes the same
+# sentence every poll and the real cause scrolls away.
+$script:napcatDownLoggedAt = [DateTime]::MinValue
 while ($true) {
   if (Test-Path $stopFlag) { Write-Log 'stop flag present - exiting'; break }
   $now = Get-Date
@@ -856,7 +867,18 @@ while ($true) {
       Save-State
     }
   } catch {
-    Write-Log ('loop error: ' + $_.Exception.Message)
+    $msg = $_.Exception.Message
+    if ($msg -like 'napcat-unreachable*') {
+      # Not a groupwatch fault: the bridge is gone (QQ closed, injection lost).
+      # Keep polling, but say it once every ten minutes rather than once a minute.
+      if (([DateTime]::Now - $script:napcatDownLoggedAt).TotalMinutes -ge 10) {
+        $script:napcatDownLoggedAt = [DateTime]::Now
+        Write-Log ('napcat down (' + $msg + ') - waiting; QQ is probably closed')
+      }
+    }
+    else {
+      Write-Log ('loop error: ' + $msg + ' @ ' + $_.InvocationInfo.PositionMessage)
+    }
   }
 
   if ($Once) { break }

@@ -3121,13 +3121,14 @@ async function loadConfig(){
 
 async function saveConfig(){
   const split = (v) => v.split(/[,，]/).map(s => s.trim()).filter(Boolean);
-  const cfg = {
-    adminQQ: split($('cfgAdminQQ').value),
-    adminCall: $('cfgCall').value.trim() || '爸爸',
-    adminCallVariants: split($('cfgVariants').value),
-    adminIdentity: '', novelTitle: '', penNames: [],
-    fanGroupQQ: 'YOUR_GROUP_ID', botQQ: 'BOT_QQ', maxReminderLen: 40
-  };
+const cfg = {
+      // Send ONLY what this form edits. The endpoint merges now, but sending a
+      // full object here is how an identity save used to wipe novelTitle,
+      // penNames, adminIdentity and the group / bot QQ numbers.
+      adminQQ: split($('cfgAdminQQ').value),
+      adminCall: $('cfgCall').value.trim() || '爸爸',
+      adminCallVariants: split($('cfgVariants').value)
+    };
   if(!cfg.adminQQ.length){ show('cfgOut', '管理员 QQ 不能空——不然她不知道谁说话算数。'); return; }
   show('cfgOut', '保存中…');
   try{

@@ -23,19 +23,71 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-ROOT = os.path.join(REPO, "\u5c9a\u5a05", "made")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _project_conf():
+    """config/project.json, or {} when it is missing/unreadable."""
+    try:
+        with open(os.path.join(REPO, "config", "project.json"), "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
+
+
+def _data_dir_name():
+    """Her data folder is <workdir>/<name>/.
+
+    The repo ships a generic name (大肥鱼) and a personalised install usually
+    renames it, so hardcoding one of them makes the other install look empty.
+    Pick whichever candidate actually holds her files: a directory that exists
+    but is an empty leftover (an old rename, a partial install) must not win
+    over the one with the config, budget and meme index in it.
+    """
+    markers = ("lanya-config.json", "budget.json", "lanya-tunables.json",
+               "activities.json", "lanya-memes-tags.json")
+    want = str(_project_conf().get("dataDirName") or "").strip()
+    best = ""
+    best_score = -1
+    for cand in (want, "\u5927\u80a5\u9c7c", "\u5c9a\u5a05"):
+        if not cand:
+            continue
+        base = os.path.join(REPO, cand)
+        if not os.path.isdir(base):
+            continue
+        score = sum(1 for m in markers if os.path.isfile(os.path.join(base, m)))
+        if score > best_score:
+            best, best_score = cand, score
+    if best and best_score > 0:
+        return best
+    return want or "\u5c9a\u5a05"
+
+
+DATA_NAME = _data_dir_name()
+DATA = os.path.join(REPO, DATA_NAME)
+ROOT = os.path.join(DATA, "made")
 NAPCAT = os.path.join(REPO, "napcat")
-PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05\u4eba\u8bbe\u6b63\u6587.md".replace("\u5c9a\u5a05", "\u5c9a\u5a05-"))
-# 上面这种拼法容易出错，直接用 os.path.join 拼真实文件名更稳
-PERSONA = os.path.join(NAPCAT, "\u5c9a\u5a05" + "-\u4eba\u8bbe\u6b63\u6587.md")
-CONFIG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-config.json")
-TUNABLES = os.path.join(REPO, "\u5c9a\u5a05", "lanya-tunables.json")
-MEMECFG  = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-config.json")
-MEME_TAGS = os.path.join(REPO, "\u5c9a\u5a05", "lanya-memes-tags.json")
+PERSONA = os.path.join(NAPCAT, DATA_NAME + "-\u4eba\u8bbe\u6b63\u6587.md")
+CONFIG  = os.path.join(DATA, "lanya-config.json")
+TUNABLES = os.path.join(DATA, "lanya-tunables.json")
+MEMECFG  = os.path.join(DATA, "lanya-memes-config.json")
+MEME_TAGS = os.path.join(DATA, "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
+# DSH install root. Found rather than assumed.
+DSH_ROOT = os.environ.get("DSH_ROOT") or ""
+if not DSH_ROOT:
+    _rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    for _d in "CDEFG":
+        _c = _d + ":\\DSH"
+        if os.path.isfile(os.path.join(_c, _rel)):
+            DSH_ROOT = _c
+            break
+    if not DSH_ROOT:
+        DSH_ROOT = "D:\\DSH"
+
 DSH_CLI = os.path.join(DSH_ROOT,
                       "resources", "runtime", "cli", "bin", "dsh.cmd")
 
@@ -269,7 +321,7 @@ def run_task(name):
 # ---------------------------------------------------------------------------
 # Extra data the multi-page console needs: budget, memes, notes/diary, works.
 # ---------------------------------------------------------------------------
-LANYA_DIR = os.path.join(REPO, "\u5c9a\u5a05")
+LANYA_DIR = DATA
 BUDGET    = os.path.join(LANYA_DIR, "budget.json")
 MEME_ROOT = os.path.join(
     os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop",
@@ -278,15 +330,15 @@ MEME_ROOT = os.path.join(
 
 # 允许页面上浏览的目录。白名单，不接受任意路径 - 这是给浏览器用的接口，
 # 不能让它顺着 ../ 读到别处去。
-ACTIVITIES = os.path.join(REPO, "\u5c9a\u5a05", "activities.json")
-ARCHIVE_ROOT = os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863")
+ACTIVITIES = os.path.join(DATA, "activities.json")
+ARCHIVE_ROOT = os.path.join(REPO, DATA_NAME + "-\u5f52\u6863")
 
 FILE_DIRS = {
     "diary":  os.path.join(LANYA_DIR, "diary"),
     "notes":  os.path.join(LANYA_DIR, "notes"),
     "made":   os.path.join(LANYA_DIR, "made"),
     "people": os.path.join(LANYA_DIR, "people"),
-    "archive": os.path.join(REPO, "\u5c9a\u5a05-\u5f52\u6863"),
+    "archive": ARCHIVE_ROOT,
 }
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -315,6 +367,27 @@ def list_memes(tag=None):
         if files:
             out.append({"tag": tg, "count": len(files), "files": files})
     return out
+
+
+# The panel's own files are not her works. Deciding that by a "lanya-" prefix
+# broke the moment everything got renamed: every picture and page in made/ then
+# started with lanya- too, and the works page went blank. Match the artifacts
+# the server actually writes, in either naming generation.
+_PANEL_PREFIXES = ("lanya-panel", "dafeiyu-panel", "theme-")
+_PANEL_STEMS = {"state", "persona", "memory", "memes", "memes-config", "tools",
+                "schedule", "budget", "config", "bili", "tunables"}
+
+
+def is_panel_artifact(name):
+    low = name.lower()
+    if low.startswith(_PANEL_PREFIXES):
+        return True
+    for pre in ("lanya-", "dafeiyu-"):
+        if low.startswith(pre):
+            rest = low[len(pre):]
+            stem = rest.split(".")[0]
+            return stem.startswith("files-") or stem in _PANEL_STEMS
+    return False
 
 
 def list_dir_files(key, with_preview=False, limit=0):
@@ -361,9 +434,10 @@ def list_dir_files(key, with_preview=False, limit=0):
             st = os.stat(p)
         except OSError:
             continue
-        # 面板自己的快照（lanya-*.json / lanya-persona.txt）不是她的作品，
-        # 列在作品页里只会让人更看不懂。
-        if f.startswith("lanya-") or f.startswith("theme-"):
+        # 面板自己的快照（state/memory/memes/... ）不是她的作品，
+        # 列在作品页里只会让人更看不懂。判断按服务真正写的那几个文件名来，
+        # 不再按前缀——改名之后前缀把所有东西都吞掉了。
+        if is_panel_artifact(f):
             continue
         row = {"name": f, "size": st.st_size, "mtime": int(st.st_mtime)}
         if with_preview:
@@ -763,7 +837,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-LANYA_MEMES = os.path.join(REPO, "\u5c9a\u5a05", "memes")
+LANYA_MEMES = os.path.join(DATA, "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}
@@ -1013,7 +1087,7 @@ import json
 import os
 import subprocess
 
-LANYA_DIR_ = os.path.join(REPO, "\u5c9a\u5a05")
+LANYA_DIR_ = DATA
 REMINDERS_ = os.path.join(LANYA_DIR_, "reminders.json")
 
 # 插件调度器已经接管的那些，在页面上标出来，免得用户以为重复的也需要留
@@ -1998,15 +2072,33 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/memory":
             return self._json(200, {"ok": True, "memory": memory_overview()})
 
+        if path == "/api/bili/duty":
+            # 真的写。之前这里放的是读处理器的副本，面板点保存只是把当前内容
+            # 读回来再显示一遍，文件一个字都没变。
+            want = body.get("text")
+            if not isinstance(want, str):
+                return self._json(400, {"ok": False, "error": "text must be a string"})
+            try:
+                import uuid as _uduty
+                tmp = BILI_DUTY + "." + _uduty.uuid4().hex[:8] + ".tmp"
+                with open(tmp, "w", encoding="utf-8", newline="") as _fd:
+                    _fd.write(want)
+                for _k in range(6):
+                    try:
+                        os.replace(tmp, BILI_DUTY)
+                        break
+                    except OSError:
+                        if _k == 5:
+                            raise
+                        import time as _td
+                        _td.sleep(0.08)
+                return self._json(200, {"ok": True, "bytes": len(want)})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+
         if path == "/api/bili":
             return self._json(200, {"ok": True, "bili": bili_snapshot()})
 
-        if path == "/api/bili/duty":
-            try:
-                with open(BILI_DUTY, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "text": fh.read()})
-            except Exception as e:
-                return self._json(200, {"ok": False, "text": "", "error": str(e)})
 
         if path == "/api/tools/check":
             q = parse_qs(urlparse(self.path).query)
@@ -2057,12 +2149,6 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/bili":
             return self._json(200, {"ok": True, "bili": bili_snapshot()})
 
-        if path == "/api/bili/duty":
-            try:
-                with open(BILI_DUTY, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "text": fh.read()})
-            except Exception as e:
-                return self._json(200, {"ok": False, "text": "", "error": str(e)})
 
         if path == "/api/tools/check":
             q = parse_qs(urlparse(self.path).query)
@@ -2074,20 +2160,6 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/tools":
             return self._json(200, {"ok": True, "tools": tools_snapshot()})
 
-        if path == "/api/bili/duty":
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return self._json(400, {"ok": False, "error": "空内容不保存"})
-            try:
-                bak = BILI_DUTY + ".bak"
-                if os.path.isfile(BILI_DUTY):
-                    import shutil
-                    shutil.copy2(BILI_DUTY, bak)
-                with open(BILI_DUTY, "w", encoding="utf-8") as fh:
-                    fh.write(text)
-                return self._json(200, {"ok": True, "chars": len(text)})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/memes/config":
             cfg = body.get("config")
@@ -2551,11 +2623,40 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(cfg, dict):
                 return self._json(400, {"ok": False, "error": "config must be an object"})
             try:
-                tmp = CONFIG + ".tmp"
+                # Merge, do not replace. This used to overwrite the whole file,
+                # and the panel sent a hardcoded object, so every identity save
+                # wiped adminIdentity / novelTitle / penNames and reset the
+                # group and bot QQ numbers to whatever the client had baked in.
+                cur = {}
+                if os.path.isfile(CONFIG):
+                    try:
+                        with open(CONFIG, "r", encoding="utf-8-sig") as fh:
+                            cur = json.load(fh)
+                        if not isinstance(cur, dict):
+                            cur = {}
+                    except Exception:
+                        cur = {}
+                merged = dict(cur)
+                for k, v in cfg.items():
+                    # An explicit null means "remove this key".
+                    if v is None:
+                        merged.pop(k, None)
+                    else:
+                        merged[k] = v
+                import uuid as _ucfg
+                tmp = CONFIG + "." + _ucfg.uuid4().hex[:8] + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(cfg, fh, ensure_ascii=False, indent=2)
-                os.replace(tmp, CONFIG)
-                return self._json(200, {"ok": True})
+                    json.dump(merged, fh, ensure_ascii=False, indent=2)
+                for _try in range(6):
+                    try:
+                        os.replace(tmp, CONFIG)
+                        break
+                    except OSError:
+                        if _try == 5:
+                            raise
+                        import time as _t
+                        _t.sleep(0.08)
+                return self._json(200, {"ok": True, "keys": sorted(merged.keys())})
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
 

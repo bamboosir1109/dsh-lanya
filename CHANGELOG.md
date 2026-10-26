@@ -4,6 +4,79 @@
 
 ---
 
+## v1.3.7 — 2026-10-26
+
+QQ 一掉线，群监听就每分钟崩一次；面板把她的目录名写死在十三个地方；
+`install.ps1` 装出来是一套跑不起来的树。
+
+### ① NapCat 断了，groupwatch 每分钟崩一次
+
+`Invoke-NapCat` 里的 `PostAsync` 在桥断掉时**不抛异常，返回 null**。下一行
+`$resp.Content.ReadAsByteArrayAsync()` 就是：
+
+```
+loop error: 不能对 Null 值表达式调用方法。
+```
+
+日志里没有「桥断了」这句话，只有一句栈信息，而且一分钟一条。10-26 16:42 到
+16:52 之间 QQ 掉了十分钟，日志里除了这行什么都没有。
+
+现在断线时抛 `napcat-unreachable: <action>`，循环捕获它、**每十分钟说一次**
+「QQ 大概没开」，然后照常轮询等它回来。真正的异常仍然带栈，不再被吞。
+
+### ② 面板把「岚娅」写死在十三处
+
+`config/project.json` 里目录名是 `大肥鱼`，`panel-server.py` 里全是写死的
+`岚娅`。新装的人按配置装出来叫 `大肥鱼`，面板打开一片空；本机反过来，
+仓库里那份代码在别处跑就是错的。
+
+现在只认一处：`_data_dir_name()` 挑**真正放着她文件的那个目录**（有没有
+`lanya-config.json`、`budget.json`、`lanya-tunables.json`…），空的残留目录
+赢不了。十三处写死合并成 `DATA` / `DATA_NAME` 两个名字。
+
+顺带修掉 `PERSONA` 那两行互相覆盖的拼法。
+
+### ③ `install.ps1` 装完跑不起来
+
+它把面板拷进 `<workdir>\大肥鱼\panel.html`，而服务读的是
+`<workdir>\<data>\made\lanya-panel.html`；服务本体还叫
+`dafeiyu-panel-server.py`；人设和身份模板一个都没铺。照着 README 装一遍，
+面板打不开、人设是空的。
+
+现在按代码真正读的路径和名字摊平：`server/` → `lanya-panel-server.py`、
+`panel/` → `<data>\made\lanya-panel.html`、`docs/` → 人设 + 三份配置模板，
+并把 `made/ notes/ diary/ people/ memes/ chats/` 建出来。`scripts/` 里跑出来的
+`*.log`、`*.bak-*` 不再跟着拷。
+
+目录名同样按「现成的那份有文件」来认，`-DataDir` 可以强指。
+
+### ④ 发布前的隐私扫描
+
+`scripts/privacy-scan.py`，对 **git 会发布的文件**跑两类规则：
+
+| 级别 | 抓什么 |
+|---|---|
+| BLOCK | QQ 号（只在身份上下文里算）、邮箱、32 位 hex token、`privacy-terms.local.json` 里的真名笔名 |
+| NOTE | 绝对路径、IP —— 是环境，不点名 |
+
+有 BLOCK 就退出码 1，别推。这条教训是 10-25 的：脱敏把**线上那份**配置里的
+群号换成了 `YOUR_GROUP_ID`，groupwatch 取群历史全空，她一整天没在读群。
+
+`.gitignore` 补上 `lanya-config.json`（改名后漏了，只挡了 `dafeiyu-config.json`）
+和 `privacy-terms.local.json`。
+
+### ⑤ 作品页一张图都没有
+
+`made/` 里本来混着两类东西：她做的东西，和面板自己写的快照。代码靠
+「文件名以 `lanya-` 开头」来分辨，改名那天这条规则失效了——**所有**图片、
+所有页面都变成 `lanya-*` 开头，作品页于是永远空着。
+
+现在按服务真正写的那几个文件名判断（`*-panel*`、`theme-*`、`*-state/persona/
+memory/memes/tools/schedule/budget/config/bili/tunables/files-*`），
+`lanya-nai-01.png` 这种回得到页面上。改名前后两代前缀都认。
+
+---
+
 ## v1.3.6 — 2026-10-26
 
 零花钱从来没算过。

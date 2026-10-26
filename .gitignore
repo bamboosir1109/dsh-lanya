@@ -3,8 +3,13 @@ node_modules/
 .DS_Store
 
 # 本机的身份配置（管理员 QQ、笔名、真实身份）绝不能提交
+# 改名前后两个名字都要挡：只挡 dafeiyu-* 的时候，lanya-config.json 是能被提交的
 dafeiyu-config.json
+lanya-config.json
 *.local.json
+
+# 隐私扫描要额外盯的词（真名、笔名）。本机才有，不进仓库。
+privacy-terms.local.json
 
 # Python
 __pycache__/
