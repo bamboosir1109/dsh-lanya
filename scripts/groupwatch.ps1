@@ -22,7 +22,7 @@
 param(
   [switch]$DryRun,
   [switch]$Once,
-  [string]$GroupId = 'YOUR_GROUP_ID',
+  [string]$GroupId = '',
   [int]$PollSeconds = 60,
   [int]$QuietMinutes = 180,
   # Raised a lot on the owner's request (owner: make her much more active than this)
@@ -84,6 +84,14 @@ if (-not $PSBoundParameters.ContainsKey('PollSeconds')) {
 }
 $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
 
+# $root is the napcat folder; everything of hers lives one level up.
+# Join-Path $root $dataDirName silently produced <napcat>\<dataDir>, which
+# does not exist - that is why budget, tunables, affinity and lanya-config
+# were all being read as empty.
+# Use $PSScriptRoot, not $root: at this point $root still holds the PARENT
+# of the script folder, so Split-Path -Parent $root would give the drive root.
+$workDir = Split-Path -Parent $PSScriptRoot
+
 
 # ---------------------------------------------------------------------------
 # Respect the group spending cap.
@@ -94,7 +102,7 @@ $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927
 #
 # Write-Log is defined further down, so this uses Write-Output directly.
 # ---------------------------------------------------------------------------
-$budgetPath = Join-Path (Join-Path $root $dataDirName) 'budget.json'
+$budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
     $bud = Get-Content $budgetPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -115,7 +123,10 @@ if (Test-Path $budgetPath) {
 #
 # ASCII-only source.
 # ---------------------------------------------------------------------------
-$tunablesPath = Join-Path (Join-Path $root $dataDirName) 'dafeiyu-tunables.json'
+$tunablesPath = Join-Path (Join-Path $workDir $dataDirName) 'dafeiyu-tunables.json'
+    if (-not (Test-Path $tunablesPath)) {
+      $tunablesPath = Join-Path (Join-Path $workDir $dataDirName) 'lanya-tunables.json'
+    }
 if (Test-Path $tunablesPath) {
   try {
     $tun = Get-Content $tunablesPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -128,12 +139,14 @@ if (Test-Path $tunablesPath) {
   } catch { }
 }
 
+
+
 $root       = $PSScriptRoot
 $promptPath = Join-Path $root 'groupwatch.prompt.txt'
 $statePath  = Join-Path $root 'groupwatch.state.json'
 # Per-QQ affinity. level "avoid" means she does not answer that person at all.
 # The folder name is built from code points so this file stays ASCII-only.
-$affinityPath = Join-Path (Join-Path $root $dataDirName) 'affinity.json'
+$affinityPath = Join-Path (Join-Path $workDir $dataDirName) 'affinity.json'
 $logPath    = Join-Path $root 'groupwatch.log'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
@@ -143,6 +156,30 @@ function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
   Add-Content -Path $logPath -Value $line -Encoding UTF8
   Write-Output $line
+}
+
+
+# Nothing above may have set it (missing or renamed tunables file). Fall back
+# to the shared config so the group id is never the empty string - NapCat
+# rejects that with "Schema compilation error: Expected string" and the whole
+# history read fails, which looks like "she stopped posting memes" from the
+# outside.
+if (-not $GroupId) {
+  $cfgPath = Join-Path (Join-Path $workDir $dataDirName) 'lanya-config.json'
+  if (Test-Path $cfgPath) {
+    try {
+      $cfg0 = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($cfg0.fanGroup) { $GroupId = [string]$cfg0.fanGroup }
+      if (-not $GroupId -and $cfg0.fanGroupQQ) { $GroupId = [string]$cfg0.fanGroupQQ }
+    } catch { }
+  }
+}
+if (-not $GroupId) {
+  $GroupId = [string](Get-ProjectConfValue 'fanGroup' '')
+}
+if (-not $GroupId) {
+  Write-Log 'no group id configured; refusing to poll'
+  return
 }
 
 function Read-AnyText([string]$path) {
@@ -162,7 +199,7 @@ $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 # (stealmemes.py drops them in <dafeiyu>\memes\stolen). That is what makes mood
 # "stolen" work, so she can throw a groupmate's own joke back at them.
 $memeRoots = @(
-  (Join-Path $root $dataDirName),
+  (Join-Path $workDir $dataDirName),
   '%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-meme\memes\dafeiyu-001',
   '%USERPROFILE%\.dsh\meme-packs\official-001',
   '%USERPROFILE%\.dsh\meme-packs\whale-girl-emoji'
