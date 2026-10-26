@@ -4,6 +4,60 @@
 
 ---
 
+## v1.3.5 — 2026-10-26
+
+表情包真的发出来了。
+
+### 兜底代码放错了作用域
+
+v1.3.4 加的确定性兜底，我把它插在了 `if ($rows.Count -ge 3 ...)` **里面**。
+
+意思是：**只有当模型写了 IMG 那一行，兜底才会执行** —— 而模型从来不写。
+所以那段代码一次都没跑到，日志里连一行都没有。
+
+用大括号深度数出来的：
+
+```
+L671  depth 2->3   if ($rows.Count -ge 3 ...) {     <- IMG 判断
+L787  depth 3       if (-not $imgPath -and ...) {   <- 兜底，错在这里
+```
+
+挪到 depth 2（IMG 块外面）之后就好了。
+
+### 严肃话题判断也修了
+
+```powershell
+$serious = $reply -match '\u751f\u75c5|...'   # PowerShell 单引号不认 \u 转义
+```
+
+这串是**字面量**，永远匹配不上。换成数组 + `[regex]::Unescape`。
+
+### 实测
+
+```
+[14:47:52] meme auto-attached mood=happy picked=0C9F43B9....jpg
+[14:47:52] reply: 你什么都要啊
+[14:47:52] DRY RUN - not sending (would attach ...)
+
+[14:48:35] meme auto-attached mood=cheer picked=...jpg
+[14:48:35] reply: 翻到了，奶牛设定还真有
+[14:48:35] deliver(text):  retcode 0
+[14:48:37] deliver(image): retcode 0
+```
+
+**先说话，2 秒后甩图，两条消息。**
+
+### 验证
+
+```
+选图函数   6 次调用全部返回真实文件
+duration   兜底日志出现
+真发        text + image 各 retcode 0
+隐私        CLEAN
+```
+
+---
+
 ## v1.3.4 — 2026-10-26
 
 她一张图都发不出去。真正的原因跟图库没关系。

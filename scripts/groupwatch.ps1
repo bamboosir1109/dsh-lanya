@@ -780,25 +780,6 @@ while ($true) {
         }
       }
 
-    # Deterministic fallback. The model almost never writes the IMG line, so in
-    # practice she answered text-only forever - the owner's complaint. Attaching a
-    # picture should not depend on it remembering a third line: after $MemeEvery
-    # speeches without one, pick a neutral mood here instead.
-    if (-not $imgPath -and [int]$state.speakSinceMeme -ge $MemeEvery) {
-      $serious = $reply -match '\u751f\u75c5|\u533b\u9662|\u96be\u53d7|\u60f3\u54ed|\u5d29\u6e83|\u53bb\u4e16|\u5206\u624b|\u5435\u67b6|\u5931\u4e1a|\u5de5\u8d44'
-      if ($serious) {
-        Write-Log 'meme skipped: serious topic'
-      }
-      else {
-        $imgPath = Get-MemeIfDue
-        if ($imgPath) {
-          Write-Log ('meme auto-attached mood=' + $script:autoMood + ' picked=' + (Split-Path $imgPath -Leaf))
-        }
-        else {
-          Write-Log 'meme auto-attach found nothing'
-        }
-      }
-    }
 
       if ($imgPath) {
         # Remember recent picks, newest last. A long window on purpose: the point
@@ -810,6 +791,30 @@ while ($true) {
         Save-State
       }
     }
+
+  # Deterministic fallback. The model almost never writes the IMG line, so in
+  # practice she answered text-only forever - the owner's complaint. Attaching a
+  # picture should not depend on it remembering a third line: after $MemeEvery
+  # speeches without one, pick a neutral mood here instead.
+  if (-not $imgPath -and [int]$state.speakSinceMeme -ge $MemeEvery) {
+      $seriousWords = @('\u751f\u75c5','\u533b\u9662','\u96be\u53d7','\u60f3\u54ed','\u5d29\u6e83','\u53bb\u4e16','\u5206\u624b','\u5435\u67b6','\u5931\u4e1a','\u5de5\u8d44')
+      $serious = $false
+      foreach ($w in $seriousWords) {
+        if ($reply -and $reply.Contains([string]([regex]::Unescape($w)))) { $serious = $true }
+      }
+    if ($serious) {
+      Write-Log 'meme skipped: serious topic'
+    }
+    else {
+      $imgPath = Get-MemeIfDue
+      if ($imgPath) {
+        Write-Log ('meme auto-attached mood=' + $script:autoMood + ' picked=' + (Split-Path $imgPath -Leaf))
+      }
+      else {
+        Write-Log 'meme auto-attach found nothing'
+      }
+    }
+  }
 
     Write-Log ('reply: ' + $reply)
     if ($DryRun) { Write-Log ('DRY RUN - not sending' + $(if ($imgPath) { ' (would attach ' + (Split-Path $imgPath -Leaf) + ')' } else { '' })); if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }

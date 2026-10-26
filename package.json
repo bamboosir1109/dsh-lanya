@@ -1,6 +1,6 @@
 {
   "name": "dsh-lanya",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "一只住在 QQ 群里的狼：人设注入 + 长期记忆 + 表情包情绪分类 + 自主刷 B 站 + 14 页可视化控制台。",
   "type": "module",
   "main": "lib/index.js",
