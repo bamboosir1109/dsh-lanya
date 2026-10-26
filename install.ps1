@@ -34,7 +34,7 @@ $PersonaSuffix = ([char]0x4EBA + [char]0x8BBE + [char]0x6B63 + [char]0x6587)  # 
 # Her folder name comes from config/project.json so the repo can stay generic
 # and a personalised install can rename it without touching code. An existing
 # folder that already holds her files wins over the configured default: that is
-# how a renamed install (岚娅 here) keeps being updated instead of getting a
+# how a renamed install (大肥鱼 here) keeps being updated instead of getting a
 # second, empty folder next to it.
 if (-not $DataDir) {
     $confPath = Join-Path $Repo 'config\project.json'
