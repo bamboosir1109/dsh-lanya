@@ -72,7 +72,7 @@ if (Test-Path $tunablesPath) {
 ### 验证
 
 ```
-groupwatch start: group=310647026   <- 之前是空的
+groupwatch start: group=<群号>   <- 之前是空的
 verdict=SPEAK
 deliver(text): retcode 0
 选图函数 6 次调用全部返回真实文件
