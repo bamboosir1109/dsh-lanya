@@ -102,6 +102,11 @@ $workDir = Split-Path -Parent $PSScriptRoot
 #
 # Write-Log is defined further down, so this uses Write-Output directly.
 # ---------------------------------------------------------------------------
+# How many speeches may pass without a picture before one is attached
+# automatically. The model is supposed to ask with an IMG line but it
+# almost never does, so this is the real mechanism.
+$MemeEvery = 3
+
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
@@ -144,6 +149,9 @@ if (Test-Path $tunablesPath) {
 $root       = $PSScriptRoot
 $promptPath = Join-Path $root 'groupwatch.prompt.txt'
 $statePath  = Join-Path $root 'groupwatch.state.json'
+# Speeches since the last picture, persisted so a restart does not
+# reset the count and delay the first meme again.
+
 # Per-QQ affinity. level "avoid" means she does not answer that person at all.
 # The folder name is built from code points so this file stays ASCII-only.
 $affinityPath = Join-Path (Join-Path $workDir $dataDirName) 'affinity.json'
@@ -151,6 +159,26 @@ $logPath    = Join-Path $root 'groupwatch.log'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
 $selfId     = 'BOT_QQ'
+
+function Get-MemeIfDue {
+  # Pick a neutral, low-risk mood. Deliberately not angry or sad: attaching
+  # those to an ordinary line can land badly.
+  $moods = @('happy', 'cute', 'confused', 'cheer')
+  $script:autoMood = $moods | Get-Random
+  $base = Join-Path (Join-Path (Join-Path $workDir $dataDirName) 'memes') 'stolen'
+  $d = Join-Path $base $script:autoMood
+  if (-not (Test-Path $d)) { $d = Join-Path $base 'other' }
+  if (-not (Test-Path $d)) { $d = $base }
+  if (-not (Test-Path $d)) { return $null }
+  $recent = @($state.recentMemes | Where-Object { $_ })
+  $c = @(Get-ChildItem $d -File -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' } |
+    ForEach-Object { $_.FullName })
+  $fresh = @($c | Where-Object { $recent -notcontains $_ })
+  if ($fresh.Count -gt 0) { $c = $fresh }
+  if (-not $c.Count) { return $null }
+  return ($c | Get-Random)
+}
 
 function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
@@ -267,6 +295,12 @@ $state = @{ lastSendAt = $null; sendTimes = @(); sendTimesQuiet = @(); lastMsgTi
 if (Test-Path $statePath) {
   try { $state = Get-Content $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
 }
+# Speeches since the last picture. Persisted so a restart does not
+# reset it and delay the next meme.
+if ($null -eq $state.speakSinceMeme) {
+  $state | Add-Member -NotePropertyName speakSinceMeme -NotePropertyValue 0 -Force
+}
+$speakSinceMeme = [int]$state.speakSinceMeme
 if ($null -eq $state.sendTimes) { $state | Add-Member -NotePropertyName sendTimes -NotePropertyValue @() -Force }
 if ($null -eq $state.sendTimesQuiet) { $state | Add-Member -NotePropertyName sendTimesQuiet -NotePropertyValue @() -Force }
 
@@ -292,6 +326,7 @@ function Save-State() {
     sendTimesQuiet = $keepQuiet
     lastMsgTime    = $state.lastMsgTime
     recentMemes    = @($state.recentMemes | Where-Object { $_ })
+    speakSinceMeme = [int]($state.speakSinceMeme)
     nextQuietAt    = $state.nextQuietAt
     # Daily self-start counter must persist, otherwise a restart resets it and the
     # ceiling it exists to enforce silently disappears.
@@ -629,6 +664,10 @@ while ($true) {
     # mood folder. The model only chooses the mood; the file choice is random here
     # so the same shot does not repeat.
     $imgPath = $null
+    if ($rows.Count -ge 3 -and $rows[2].Trim() -and
+        $rows[2] -notmatch '^\s*IMG\s+([a-z0-9_-]+)\s*$') {
+      Write-Log ('third line present but not a valid IMG directive: ' + $rows[2].Trim().Substring(0, [Math]::Min(40, $rows[2].Trim().Length)))
+    }
     if ($rows.Count -ge 3 -and $rows[2] -match '^\s*IMG\s+([a-z0-9_-]+)\s*$') {
       $mood = $Matches[1].ToLower()
       # The prompt lists the real folder names, but the model invents its own
@@ -741,6 +780,26 @@ while ($true) {
         }
       }
 
+    # Deterministic fallback. The model almost never writes the IMG line, so in
+    # practice she answered text-only forever - the owner's complaint. Attaching a
+    # picture should not depend on it remembering a third line: after $MemeEvery
+    # speeches without one, pick a neutral mood here instead.
+    if (-not $imgPath -and [int]$state.speakSinceMeme -ge $MemeEvery) {
+      $serious = $reply -match '\u751f\u75c5|\u533b\u9662|\u96be\u53d7|\u60f3\u54ed|\u5d29\u6e83|\u53bb\u4e16|\u5206\u624b|\u5435\u67b6|\u5931\u4e1a|\u5de5\u8d44'
+      if ($serious) {
+        Write-Log 'meme skipped: serious topic'
+      }
+      else {
+        $imgPath = Get-MemeIfDue
+        if ($imgPath) {
+          Write-Log ('meme auto-attached mood=' + $script:autoMood + ' picked=' + (Split-Path $imgPath -Leaf))
+        }
+        else {
+          Write-Log 'meme auto-attach found nothing'
+        }
+      }
+    }
+
       if ($imgPath) {
         # Remember recent picks, newest last. A long window on purpose: the point
         # is that the same picture must not come round again quickly.
@@ -760,11 +819,13 @@ while ($true) {
     # reads like a UI that attached a file.
     $res = Invoke-NapCat 'send_group_msg' @{ group_id = $GroupId; message = $reply }
     Write-Log ('deliver(text): ' + $res)
+    if (-not $imgPath) { $state.speakSinceMeme = [int]$state.speakSinceMeme + 1 }
     if ($imgPath) {
       Start-Sleep -Milliseconds (500 + (Get-Random -Minimum 0 -Maximum 900))
       $imgSeg = @(@{ type = 'image'; data = @{ file = $imgPath } })
       $resImg = Invoke-NapCat 'send_group_msg' @{ group_id = $GroupId; message = $imgSeg }
       Write-Log ('deliver(image): ' + $resImg)
+      $state.speakSinceMeme = 0
       if ($resImg -notmatch '"retcode":\s*0') {
         Write-Log ('image send failed, text already went out')
       }

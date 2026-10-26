@@ -4,6 +4,82 @@
 
 ---
 
+## v1.3.4 — 2026-10-26
+
+她一张图都发不出去。真正的原因跟图库没关系。
+
+### 根因：群号是空的
+
+```
+groupwatch start: group= poll=60s
+history failed: 消息undefined不存在
+```
+
+`group=` 后面什么都没有。群号没读到，所以 `get_group_msg_history` 每次都失败，
+**她根本没在看群**，也就没有任何发言和发图的决定。
+
+三个错叠在一起：
+
+**① `$root` 又用错了**
+
+`$root` 是 `napcat` 目录，但她的所有文件都在上一级。
+`Join-Path $root $dataDirName` 拼出 `<napcat>\<dataDir>` —— 不存在。
+于是 `budget.json`、tunables、`affinity.json`、`lanya-config.json` **全部读成空**。
+
+（和上一版偷图目录那个 bug 是同一个错。）
+
+**② `Split-Path -Parent $root` 得到的是盘符根**
+
+修的时候我在 `$dataDirName` 赋值后面加了 `$workDir = Split-Path -Parent $root`，
+但那会儿 `$root` 还存的是**脚本目录的上一级**，再取 parent 就成 `E:\` 了。
+必须用 `Split-Path -Parent $PSScriptRoot`。
+
+**③ 兜底代码被套在 if 里，还调用了没定义好的函数**
+
+```powershell
+if (Test-Path $tunablesPath) {
+  ...
+  if (-not $GroupId) { ...兜底... }   # 文件不存在 -> 整块跳过
+}
+```
+
+而且它调 `Write-Log`，那个函数定义在后面 —— `CommandNotFoundException`，
+脚本直接静默死掉。
+
+现在挪到 `Write-Log` 定义之后。
+
+### 顺带：模型不写 IMG 那一行
+
+群号修好之后她开始说话了，但**三行里只有两行**，从来不写 `IMG xxx`。
+提示词里明明写着可选第三行。
+
+所以加了**确定性兜底**：连续 3 条没带图，就自己挑一张中性情绪的
+（happy / cute / confused / cheer）配上去。**不再依赖模型记得那行。**
+
+严肃话题（生病、医院、崩溃、失业……）不配图。
+
+计数器存在 state 里，重启不会清零。
+
+### 提示词
+
+配图那段原来是「什么时候配图 / 什么时候别配」，太软。改成：
+
+> **配图是常态，不是特例。** 你在 QQ 群里聊天，大多数回合都应该带一张。
+> 没把握就**配**——少发图比多发图更像机器人。
+
+顺手修了四个星号的 markdown bug。
+
+### 验证
+
+```
+groupwatch start: group=310647026   <- 之前是空的
+verdict=SPEAK
+deliver(text): retcode 0
+选图函数 6 次调用全部返回真实文件
+```
+
+---
+
 ## v1.3.3 — 2026-10-26
 
 补图：把散落在三个暂存目录里的表情包收进图库。
