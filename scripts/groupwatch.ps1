@@ -548,7 +548,8 @@ while ($true) {
       Replace('{{SINCE}}', [string][math]::Round($sinceMine,1)).
       Replace('{{MINE}}', $myRecent).
       Replace('{{TRIGGER}}', $triggerText).
-  Replace('{{MEME_TAGS}}', $memeTags)
+  Replace('{{MEME_TAGS}}', $memeTags).
+  Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
     $answer = Ask-Agent $task
