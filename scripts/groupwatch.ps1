@@ -500,12 +500,55 @@ while ($true) {
       }
     } catch { }
 
-    $tpl = Read-AnyText $promptPath
+    # Regenerate the mood list from what is actually on disk. The prompt used to
+  # carry a hardcoded list and it drifted: it offered tags like "sigh", "see",
+  # "baka" that no folder had, so half the IMG requests resolved to nothing.
+  $tagLines = @()
+  $tagDesc = @{
+    'happy' = '\u5f00\u5fc3\u3001\u5356\u840c'; 'sad' = '\u96be\u8fc7\u3001\u65e0\u8bed';
+    'angry' = '\u751f\u6c14\u3001\u5acc\u5f03'; 'speechless' = '\u65e0\u8bed';
+    'cute' = '\u53ef\u7231'; 'shy' = '\u5bb3\u7f9e';
+    'surprise' = '\u9707\u60ca'; 'confused' = '\u56f0\u60d1';
+    'refuse' = '\u62d2\u7edd'; 'cheer' = '\u52a0\u6cb9';
+    'sleepy' = '\u56f0'; 'hungry' = '\u997f';
+    'money' = '\u8981\u94b1'; 'other' = '\u5176\u5b83';
+    'work' = '\u52a0\u73ed'; 'lazy' = '\u6446\u70c2';
+    'pray' = '\u7948\u7977'; 'cool' = '\u9177'
+  }
+  $allTags = @('happy','sad','angry','speechless','cute','shy','surprise',
+               'confused','refuse','cheer','sleepy','hungry','money','other',
+               'work','lazy','pray','cool')
+  foreach ($tg in $allTags) {
+    $cnt = 0
+    foreach ($pr in $memeRoots) {
+      $dd = Join-Path (Join-Path $pr 'memes') $tg
+      if (Test-Path $dd) {
+        $cnt += @(Get-ChildItem $dd -File -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' }).Count
+      }
+    }
+    if ($cnt -gt 0) {
+      $tagLines += ('- ' + $tg + ' ' + $tagDesc[$tg] + '\uff08' + $cnt + ' \u5f20\uff09')
+    }
+  }
+  $stCount = 0
+  $stDir = Join-Path (Join-Path (Join-Path (Split-Path -Parent $root) $dataDirName) 'memes') 'stolen'
+  if (Test-Path $stDir) {
+    $stCount = @(Get-ChildItem $stDir -File -Recurse -ErrorAction SilentlyContinue |
+      Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' }).Count
+  }
+  $memeTags = ($tagLines -join "`n")
+  if ($stCount -gt 0) {
+    $memeTags += ("`n`n**\u8fd8\u6709\u4e00\u4e2a\u4f60\u81ea\u5df1\u7684\u6536\u85cf\u5939**\uff1a`n`n- **stolen \u7fa4\u53cb\u8868\u60c5\u5305**\uff08" + $stCount + " \u5f20\uff09")
+  }
+
+  $tpl = Read-AnyText $promptPath
     $task = $tpl.Replace('{{CONTEXT}}', ($lines -join "`n")).
       Replace('{{IDLE}}', [string][math]::Round($idleMin,1)).
       Replace('{{SINCE}}', [string][math]::Round($sinceMine,1)).
       Replace('{{MINE}}', $myRecent).
-      Replace('{{TRIGGER}}', $triggerText)
+      Replace('{{TRIGGER}}', $triggerText).
+  Replace('{{MEME_TAGS}}', $memeTags)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
     $answer = Ask-Agent $task
@@ -550,6 +593,31 @@ while ($true) {
     $imgPath = $null
     if ($rows.Count -ge 3 -and $rows[2] -match '^\s*IMG\s+([a-z0-9_-]+)\s*$') {
       $mood = $Matches[1].ToLower()
+      # The prompt lists the real folder names, but the model invents its own
+      # sometimes ("see", "baka", "sigh") and then nothing matches and she sends
+      # no picture at all. Map the near misses onto a folder that exists.
+      $moodAlias = @{
+        'see' = 'surprise'; 'look' = 'surprise'; 'wow' = 'surprise';
+        'sigh' = 'speechless'; 'speechlessness' = 'speechless';
+        'meh' = 'speechless'; 'whatever' = 'speechless';
+        'baka' = 'confused'; 'huh' = 'confused'; 'confusion' = 'confused';
+        'what' = 'confused'; 'idiot' = 'confused';
+        'laugh' = 'happy'; 'lol' = 'happy'; 'haha' = 'happy';
+        'joy' = 'happy'; 'smile' = 'happy';
+        'cry' = 'sad'; 'sob' = 'sad'; 'depressed' = 'sad';
+        'mad' = 'angry'; 'rage' = 'angry'; 'annoyed' = 'angry';
+        'shyness' = 'shy'; 'blush' = 'shy';
+        'thanks' = 'cheer'; 'yes' = 'cheer'; 'ok' = 'cheer';
+        'no' = 'refuse'; 'nope' = 'refuse'; 'reject' = 'refuse';
+        'tired' = 'sleepy'; 'sleep' = 'sleepy'; 'zzz' = 'sleepy';
+        'eat' = 'hungry'; 'food' = 'hungry';
+        'rich' = 'money'; 'coin' = 'money';
+        'cute' = 'cute'; 'love' = 'cute'; 'adore' = 'cute';
+      }
+      if ($moodAlias.ContainsKey($mood)) {
+        Write-Log ('meme mood alias ' + $mood + ' -> ' + $moodAlias[$mood])
+        $mood = $moodAlias[$mood]
+      }
       $cands = @()
       foreach ($packRoot in $memeRoots) {
         $d = Join-Path (Join-Path $packRoot 'memes') $mood
@@ -564,10 +632,30 @@ while ($true) {
       # mood, a mood request only ever reached the stolen pile when she happened to
       # ask for "stolen", so in practice she kept sending the same prepackaged
       # dafeiyu shots. Now any request prefers what she took from the group.
-      $stolenDir = Join-Path (Join-Path (Join-Path $root $dataDirName) 'memes') 'stolen'
+      # Her own collection lives one level up from this script:
+      #   <workdir>\<dataDir>\memes\stolen
+      # $root is the napcat folder, so Join-Path $root $dataDirName pointed at
+      # <napcat>\<dataDir> which does not exist - her stolen stickers were never
+      # reachable. The clue was the log saying "mood=stolen has no images" while
+      # the folder held 87 files.
+      $workDir = Split-Path -Parent $root
+      $stolenDir = Join-Path (Join-Path (Join-Path $workDir $dataDirName) 'memes') 'stolen'
+      # The three pre-packaged meme packs are empty shells - their folders still
+      # carry the old tag names (sigh, see, baka, cpu ...) but hold zero images.
+      # Everything she actually has lives here, sorted into stolen\<mood>\. So a
+      # mood request has to look inside that subfolder too, otherwise the only
+      # way to get a picture is IMG stolen and every named mood resolves to none.
+      if (Test-Path (Join-Path $stolenDir $mood)) {
+        $moodStolen = Join-Path $stolenDir $mood
+        $cands += @(Get-ChildItem $moodStolen -File -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' } |
+          ForEach-Object { $_.FullName })
+      }
       $stolen = @()
       if (Test-Path $stolenDir) {
-        $stolen = @(Get-ChildItem $stolenDir -File -ErrorAction SilentlyContinue |
+        # -Recurse: the classifier sorts them into stolen\<mood>\, so the top
+        # level only ever held the handful that failed classification.
+        $stolen = @(Get-ChildItem $stolenDir -File -Recurse -ErrorAction SilentlyContinue |
           Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' } |
           ForEach-Object { $_.FullName })
       }
@@ -594,7 +682,25 @@ while ($true) {
         Write-Log ('meme mood=' + $mood + ' candidates=' + $cands.Count + ' picked=' + (Split-Path $imgPath -Leaf))
       }
       else {
-        Write-Log ('meme mood=' + $mood + ' has no images; sending text only')
+        # Last resort: any picture beats no picture. "other" exists for exactly
+        # this, and if that is empty too, fall back to the whole stolen pile.
+        $fallback = @()
+        foreach ($packRoot in $memeRoots) {
+          $od = Join-Path (Join-Path $packRoot 'memes') 'other'
+          if (Test-Path $od) {
+            $fallback += @(Get-ChildItem $od -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -match '^\.(jpg|jpeg|png|gif|webp)$' } |
+              ForEach-Object { $_.FullName })
+          }
+        }
+        if ($stolen.Count -gt 0) { $fallback += $stolen }
+        if ($fallback.Count -gt 0) {
+          $imgPath = $fallback | Get-Random
+          Write-Log ('meme mood=' + $mood + ' fell back to other/stolen; picked=' + (Split-Path $imgPath -Leaf))
+        }
+        else {
+          Write-Log ('meme mood=' + $mood + ' has no images anywhere; sending text only')
+        }
       }
 
       if ($imgPath) {
@@ -611,14 +717,20 @@ while ($true) {
     Write-Log ('reply: ' + $reply)
     if ($DryRun) { Write-Log ('DRY RUN - not sending' + $(if ($imgPath) { ' (would attach ' + (Split-Path $imgPath -Leaf) + ')' } else { '' })); if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }
 
-    $msgObj = if ($imgPath) {
-      @(
-        @{ type = 'text';  data = @{ text = $reply } },
-        @{ type = 'image'; data = @{ file = $imgPath } }
-      )
-    } else { $reply }
-    $res = Invoke-NapCat 'send_group_msg' @{ group_id = $GroupId; message = $msgObj }
-    Write-Log ('deliver: ' + $res)
+    # Text and picture go out as TWO messages, not one bubble with both.
+    # A person types the line, then drops the sticker in - the combined payload
+    # reads like a UI that attached a file.
+    $res = Invoke-NapCat 'send_group_msg' @{ group_id = $GroupId; message = $reply }
+    Write-Log ('deliver(text): ' + $res)
+    if ($imgPath) {
+      Start-Sleep -Milliseconds (500 + (Get-Random -Minimum 0 -Maximum 900))
+      $imgSeg = @(@{ type = 'image'; data = @{ file = $imgPath } })
+      $resImg = Invoke-NapCat 'send_group_msg' @{ group_id = $GroupId; message = $imgSeg }
+      Write-Log ('deliver(image): ' + $resImg)
+      if ($resImg -notmatch '"retcode":\s*0') {
+        Write-Log ('image send failed, text already went out')
+      }
+    }
     if ($res -match '"retcode":\s*0') {
       $state.lastSendAt = (Get-Date).ToString('o')
       $state.sendTimes = @($state.sendTimes) + @($state.lastSendAt)

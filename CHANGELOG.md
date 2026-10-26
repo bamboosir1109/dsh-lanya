@@ -4,6 +4,91 @@
 
 ---
 
+## v1.3.2 — 2026-10-26
+
+表情包发不出去。查下来是四个独立的问题叠在一起。
+
+### 为什么最近不发表情包了
+
+日志里全是这一句：
+
+```
+meme mood=see has no images; sending text only
+meme mood=stolen has no images; sending text only
+meme mood=baka has no images; sending text only
+meme mood=sigh has no images; sending text only
+```
+
+**它想发，但一张都找不到。**
+
+### 四个原因
+
+**① 偷来的图她根本够不着**
+
+```powershell
+$stolenDir = Join-Path (Join-Path (Join-Path $root $dataDirName) 'memes') 'stolen'
+```
+
+`$root` 是 `napcat` 目录，所以算出来是 `<napcat>\<dataDir>\memes\stolen` ——
+**这个路径不存在**。实际在 `<工作目录>\<dataDir>\memes\stolen`（上一级）。
+
+她攒了 89 张图，一张都没用上。
+
+**② 偷来的图被分到子目录里了**
+
+自动分类按情绪把它们放进了 `stolen/happy/`、`stolen/cute/` 这些子目录，
+顶层只剩 4 张。原代码 `Get-ChildItem -File` 不递归，所以即使路径对了也只看到 4 张。
+
+**③ 提示词里的标签是假的**
+
+提示词写着 19 个可用标签：happy shy like daily sad angry confused surprised
+cpu sigh sleep see meow baka fool color givemoney work morning……
+
+**实际目录一个都没有**。三个预置图包（`dafeiyu-001` / `official-001` /
+`whale-girl-emoji`）的文件夹还在，但**里面一张图都没有**，而且挂的还是老标签名。
+
+模型照着提示词点 `sigh`、`see`、`baka`，全都是空目录。
+
+**④ 文字和图捆在同一条消息里**
+
+原来是一次 `send_group_msg` 带两个 segment。看起来像"附件"，不像人说话。
+
+### 怎么修的
+
+- `$stolenDir` 改用 `Split-Path -Parent $root`
+- 偷图目录 `-Recurse`，并且**按情绪查 `stolen/<mood>/`**
+- 提示词里那段标签列表换成 `{{MEME_TAGS}}`，groupwatch 每次按**真实目录**现算
+- 加一层情绪别名（`sigh`→`speechless`、`baka`→`confused`、`see`→`surprise`…）
+- 实在没有就落到 `other` 或者随便一张偷来的，**别再无声放弃**
+- **文字和图分两条发**，中间隔 0.5-1.4 秒
+
+### 修完的效果
+
+```
+happy        13 张        confused     15 张
+sad          15 张        cute          7 张
+angry        16 张        speechless    2 张
+shy           4 张        surprise      1 张
+stolen(全部)  89 张
+```
+
+之前**每个都是 0**。
+
+### 偷图功能本身是好的
+
+`steal.log` 最近几次：`+2 memes`、`+1 memes`、`nothing new`。开关开着，
+分类也正常。**问题只在"发"这一头。**
+
+### 验证
+
+```
+POST 接口     9 个，全部真的写
+全按钮        622 个，报错 0
+隐私          CLEAN
+```
+
+---
+
 ## v1.3.1 — 2026-10-26
 
 给判重表和日记加上限。
