@@ -399,6 +399,30 @@ while ($true) {
     # For the affinity gate: who spoke recently, and whether anyone other than the
     # current speaker @-ed her.
     $recentSpeakers = New-Object System.Collections.ArrayList
+    # message_id -> sender QQ. Needed because a reply segment only carries the id
+    # of the message being answered, and "did they answer ME" is the difference
+    # between a question and background chatter.
+    $msgOwner = @{}
+    $msgNick = @{}
+    foreach ($m0 in $hj.data.messages) {
+      $mid0 = [string]$m0.message_id
+      if ($mid0) {
+        $msgOwner[$mid0] = [string]$m0.sender.user_id
+        $disp = if ($m0.sender.card) { [string]$m0.sender.card } else { [string]$m0.sender.nickname }
+        $msgNick[$mid0] = $disp
+      }
+    }
+    # (note omitted: this file must stay ASCII-only)
+    $selfNames = @()
+    if ($dataDirName) { $selfNames += [string]$dataDirName }
+    try {
+      $qp = Join-Path $root 'qq-profile.json'
+      if (Test-Path $qp) {
+        $qj = Get-Content $qp -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($qj.nickname) { $selfNames += [string]$qj.nickname }
+      }
+    } catch { }
+    $repliedToMeHere = $false
     $addressedByOther = $false
     # Newest time anyone @-ed her, so the trigger decision can tell a fresh
     # mention from one buried in the 30-message window.
@@ -406,18 +430,61 @@ while ($true) {
     foreach ($m in $hj.data.messages) {
       $t = ''
       $mentionsMe = $false
+      $replyToMe = $false
+      $replyHint = ''
+      $rawText = ''
       if ($m.message -is [array]) {
         $parts = @()
         foreach ($seg in $m.message) {
-          if ($seg.type -eq 'text') { $parts += $seg.data.text }
+          if ($seg.type -eq 'text') {
+            $parts += $seg.data.text
+            $rawText += [string]$seg.data.text
+          }
           elseif ($seg.type -eq 'image') { $parts += '[' + [char]0x56FE + [char]0x7247 + ']' }
           elseif ($seg.type -eq 'at') {
-            $parts += ('@' + $seg.data.qq)
-            if ([string]$seg.data.qq -eq $selfId) { $mentionsMe = $true }
+            $aq = [string]$seg.data.qq
+            if ($aq -eq $selfId) {
+              $parts += '@' + [char]0x4F60
+              $mentionsMe = $true
+            }
+            elseif ($aq -eq 'all') { $parts += '@' + [char]0x5168 + [char]0x4F53 }
+            else {
+              $an = if ($msgNick.ContainsKey([string]$m.message_id)) { '' } else { '' }
+              $parts += '@' + $aq
+            }
+          }
+          elseif ($seg.type -eq 'reply') {
+            # A reply segment carries only the id of the quoted message. Resolve it
+            # through the map built above; if it is one of HER messages, whoever
+            # sent this is answering her directly.
+            $rid = [string]$seg.data.id
+            if ($msgOwner.ContainsKey($rid) -and $msgOwner[$rid] -eq $selfId) {
+              $replyToMe = $true
+              $parts += '[' + [char]0x56DE + [char]0x4F60 + ']'
+            }
+            elseif ($msgOwner.ContainsKey($rid)) {
+              $who2 = $msgNick[$rid]
+              $parts += '[' + [char]0x56DE + $who2 + ']'
+            }
+            else {
+              $parts += '[' + [char]0x5F15 + [char]0x7528 + ']'
+            }
           }
         }
         $t = ($parts -join '')
-      } else { $t = [string]$m.message }
+      } else {
+        $t = [string]$m.message
+        $rawText = $t
+      }
+      # Name dropped in plain text counts as talking to her.
+      if (-not $mentionsMe -and -not $replyToMe -and $rawText -and $selfNames.Count -gt 0) {
+        foreach ($nm in $selfNames) {
+          if ($nm -and $rawText.Contains($nm)) {
+            $mentionsMe = $true
+            break
+          }
+        }
+      }
       $t = $t.Trim()
       if ($t -eq '') { continue }
       $mt = [DateTimeOffset]::FromUnixTimeSeconds([long]$m.time).LocalDateTime
@@ -431,14 +498,23 @@ while ($true) {
         [void]$recentSpeakers.Add($who)
         while ($recentSpeakers.Count -gt 6) { $recentSpeakers.RemoveAt(0) }
       }
-      if ($mentionsMe -and $who -ne $selfId) {
+      if (($mentionsMe -or $replyToMe) -and $who -ne $selfId) {
         $addressedByOther = $true
         if ($mt -gt $lastMentionTime) { $lastMentionTime = $mt }
       }
       if ($who -eq $selfId) {
-        $lines += ([string][char]0x6211 + '(' + [char]0x5927 + [char]0x80A5 + [char]0x9C7C + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
-      } else {
-        $lines += ($m.sender.nickname + ': ' + $t)
+        # Her own line. Use the real directory name, not a hardcoded one.
+        $me = [string]$dataDirName
+        $lines += ([string][char]0x6211 + '(' + $me + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
+      }
+      else {
+        # QQ number included so two people sharing a nickname stay distinct, and
+        # so the model can keep its own per-person memory straight.
+        $disp = if ($m.sender.card) { [string]$m.sender.card } else { [string]$m.sender.nickname }
+        $role = [string]$m.sender.role
+        $tag = ''
+        if ($role -eq 'admin' -or $role -eq 'owner') { $tag = '[' + [char]0x7FA4 + [char]0x4E3B + ']' }
+        $lines += ($disp + '(' + $who + ')' + $tag + ': ' + $t)
       }
     }
     if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
