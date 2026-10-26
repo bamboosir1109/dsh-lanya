@@ -35,14 +35,35 @@ if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
 }
 # An explicit -Limit still wins; the config only replaces the DEFAULT (1.0).
 if (-not $PSBoundParameters.ContainsKey('Limit')) {
-  $Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
+  
 }
 $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
 
-$dafeiyuDir  = Join-Path $root $dataDirName   # "Dafeiyu"
-$ledger    = '%USERPROFILE%\.dsh\storages\cost-meter\ledger.json'
+# $root is the napcat folder; her files live one level up. Same mistake as
+# everywhere else in this script family.
+$workDir = Split-Path -Parent $PSScriptRoot
+$dafeiyuDir  = Join-Path $workDir $dataDirName
+# %USERPROFILE% is cmd syntax; PowerShell does not expand it in a plain string,
+# so this stayed literal and Test-Path always failed. The script then logged
+# "ledger missing" and exited - the budget was never recalculated at all.
+$ledger    = Join-Path (Join-Path $env:USERPROFILE '.dsh') 'storages\cost-meter\ledger.json'
 $outPath   = Join-Path $dafeiyuDir 'budget.json'
-$logPath   = Join-Path $dafeiyuDir 'budget.log'
+
+# The panel writes its own limit into budget.json. Do not stomp it with the
+# config default every run - that is exactly the "I set 2.5 and it changed
+# itself back" complaint. Config is only the initial value.
+$prevLimit = $null
+if (Test-Path $outPath) {
+  try {
+    $pj0 = Get-Content $outPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -ne $pj0.limit) { $prevLimit = [double]$pj0.limit }
+  } catch { }
+}
+if ($null -ne $prevLimit -and $prevLimit -gt 0) {
+  $Limit = $prevLimit
+} else {
+  $Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
+}$logPath   = Join-Path $dafeiyuDir 'budget.log'
 $cfgPath   = (Join-Path $PSScriptRoot 'balance-alert.config.json')
 $adminQQ   = 'YOUR_ADMIN_QQ'
 
@@ -103,11 +124,19 @@ $status = [pscustomobject]@{
   date      = $today
   limit     = $Limit
   spent     = [math]::Round($spent, 4)
-  remaining = [math]::Round([math]::Max(0, $Limit - $spent), 4)
+  # 0.0, not 0: [math]::Max(0, 2.3424) picks the INTEGER overload and
+  # truncates to 2. That is how the remaining figure went wrong.
+  remaining = [math]::Round([math]::Max(0.0, $Limit - $spent), 4)
   exhausted = $exhausted
-  notifiedFor = if ($prev -and $prev.notifiedFor) { [string]$prev.notifiedFor } else { '' }
+  # Clear the "already told her" marker when the day changes, otherwise the
+  # reminder never fires again after the first day.
+  notifiedFor = if ($prev -and $prev.notifiedFor -eq $today) { [string]$prev.notifiedFor } else { '' }
+  prevDate  = if ($prev -and $prev.date) { [string]$prev.date } else { $today }
   dmSpent    = [math]::Round($dmSpent, 4)
   groupSpent = [math]::Round($groupSpent, 4)
+  # Total across every channel, for the panel to show next to the pocket-money
+  # number. $spent above stays "her own play" on purpose.
+  totalSpent = [math]::Round($spent + $dmSpent + $groupSpent, 4)
   dmLimit    = $dmLimit
   groupLimit = $groupLimit
   askWhenExhausted = $ask

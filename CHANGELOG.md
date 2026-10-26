@@ -4,6 +4,91 @@
 
 ---
 
+## v1.3.6 — 2026-10-26
+
+零花钱从来没算过。
+
+### 四个 bug
+
+**① ledger 路径是字面量**
+
+```powershell
+$ledger = '%USERPROFILE%\.dsh\storages\cost-meter\ledger.json'
+```
+
+`%USERPROFILE%` 是 **cmd 的写法**，PowerShell 不展开。所以这串永远是字面量，
+`Test-Path` 返回 false，脚本打一行 `ledger missing; nothing to do` 就退出。
+
+**额度从头到尾没算过一次。** `budget.json` 里的 date 停在 2026-10-25，
+spent 停在 0.1395，全是旧值。
+
+**② `$dafeiyuDir` 又用错 `$root`**
+
+`$root` 是 napcat 目录，她的文件在上一级。同一个错这是第四次了。
+
+**③ 配置值覆盖面板设置**
+
+```powershell
+$Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
+```
+
+每次定时跑都用配置里的 1.0 覆盖掉面板上刚设的 2.5 ——
+这就是「改了又变回去」。
+
+现在：**面板设过就用面板的**，只有从未设过才用配置默认值。
+
+**④ `[math]::Max(0, ...)` 截断小数**
+
+```powershell
+remaining = [math]::Round([math]::Max(0, $Limit - $spent), 4)
+```
+
+`0` 是 `[int]`，PowerShell 会选 **int 重载**：
+
+```
+[math]::Max(0, 2.3424)  ->  2
+```
+
+**2.5 的额度花掉 0.1576，余量显示成 2 而不是 2.3424。**
+
+改成 `0.0` 就好了。这一条最阴，因为代码看着完全正确。
+
+### 现在的数字
+
+```
+date        2026-10-26        <- 终于滚到今天
+limit       2.5               <- 面板设的保住了
+spent       0.1576            <- 她自己玩花的
+remaining   2.3424            <- 不再截断
+totalSpent  0.9152            <- 所有渠道加起来
+```
+
+### 额度到底管什么
+
+**`limit` 只管她自己玩的钱**（刷 B 站、上网、写笔记）。
+聊天不算 —— 聊天是社交。
+
+所以今天：
+- 你自己干活 2.11
+- QQ 私聊 0.43
+- QQ 群 0.31
+- 她自己玩 0.16
+
+`limit 2.5` 只盯着最后那 0.16。这就是「好像没起作用」的原因 ——
+**它确实在起作用，只是管的东西比你以为的窄。**
+
+面板上现在同时显示 `totalSpent`，方便对照。
+
+### 验证
+
+```
+面板设 2.5 -> POST -> 读回 2.5 -> 跑 budget.ps1 -> 还是 2.5
+remaining 2.3424（手算一致）
+date 滚到 2026-10-26
+```
+
+---
+
 ## v1.3.5 — 2026-10-26
 
 表情包真的发出来了。
