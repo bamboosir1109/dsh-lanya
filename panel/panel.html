@@ -668,6 +668,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <button onclick="memConsolidate(true)">预览合并</button>
       <button class="pri" onclick="memConsolidate(false)">合并</button>
       <button onclick="memCompress()">压缩</button>
+      <button onclick="memTrimSeen()">收判重表</button>
     </div>
     <div class="out" id="memCorpusOut"></div>
   </div>
@@ -2524,6 +2525,24 @@ async function memCorpusLoad(){
       out.textContent = '没有可以合并的。';
     }
   }catch(e){ if(out) out.textContent = '读不了：' + e.message; }
+}
+
+// 判重表（看过哪些视频）只增不减，收一下：老的搬到归档，
+// 判重读 live + archive 两份，所以不会被重刷。
+async function memTrimSeen(){
+  const out = $('memCorpusOut');
+  if(out) out.textContent = '收中…';
+  try{
+    const j = await api('/memory/trim-seen', { method:'POST',
+      headers:{'content-type':'application/json'}, body: '{}' });
+    if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
+    if(out){
+      out.textContent = j.moved
+        ? ('搬了 ' + j.moved + ' 条到归档，留 ' + j.kept + ' 条')
+        : (j.note || '没超上限');
+    }
+    memCorpusLoad();
+  }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
 async function memConsolidate(dry){

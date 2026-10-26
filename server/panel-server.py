@@ -1744,6 +1744,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
+        if path == "/api/memory/trim-seen":
+            try:
+                import seen_cap as _sc
+                r = _sc.trim_seen(dry=False)
+                r.pop("ok", None)
+                return self._json(200, dict(ok=True, **r))
+            except Exception as e:
+                return self._json(200, {"ok": False, "error": str(e)[:200]})
+
         if path == "/api/memory/compress":
             try:
                 import memory_plastic as _mp

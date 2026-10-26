@@ -37,6 +37,11 @@ DATA = os.path.join(WORK, "\u5c9a\u5a05")
 DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 DIARY = os.path.join(DATA, "diary")
 SEEN = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty", "seen.md")
+# 判重表超过上限会归档，语料侧不能只读 live。
+try:
+    import seen_cap as _sc
+except Exception:
+    _sc = None
 
 # 合并阈值：相似度多高算"说的是同一件事"
 SIM_MERGE = 0.62
@@ -117,7 +122,28 @@ def load_seen():
     """判重表里的「看过哪些视频」也进语料。
 
     这些本来就记过，只是记在文件里，检索时看不到。
+    判重表有上限（见 seen_cap），超了会归档，所以这里读 live + archive。
     """
+    if _sc is not None:
+        try:
+            rows = _sc.load_seen_capped()
+            out = []
+            for cells in rows:
+                bv, title, up = cells[1], cells[2], cells[3]
+                out.append({
+                    "id": "seen:" + bv,
+                    "text": "\u5728 B \u7ad9\u770b\u4e86\u300a%s\u300b"
+                            "\uff08%s\uff09%s"
+                            % (title[:50], up or "\u4e0d\u77e5\u9053\u8c01", bv),
+                    "track": "agent",
+                    "source": "bili-seen",
+                    "created_at": 0,
+                    "tags": '["bili"]',
+                    "_src": "seen",
+                })
+            return out
+        except Exception:
+            pass
     if not os.path.isfile(SEEN):
         return []
     out = []
@@ -314,7 +340,17 @@ def consolidate(dry=True):
 
 
 def compress(dry=True):
-    """超过阈值就压。先合并相似，再按来源比例砍最老的。"""
+    """超过阈值就压。先合并相似，再按来源比例砍最老的。
+
+    顺手把判重表也收一下 —— 它只增不减，检索时全读进语料。
+    """
+    seen_info = None
+    if _sc is not None:
+        try:
+            seen_info = _sc.trim_seen(dry=dry)
+        except Exception as e:
+            seen_info = {"ok": False, "error": str(e)[:80]}
+
     cp = Corpus()
     n = len(cp.db)
     if n <= COMPRESS_OVER:
@@ -342,7 +378,8 @@ def compress(dry=True):
         c.close()
 
     return {"merged": r1.get("merges", 0), "trimmed": len(victims),
-            "left": len(items) - len(victims), "dry": dry}
+            "left": len(items) - len(victims), "dry": dry,
+            "seen": seen_info}
 
 
 def _cli():

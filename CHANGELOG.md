@@ -4,6 +4,67 @@
 
 ---
 
+## v1.3.1 — 2026-10-26
+
+给判重表和日记加上限。
+
+### 为什么要加
+
+`seen.md` 只增不减：刷一条追加一行，一年下来几千行，检索时全读进语料。
+判重表还有另一个职责 —— **防止重复刷同一个视频**，所以不能直接删。
+
+### 怎么做
+
+超过 `seenKeep`（默认 400）行，就把最早的搬到 `seen-archive.md`。
+
+**判重读 live + archive 两份**，所以搬走不影响判重；只是 live 文件变小了。
+语料侧只读 archive 的最近 `archiveInCorpus`（默认 300）条，避免每次检索都扫全量。
+
+日记同理：超过 `diaryInCorpus`（默认 60）条的老日记不进语料，**文件不删**。
+
+### 配置
+
+```json
+"memory": {
+  "seenKeep": 400,
+  "archiveInCorpus": 300,
+  "diaryKeepDays": 120,
+  "diaryInCorpus": 60,
+  "compressOver": 120,
+  "compressTo": 80
+}
+```
+
+### 接在哪
+
+- 面板「可塑性」那块多了个 **收判重表** 按钮
+- `POST /api/memory/trim-seen`
+- `compress()` 也会顺手收一次
+- 命令行：`python memory_plastic.py --trim-seen [--dry]`
+  或 `python seen_cap.py --trim-seen [--dry]`
+
+### 修了什么
+
+换语料时 `load_seen_capped` 把**评论记录表也当成视频行**读了 —— 评论表也是
+5 列的表，不按小节筛就会混进来。加了小节判断。
+
+`trim-seen` 接口第一版返回 `dict(ok=True, **r)` 而 `r` 里已经有 `ok`，
+直接 `TypeError`。去掉了重复的键。
+
+### 验证
+
+```
+POST 接口     9 个，全部真的写
+记忆检索      12 条命中
+关系图        311 圆 / 473 线
+可塑性        4 行，正常
+trim-seen     96 行，没超上限，搬 0 条
+全按钮        597 个，报错 0
+隐私          CLEAN
+```
+
+---
+
 ## v1.3.0 — 2026-10-26
 
 可塑性记忆：能合并、能压缩，日记和刷站记录也算记忆。
