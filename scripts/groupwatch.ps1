@@ -105,7 +105,7 @@ $workDir = Split-Path -Parent $PSScriptRoot
 # How many speeches may pass without a picture before one is attached
 # automatically. The model is supposed to ask with an IMG line but it
 # almost never does, so this is the real mechanism.
-$MemeEvery = 3
+$MemeEvery = 1
 
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
