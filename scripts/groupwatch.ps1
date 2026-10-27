@@ -225,11 +225,14 @@ try {
     if ($cj.botQQ) { $selfId = [string]$cj.botQQ }
   }
 } catch { }
+# No get_login_info fallback here: Invoke-NapCat is not defined until further
+# down the file, so calling it at this point could only ever throw. The config
+# value is authoritative anyway.
 if (-not $selfId) {
-  try {
-    $li = (Invoke-NapCat 'get_login_info' @{}) | ConvertFrom-Json
-    if ($li.data.user_id) { $selfId = [string]$li.data.user_id }
-  } catch { }
+  # Write-Log is not defined yet at this point either - use plain output, which
+  # the scheduled task redirects into the same log file.
+  Write-Output ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') +
+    '] WARNING: botQQ missing from config - @-mention detection will not work')
 }
 
 function Get-MemeIfDue {
@@ -525,7 +528,74 @@ while ($true) {
       if ($m.message -is [array]) {
         $parts = @()
         foreach ($seg in $m.message) {
-          if ($seg.type -eq 'text') {
+          # Official QQ emoji. "face" carries the emoticon's own name in
+      # data.raw.faceText (e.g. "/wangwang"), so there is no id table to keep.
+      # Without this branch every official emoji was silently dropped and her
+      # side of the conversation showed a blank where the face was.
+      if ($seg.type -eq 'face') {
+        $fn = ''
+        try { $fn = [string]$seg.data.raw.faceText } catch { }
+        if ($fn) { $fn = $fn.Trim().TrimStart('/') }
+        if (-not $fn) { try { $fn = [string]$seg.data.id } catch { } }
+        $parts += ('[' + [char]0x8868 + [char]0x60C5 + ' ' + $fn + ']')   # [biaoqing ...]
+      }
+      # Market / sticker faces carry a human-readable summary.
+      elseif ($seg.type -eq 'mface') {
+        $ms = ''
+        try { $ms = [string]$seg.data.summary } catch { }
+        if (-not $ms) { try { $ms = [string]$seg.data.emoji_id } catch { } }
+        $parts += ('[' + [char]0x8868 + [char]0x60C5 + [char]0x5305 + ' ' + $ms + ']')  # [biaoqingbao ...]
+      }
+      # A merged forward is just an id here; get_forward_msg has to be called to
+      # read it. Failure is tolerated - a bare [zhuanfa] is still better than
+      # pretending the message never arrived.
+      elseif ($seg.type -eq 'forward' -or $seg.type -eq 'node') {
+        $fid = ''
+        try { $fid = [string]$seg.data.id } catch { }
+        if (-not $fid) { try { $fid = [string]$seg.data.resid } catch { } }
+        $fsum = ''
+        if ($fid) {
+          try {
+            $fr = Invoke-NapCat 'get_forward_msg' @{ id = $fid }
+            $fj = $fr | ConvertFrom-Json
+            $fmsgs = $fj.data.messages
+            if (-not $fmsgs) { $fmsgs = $fj.data.message }
+            $inner = @()
+            foreach ($fm in @($fmsgs)) {
+              if (-not $fm) { continue }
+              $fparts = @()
+              foreach ($fs in @($fm.message)) {
+                if (-not $fs) { continue }
+                if ($fs.type -eq 'text') { $fparts += [string]$fs.data.text }
+                elseif ($fs.type -eq 'image') { $fparts += ('[' + [char]0x56FE + [char]0x7247 + ']') }
+                elseif ($fs.type -eq 'face') {
+                  $fn2 = ''
+                  try { $fn2 = [string]$fs.data.raw.faceText } catch { }
+                  if ($fn2) { $fn2 = $fn2.Trim().TrimStart('/') }
+                  $fparts += ('[' + [char]0x8868 + [char]0x60C5 + ' ' + $fn2 + ']')
+                }
+                elseif ($fs.type -eq 'at') { $fparts += '@' + [string]$fs.data.qq }
+              }
+              $fbody = ($fparts -join '').Trim()
+              if ($fbody) { $inner += $fbody }
+              if ($inner.Count -ge 8) { break }
+            }
+            if ($inner.Count -gt 0) {
+              $fsum = [char]0xFF1A + (($inner -join ' / '))
+              if ($fsum.Length -gt 180) { $fsum = $fsum.Substring(0, 180) + '...' }
+            }
+          } catch { }
+        }
+        $parts += ('[' + [char]0x8F6C + [char]0x53D1 + ']' + $fsum)   # [zhuanfa]
+      }
+      elseif ($seg.type -eq 'video') { $parts += ('[' + [char]0x89C6 + [char]0x9891 + ']') }
+      elseif ($seg.type -eq 'file') {
+        $fname = ''
+        try { $fname = [string]$seg.data.name } catch { }
+        if (-not $fname) { try { $fname = [string]$seg.data.file } catch { } }
+        $parts += ('[' + [char]0x6587 + [char]0x4EF6 + ' ' + $fname + ']')
+      }
+      elseif ($seg.type -eq 'text') {
             $parts += $seg.data.text
             $rawText += [string]$seg.data.text
           }
