@@ -2,6 +2,8 @@
 
 `scripts/androidd.py` 是维护版源码；本轮未覆盖旧安装副本，也没有自动注册或启动守护进程。模拟器启动、BIOS/SVM 和 Windows 虚拟化功能需分别核实，离线测试通过不代表真实设备验收完成。
 
+推荐使用硬件加速；AMD 的 SVM 未开启时，加速路径仍需在用户安排的维护窗口完成 BIOS 前置并复查 Windows hypervisor。官方也保留 `-accel off` 软件模拟入口，需显式设置 `ANDROID_I_WANT_MY_TCG=yes`，但标为不受支持且很慢；不能把硬件加速检查失败写成软件模拟不存在。一次特定版本或镜像的软件模式崩溃，也不能证明所有软件模式都不可能。无论使用哪条路径，都以实际开机、ADB 在线和真实截图验收，见[命令行说明](https://developer.android.com/studio/run/emulator-commandline)与[加速说明](https://developer.android.com/studio/run/emulator-acceleration)。
+
 项目配置示例：
 
 ```json

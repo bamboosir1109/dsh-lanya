@@ -76,3 +76,62 @@ python -B scripts/memory_mutations.py restore --db EXISTING_PRIVATE_DB --request
 预检返回 fingerprint；保持请求不变，再追加 --apply --expected-fingerprint PREVIEW_FINGERPRINT。恢复要求当前完整行仍等于归档 after，包括版本、归属和召回计数；删除后的 ID 必须未占用，且不存在该 ID 的后续维护变更。恢复提高版本、另存完整变更和审计，同一 change 不会重复恢复。它会拒绝覆盖新事实，不提供 force。
 
 旧 `seed_memory.py --seed/--add/--from-json` 已退役并明确报错，导入旧 add 函数同样拒绝；不会打开数据库，也不再导入占位模板。
+
+## 显式归属迁移
+
+`scripts/memory_scope_migration.py` 是独立的本地维护工具，没有模型工具、面板或自动定时入口。它不会根据目录名、角色名、相似正文或空共享键推断归属。旧 `workspace_key=''` 且 scope 为 workspace 的记录必须先取得来源会话、创建时 cwd/preset 或可靠导入清单等证据，并由操作人员确认映射；不能为让模型看见而改成 user-global。
+
+请求是私有 JSON，显式提供所有 source、destination 四维字段与每个来源分区的 expected_count。下面只有合成示例，数量与目标键都必须替换为经过核对的值：
+
+```json
+{
+  "mappings": [
+    {
+      "source": {"track": "agent", "scope": "workspace", "workspace_key": "", "agent_key": ""},
+      "destination": {"track": "agent", "scope": "workspace", "workspace_key": "YOUR_NORMALIZED_WORKSPACE_KEY", "agent_key": ""},
+      "expected_count": 12
+    },
+    {
+      "source": {"track": "user", "scope": "workspace", "workspace_key": "", "agent_key": ""},
+      "destination": {"track": "user", "scope": "workspace", "workspace_key": "YOUR_NORMALIZED_WORKSPACE_KEY", "agent_key": ""},
+      "expected_count": 5
+    }
+  ]
+}
+```
+
+目前只支持 workspace 范围；track 与 scope 必须保持不变。来源可选择遗留空 workspace；目标 workspace_key 必须非空且不能全为空白，避免制造新的不可归属分区。目标必须由操作人员提供 memento 规范化后的键，工具不会默默去空白、改大小写或猜当前 cwd。空 agent_key 仍是明确的共享键，不能省略字段或自动替换为某个 preset。拒绝重复来源、来源与目标形成链或环、无变化映射及数量不符。目标已有无关合法条目可共存，多个明确来源也可迁至同一目标；不合并正文、不清空目标、不覆盖任何 ID。整批零条仅可预览，不生成空迁移批次。
+
+默认预览使用现有数据库的只读连接，不创建审计表、不修改数据库。输出只含计数和 fingerprint，不含条目 ID、正文或完整快照：
+
+```powershell
+python -B scripts/memory_scope_migration.py --db EXISTING_PRIVATE_DB --mappings PRIVATE_MAPPINGS_JSON
+```
+
+fingerprint 绑定显式数据库路径、entries schema、整批映射、每条完整 before/after、原 owner、version 与数量。映射顺序不会改变结果；新事实时间不使用预览时钟。不同副本或路径需要各自预览。确认来源归属、备份、停写窗口与预览后，使用同一请求和 fingerprint 才能执行：
+
+```powershell
+python -B scripts/memory_scope_migration.py --db EXISTING_PRIVATE_DB --mappings PRIVATE_MAPPINGS_JSON --apply --fingerprint PREVIEW_FINGERPRINT
+```
+
+实际写入在单个 `BEGIN IMMEDIATE` 事务中重新验证全批，先冻结全部原行，再按 ID、原 owner 与原 version 更新。只更改 workspace_key、agent_key 与 version；ID、track、scope、正文、source、tags、召回元数据、created_at 与 updated_at 全部保留，version 加一。操作时间写维护审计，不把归属纠正伪装成新的作者事实。任一行或审计失败，全部回滚。
+
+独立审计表 `scope_migration_batches`、`scope_migration_rows`、`scope_migration_audit` 保存完整 before/after、逐行哈希、整批封印、映射、schema、fingerprint 与 migration_id，不修改 memento 的应用 schemaVersion。完整快照属于私有数据，随数据库备份保护，不能复制进公开仓库。此工具没有无归档 DELETE 或部分归属模式。
+
+### 恢复归属
+
+使用实际返回的 migration_id，默认仅做整批恢复预检：
+
+```powershell
+python -B scripts/memory_scope_migration.py --db EXISTING_PRIVATE_DB --restore MIGRATION_ID
+```
+
+预检验证完整批次与审计封印，并要求每条当前行仍完全等于迁移后的 after。后续正文、source、owner、version、召回计数或召回时间变化、行被删除、同 ID 被别的内容占用、schema 或归档损坏都会拒绝；不覆盖新事实。无关新 ID 可与恢复后的原分区共存。
+
+保持数据库和迁移批次不变，使用这次恢复预检的 fingerprint 才真正恢复：
+
+```powershell
+python -B scripts/memory_scope_migration.py --db EXISTING_PRIVATE_DB --restore MIGRATION_ID --apply --fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+恢复同样在单事务里先检查全批，再恢复原归属并保存恢复操作完整 before/after 与审计；version 继续前进，不降回旧版本，事实时间保持原样。一次迁移只能恢复一次，不提供 force。暂时无法确认的旧范围保持原位；准备工具或取得预览不等于已批准、已执行真实库迁移。
