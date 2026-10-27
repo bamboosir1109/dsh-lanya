@@ -428,10 +428,13 @@ export function apply(ctx, config = {}) {
     if (!/^[1-9][0-9]*$/.test(value)) throw new Error('No configured reminder conversation')
     return (target === 'group' ? 'group:' : 'private:') + value
   }
+  // Match Python/PowerShell owner normalization, including an explicit shared
+  // empty key. The consumer independently checks the actual resolved chat ID.
+  const reminderPreset = String(project.decisions?.agentPreset || '').trim()
   const observeReminder = createReminderObserver({
     directory: path.join(DAFEIYU_DIR, 'decision-inbox'),
-    workspaceKey: process.platform === 'win32' ? runtime.workDir.toLowerCase() : runtime.workDir,
-    agentKey: String(project.decisions?.agentPreset || ''), resolveScope: reminderScope
+    workspaceKey: process.platform === 'win32' ? path.resolve(runtime.workDir).toLowerCase() : path.resolve(runtime.workDir),
+    agentKey: process.platform === 'win32' ? reminderPreset.toLowerCase() : reminderPreset, resolveScope: reminderScope
   })
   async function fireReminder(r, context) {
     const mode = project.decisions?.mode || 'unified'

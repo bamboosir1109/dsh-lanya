@@ -264,14 +264,25 @@ export class OneBotDecisionAdapter {
     return result.value
   }
 
-  async readMemoryContext(scope, query) {
+  async trustedOwner(scope) {
     const cwd = this.bridge.effectiveCwd(scope)
+    // The real registry resolves deployment defaults and /preset overrides
+    // asynchronously. A Promise is never a preset ID or a shared-owner key.
+    const resolved = await this.bridge.resolvePresetId(scope)
+    const preset = resolved === undefined || resolved === null ? '' : resolved
+    if (typeof cwd !== 'string' || typeof preset !== 'string') throw new Error('Trusted conversation owner is unavailable')
+    const workspace = cwd ? path.resolve(cwd) : ''
+    const agent = preset.trim()
+    return { cwd, preset,
+      workspace_key: process.platform === 'win32' ? workspace.toLowerCase() : workspace,
+      agent_key: process.platform === 'win32' ? agent.toLowerCase() : agent }
+  }
+
+  async readMemoryContext(scope, query) {
+    const owner = await this.trustedOwner(scope)
     const script = this.config.memoryContextScript || path.join(this.deps.config.workspacePath || path.dirname(path.dirname(this.stateFile)), 'napcat', 'memory_context.py')
-    const request = { cwd, agent_preset: this.bridge.resolvePresetId(scope) || '', query,
+    const request = { cwd: owner.cwd, agent_preset: owner.preset, query,
       recent_events: [], conversation_key: canonicalScope(scope), limit: 8 }
-    const expectedWorkspace = process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd)
-    const preset = request.agent_preset.trim()
-    const expectedAgent = process.platform === 'win32' ? preset.toLowerCase() : preset
     return new Promise((resolve, reject) => {
       const child = execFile(this.config.pythonExecutable || 'python', [script, '--stdin-json'],
         { windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
@@ -279,7 +290,7 @@ export class OneBotDecisionAdapter {
           try {
             const value = JSON.parse(stdout.replace(/^\uFEFF/, ''))
             if (value.schema !== 'dsh-memento-context/v1' || value.read_only !== true || value.conversation_key !== scope ||
-                !plain(value.owner) || value.owner.workspace_key !== expectedWorkspace || value.owner.agent_key !== expectedAgent) {
+                !plain(value.owner) || value.owner.workspace_key !== owner.workspace_key || value.owner.agent_key !== owner.agent_key) {
               throw new Error('Invalid scoped context owner or conversation')
             }
             resolve(value)
@@ -299,8 +310,19 @@ export class OneBotDecisionAdapter {
     } catch (error) { this.log('warn', 'scoped_memory_context_unavailable:' + error.name); return text }
   }
 
-  dispatchObservation(event) {
+  async dispatchObservation(event) {
+    // Public callers may retain and mutate their object while the registry
+    // resolves a preset. Bind validation, owner lookup, pin and payload to the
+    // same detached snapshot before the first asynchronous boundary.
+    try { event = structuredClone(event) } catch { throw new Error('Invalid observation snapshot') }
     validateObservation(event)
+    const owner = await this.trustedOwner(event.scope)
+    // Producers must use the actual resolved chat owner, not a configured
+    // alias or a different role/preset left in this inbox. Reject before any
+    // map entry, policy revision, durable pin or agent followup is created.
+    if (event.workspace_key !== owner.workspace_key || event.agent_key !== owner.agent_key) {
+      throw new Error('Observation owner mismatch; dispatch refused')
+    }
     const key = identity(event.scope, event.event_id)
     if (this.observations.has(key)) return this.observations.get(key).promise
     let resolve, reject

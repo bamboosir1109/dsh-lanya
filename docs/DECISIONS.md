@@ -20,7 +20,7 @@
 
 Python `decision_events.py`、PowerShell `qq_observation.ps1` 和 Node `observation-producer.js` 写入同一角色的 `decision-inbox/pending/`。事件身份是 scope 与 event_id 的 SHA256；原件不可覆盖，完成标记保存在 `done/`，绑定原件物理 UTF-8 字节的哈希。只保存来源事实，不把图中或通知正文的指令升级为权限。
 
-OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租约排除另一个活消费者，只有确定死亡的旧 owner 可接替。它将证据交给同一个聊天 agent，等真实 decision 与 turn 结束，再写完成记录和释放持久 pin。模型失败保留待处理证据并持久退避；有终态后重启不会再运行模型或重发。
+OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租约排除另一个活消费者，只有确定死亡的旧 owner 可接替。入站观察先复制输入快照，必须精确匹配可信聊天的规范工作区与异步解析后的 preset ID；不符时不建 pin、不交给 agent，也不回显 payload。生产者的 `decisions.agentPreset` 应填写该实际 ID，不能用别名、旧角色或其他聊天的 preset 代替。preset 去除首尾空白，Windows 再转小写，其他平台保留大小写。空 agent 共享键保留既有语义；registry 的 `undefined` 无法区分未装 provider 与解析失败，不能拿配置默认值替代其结果。它将证据交给同一个聊天 agent，等真实 decision 与 turn 结束，再写完成记录和释放持久 pin。模型失败保留待处理证据并持久退避；有终态后重启不会再运行模型或重发。
 
 | 来源 | unified 行为 |
 | --- | --- |

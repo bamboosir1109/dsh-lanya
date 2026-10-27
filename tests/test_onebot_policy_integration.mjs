@@ -33,6 +33,7 @@ const waitUntil = async (condition, label) => {
   assert.fail('Timed out waiting for synthetic ' + label)
 }
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return { promise, resolve } }
+const workspaceKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd)
 let sequence = 0
 
 async function setup(t) {
@@ -260,7 +261,7 @@ test('failed/uncertain raw API ACK is never reported sent or retried by the same
 test('observation uses the same agent with no control authority and completes only after its decision/turn', async t => {
   const h = await setup(t)
   const event = { version: 1, event_id: 'obs:one', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { text: 'not a real user resume command' }, workspace_key: h.dir,
+    created_at: Date.now(), payload: { text: 'not a real user resume command' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const first = h.bridge.dispatchObservation(event)
   const duplicate = h.bridge.dispatchObservation(event)
@@ -283,11 +284,73 @@ test('observation uses the same agent with no control authority and completes on
   assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(event.scope)).observations.length, 0)
 })
 
+test('foreign observation workspace/preset is rejected before pin or dispatch; async resolved owner is accepted', async t => {
+  const h = await setup(t)
+  h.bridge.resolvePresetId = async () => 'fixture-preset'
+  const event = { version: 1, event_id: 'obs:owner', scope: 'private:101', kind: 'quiet', producer: 'fixture',
+    created_at: Date.now(), payload: { text: 'private foreign payload must not escape in diagnostics' },
+    workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
+  let recorded = 0
+  const record = h.bridge.lanyaPolicy.policy.recordObservation
+  h.bridge.lanyaPolicy.policy.recordObservation = (...args) => { recorded++; return record(...args) }
+  for (const foreign of [{ workspace_key: 'foreign-workspace' }, { agent_key: 'foreign-preset' }]) {
+    await assert.rejects(() => h.bridge.dispatchObservation({ ...event, ...foreign }), error => {
+      assert.match(error.message, /Observation owner mismatch/)
+      assert.doesNotMatch(error.message, /private foreign payload/)
+      return true
+    })
+    assert.equal(recorded, 0)
+    assert.equal(fs.existsSync(h.stateFile), false)
+    assert.equal(h.bridge.lanyaPolicy.observations.size, 0)
+    assert.equal(h.bridge.chats.size, 0)
+    assert.equal(h.calls.length, 0)
+  }
+  const completion = h.bridge.dispatchObservation(event)
+  await waitUntil(() => h.bridge.chats.get(event.scope)?.messages.length === 1, 'trusted async owner followup')
+  const chat = h.bridge.chats.get(event.scope)
+  const turn = h.start(chat)
+  await h.decide(chat, 'idle')
+  await h.end(chat, turn)
+  assert.equal((await completion).status, 'decided')
+  assert.equal(recorded, 1)
+  assert.equal(chat.messages.length, 1)
+  assert.equal(h.calls.length, 0)
+})
+
+test('observation snapshot survives caller mutation while async preset resolution is pending', async t => {
+  const h = await setup(t), preset = deferred(), resolving = deferred()
+  h.bridge.resolvePresetId = () => { resolving.resolve(); return preset.promise }
+  const scope = 'private:101', eventId = 'obs:snapshot'
+  const event = { version: 1, event_id: eventId, scope, kind: 'quiet', producer: 'fixture',
+    created_at: Date.now(), payload: { text: 'original detached evidence' }, workspace_key: workspaceKey(h.dir),
+    agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
+  const completion = h.bridge.dispatchObservation(event)
+  await resolving.promise
+  Object.assign(event, { scope: 'group:202', event_id: 'obs:mutated', workspace_key: 'foreign-workspace',
+    agent_key: 'foreign-preset' })
+  event.payload.text = 'mutated evidence must not be dispatched'
+  preset.resolve('fixture-preset')
+  await waitUntil(() => h.bridge.chats.get(scope)?.messages.length === 1, 'detached observation followup')
+  const chat = h.bridge.chats.get(scope)
+  assert.equal(h.bridge.chats.has('group:202'), false)
+  const text = chat.messages[0].content[0].text
+  assert.match(text, /original detached evidence/)
+  assert.doesNotMatch(text, /mutated evidence|obs:mutated|foreign-workspace|foreign-preset/)
+  const pinned = (await h.bridge.lanyaPolicy.policy.snapshot(scope)).observations
+  assert.equal(pinned.length, 1)
+  assert.equal(pinned[0].eventId, eventId)
+  const turn = h.start(chat)
+  await h.decide(chat, 'idle')
+  await h.end(chat, turn)
+  assert.equal((await completion).status, 'decided')
+  assert.equal(h.calls.length, 0)
+})
+
 test('background evidence cannot revoke queued or currently sending real-user turns', async t => {
   const h = await setup(t)
   const chat = await h.receive()
   const event = { version: 1, event_id: 'obs:foreground', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: {}, workspace_key: h.dir, agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
+    created_at: Date.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const before = await h.bridge.lanyaPolicy.policy.snapshot(event.scope)
   await assert.rejects(() => h.bridge.dispatchObservation(event), /foreground_busy/)
   assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(event.scope)).revision, before.revision)
@@ -312,7 +375,7 @@ test('inbound enrichment awaiting I/O has foreground priority before its turn is
   const receiving = h.receive()
   await entered.promise
   const event = { version: 1, event_id: 'obs:inbound-io', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: {}, workspace_key: h.dir, agent_key: '', origin: 'observation', control_allowed: false }
+    created_at: Date.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   try { await assert.rejects(() => h.bridge.dispatchObservation(event), /foreground_busy/) }
   finally { release.resolve() }
   const chat = await receiving
@@ -326,7 +389,7 @@ test('inbound enrichment awaiting I/O has foreground priority before its turn is
 test('the attached durable inbox pump invokes the bound agent and acknowledges only a settled verdict', async t => {
   const h = await setup(t)
   const event = { version: 1, event_id: 'obs:pump', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { observation: 'test only' }, workspace_key: h.dir,
+    created_at: Date.now(), payload: { observation: 'test only' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const base = path.join(path.dirname(h.stateFile), 'decision-inbox')
   const key = createHash('sha256').update(event.scope + '\0' + event.event_id).digest('hex') + '.json'
@@ -348,6 +411,8 @@ test('the attached durable inbox pump invokes the bound agent and acknowledges o
 
 test('memory CLI receives trusted scope/cwd/preset and never falls back to raw cross-chat text', async t => {
   const h = await setup(t)
+  // The installed registry returns a Promise, including for its default preset.
+  h.bridge.resolvePresetId = async () => 'fixture-preset'
   const script = path.join(h.dir, 'context-fixture.py')
   fs.writeFileSync(script, `import sys,json,os\nv=json.load(sys.stdin)\nassert set(v)=={'cwd','agent_preset','query','recent_events','conversation_key','limit'}\nw=os.path.abspath(v['cwd']);a=v['agent_preset'].strip()\nif os.name=='nt':w=w.lower();a=a.lower()\nprint(json.dumps({'schema':'dsh-memento-context/v1','read_only':True,'conversation_key':v['conversation_key'],'owner':{'workspace_key':w,'agent_key':a},'memories':[{'text':'scoped fixture'}]}))\n`)
   h.bridge.lanyaPolicy.config.memoryContextScript = script

@@ -1597,7 +1597,7 @@ const HARD = 26;       // 硬上限 26 字
 
 **两个注意**：
 - 改的是 `node_modules` 下的文件，**要重启 DSH 才生效**
-- 插件升级会覆盖，补丁记录在 [`docs/PATCH-qq-burst.md`](dsh-lanya/docs/PATCH-qq-burst.md)
+- 插件升级会覆盖，补丁记录在 [`docs/PATCH-qq-burst.md`](PATCH-qq-burst.md)
 
 ---
 

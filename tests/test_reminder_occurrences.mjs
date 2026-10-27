@@ -224,10 +224,10 @@ test('missing explicit config and unreadable preferred config fail closed',t=>{
   assert.throws(()=>resolveRuntime({}, {env:{LANYA_WORKDIR:f.directory},cwd:f.directory}),/invalid/)
 })
 
-async function hostFixture(t, {failPersistence=false}={}) {
+async function hostFixture(t, {failPersistence=false,agentPreset='fixture-preset',omitPreset=false}={}) {
   const f=fixture(t), data=path.join(f.directory,'role'), project=path.join(f.directory,'project.json')
   fs.mkdirSync(data);fs.mkdirSync(path.join(f.directory,'napcat'))
-  fs.writeFileSync(project,JSON.stringify({dataDirName:'role',decisions:{mode:'unified'}}))
+  fs.writeFileSync(project,JSON.stringify({dataDirName:'role',decisions:{mode:'unified',...(!omitPreset&&{agentPreset})}}))
   fs.writeFileSync(path.join(data,'lanya-config.json'),JSON.stringify({adminQQ:['101']}))
   const list=[{at:new Date(Date.now()-1000).toISOString(),text:'host fixture'}]
   fs.writeFileSync(path.join(data,'reminders.json'),JSON.stringify(list))
@@ -263,8 +263,9 @@ async function hostFixture(t, {failPersistence=false}={}) {
       {workDir:f.directory,schedulerEnabled:true})
     for(let tick=0;tick<20;tick++) await new Promise(resolve=>setImmediate(resolve))
     const queue=path.join(data,'decision-inbox','pending')
-    return {published,observedIntent,list:JSON.parse(fs.readFileSync(path.join(data,'reminders.json'))),
-      count:fs.existsSync(queue)?fs.readdirSync(queue).filter(name=>name.endsWith('.json')).length:0}
+    const events=fs.existsSync(queue)?fs.readdirSync(queue).filter(name=>name.endsWith('.json')).map(name=>JSON.parse(fs.readFileSync(path.join(queue,name)))):[]
+    return {published,observedIntent,directory:f.directory,events,list:JSON.parse(fs.readFileSync(path.join(data,'reminders.json'))),
+      count:events.length}
   } finally {
     for(const stop of shutdown) stop?.()
     globalThis.setInterval=old.setInterval;globalThis.setTimeout=old.setTimeout
@@ -286,5 +287,32 @@ test('actual host persistence failure prevents queue publication without consumi
   const result=await hostFixture(t,{failPersistence:true})
   assert.equal(result.published,0)
   assert.equal(result.count,0)
+  assert.equal(result.list.length,1)
+})
+
+test('actual host reminder producer normalizes explicit owner with Python platform semantics',async t=>{
+  const result=await hostFixture(t,{agentPreset:'  Fixture-Preset  '})
+  assert.equal(result.events.length,1)
+  const event=result.events[0],workspace=path.resolve(result.directory)
+  assert.equal(event.workspace_key,process.platform==='win32'?workspace.toLowerCase():workspace)
+  assert.equal(event.agent_key,process.platform==='win32'?'fixture-preset':'Fixture-Preset')
+  assert.equal(result.list.length,1)
+})
+
+for(const agentPreset of ['', '   ', null]) {
+  test('actual host preserves the shared empty reminder key for '+JSON.stringify(agentPreset),async t=>{
+    const result=await hostFixture(t,{agentPreset})
+    assert.equal(result.published,1)
+    assert.equal(result.count,1)
+    assert.equal(result.events[0].agent_key,'')
+    assert.equal(result.list.length,1)
+  })
+}
+
+test('actual host retains the existing shared-key semantics when no preset is configured',async t=>{
+  const result=await hostFixture(t,{omitPreset:true})
+  assert.equal(result.published,1)
+  assert.equal(result.count,1)
+  assert.equal(result.events[0].agent_key,'')
   assert.equal(result.list.length,1)
 })
