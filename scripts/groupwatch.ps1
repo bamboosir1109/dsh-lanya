@@ -115,6 +115,20 @@ $mentionFreshMin = 3
 # Separate ceiling so a spam wave cannot machine-gun her. Well above anything a
 # normal group produces.
 $mentionCapPerHour = 12
+# How long an unanswered @ stays pending. Long enough that a missed poll does not
+# lose it, short enough that a day-old mention does not resurrect.
+$pendingMaxMin = 30
+# Last-resort lines when the model refuses to answer a direct @ twice in a row.
+# These must sound like her: short, no pleasantries, slightly cheeky. Built from
+# code points because this file has to stay pure ASCII.
+$mentionFallback = @(
+  ([string][char]0x6B38),                                            # ei
+  ([string][char]0x554A + [char]0xFF1F),                             # a?
+  ([string][char]0x5728),                                            # zai
+  ([string][char]0x548B + [char]0x4E86),                             # zenme le
+  ([string][char]0x5E72 + [char]0x55EF + [char]0xFF1F),              # gan ma?
+  ([string][char]0x53EB + [char]0x6211 + [char]0x5E72 + [char]0x55EF) # jiao wo gan ma
+)
 
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
@@ -424,9 +438,21 @@ while ($true) {
     } catch { }
     $repliedToMeHere = $false
     $addressedByOther = $false
+    # An @ she has not answered yet is remembered across polls. Without this the
+    # mention "expires" three minutes after it was sent and she can never come
+    # back to it - which is exactly how an unanswered @ looks from the outside.
+    $pendingQQ = ''
+    $pendingAt = [DateTime]::MinValue
+    if ($state.pendingMention) {
+      try {
+        $pendingQQ = [string]$state.pendingMention.qq
+        $pendingAt = [DateTime]::Parse([string]$state.pendingMention.at)
+      } catch { $pendingQQ = ''; $pendingAt = [DateTime]::MinValue }
+    }
     # Newest time anyone @-ed her, so the trigger decision can tell a fresh
     # mention from one buried in the 30-message window.
     $lastMentionTime = [DateTime]::MinValue
+    $lastMentionQQ = ''
     foreach ($m in $hj.data.messages) {
       $t = ''
       $mentionsMe = $false
@@ -500,7 +526,10 @@ while ($true) {
       }
       if (($mentionsMe -or $replyToMe) -and $who -ne $selfId) {
         $addressedByOther = $true
-        if ($mt -gt $lastMentionTime) { $lastMentionTime = $mt }
+        if ($mt -gt $lastMentionTime) {
+          $lastMentionTime = $mt
+          $lastMentionQQ = $who
+        }
       }
       if ($who -eq $selfId) {
         # Her own line. Use the real directory name, not a hardcoded one.
@@ -622,6 +651,21 @@ while ($true) {
         $freshMention = $true
       }
     }
+    # A still-unanswered @ from an earlier poll keeps the mention trigger alive.
+    if (-not $freshMention -and $pendingQQ -and $pendingAt -ne [DateTime]::MinValue) {
+      $pendingAge = ($now - $pendingAt).TotalMinutes
+      if ($pendingAge -le $pendingMaxMin) {
+        $freshMention = $true
+        if ($lastMentionTime -eq [DateTime]::MinValue) { $lastMentionTime = $pendingAt }
+        if (-not $lastMentionQQ) { $lastMentionQQ = $pendingQQ }
+        Write-Log ('pending mention from ' + [math]::Round($pendingAge,1) + 'min ago still unanswered - retrying')
+      }
+      else {
+        # Give up after a while so one stale @ does not mute the trigger forever.
+        $state.pendingMention = $null
+        Write-Log ('pending mention expired after ' + [math]::Round($pendingAge,0) + 'min')
+      }
+    }
     if ($freshMention) { $triggerKey = 'mention' }
     elseif ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
     else { $triggerKey = 'active' }
@@ -635,6 +679,16 @@ while ($true) {
     }
     if ($outsideWindow -and $triggerKey -eq 'mention') {
       Write-Log ('outside window (' + $hour + 'h) but addressed - answering anyway')
+    }
+
+    # Remember the unanswered @ so a failed attempt does not lose it.
+    if ($triggerKey -eq 'mention') {
+      $pendQQ = if ($lastMentionQQ) { $lastMentionQQ } else { $pendingQQ }
+      $pendAt = if ($lastMentionTime -ne [DateTime]::MinValue) { $lastMentionTime } else { $now }
+      $state | Add-Member -NotePropertyName pendingMention -NotePropertyValue @{
+        qq = [string]$pendQQ
+        at = $pendAt.ToString('o')
+      } -Force
     }
 
     # Rate limits, counted separately per trigger type.
@@ -712,7 +766,8 @@ while ($true) {
     }
 
     # Runaway guard only; deliberately far above what a human would send.
-    if ($totalCount -ge $MaxTotal) {
+    # A direct @ still gets through: it is a question, not a volume problem.
+    if ($totalCount -ge $MaxTotal -and $triggerKey -ne 'mention') {
       Write-Log ('hard stop (' + $totalCount + '/' + $MaxTotal + ' total per 2h), skip')
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
@@ -834,15 +889,36 @@ while ($true) {
   Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
-    $answer = Ask-Agent $task
-    $answer = $answer.Trim()
-    if ($answer -eq '') { Write-Log 'agent returned empty; skip'; if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }
+    $answer = (Ask-Agent $task).Trim()
 
     # NOTE: wrap in @() - a single-line answer makes -split return a bare string,
     # and then $rows[0] is a [char] (no .Trim()), which threw here before.
     $rows = @($answer -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
-    $verdict = $rows[0].Trim().ToUpper()
+    $verdict = if ($rows.Count -gt 0) { $rows[0].Trim().ToUpper() } else { '' }
     Write-Log ('verdict=' + $verdict)
+
+    # A direct @ is a question. Silence is not an acceptable answer to it, so ask
+    # the model once more with the instruction spelled out, and if it still
+    # refuses, reply anyway with something minimal.
+    #
+    # The prompt already forbade this (checked: {{TRIGGER}} says "Do not go
+    # SILENT"), and the model still returned SILENT - which is why people were
+    # being ignored after being @-ed.
+    if ($triggerKey -eq 'mention' -and $verdict -notlike 'SPEAK*') {
+      Write-Log ('mention but agent said [' + $verdict + '] - retrying with an explicit order')
+      $retryTask = $task + "`n`n" +
+        'REMINDER: you were @-ed directly. You must answer. Output SPEAK and one short line. SILENT is not allowed here.'
+      $answer = (Ask-Agent $retryTask).Trim()
+      $rows = @($answer -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
+      $verdict = if ($rows.Count -gt 0) { $rows[0].Trim().ToUpper() } else { '' }
+      Write-Log ('retry verdict=' + $verdict)
+      if ($verdict -notlike 'SPEAK*') {
+        # Still nothing usable. Say something short rather than leaving them on read.
+        $rows = @('SPEAK', ($mentionFallback | Get-Random))
+        $verdict = 'SPEAK'
+        Write-Log 'retry failed - using a fallback line'
+      }
+    }
 
     if ($verdict -notlike 'SPEAK*') {
       Write-Log 'SILENT - staying quiet'
@@ -850,6 +926,10 @@ while ($true) {
     }
 
     $reply = if ($rows.Count -ge 2) { $rows[1].Trim() } else { ($rows[0] -replace '^SPEAK[:\s]*', '').Trim() }
+    if ($reply -eq '' -and $triggerKey -eq 'mention') {
+      $reply = ($mentionFallback | Get-Random)
+      Write-Log ('SPEAK with an empty line on a mention - using a fallback line')
+    }
     if ($reply -eq '') { Write-Log 'SPEAK but empty line; skip'; if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }
 
     # Guard: never post a stage direction.
@@ -867,7 +947,13 @@ while ($true) {
     $stageRe = '^\s*' + $open + '.*' + $close + '\s*$'
     if ($reply -match $stageRe) {
       Write-Log ('suppressed stage-direction reply: ' + $reply)
-      if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
+      if ($triggerKey -eq 'mention') {
+        $reply = ($mentionFallback | Get-Random)
+        Write-Log 'mention + stage direction - using a fallback line'
+      }
+      else {
+        if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
+      }
     }
 
     # Optional third line "IMG <mood>" asks for a meme picked at random from that
@@ -1046,6 +1132,11 @@ while ($true) {
       }
     }
     if ($res -match '"retcode":\s*0') {
+      # She answered, so the pending @ is satisfied.
+      if ($state.pendingMention) {
+        $state | Add-Member -NotePropertyName pendingMention -NotePropertyValue $null -Force
+        if ($triggerKey -eq 'mention') { Write-Log 'pending mention cleared - she answered' }
+      }
       $state.lastSendAt = (Get-Date).ToString('o')
       $state.sendTimes = @($state.sendTimes) + @($state.lastSendAt)
       # Only SHE-STARTED messages consume the limited budget.
