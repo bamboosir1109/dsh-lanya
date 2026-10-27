@@ -148,7 +148,57 @@ $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 # NOTE: the list of people she may contact lives in lifeloop.prompt.txt, not here.
 # This file must stay pure ASCII - PowerShell 5.1 reads a BOM-less .ps1 with the
 # ANSI codepage, so Chinese literals here become a parse error.
-$friendsBlock = '(see the contact list inside the prompt above)'
+# The contact list she is allowed to message. It used to be a hardcoded set of
+# names inside the prompt, plus this string - which was only ever a note saying
+# "see the prompt". Now it is built from the real friend list, so it always
+# matches who she can actually reach.
+$friendsBlock = ''
+try {
+  $fl = (Invoke-NapCat 'get_friend_list' @{}) | ConvertFrom-Json
+  $adminIds = @()
+  try {
+    $cf = Join-Path $dafeiyuDir 'lanya-config.json'
+    if (Test-Path $cf) {
+      $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+      $a = $cj.adminQQ
+      if ($a -is [array]) { $adminIds = @($a | ForEach-Object { [string]$_ }) }
+      elseif ($a) { $adminIds = @([string]$a) }
+    }
+  } catch { }
+  # Her own account shows up in the friend list; offering her the option to
+  # message herself is just noise. And there are people she has been told to
+  # leave alone - listing them would undo that.
+  $selfId = ''
+  $avoidIds = @()
+  try {
+    $cj2 = Get-Content (Join-Path $dafeiyuDir 'lanya-config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cj2.botQQ) { $selfId = [string]$cj2.botQQ }
+    if ($cj2.avoidQQ) { $avoidIds = @($cj2.avoidQQ | ForEach-Object { [string]$_ }) }
+  } catch { }
+  $fb = @()
+  $fb += '- `admin`  = your owner (use this word, the system expands it)'
+  $others = 0
+  foreach ($f in @($fl.data)) {
+    if (-not $f) { continue }
+    $fq = [string]$f.user_id
+    $fn = [string]$f.remark
+    if (-not $fn) { $fn = [string]$f.nickname }
+    if (-not $fq) { continue }
+    if ($selfId -and $fq -eq $selfId) { continue }
+    if ($avoidIds -contains $fq) { continue }
+    if ($adminIds -contains $fq) {
+      $fb += ('- `' + $fq + '` = ' + $fn + ' (your owner''s other account)')
+    }
+    elseif ($others -lt 8) {
+      $fb += ('- `' + $fq + '` = ' + $fn)
+      $others++
+    }
+  }
+  if ($fb.Count -gt 1) { $friendsBlock = ($fb -join "`n") }
+} catch { }
+if (-not $friendsBlock) {
+  $friendsBlock = '- `admin`  = your owner (use this word, the system expands it)'
+}
 
 function Invoke-NapCat([string]$action, $bodyObj) {
   Add-Type -AssemblyName System.Net.Http
@@ -261,6 +311,10 @@ try {
       Replace('{{NOTES}}', $noteList).
       Replace('{{LASTSHARE}}', [string]$state.lastShare).
       Replace('{{SINCESHARE}}', [string]$sinceShare).
+      # Absolute path of her own data dir. The prompt used to spell the folder
+      # name out in literally a dozen places, so renaming the character silently
+      # pointed her at a directory that does not exist.
+      Replace('{{DIR}}', [string]$dafeiyuDir).
       Replace('{{IDLE}}', [string]$idleMin).
       Replace('{{FRIENDS}}', $friendsBlock)
 
