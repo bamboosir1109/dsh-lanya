@@ -200,6 +200,34 @@ if (-not $friendsBlock) {
   $friendsBlock = '- `admin`  = your owner (use this word, the system expands it)'
 }
 
+function Similar($a, $b) {
+  # Two signals, because neither alone is enough:
+  #   Jaccard on character bigrams catches a rewording of the whole line
+  #   longest common substring catches a shared phrase inside otherwise
+  #     different sentences - the real duplicate only scored 0.26 on Jaccard
+  #     and slipped straight through.
+  if (-not $a -or -not $b) { return 0.0 }
+  $a = [string]$a; $b = [string]$b
+  $ga = @{}
+  for ($i = 0; $i -lt $a.Length - 1; $i++) { $ga[$a.Substring($i, 2)] = $true }
+  $gb = @{}
+  for ($i = 0; $i -lt $b.Length - 1; $i++) { $gb[$b.Substring($i, 2)] = $true }
+  if ($ga.Count -eq 0 -or $gb.Count -eq 0) { return 0.0 }
+  $inter = 0
+  foreach ($k in $ga.Keys) { if ($gb.ContainsKey($k)) { $inter++ } }
+  $union = $ga.Count + $gb.Count - $inter
+  $jac = if ($union -gt 0) { [double]$inter / [double]$union } else { 0.0 }
+  $best = 0
+  for ($i = 0; $i -lt $a.Length; $i++) {
+    for ($L = $a.Length - $i; $L -gt $best; $L--) {
+      if ($b.Contains($a.Substring($i, $L))) { if ($L -gt $best) { $best = $L }; break }
+    }
+  }
+  if ($jac -ge 0.35 -or $best -ge 6) { return [math]::Max($jac, [double]$best / 10.0) }
+  return $jac
+}
+
+
 function Invoke-NapCat([string]$action, $bodyObj) {
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
@@ -335,6 +363,16 @@ try {
     # SHARE <target> <text>
     $m = [regex]::Match($head, '^SHARE\s+(\S+)\s+(.+)$')
     if (-not $m.Success) { Write-Log 'malformed SHARE line'; if ($Once) { break } else { $plan = Get-SleepPlan $IntervalMinutes; Save-Mood $plan.Mood $plan.Seconds; Write-Log ('sleep ' + $plan.Seconds + 's (' + $plan.Mood + ')'); Start-Sleep -Seconds $plan.Seconds; continue } }
+    # Say the same thing twice and it reads like a broken record. The model
+    # does not remember what it said last round, so this has to be enforced here.
+    if ($state.lastShare) {
+      $sim = Similar $textToSend $state.lastShare
+      if ($sim -ge 0.55) {
+        Write-Log ('too similar to the last share (' + [math]::Round($sim, 2) + '): ' + $textToSend)
+        Write-Log 'skipping as a repeat'
+        if ($Once) { break } else { $plan = Get-SleepPlan $IntervalMinutes; Save-Mood $plan.Mood $plan.Seconds; Write-Log ('sleep ' + $plan.Seconds + 's (' + $plan.Mood + ')'); Start-Sleep -Seconds $plan.Seconds; continue }
+      }
+    }
     $target = $m.Groups[1].Value.Trim().ToLower()
     $textToSend = $m.Groups[2].Value.Trim()
 
