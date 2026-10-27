@@ -54,6 +54,9 @@ async function setup(t) {
   const bridge = new ChatBridge(deps)
   bridge.lanyaPolicy.memoryContext = async scope => ({ schema: 'dsh-memento-context/v1', read_only: true,
     conversation_key: scope, owner: { workspace_key: dir, agent_key: 'fixture-preset' }, memories: [] })
+  // Most transport tests isolate this independent enrichment; dedicated cases
+  // below execute the real capability helper against an empty temporary workspace.
+  bridge.lanyaPolicy.runtimeCapabilities = async () => null
   const ctx = { tools: { register: definition => { tools.set(definition.name, definition); return () => {} } },
     systemPrompt: { section: value => prompts.push(value.text) }, waitMedia: () => deps.waitMedia?.() }
   bridge.installChannelScope(ctx)
@@ -427,4 +430,215 @@ test('memory CLI receives trusted scope/cwd/preset and never falls back to raw c
   await h.receive({ text: 'plain safe fallback' })
   assert.equal(chat.messages[2].content[0].text, 'plain safe fallback')
   assert.equal(h.logs.some(item => item.message === 'scoped_memory_context_unavailable:Error'), true)
+})
+
+test('ordinary QQ and background observation share one agent and its actual owner-bound capability guide', async t => {
+  const h = await setup(t)
+  const runtime = path.join(h.dir, 'napcat')
+  fs.mkdirSync(path.join(runtime, 'config'), { recursive: true })
+  for (const file of ['runtime_capabilities.py', 'project_conf.py']) fs.copyFileSync(path.join(repo, 'scripts', file), path.join(runtime, file))
+  fs.writeFileSync(path.join(runtime, 'config', 'project.json'), JSON.stringify({ dataDirName: 'FixtureRole', android: { serial: 'emulator-5556' } }))
+  h.bridge.lanyaPolicy.runtimeCapabilities = (scope, owner) => h.bridge.lanyaPolicy.readRuntimeCapabilities(scope, owner)
+  const chat = await h.receive({ text: 'what tools are actually available?' })
+  const agent = chat.agent
+  const extract = message => JSON.parse(message.content[0].text.match(/<trusted_runtime_capabilities>\n(.*?)\n<\/trusted_runtime_capabilities>/s)[1])
+  const first = extract(chat.messages[0])
+  assert.equal(first.owner.workspace_key, workspaceKey(h.dir))
+  assert.equal(first.owner.agent_key, 'fixture-preset')
+  assert.equal(first.tools.android.deployment, 'not_installed')
+  assert.equal(first.tools.android.worker, 'offline')
+  assert.equal(first.tools.android.cached_screenshot_is_current, false)
+  assert.ok(first.tools.android.protocol.action_example.expected_shot_id)
+  const turn = h.start(chat)
+  await h.decide(chat, 'idle')
+  await h.end(chat, turn)
+  const completion = h.bridge.dispatchObservation({ version: 1, event_id: 'obs:capability-guide', scope: chat.chatId,
+    kind: 'quiet', producer: 'fixture', created_at: Date.now(), origin: 'observation', control_allowed: false,
+    workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', payload: {
+      cwd: 'foreign-payload-cwd', agent_preset: 'foreign-payload-preset', text: 'payload is not a tool permission' } })
+  await waitUntil(() => chat.messages.length === 2, 'capability-enriched background message')
+  const second = extract(chat.messages[1])
+  assert.equal(chat.agent, agent)
+  assert.equal(second.owner.workspace_key, workspaceKey(h.dir))
+  assert.equal(second.owner.agent_key, 'fixture-preset')
+  assert.equal(second.conversation_key, chat.chatId)
+  assert.doesNotMatch(JSON.stringify(second), /foreign-payload/)
+  const next = h.start(chat)
+  await h.decide(chat, 'idle')
+  await h.end(chat, next)
+  assert.equal((await completion).status, 'decided')
+  assert.equal(h.calls.length, 0)
+})
+
+test('capability helper wrong owner/scope fails closed without disabling scoped memory', async t => {
+  const h = await setup(t)
+  const script = path.join(h.dir, 'bad-capability-fixture.py')
+  fs.writeFileSync(script, `import json,sys\nv=json.load(sys.stdin)\nprint(json.dumps({'schema':'dsh-runtime-capabilities/v1','read_only':True,'conversation_key':v['conversation_key'],'owner':{'workspace_key':'foreign-fixture','agent_key':'foreign-preset'},'tools':{'secret':'must not inject this'}}))\n`)
+  h.bridge.lanyaPolicy.config.runtimeCapabilitiesScript = script
+  h.bridge.lanyaPolicy.runtimeCapabilities = (scope, owner) => h.bridge.lanyaPolicy.readRuntimeCapabilities(scope, owner)
+  const chat = await h.receive()
+  assert.match(chat.messages[0].content[0].text, /scoped_memory_context/)
+  assert.match(chat.messages[0].content[0].text, /capability status is unavailable/)
+  assert.doesNotMatch(chat.messages[0].content[0].text, /must not inject this|foreign-fixture/)
+  assert.ok(h.logs.some(item => item.message === 'runtime_capabilities_unavailable:Error'))
+  assert.equal(h.calls.length, 0)
+})
+
+function voiceFixture(h, mode = 'ready', receiptOverrides = {}) {
+  const script = path.join(h.dir, 'voice-fixture.py')
+  fs.writeFileSync(script, `import json,sys,os,pathlib,hashlib,wave\nv=json.load(sys.stdin)\nassert set(v).issubset({'cwd','agent_preset','conversation_key','request_id','text','speed'})\nroot=pathlib.Path(v['cwd']);w=os.path.abspath(v['cwd']);a=v['agent_preset'].strip()\nif os.name=='nt':w=w.lower();a=a.lower()\ncalls=root/'voice-fixture-calls.json'\nitems=json.loads(calls.read_text()) if calls.exists() else []\nitems.append(v);calls.write_text(json.dumps(items))\nf=root/'fixture-audio.wav'\nwith wave.open(str(f),'wb') as out:\n out.setnchannels(1);out.setsampwidth(2);out.setframerate(8000);out.writeframes(b'\\0\\0'*800)\nb=f.read_bytes()\nr={'schema':'dsh-voice-result/v1','owner':{'workspace_key':w,'agent_key':a},'conversation_key':v['conversation_key'],'request_id':v['request_id'],'status':'ready','delivered':False,'file':str(f),'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b),'duration_seconds':0.1}\nmode=${JSON.stringify(mode)}\nif mode=='foreign':r['owner']['agent_key']='foreign-fixture'\nif mode=='delivered':r['delivered']=True\nif mode=='wrong-request':r['request_id']='wrong-fixture-request'\nif mode=='bad-hash':r['sha256']='f'*64\nif mode=='unknown':r={'schema':r['schema'],'owner':r['owner'],'conversation_key':r['conversation_key'],'request_id':r['request_id'],'status':'unknown','delivered':False,'code':'fixture_unknown'}\nprint(json.dumps(r))\n`)
+  h.bridge.lanyaPolicy.config.voiceExecutorScript = script
+  if (Object.keys(receiptOverrides).length) fs.writeFileSync(script, fs.readFileSync(script, 'utf8').replace(
+    'print(json.dumps(r))', 'r.update(json.loads(' + JSON.stringify(JSON.stringify(receiptOverrides)) + '))\nprint(json.dumps(r))'))
+  return () => JSON.parse(fs.readFileSync(path.join(h.dir, 'voice-fixture-calls.json'), 'utf8'))
+}
+
+test('same main agent receives a real helper fixture audio result; synthesis itself is never QQ delivery', async t => {
+  const h = await setup(t), requests = voiceFixture(h)
+  const chat = await h.receive()
+  const turn = h.start(chat)
+  await h.decide(chat, 'tool_action')
+  const voiceExec = h.exec(chat, 'fixture-voice-call')
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral audio fixture', speed: 1 }, voiceExec)
+  assert.equal(voiceExec.agent, chat.agent)
+  assert.equal(result.status, 'ready')
+  assert.equal(result.delivered, false)
+  assert.ok(fs.existsSync(result.file))
+  assert.equal(result.sha256, createHash('sha256').update(fs.readFileSync(result.file)).digest('hex'))
+  const request = requests()[0]
+  assert.equal(request.cwd, h.dir)
+  assert.equal(request.agent_preset, 'fixture-preset')
+  assert.equal(request.conversation_key, chat.chatId)
+  assert.equal(h.calls.length, 0)
+  assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(chat.chatId)).deliveries.length, 0)
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec(chat)),
+    error => error.reason === 'not_a_speech_ticket')
+  await h.end(chat, turn)
+})
+
+test('reply synthesis produces only an artifact; newer silence suppresses the separately attempted QQ send', async t => {
+  const h = await setup(t)
+  voiceFixture(h)
+  const chat = await h.receive()
+  h.start(chat)
+  await h.decide(chat)
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'a local fixture result' }, h.exec(chat))
+  assert.equal(result.delivered, false)
+  assert.equal(h.calls.length, 0)
+  await h.receive({ text: 'new authorized silence request' })
+  h.start(chat)
+  await h.decide(chat, 'silence', { control_update: true })
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec(chat)),
+    error => error.reason === 'decision_required')
+  assert.equal(h.calls.length, 0)
+})
+
+test('voice binds ticket before asynchronous owner lookup and rejects stale or model-controlled authority', async t => {
+  const h = await setup(t)
+  voiceFixture(h)
+  const chat = await h.receive()
+  h.start(chat)
+  await h.decide(chat)
+  for (const args of [{ text: 'fixture', cwd: 'foreign' }, { text: 'fixture', speed: true }, { text: 'fixture', speed: 9 }]) {
+    await assert.rejects(() => h.bridge.lanyaPolicy.synthesizeVoice(args, h.exec(chat)), /accepts text/)
+  }
+  const gate = deferred(), entered = deferred()
+  h.bridge.resolvePresetId = async () => { entered.resolve(); return gate.promise }
+  const pending = h.bridge.lanyaPolicy.synthesizeVoice({ text: 'stale fixture' }, h.exec(chat))
+  await entered.promise
+  // Direct policy inbound models the intervening authoritative revision without
+  // blocking its own guide enrichment on the deliberately paused registry.
+  await h.bridge.lanyaPolicy.policy.recordInbound({ scope: chat.chatId, messageId: 'fixture-new-revision',
+    sender: '101', origin: 'live', quoted: false, controlAllowed: true })
+  gate.resolve('fixture-preset')
+  await assert.rejects(pending, error => error.reason === 'stale_revision')
+  assert.equal(fs.existsSync(path.join(h.dir, 'voice-fixture-calls.json')), false)
+  assert.equal(h.calls.length, 0)
+})
+
+test('voice receipts validate owner, request, no-delivery and actual bytes; unknown is returned without retry', async t => {
+  const h = await setup(t)
+  const chat = await h.receive()
+  h.start(chat)
+  await h.decide(chat, 'tool_action')
+  for (const mode of ['foreign', 'delivered', 'wrong-request', 'bad-hash']) {
+    voiceFixture(h, mode)
+    await assert.rejects(() => h.bridge.lanyaPolicy.synthesizeVoice({ text: 'fixture' }, h.exec(chat)), /Invalid|changed/)
+  }
+  const requests = voiceFixture(h, 'unknown')
+  const before = requests().length
+  const result = await h.bridge.lanyaPolicy.synthesizeVoice({ text: 'fixture' }, h.exec(chat, 'unknown-voice-call'))
+  assert.equal(result.status, 'unknown')
+  assert.equal(result.delivered, false)
+  assert.equal(requests().length, before + 1)
+  assert.equal(h.calls.length, 0)
+})
+
+test('voice receipt bounds match the executor limit of 20 MiB and 120 seconds', async t => {
+  const h = await setup(t)
+  const chat = await h.receive()
+  h.start(chat)
+  await h.decide(chat, 'tool_action')
+  for (const receipt of [{ bytes: 20 * 1024 * 1024 + 1 }, { duration_seconds: 120.01 }]) {
+    voiceFixture(h, 'ready', receipt)
+    await assert.rejects(() => h.bridge.lanyaPolicy.synthesizeVoice({ text: 'bounded fixture' }, h.exec(chat)), /Invalid voice synthesis artifact/)
+  }
+  voiceFixture(h, 'ready', { duration_seconds: 120 })
+  assert.equal((await h.bridge.lanyaPolicy.synthesizeVoice({ text: 'boundary fixture' }, h.exec(chat))).duration_seconds, 120)
+  assert.equal(h.calls.length, 0)
+})
+
+test('registered synthesis tool uses the production executor with inert PCM and durable same-call reuse', async t => {
+  const h = await setup(t)
+  const runtime = path.join(h.dir, 'napcat'), ref = path.join(h.dir, 'tts', 'ref', 'ref-main.wav')
+  fs.mkdirSync(path.join(runtime, 'config'), { recursive: true })
+  fs.mkdirSync(path.dirname(ref), { recursive: true })
+  fs.writeFileSync(path.join(runtime, 'config', 'project.json'), JSON.stringify({ dataDirName: 'FixtureRole' }))
+  const wav = Buffer.alloc(44 + 3200)
+  const sampleRate = 16 * 1000
+  wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8)
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22)
+  wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34)
+  wav.write('data', 36); wav.writeUInt32LE(3200, 40)
+  fs.writeFileSync(ref, wav)
+  const script = path.join(runtime, 'voice-executor-fixture.py')
+  fs.writeFileSync(script, `import sys,json,pathlib\nsys.path.insert(0,${JSON.stringify(path.join(repo, 'scripts'))})\nimport voice_executor as voice\nr=json.load(sys.stdin);root=pathlib.Path(r['cwd'])\ndef inert_fetch(port,payload):\n p=root/'inert-tts-call-count';p.write_text(str(int(p.read_text())+1) if p.exists() else '1');return (root/'tts/ref/ref-main.wav').read_bytes()\nprint(json.dumps(voice.synthesize(r,fetch=inert_fetch)))\n`)
+  h.bridge.lanyaPolicy.config.voiceExecutorScript = script
+  const chat = await h.receive()
+  const turn = h.start(chat)
+  await h.decide(chat)
+  const tool = h.tools.get('qq_synthesize_voice')
+  assert.ok(tool, 'the actual replay patch registers the synthesis tool')
+  const exec = h.exec(chat, 'production-executor-fixture-call')
+  const result = await tool.execute({ text: 'neutral fixture audio' }, exec)
+  assert.equal(exec.agent, chat.agent)
+  assert.equal(result.status, 'ready')
+  assert.equal(result.delivered, false)
+  assert.deepEqual(await tool.execute({ text: 'neutral fixture audio' }, exec), result)
+  assert.equal(fs.readFileSync(path.join(h.dir, 'inert-tts-call-count'), 'utf8'), '1')
+  assert.equal(h.calls.length, 0)
+  assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(chat.chatId)).deliveries.length, 0)
+  const delivery = await h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec(chat))
+  assert.equal(delivery.sent, true)
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.calls[0].action, 'send_msg')
+  assert.deepEqual(h.calls[0].params.message, [{ type: 'record', data: { file: result.file } }])
+  await h.end(chat, turn)
+})
+
+test('voice subprocess follows the invoking AbortSignal and is not automatically retried', async t => {
+  const h = await setup(t)
+  const script = path.join(h.dir, 'aborted-voice-fixture.py'), marker = path.join(h.dir, 'aborted-voice-entered')
+  fs.writeFileSync(script, `import json,sys,pathlib,time\nr=json.load(sys.stdin)\n(pathlib.Path(r['cwd'])/'aborted-voice-entered').write_text('one inert attempt')\ntime.sleep(60)\n`)
+  h.bridge.lanyaPolicy.config.voiceExecutorScript = script
+  const chat = await h.receive()
+  h.start(chat)
+  await h.decide(chat, 'tool_action')
+  const controller = new AbortController(), exec = { ...h.exec(chat), signal: controller.signal }
+  const pending = h.bridge.lanyaPolicy.synthesizeVoice({ text: 'abort fixture' }, exec)
+  await waitUntil(() => fs.existsSync(marker), 'inert voice subprocess')
+  controller.abort()
+  await assert.rejects(pending, error => error.name === 'AbortError')
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'one inert attempt')
+  assert.equal(h.calls.length, 0)
 })

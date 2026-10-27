@@ -15,6 +15,17 @@ export function registerTools(ctx, bridge, connection, limits) {
         },
     }));
     register(defineTool({
+        name: 'qq_send_voice',
+        isConcurrencySafe: () => true,
+        execute: async (args, exec) => {
+            if (typeof args.path !== 'string' || !args.path) throw new Error('qq_send_voice requires path');
+            await ctx.waitMedia?.();
+            const scope = args.chat_id || bridge.chatForSession(exec.agent.session.id);
+            const messageId = await bridge.sendSegments(scope, [{ type: 'record', data: { file: args.path } }]);
+            return { sent: true, messageId };
+        },
+    }));
+    register(defineTool({
         name: 'qq_send_forward',
         isConcurrencySafe: () => true,
         execute: async (args, exec) => bridge.sendForward(args.chat_id || bridge.chatForSession(exec.agent.session.id), args.messages),

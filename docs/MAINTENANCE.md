@@ -122,6 +122,27 @@ python -B scripts/workspace_archive.py --workspace .. --restore maintenance/work
 
 配置、账号和凭据备份只保存在受保护的本机归档，不能进入公开仓库、打包产物或面板可访问的作品目录。manifest 也可能包含真实路径、文件名和 Git 状态，不直接作为公开维护报告。
 
+## B 站主 agent 补丁
+
+`scripts/patch_bili_main_agent.py` 只支持已审阅的 `dsh-bili-scroll 2.2.0` 文件哈希与 direct MCP client。它按精确锚点修改 index，新增一个 bridge 和仅含 project/ledger 路径的配置；保留其余本机定制，不覆盖整包，不读取凭据。未知版本、文件变化或不完整旧补丁会拒绝。
+
+以下路径是占位值，需改为已确认的绝对私有路径；project 应与同一角色的其他执行器共用，SQLite 账本按 B 站账号独立且不能复用记忆库或 QQ policy JSON：
+
+```powershell
+python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --project-config ABSOLUTE_PRIVATE_PROJECT_JSON --ledger-file ABSOLUTE_PRIVATE_BILI_ACTIONS_SQLITE
+
+# 停止相关宿主后，使用刚取得的预览指纹和新的私有备份目录
+python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --project-config ABSOLUTE_PRIVATE_PROJECT_JSON --ledger-file ABSOLUTE_PRIVATE_BILI_ACTIONS_SQLITE --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 恢复同样默认只预检，再显式执行
+python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --restore-manifest ABSOLUTE_PRIVATE_BACKUP_PATCH_JSON
+python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --restore-manifest ABSOLUTE_PRIVATE_BACKUP_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+`--host-stopped` 是操作者前提，不是工具自动证明。应用前绑定包、MCP client、当前文件身份和输出哈希；替换使用新文件，切断可能的 HardLink。多文件写入不具备整批原子性，故障时保留私有原件与记录，先重新预检恢复。恢复只接受原件 before/after 和生成件 after 的已知状态；任一后续修改先整批拒绝，不覆盖新定制。恢复不删除 project、凭据、私信执行账本或观察队列；private backup 也必须继续保留。
+
+补丁加载后仍需核对主 agent 工具可见性、统一调度所有者和实际 MCP 能力。推荐与详情只读；发送结果须有回执。模型和真实平台验收应另行安排，不能以离线 fixture 声称已经对外投递。
+
 ## 提交与隐私
 
 ```powershell

@@ -34,9 +34,19 @@ OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租�
 
 `next_review_at` 可省略，省略表示不约下一轮；提交时必须在未来一分钟至七天内。mind 和提醒落实自己的复查，其他观察由 consumer 按持久完成记录产生唯一的 `main-review` 后继事件，scope、owner、kind 保持不变。unknown 不继承复查；没有新证据、没有约定时间就不唤醒。派生事件同样遵守持久失败退避，不能绕过停放的未知结果。
 
+### B 站直接执行
+
+`bili-main-agent.js` 通过已装 `dsh-bili-scroll` 的 direct MCP client 补充 `bili_video_info`、`bili_recommend` 和 `bili_send_message`。搜索、字幕、封面、抽帧及评论仍沿用该插件原工具。统一模式的 `bili_run` 直接返回推荐事实，由当前主 agent 继续调用原语或 idle，不创建 headless 会话，也不自动向 QQ 汇报。旧窗口定时器及私信独立回复在 unified 下停止认领；只有共享 project 配置明确 `decisions.mode=legacy` 才恢复原分支。其他 B 站插件的独立调度仍需在协调切换中停用。
+
+新私信工具按可信 host session/callId 在每账号独立的私有 `bili-actions.sqlite` 预留执行身份，仅保存参数哈希和回执。取得实际 `msg_key` 才返回 sent；失败、unknown 或重启后的同一执行均不自动重试。相同执行换参数会被拒绝，新 callId 表示新的动作，不能据此宣称按正文去重或平台提供了 exactly-once。账本达到容量会拒绝新增，不能删除旧账来冒充一次新执行。它不授予 QQ 发言权限，也不表示所有 B 站动作已纳入同一账本。
+
+源码补丁和合成 host/MCP 调用回归不表示已修改安装、登录账号、发出私信或验证真实平台。安装与恢复步骤见 [维护](MAINTENANCE.md#b-站主-agent-补丁)。
+
 ## 记忆和手机
 
 `memory_context.py` 使用可信工作区与 preset 过滤长期记忆，先筛范围再排序和截断；派生摘要带来源和原文 lineage。最近对话由原 DSH session 保留。读取失败不回退到全库、原始跨聊流水或其他人的档案。
+
+同一 OneBot 上下文入口也为普通聊天和后台观察注入 owner 绑定的只读本机能力 guide，包含浏览器、Android 的真实文件协议与语音合成/发送边界。脚本存在不等于 worker 在线，缓存图不算当前观察，本地音频 ready 不算 QQ 已送达；观察 payload 不能指定工具工作区、preset 或升级权限，见 [CAPABILITIES](CAPABILITIES.md)。
 
 Android 是执行器。真实设备在线并取得新鲜截图后才可用 `serial + expected_shot_id` 操作，执行后再截图。网页只展示该实际结果；离线、旧图或待处理请求均不给操作许可。环境和协议见 [ANDROID](ANDROID.md)。
 

@@ -13,17 +13,21 @@ Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness�
 | [维护与发布](docs/MAINTENANCE.md) | 故障排查、验证、源码与运行副本同步、隐私与发布 |
 | [主 LLM 决策](docs/DECISIONS.md) | 统一观察、持久静默、固定许可和部署边界 |
 | [记忆维护](docs/MEMORY.md) | 作用域、版本、压缩来源与可恢复变更 |
+| [运行能力上下文](docs/CAPABILITIES.md) | 同一主agent中的浏览器、安卓与语音协议和真实状态 |
+| [统一语音](docs/VOICE.md) | 本地合成、结果校验和独立QQ投递许可 |
 | [真实安卓](docs/ANDROID.md) | 模拟器前提、固定设备、截图与动作校验 |
 | [已知限制](docs/LIMITATIONS.md) | 外部依赖、当前边界、尚未验证的能力 |
 | [更新日志](CHANGELOG.md) | 版本变化；未发布改动单独列出 |
 
-[DEVLOG](https://github.com/bamboosir1109/dsh-lanya/blob/main/docs/DEVLOG.md) 和 [QQ 分段补丁记录](docs/PATCH-qq-burst.md) 保留历史排查过程；执行当前安装或运维时，以以上四份文档和当前代码为准。
+[DEVLOG](https://github.com/bamboosir1109/dsh-lanya/blob/main/docs/DEVLOG.md) 和 [QQ 分段补丁记录](docs/PATCH-qq-burst.md) 保留历史排查过程；执行当前安装或运维时，以以上当前手册和代码为准。
 
 ## 能做什么
 
 当前未发布源码默认统一决策：真实 QQ 入站与自主观察交给同一个聊天 agent，LLM 可以安静结束；发送前持久许可拦住旧队列和跨聊旁路。记忆维护有明确范围、版本与恢复记录；手机页展示真实 Android 截图。完整接入需按决策文档协调修补与重启，不能只复制某个脚本。
 
 B 站、语音和独立浏览器需要分别安装依赖、配置账号或本机服务。B 站评论和 QQ 消息会真正发出；安装脚本本身只复制文件，不启动这些活动。
+
+当前源码将可信运行能力说明接入同一agent的普通聊天和后台观察，设备离线不编造可用状态。语音先生成本地WAV，再由原QQ许可控制发送；B站直接动作需额外部署审定的scroll 2.2.0主agent补丁，避免旧定时和手动入口另开headless。说明与执行器的离线验证不代表已安装的外部插件已切换。
 
 ```text
 QQ 群 / 私聊 → NapCat → dsh-onebot-qq → DSH agent
