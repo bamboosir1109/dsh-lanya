@@ -10,6 +10,7 @@
   },
   "files": [
     "plugin/lib/*.js",
+    "plugin/lib/*.mjs",
     "server/*.py",
     "scripts/*.py",
     "scripts/*.ps1",

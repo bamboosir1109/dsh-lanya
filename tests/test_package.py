@@ -45,6 +45,13 @@ class PackageTests(unittest.TestCase):
             "plugin/lib/observation-queue.js", "plugin/lib/observation-producer.js",
             "scripts/androidd.py", "scripts/android_panel.py", "scripts/memory_context.py",
             "tests/fixtures/onebot_policy/lib/bridge.js", "tests/fixtures/onebot_policy/package.json",
+            "plugin/lib/memento-history.mjs", "scripts/patch_memento_history.py",
+            "scripts/memory_native_history.py",
+            "tests/fixtures/memento_native_0_5_23/lib/store.mjs",
+            "tests/fixtures/memento_native_0_5_23/lib/protocol.mjs",
+            "tests/fixtures/memento_native_0_5_23/native-tool.mjs",
+            "tests/fixtures/memento_native_0_5_23/LICENSE.md",
+            "tests/fixtures/memento_native_0_5_23/THIRD_PARTY_NOTICES.md",
         }
         self.assertFalse(required - paths, "Missing packaged runtime files: " + repr(required - paths))
         self.assertNotIn("docs/cordis.patch.yml", paths)

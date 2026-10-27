@@ -1,7 +1,7 @@
 """Operator memory mutations: synthetic temporary SQLite, no live store access."""
 import ast
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
 import io
@@ -48,7 +48,7 @@ class MemoryMutationTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.db = self.root / "fixture.db"
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection, connection:
             connection.executescript(SCHEMA)
         self.context = load("memory_context")
         with mock.patch.dict(sys.modules, {"memory_context": self.context}):
@@ -56,7 +56,7 @@ class MemoryMutationTests(unittest.TestCase):
         self.owner = dict(track="agent", scope="workspace", workspace_key="fixture-workspace", agent_key="fixture-agent")
 
     def sql(self, statement, args=()):
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection, connection:
             connection.row_factory = sqlite3.Row
             return [dict(row) for row in connection.execute(statement, args).fetchall()]
 

@@ -34,7 +34,7 @@ class MemoryContextTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.db = self.root / "fixture.db"
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             connection.executescript(SCHEMA)
         keys = ("memory_context", "memory_index", "memory_plastic", "project_conf", "seen_cap")
         missing = object()
@@ -72,7 +72,7 @@ class MemoryContextTests(unittest.TestCase):
         return module
 
     def sql(self, statement, values=()):
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             return connection.execute(statement, values).fetchall()
 
     def insert(self, eid, text="synthetic needle", **changes):

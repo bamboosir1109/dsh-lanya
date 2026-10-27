@@ -56,7 +56,7 @@ class MemoryPlasticTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.db = self.root / "fixture.db"
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             connection.executescript(SCHEMA)
         self.seen = types.SimpleNamespace(
             load_seen_capped=mock.Mock(side_effect=AssertionError("file corpus must stay offline")),
@@ -79,7 +79,7 @@ class MemoryPlasticTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def execute(self, sql, values=()):
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             return connection.execute(sql, values).fetchall()
 
     def insert(self, eid, text="steady synthetic memory", created=1, **changes):
@@ -92,12 +92,12 @@ class MemoryPlasticTests(unittest.TestCase):
         return row
 
     def entries(self):
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             connection.row_factory = sqlite3.Row
             return [dict(row) for row in connection.execute("SELECT * FROM entries ORDER BY id")]
 
     def archive(self, batch_id):
-        with sqlite3.connect(self.db) as connection:
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             connection.row_factory = sqlite3.Row
             return [dict(row) for row in connection.execute(
                 "SELECT * FROM plastic_archive WHERE batch_id = ? ORDER BY entry_id", (batch_id,))]

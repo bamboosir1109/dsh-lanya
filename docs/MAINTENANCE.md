@@ -143,6 +143,24 @@ python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --
 
 补丁加载后仍需核对主 agent 工具可见性、统一调度所有者和实际 MCP 能力。推荐与详情只读；发送结果须有回执。模型和真实平台验收应另行安排，不能以离线 fixture 声称已经对外投递。
 
+## 原生 memento 历史补丁
+
+`scripts/patch_memento_history.py` 针对已审阅的 memento 0.5.23 generic store/protocol 及依赖哈希。顺序是先应用可见性补丁，再预览原生历史补丁；撤回必须先历史、后可见性。未知形状或不完整补丁会拒绝，不整包替换、不访问记忆库。测试用原生代码保留 Apache-2.0 LICENSE 和第三方声明。
+
+```powershell
+# 对已完成 visibility 补丁的包预览
+python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKAGE
+
+# 停止对应宿主与 writer 后，使用新私有备份及本次预览指纹
+python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKAGE --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 仅撤回程序补丁：先预检，再显式执行
+python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKAGE --restore-manifest ABSOLUTE_PRIVATE_PATCH_JSON
+python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKAGE --restore-manifest ABSOLUTE_PRIVATE_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+两个补丁共享 OS 文件锁，排除同时操作同一包的维护进程；锁文件保留，不按 PID/时间删除。host-stopped 仍是操作者断言。应用保存完整私有原件，以新 inode 替换文件，保护共享 HardLink 源。多文件应用不是整批原子操作；中断后使用其 prepared manifest 重新预检，已知 before/after 的部分状态可恢复，任何后续编辑先整批拒绝。程序撤回保留数据库及全部 native history，不自动恢复事实；事实恢复单独按 [MEMORY](MEMORY.md#原生历史恢复) 执行。
+
 ## 提交与隐私
 
 ```powershell

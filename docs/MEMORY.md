@@ -1,10 +1,36 @@
 # 记忆维护与可恢复批次
 
-本页说明 `scripts/memory_plastic.py` 的维护内核。它使用已有 memento 的 entries/audit 表，仅新增 plastic_batches、plastic_archive 作为批次审计，不另建一套活动记忆库。短期事件、长期召回和主 LLM 上下文仍按 [ROADMAP](ROADMAP.md) 继续接入。
+本页说明原生 memento 的事实历史与本地维护工具，均使用现有 entries 数据库。源码补丁、运行文件、宿主加载与真实验收分别记录，不能以离线通过代表线上已启用。短期事件、长期召回和主 LLM 上下文见 [ROADMAP](ROADMAP.md) 与 [DECISIONS](DECISIONS.md)。
+
+## 原生主 agent 写入历史
+
+`plugin/lib/memento-history.mjs` 由审定补丁接入 memento 0.5.23 的 Provider。原生 add、seed、replace、remove、consolidate 的实际 entries 写入，均在同一个 `BEGIN IMMEDIATE` 内保存完整 SQL before/after、逐行 SHA256、owner、version、批次封印与独立批次审计；归档失败时事实与档案一起回滚。原生工具返回、审批、旧 audit 和会话事件继续保留，有限正文审计不再是唯一恢复依据。
+
+替换、删除和整合绑定审批前的完整目标。最终事务重新按目标 owner 定位并核对 ID、版本及全部字段；审批等待期间编辑、删除或同名重建，均不能换成另一条获准目标。模型工具传入的 owner 字段不代替可信会话元数据。Provider 的显式管理 API 仍区别于模型工具，不能把其直接数据库访问当作对任意 SQL 的授权闸门。
+
+新增的 native_history_batches、native_history_rows、native_history_audit 为追加历史；UPDATE、DELETE 和冲突 INSERT OR REPLACE 有拒绝触发器，写入前严格核对三表、索引及九个触发器。未知结构不会自动修成可写。哈希封印用于发现损坏与不一致，不抵抗有权重建数据库并重算全部封印的管理员。普通召回计数不生成事实批次，但完整快照包含计数，恢复不能覆盖后来召回。
+
+每次事实写入在锁内读取 entries 的完整前后状态，只存实际差异；其读取与比较成本随全库条目数增长。当前没有以未经验证的优化省略原行或缩小审计范围。原生补丁只保护启用之后的写入，不能从历史正文审计自动补回已经丢失的完整行。
+
+### 原生历史恢复
+
+`scripts/memory_native_history.py` 没有默认数据库。先列批次元数据，再对一个明确批次做完整只读预检；输出不含记忆正文：
+
+```powershell
+python -B scripts/memory_native_history.py --db ABSOLUTE_PRIVATE_DB --list
+python -B scripts/memory_native_history.py --db ABSOLUTE_PRIVATE_DB --restore BATCH_ID
+
+# 停齐相关 writer 后，使用刚得到的预览 fingerprint 显式恢复
+python -B scripts/memory_native_history.py --db ABSOLUTE_PRIVATE_DB --restore BATCH_ID --apply --writers-stopped --fingerprint PREVIEW_FINGERPRINT
+```
+
+预检验证全部历史封印、审计、表结构和恢复关系。当前每条完整行必须精确等于该批次 after，包括 owner、version、正文、tags、事实时间和召回元数据；删除后的 ID 必须仍未占用。后续同 ID 历史、重复恢复、结构变化或封印损坏都会拒绝，不提供 force。新增条目的逆操作删除该条；删除或修改的逆操作保留原始正文与时间，version 在历史最高值之后继续前进。恢复事实与新逆批次、审计在同一事务提交，旧批次不改写。
+
+`--writers-stopped` 是操作者前提，不是自动停机证明。原生历史恢复、下面的 plastic 批次恢复、面板 change 恢复及归属迁移恢复，各自使用自己的记录 ID 和指纹，不能混用。代码补丁的安装/撤回顺序见 [维护](MAINTENANCE.md#原生-memento-历史补丁)。
 
 ## 当前行为
 
-相似条目只在相同 track、scope、workspace_key、agent_key 内聚类。普通合并保留最新的完整行，删除列表排除保留 ID；视频摘要保存原文、派生条目及来源链。派生摘要不会再次作为普通原文参与相似合并。
+`scripts/memory_plastic.py` 提供下面的本地维护与压缩操作。相似条目只在相同 track、scope、workspace_key、agent_key 内聚类。普通合并保留最新的完整行，删除列表排除保留 ID；视频摘要保存原文、派生条目及来源链。派生摘要不会再次作为普通原文参与相似合并。
 
 合并与压缩的原文归档、条目变化、审计记录在同一 SQLite 事务内完成。异常会整批回滚。每个批次保存完整行、版本、内容哈希和整批校验，恢复前检查整批；后续被修改、召回计数变化、原 ID 被占用或归档损坏都会拒绝恢复，不覆盖新事实。
 
@@ -33,9 +59,9 @@ python -B scripts/memory_plastic.py --compress --dry --track agent --scope works
 python -B scripts/memory_plastic.py --restore-batch YOUR_BATCH_ID
 ```
 
-追加 --apply 才执行整批恢复。发生版本、内容、范围、召回计数或 ID 冲突时，应人工核对后续变更，不能绕过校验强行覆盖。外部写入仍需逐步统一到 memento 服务，当前维护内核不代表主 LLM 的记忆读写入口已经完成。
+追加 --apply 才执行整批恢复。发生版本、内容、范围、召回计数或 ID 冲突时，应人工核对后续变更，不能绕过校验强行覆盖。plastic 是独立维护内核；主 LLM 的原生工具写入由前述 Provider 补丁保护，需要分别部署。任意外部直接 SQL 不因此获得统一事务审计。
 
-回归只使用临时 SQLite，覆盖乱序合并、范围隔离、原文与来源链、故障回滚、完整性及恢复冲突；没有读取或维护真实私人数据库。
+这些源码回归只使用临时 SQLite，覆盖乱序合并、范围隔离、原文与来源链、故障回滚、完整性及恢复冲突，不读取或维护真实私人数据库。
 
 ## 单条管理写入
 
