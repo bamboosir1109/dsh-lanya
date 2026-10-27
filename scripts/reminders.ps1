@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Continue'
 # (see the SCHEDULE table in dsh-lanya/lib/index.js). Bail out immediately so the
 # scheduled task becomes a no-op instead of spawning a second powershell every
 # minute just to call the tick.
-$__marker = Join-Path $PSScriptRoot 'scheduler-in-plugin.flag'
+$__marker = Join-Path '<WORKDIR>\napcat' 'scheduler-in-plugin.flag'
 if (Test-Path $__marker) {
   if (((Get-Date) - (Get-Item $__marker).LastWriteTime).TotalMinutes -lt 30) { exit 0 }
 }
@@ -37,17 +37,13 @@ if (Test-Path $__marker) {
 # fixed bug keeps reproducing for hours.
 $scriptStartWrite = (Get-Item $PSCommandPath).LastWriteTime
 
-# Derived from this script's own location: <root>\napcat\<file>.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  $root = Split-Path -Parent $root
-}
+$root      = '<WORKDIR>'
 $notesDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya" folder
 $remPath   = Join-Path $notesDir 'reminders.json'
 $statePath = Join-Path $notesDir 'reminders.state.json'
 $logPath   = Join-Path $notesDir 'reminders.log'
-$cfgPath = Join-Path $root 'napcat\balance-alert.config.json'
-# The owner's QQ, read from config.
+$cfgPath   = '<WORKDIR>\napcat\balance-alert.config.json'
+# The owner's QQ, read from config (was a hardcoded number).
 $adminQQ = ''
 try {
   $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')

@@ -25,11 +25,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Derived from this script's own location: <root>\napcat\<file>.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  $root = Split-Path -Parent $root
-}
+$root    = '<WORKDIR>\napcat'
 $relPath = Join-Path $root 'autochat.relations.json'
 $statePath = Join-Path $root 'agentchat.state.json'
 $logPath   = Join-Path $root 'agentchat.log'
@@ -97,7 +93,7 @@ $hj = $history | ConvertFrom-Json
 if ($hj.retcode -ne 0) { Write-Log ('history fetch failed: ' + $history); exit 1 }
 
 $lines = @()
-# Her own QQ, read from config.
+# Her own QQ, read from config (was a hardcoded number).
 $selfId = ''
 try {
   $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')

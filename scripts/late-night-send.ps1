@@ -11,16 +11,12 @@
 
 $ErrorActionPreference = 'Continue'
 
-# Derived from this script's own location: <root>\napcat\<file>.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  $root = Split-Path -Parent $root
-}
+$root      = '<WORKDIR>'
 $lanyaDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)
 $logPath   = Join-Path $lanyaDir 'late-night.log'
 $remPath   = Join-Path $lanyaDir 'reminders.json'
 $sentLog   = Join-Path $lanyaDir 'sent-log.txt'
-$cfgPath = Join-Path $root 'napcat\balance-alert.config.json'
+$cfgPath   = '<WORKDIR>\napcat\balance-alert.config.json'
 $groupId = ''
 try {
   $cfgFile = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')
@@ -38,7 +34,7 @@ if (-not $groupId) {
     $groupId = [string](Get-ProjectConfValue 'fanGroup' '')
   } catch { }
 }
-# Her own QQ, read from config.
+# Her own QQ, read from config (was a hardcoded number).
 $selfId = ''
 try {
   $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')
