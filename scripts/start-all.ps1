@@ -39,10 +39,10 @@ Note '--- start-all begin ---'
 
 # 1. Panel API (19389) and the static one (19388). Both are the same script.
 if (-not (Test-Port 19389)) {
-  Spawn 'python' @((Join-Path $root 'lanya-panel-server.py')) 'panel-api:19389'
+  Spawn 'C:\Python314\python.exe' @('E:\\DSH work\\napcat\lanya-panel-server.py') 'panel-api:19389'
 }
 if (-not (Test-Port 19388)) {
-  Spawn 'python' @((Join-Path $root 'lanya-panel-server.py'), '--port', '19388') 'panel-static:19388'
+  Spawn 'C:\Python314\python.exe' @('E:\\DSH work\\napcat\lanya-panel-server.py', '--port', '19388') 'panel-static:19388'
 }
 
 # 2. Supervisor - it is what drives budget, chats, steal, greet, memory, bili.
@@ -53,6 +53,15 @@ if (-not (Test-Script 'lanya-supervisor.ps1')) {
 }
 
 # 3. The long-running daemons.
+# The planning loop replaced lifeloop. Nothing else drives her autonomous
+# activity, so if this is not up she simply does not live between messages.
+if (-not (Test-Script 'mind.py')) {
+  $mind = Join-Path $root 'mind.py'
+  if (Test-Path $mind) {
+    Spawn 'C:\Python314\python.exe' @($mind) 'mind.py'
+  }
+}
+
 $daemons = @(
   @{ n = 'groupwatch.ps1';  f = 'groupwatch.ps1' },
   @{ n = 'lifeloop.ps1';    f = 'lifeloop.ps1' },

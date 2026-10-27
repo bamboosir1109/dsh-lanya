@@ -118,7 +118,7 @@ $MemeEvery = 1
 $mentionFreshMin = 10
 # Separate ceiling so a spam wave cannot machine-gun her. Well above anything a
 # normal group produces.
-$mentionCapPerHour = 12
+$mentionCapPerHour = 4
 # How long an unanswered @ stays pending. Long enough that a missed poll does not
 # lose it, short enough that a day-old mention does not resurrect.
 $pendingMaxMin = 30
@@ -896,6 +896,22 @@ while ($true) {
         }
         if ($hitList.Count -gt 40) { $hitList = @($hitList[($hitList.Count - 40)..($hitList.Count - 1)]) }
         ($hitList | ConvertTo-Json -Depth 4 -Compress) | Set-Content -Path $hitPath -Encoding UTF8
+      }
+    } catch { }
+
+    # Keep the other pieces alive.
+    #
+    # This loop runs under Task Scheduler, so a process it starts is not reaped
+    # when some transient shell exits. That is why the keep-alive lives here:
+    # spawning the same thing from an ordinary shell silently fails.
+    try {
+      if (-not $script:lastWatchdog) { $script:lastWatchdog = [datetime]::MinValue }
+      if (((Get-Date) - $script:lastWatchdog).TotalMinutes -ge 10) {
+        $script:lastWatchdog = Get-Date
+        $sa = Join-Path $root 'start-all.ps1'
+        if (Test-Path $sa) {
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $sa 2>$null
+        }
       }
     } catch { }
 

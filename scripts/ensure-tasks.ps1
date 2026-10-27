@@ -163,4 +163,28 @@ if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-PanelStatic' -ErrorAction Silen
   Note 'DSH-Lanya-PanelStatic  <-  19388'
 }
 
+
+# ---------------------------------------------------------------------------
+# The planning loop. lifeloop used to wake her on a random timer; mind.py
+# replaced it with a plan that survives between rounds, and lifeloop now
+# retires itself. That makes this task the only thing driving her autonomous
+# activity - without it she just sits there between messages.
+#
+# It has to be a task, not a spawned process: anything started with
+# Start-Process gets reaped, and mind.py dies within seconds of being launched
+# that way.
+if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Mind' -ErrorAction SilentlyContinue)) {
+  $am = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
+    -Argument ('"' + (Join-Path $napcat 'mind.py') + '"')
+  $tm1 = New-ScheduledTaskTrigger -AtLogOn
+  $tm2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+  $sm = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+  Register-ScheduledTask -TaskName 'DSH-Lanya-Mind' -Action $am `
+    -Trigger @($tm1, $tm2) -Settings $sm -Force | Out-Null
+  Note 'DSH-Lanya-Mind  <-  mind.py'
+}
+
 Write-Host ''

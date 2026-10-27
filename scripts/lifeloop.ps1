@@ -48,6 +48,28 @@ $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927
 
 $root       = Join-Path (Split-Path -Parent $PSScriptRoot) 'napcat'
 $workDir    = Split-Path -Parent $root
+# ---- retired in favour of mind.py -------------------------------------------
+#
+# lifeloop woke the agent on a random timer: every round started from nothing,
+# with no idea what the previous one had been doing. mind.py replaced it with a
+# plan that survives between rounds.
+#
+# Running both means she gets told to "go do something" twice with two
+# different mental states, and speaks about twice as often as either would
+# alone. This loop therefore retires itself as soon as the planner is present.
+#
+# The scheduled task is left registered on purpose - deleting it needs
+# elevation - so this guard is what actually stops it.
+$__mind = Join-Path $PSScriptRoot 'mind.py'
+if (Test-Path $__mind) {
+  $__log = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName) 'lifeloop.log'
+  try {
+    Add-Content -Path $__log -Encoding UTF8 -Value ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') +
+      '] retired - mind.py is handling the loop now; lifeloop exits')
+  } catch { }
+  exit 0
+}
+
 $dafeiyuDir   = Join-Path $workDir $dataDirName
 $notesDir   = Join-Path $dafeiyuDir 'notes'
 $madeDir    = Join-Path $dafeiyuDir 'made'
