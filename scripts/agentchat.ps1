@@ -100,7 +100,7 @@ $lines = @()
 # Her own QQ, read from config.
 $selfId = ''
 try {
-  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) ('岚娅\lanya-config.json')
+  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')
   if (Test-Path $cf) {
     $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($cj.botQQ) { $selfId = [string]$cj.botQQ }
