@@ -6,9 +6,9 @@
 这一晚反复出现同一类故障：消息发不出去、发到不存在的目标、发了没人回。
 根因几乎都是同一个 —— **脱敏脚本把真值换成了占位符，而线上在跑的那份也被换了**。
 
-    $selfId  = 'BOT_QQ'          @ 检测永远为假
-    $groupId = 'YOUR_GROUP_ID'    发到一个不存在的群
-    $adminQQ = 'YOUR_ADMIN_QQ'    发给一个不存在的用户
+    自己 QQ  写成了占位符字符串      -> @ 检测永远为假
+    群号     写成了占位符字符串      -> 发到一个不存在的群
+    管理员   写成了占位符字符串      -> 发给一个不存在的用户
 
 **它们全都不报错。** NapCat 那边返回 `retcode 0`（发给 0 号也返回成功），
 或者返回一句「无法获取用户信息」，脚本照样往下走。
@@ -31,6 +31,13 @@ import json
 import os
 import re
 import sys
+
+# The console here is GBK; without this the check marks raise
+# UnicodeEncodeError and the whole audit dies at the reporting stage.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 # Both derived from this file's location: tests/ lives inside the repo.
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
