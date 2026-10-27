@@ -90,7 +90,7 @@ function Invoke-Job($j) {
   try {
     # Quote every argument that contains a space. Passing the array straight to
     # -ArgumentList let Windows split "<WORKDIR>\napcat\reminders.ps1" at the
-    # space, so powershell got "-File E:\DSH" and every job failed instantly.
+    # space, so powershell got "<path>"  # scrubbed
     $quoted = @()
     foreach ($a in $j.args) {
       if ($a -match '\s') { $quoted += ('"' + $a + '"') } else { $quoted += $a }
