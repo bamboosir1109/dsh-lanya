@@ -33,6 +33,7 @@
 20. 这一轮新增的工具
 21. 这一轮学到的判断法
 22. 待办
+23. 2026-10-27 晚：清理、体检、补文档
 后记：用户的工作方式
 
 
@@ -1123,7 +1124,7 @@ NapCat 发语音
 | `YOUR_ADMIN_QQ` / `YOUR_ADMIN_QQ2` | `YOUR_ADMIN_QQ` |
 | `YOUR_GROUP_ID` | `YOUR_GROUP_ID` |
 | `BOT_QQ` | `BOT_QQ` |
-| `FRIEND_QQ` | 已经替换过 |
+| `FRIEND_QQ` | `FRIEND_QQ` |
 | `~` | `~` |
 | `<WORKDIR>` | `<WORKDIR>` / `<YOUR_WORKDIR>` |
 | `大肥鱼` | `大肥鱼` |
@@ -1396,8 +1397,8 @@ L407  lastMsgTime = $state.lastMsgTime     # 写进 state 文件
 实测：
 
 ```
-[11:32:47] no new messages since last poll (last=1793071653) - skipping without a model call
-[11:33:47] no new messages since last poll (last=1793071653) - skipping without a model call
+[11:32:47] no new messages since last poll (last=<ts>) - skipping without a model call
+[11:33:47] no new messages since last poll (last=<ts>) - skipping without a model call
 ```
 
 ---
@@ -1492,7 +1493,7 @@ function Spawn($exe, $args, $label) {        # ❌ $args 是自动变量
 
 **踩到的坑**：
 
-- ffmpeg 对 8.3 短路径（8.3 格式的短路径（形如 `XXX~1`））会 **I/O error**，要写完整路径
+- ffmpeg 对 8.3 短路径（`8.3 短路径`）会 **I/O error**，要写完整路径
 - ffmpeg 直接读 B 站 CDN 的 URL 会 **403**（`-headers` 被 PowerShell 吃掉），改成 Python 下载再本地抽帧
 
 ---
@@ -1539,7 +1540,7 @@ bili_send_message           发私信
 **踩到的坑**：返回结构是嵌套的，跟直觉不一样：
 
 ```json
-{"id": ..., "user": {"mid": 474165806, "nickname": "..."},
+{"id": ..., "user": {"mid": 123456789, "nickname": "..."},
  "item": {"subject_id": ..., "root_id": ..., "title": "正文在这"}}
 ```
 
@@ -1928,6 +1929,187 @@ python "<WORKDIR>\napcat\audit_send.py" --live
 - [ ] `MAX = 22` 是否调到 30（碎 vs 多，另一个问题）
 - [ ] `voicedaemon` 曾报 `entry has no usable text field; keys=Count,Length,...`——数组被当哈希用，未定位
 - [ ] `8765` 静态服务（`made/` 的 http.server）没在跑，是否需要
+- [ ] `other` 分类里还有 ~226 张表情包未分类
+
+
+---
+
+## 23. 2026-10-27 晚：清理、体检、补文档
+
+这一节记的是「收尾」——把前面二十多节修过的东西整理干净，
+再加上一层能反复用的自检。
+
+---
+
+### 23.1 全文体检抓到的一个真 bug
+
+新写的 `fullcheck.py` 一跑就抓到：
+
+```
+[lifeloop.ps1] L157  invoke-napcat() 定义在 L229，这里就调了
+```
+
+**和 19.1 / 19.4 是同一个坑，第三次了。**
+
+```powershell
+L157   $fl = (Invoke-NapCat 'get_friend_list' @{})     # 调用
+L231   function Invoke-NapCat([string]$action, ...)     # 定义
+```
+
+后果：`$friendsBlock` **永远拿不到好友列表**，一直用兜底那句
+`- \`admin\` = your owner`。`try/catch { }` 把异常吞得干干净净。
+
+在那个位置加注释是不够的——所以这次把**整块逻辑挪到函数定义之后**，
+并在注释里写清楚为什么不能放回去。
+
+**教训**：
+> PowerShell 里往脚本中间插一段代码时，
+> 别只看「语法对不对」，要看「它依赖的函数定义了没有」。
+
+---
+
+### 23.2 一并清掉的杂物
+
+| 类型 | 内容 |
+|---|---|
+| 残破代码 | `$an = if (...) { '' } else { '' }` —— 两个分支都返回空串 |
+| 死变量 | `$speakSinceMeme` `$lastOtherId` `$replyHint` `$relPath` `$dataDir` `$lanya` `$dafeiyu` |
+| 语法错误 | `_tags.ps1` L56 `Unexpected token '-Output'` |
+| 非 ASCII | `_t3.ps1` 24 字节 >127 |
+| 调试残留 | 11 个一次性补丁脚本（`fix_*.py`） |
+
+`_tags.ps1` / `_t3.ps1` 全仓库**引用 0 次**，直接删。
+
+---
+
+### 23.3 目录整理
+
+`napcat/` 主目录原来有 **267 个文件**，其中：
+
+- 100 个 `_` / `opt_` / `patch_` / `fix_` / `add_` 开头的一次性脚本
+- 9 个 `.bak*` 备份
+
+全部移到归档目录（**移动不是删除**，需要时还能翻）：
+
+```
+napcat/_scratch/     100 个一次性脚本
+napcat/_backup/        9 个改前备份
+```
+
+**归档前先查引用**——扫全仓库的 `.ps1/.py/.json/.yml/.md/.cmd`，
+确认没有任何文件提到这些名字，才动。
+
+归档后重跑 `fullcheck.py` 和 `verify_privacy.py`，都是干净的。
+
+---
+
+### 23.4 `fullcheck.py`：把踩过的坑做成检查
+
+这一晚的 bug 有个共同点：**全都不报错。**
+
+```
+$selfId = 'BOT_QQ'          恒假条件，只是分支永远不进
+def Similar(...)            语法检查通过，函数从未定义
+Invoke-NapCat 早于定义       被 try/catch 吞掉
+$newCount                   赋值了，没人用
+$args                       自动变量，参数值是空的
+```
+
+**没有一条会让脚本报错，只会让它悄悄不干活。**
+
+所以检查的是这些形状，而不是语法：
+
+| 检查 | 抓什么 |
+|---|---|
+| 函数调用早于定义 | 今晚栽了三次 |
+| `$args`/`$input`/`$this`/`$matches` 当参数名 | 一次 |
+| 占位符当值（`= 'YOUR_xxx'` / `= 'BOT_QQ'`） | 八处 |
+| 只赋值不使用的变量 | 七处 |
+| `.ps1` 非 ASCII | 两次 |
+| 真实业务号进了仓库 | 多次 |
+
+收敛过程：
+
+```
+第一次  73 处
+降噪    17 处
+修完     8 处
+再修     1 处
+最终    ✅ 0 处
+```
+
+**降噪很重要**：`$ErrorActionPreference` 是 PowerShell 隐式读的，
+生成器脚本里的 `<WORKDIR>` 是模板占位——这些不算问题。
+**一个噪声太多的检查器，人会直接不看。**（见 19.17 同一个道理）
+
+---
+
+### 23.5 `sync_sanitize.py` 漏了转义路径
+
+```powershell
+$dsh = 'C:\Python314\python.exe'
+Spawn 'python' @('E:\\DSH work\\napcat\\lanya-panel-server.py')   # ← 双反斜杠
+```
+
+`<WORKDIR>` 的规则匹配不到 `E:\\DSH work`（PowerShell 字符串里转义过），
+所以它**每次都漏进仓库**。
+
+补了 `ESCAPED_SUBS`：
+
+```python
+ESCAPED_SUBS = [
+    (r"E:\\\\DSH work", "<WORKDIR>"),
+    (r"E:\\\\DSH\\", "<DSH_ROOT>\\\\"),
+    (r"C:\\\\Users\\\\bamboosir120", "~"),
+]
+```
+
+**修好之后仍然把 `start-all.ps1` 的那两行改成 `(Join-Path $root '...')`** ——
+能用变量就别用字面路径，从根上避免这类遗漏。
+
+---
+
+### 23.6 隐私扫描器又一次报自己
+
+`fullcheck.py` 的正则表里当然有 `YOUR_GROUP_ID` 这些字样，
+`verify_privacy.py` 把它报成脏。
+
+已经是第三次了（19.17 记过）。继续往白名单里加：
+
+```python
+PATTERN_FILES = {
+    "tests/audit_send.py",
+    "tests/fullcheck.py",
+    "scripts/fullcheck.py",
+    "scripts/privacy-scan.py",
+    "verify_privacy.py",
+}
+```
+
+> **一个永远报自己的扫描器，等于没有扫描器。**
+
+---
+
+### 23.7 文档
+
+- `README.md` 更新了四节：
+  - 「自主活动的节奏」—— 改掉随机骰子的描述，换成 `mind.py` 的计划
+  - 「真看视频」—— 故事板为什么不能用、真办法是什么
+  - 「她的手机」—— 十个应用 + 怎么用（走 browserd）
+  - 「体检工具」—— 五个检查脚本，什么时候跑
+- 「仓库结构」补上新增的文件
+- DEVLOG 补了这一节
+
+---
+
+### 23.8 还没做的
+
+- [ ] `ensure-tasks.ps1` 需要管理员跑一次 —— 补 `DSH-Lanya-Supervisor` / `-Panel` / `-PanelStatic`
+- [ ] 重启 DSH —— 让 `outbound.js` 的 `MAX_PIECES=3` 生效（19.10）
+- [ ] `lifeloop.ps1` 和 `mind.py` 会打架，建议只留一个
+- [ ] `agentchat.ps1` 里 3 个 `catch { }` 全是空的 —— 出错不留痕
+- [ ] `MAX = 22`（每条消息的字数）是否调到 30
+- [ ] `voicedaemon` 曾报 `entry has no usable text field; keys=Count,Length,...` —— 数组被当哈希用，未定位
 - [ ] `other` 分类里还有 ~226 张表情包未分类
 
 ## 后记：用户的工作方式
