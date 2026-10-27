@@ -175,7 +175,7 @@ def _is_cliche(text):
 # ---------------------------------------------------------------------------
 # 生成评论
 # ---------------------------------------------------------------------------
-def watch_frames(bvid, every=0, max_frames=12):
+def watch_frames(bvid, every=0, max_frames=36):
     """Download the video and pull real frames out of it.
 
     Returns ([], reason) on failure - never raises, because not being able to
@@ -186,13 +186,19 @@ def watch_frames(bvid, every=0, max_frames=12):
                           "bili_watch.py")
     if not os.path.isfile(script):
         return [], "bili_watch.py missing"
-    args = [sys.executable, script, bvid, "--max=%d" % max_frames]
+    args = [sys.executable, script, bvid, "--max=36"]
     if every:
         args.append("--every=%d" % every)
     try:
         p = subprocess.run(args, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=900)
         data = _j.loads((p.stdout or "").strip() or "{}")
+        # Prefer the contact sheets: nine frames per image, and all of the text
+        # in them is still readable. Handing over thirty loose stills instead
+        # just floods the model and it reads none of them properly.
+        sheets = list(data.get("sheets") or [])
+        if sheets:
+            return sheets, str(data.get("error") or "")
         return list(data.get("frames") or []), str(data.get("error") or "")
     except Exception as e:
         return [], str(e)[:150]
@@ -209,13 +215,16 @@ def gen_comment(title, up, content="", mention=False, frames=None):
 
     # Frames first when we have them: seeing the picture beats reading a
     # transcript of it. The agent has read_image and can look at these files.
+    prompt = ""
     if frames:
-        prompt += ("这个视频的画面我抽成了几张图，按时间顺序排：\n")
-        for _f in frames[:12]:
+        prompt += ("我把这个视频真下载下来、按间隔抽帧、拼成了下面这几张图"
+                   "（每张是 3x3 = 九帧，按时间顺序，从左上到右下）：\n")
+        for _f in frames[:8]:
             prompt += "| " + _f + "\n"
-        prompt += ("\n用 read_image 看其中几帧再写。\n\n")
+        prompt += ("\n用 read_image 把这些图都看一遍——画面里的字能读清。"
+                   "看完能说出它到底讲了什么，再写评论。\n\n")
 
-    prompt = "下面是一条视频里的内容摘录：\n"
+    prompt += "下面是一条视频里的内容摘录：\n"
     prompt += "\n".join("| " + ln for ln in (content or "")[:1200].splitlines())
     prompt += "\n\n"
     prompt += (
