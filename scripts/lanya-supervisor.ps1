@@ -52,6 +52,10 @@ $jobs = @(
   # somebody pressed the button on the panel, which is why some days she
   # simply did not watch anything. bili-social answers people who replied
   # to her comments or @-ed her there.
+  # Her planning loop. This is what replaced lifeloop's random wake-up timer:
+  # she now keeps a plan across rounds and revises it when somebody talks to
+  # her. Runs every few minutes; the actual spacing comes from her own ETA.
+  @{ n = 'mind';        m = 4;     exe = $py; args = @((Join-Path $root 'mind.py')) },
   @{ n = 'bili';        m = 180;   exe = $py; args = @((Join-Path $root 'bili_onerun.py'), '--mention') },
   @{ n = 'bili-social'; m = 90;    exe = $py; args = @((Join-Path $root 'bili_social.py'), '--max=3') },
   @{ n = 'patchcheck'; m = 1440;   exe = $ps; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', (Join-Path $root 'check-patches.ps1')) }
@@ -86,7 +90,7 @@ function Invoke-Job($j) {
   try {
     # Quote every argument that contains a space. Passing the array straight to
     # -ArgumentList let Windows split "<WORKDIR>\napcat\reminders.ps1" at the
-    # space, so powershell got the flag split at the space and every job failed instantly.
+    # space, so powershell got "-File E:\DSH" and every job failed instantly.
     $quoted = @()
     foreach ($a in $j.args) {
       if ($a -match '\s') { $quoted += ('"' + $a + '"') } else { $quoted += $a }

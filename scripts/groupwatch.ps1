@@ -882,6 +882,28 @@ while ($true) {
     elseif ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
     else { $triggerKey = 'active' }
 
+    # Leave a note for the planning loop: someone spoke while she was doing
+    # something else. That is what lets her pick the plan back up instead of
+    # starting from scratch every round.
+    try {
+      if ($directedToMe.Keys.Count -gt 0) {
+        $hitPath = Join-Path $root 'mind-interrupts.json'
+        $hitList = @()
+        if (Test-Path $hitPath) {
+          try { $hitList = @(Get-Content $hitPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { }
+        }
+        if ($hitList -isnot [array]) { $hitList = @($hitList) }
+        foreach ($hk in $directedToMe.Keys) {
+          $hText = ''
+          if ($heLast.ContainsKey([string]$hk)) { $hText = [string]$heLast[[string]$hk] }
+          if (-not $hText) { continue }
+          $hitList += @{ at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); who = [string]$hk; text = $hText.Substring(0, [Math]::Min(120, $hText.Length)) }
+        }
+        if ($hitList.Count -gt 40) { $hitList = @($hitList[($hitList.Count - 40)..($hitList.Count - 1)]) }
+        ($hitList | ConvertTo-Json -Depth 4 -Compress) | Set-Content -Path $hitPath -Encoding UTF8
+      }
+    } catch { }
+
     # Nothing new to react to? Do not spend a model call on it.
     #
     # The old code called the agent every single poll whether or not the group
