@@ -2048,10 +2048,10 @@ $args                       自动变量，参数值是空的
 
 ```powershell
 $dsh = 'C:\Python314\python.exe'
-Spawn 'python' @('E:\\DSH work\\napcat\\lanya-panel-server.py')   # ← 双反斜杠
+Spawn 'python' @('<WORKDIR-ESCAPED>\\napcat\\lanya-panel-server.py')   # ← 双反斜杠
 ```
 
-`<WORKDIR>` 的规则匹配不到 `E:\\DSH work`（PowerShell 字符串里转义过），
+`<WORKDIR>` 的规则匹配不到 `<WORKDIR>` 的**转义写法**（PowerShell 字符串里是双反斜杠），
 所以它**每次都漏进仓库**。
 
 补了 `ESCAPED_SUBS`：
