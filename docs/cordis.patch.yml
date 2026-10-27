@@ -33,7 +33,7 @@
   name: "dsh-onebot-qq"
   config:
     accessToken: "请改成你自己的一个随机字符串"
-    workspacePath: "C:\\Users\\YOUR_NAME\\DSH work"
+    workspacePath: "<WORKDIR>"
     # 私聊准入（源码 chat.js 的 dmAllowed 决定）：
     #   dmPolicy=disabled  -> 全拒
     #   dmPolicy=allowlist -> 只查 allowFrom（**完全忽略 allowAllUsers**）

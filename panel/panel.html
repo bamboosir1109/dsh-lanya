@@ -1296,7 +1296,7 @@ async function refreshOverview(){
       $('banner').classList.add('show');
       setText('bannerTitle', '还有 ' + tasks.redundant + ' 个重复的计划任务');
       setHtml('bannerText', '这些活插件已经在做了，旧任务还在会重复跑一遍（每个一闪就退，不占内存）。<br>'
-        + '想清掉：双击 <code>E:\\DSH work\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
+        + '想清掉：双击 <code>&lt;你的仓库&gt;\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
     }else{ $('banner').classList.remove('show'); }
       try{
       const bud = await api('/budget');
