@@ -148,6 +148,54 @@ $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 # NOTE: the list of people she may contact lives in lifeloop.prompt.txt, not here.
 # This file must stay pure ASCII - PowerShell 5.1 reads a BOM-less .ps1 with the
 # ANSI codepage, so Chinese literals here become a parse error.
+# (friend list built further down - Invoke-NapCat must be defined first)
+
+
+function Similar($a, $b) {
+  # Two signals, because neither alone is enough:
+  #   Jaccard on character bigrams catches a rewording of the whole line
+  #   longest common substring catches a shared phrase inside otherwise
+  #     different sentences - the real duplicate only scored 0.26 on Jaccard
+  #     and slipped straight through.
+  if (-not $a -or -not $b) { return 0.0 }
+  $a = [string]$a; $b = [string]$b
+  $ga = @{}
+  for ($i = 0; $i -lt $a.Length - 1; $i++) { $ga[$a.Substring($i, 2)] = $true }
+  $gb = @{}
+  for ($i = 0; $i -lt $b.Length - 1; $i++) { $gb[$b.Substring($i, 2)] = $true }
+  if ($ga.Count -eq 0 -or $gb.Count -eq 0) { return 0.0 }
+  $inter = 0
+  foreach ($k in $ga.Keys) { if ($gb.ContainsKey($k)) { $inter++ } }
+  $union = $ga.Count + $gb.Count - $inter
+  $jac = if ($union -gt 0) { [double]$inter / [double]$union } else { 0.0 }
+  $best = 0
+  for ($i = 0; $i -lt $a.Length; $i++) {
+    for ($L = $a.Length - $i; $L -gt $best; $L--) {
+      if ($b.Contains($a.Substring($i, $L))) { if ($L -gt $best) { $best = $L }; break }
+    }
+  }
+  if ($jac -ge 0.35 -or $best -ge 6) { return [math]::Max($jac, [double]$best / 10.0) }
+  return $jac
+}
+
+
+function Invoke-NapCat([string]$action, $bodyObj) {
+  Add-Type -AssemblyName System.Net.Http
+  $client = New-Object System.Net.Http.HttpClient
+  $client.Timeout = [TimeSpan]::FromSeconds(30)
+  $client.DefaultRequestHeaders.Authorization =
+    New-Object System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', [string]$napcat.napcatToken)
+  # -Depth matters. ConvertTo-Json defaults to 2 levels, but an image segment nests
+  # four: object -> array -> {type,data} -> {file}. Without it the "file" key is
+  # dropped and NapCat answers "file message is missing a parameter", so a picture fails
+  # while plain text goes through. Same bug as groupwatch had.
+  $json = $bodyObj | ConvertTo-Json -Compress -Depth 10
+  $content = New-Object System.Net.Http.StringContent($json, [System.Text.Encoding]::UTF8, 'application/json')
+  $url = ([string]$napcat.napcatHttp).TrimEnd('/') + '/' + $action
+  $resp = $client.PostAsync($url, $content).Result
+  return [System.Text.Encoding]::UTF8.GetString($resp.Content.ReadAsByteArrayAsync().Result)
+}
+
 # The contact list she is allowed to message. It used to be a hardcoded set of
 # names inside the prompt, plus this string - which was only ever a note saying
 # "see the prompt". Now it is built from the real friend list, so it always
@@ -200,50 +248,6 @@ if (-not $friendsBlock) {
   $friendsBlock = '- `admin`  = your owner (use this word, the system expands it)'
 }
 
-function Similar($a, $b) {
-  # Two signals, because neither alone is enough:
-  #   Jaccard on character bigrams catches a rewording of the whole line
-  #   longest common substring catches a shared phrase inside otherwise
-  #     different sentences - the real duplicate only scored 0.26 on Jaccard
-  #     and slipped straight through.
-  if (-not $a -or -not $b) { return 0.0 }
-  $a = [string]$a; $b = [string]$b
-  $ga = @{}
-  for ($i = 0; $i -lt $a.Length - 1; $i++) { $ga[$a.Substring($i, 2)] = $true }
-  $gb = @{}
-  for ($i = 0; $i -lt $b.Length - 1; $i++) { $gb[$b.Substring($i, 2)] = $true }
-  if ($ga.Count -eq 0 -or $gb.Count -eq 0) { return 0.0 }
-  $inter = 0
-  foreach ($k in $ga.Keys) { if ($gb.ContainsKey($k)) { $inter++ } }
-  $union = $ga.Count + $gb.Count - $inter
-  $jac = if ($union -gt 0) { [double]$inter / [double]$union } else { 0.0 }
-  $best = 0
-  for ($i = 0; $i -lt $a.Length; $i++) {
-    for ($L = $a.Length - $i; $L -gt $best; $L--) {
-      if ($b.Contains($a.Substring($i, $L))) { if ($L -gt $best) { $best = $L }; break }
-    }
-  }
-  if ($jac -ge 0.35 -or $best -ge 6) { return [math]::Max($jac, [double]$best / 10.0) }
-  return $jac
-}
-
-
-function Invoke-NapCat([string]$action, $bodyObj) {
-  Add-Type -AssemblyName System.Net.Http
-  $client = New-Object System.Net.Http.HttpClient
-  $client.Timeout = [TimeSpan]::FromSeconds(30)
-  $client.DefaultRequestHeaders.Authorization =
-    New-Object System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', [string]$napcat.napcatToken)
-  # -Depth matters. ConvertTo-Json defaults to 2 levels, but an image segment nests
-  # four: object -> array -> {type,data} -> {file}. Without it the "file" key is
-  # dropped and NapCat answers "file message is missing a parameter", so a picture fails
-  # while plain text goes through. Same bug as groupwatch had.
-  $json = $bodyObj | ConvertTo-Json -Compress -Depth 10
-  $content = New-Object System.Net.Http.StringContent($json, [System.Text.Encoding]::UTF8, 'application/json')
-  $url = ([string]$napcat.napcatHttp).TrimEnd('/') + '/' + $action
-  $resp = $client.PostAsync($url, $content).Result
-  return [System.Text.Encoding]::UTF8.GetString($resp.Content.ReadAsByteArrayAsync().Result)
-}
 
 # Same raw-byte stdout handling as groupwatch.ps1: decoding the child's stdout as
 # text used the console codepage and produced mojibake.

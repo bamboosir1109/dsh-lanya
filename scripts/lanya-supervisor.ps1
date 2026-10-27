@@ -26,7 +26,6 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $root  = '<WORKDIR>\napcat'
-$lanya = Join-Path '<WORKDIR>' ([string][char]0x5C9A + [char]0x5A05)
 $logPath = Join-Path $root 'lanya-supervisor.log'
 $py = 'python'
 $ps = 'powershell.exe'
@@ -90,7 +89,7 @@ function Invoke-Job($j) {
   try {
     # Quote every argument that contains a space. Passing the array straight to
     # -ArgumentList let Windows split "<WORKDIR>\napcat\reminders.ps1" at the
-    # space, so powershell got "<path>"  # scrubbed
+    # space, so powershell got the flag split at the space and every job failed instantly.
     $quoted = @()
     foreach ($a in $j.args) {
       if ($a -match '\s') { $quoted += ('"' + $a + '"') } else { $quoted += $a }

@@ -383,7 +383,6 @@ if (Test-Path $statePath) {
 if ($null -eq $state.speakSinceMeme) {
   $state | Add-Member -NotePropertyName speakSinceMeme -NotePropertyValue 0 -Force
 }
-$speakSinceMeme = [int]$state.speakSinceMeme
 if ($null -eq $state.sendTimes) { $state | Add-Member -NotePropertyName sendTimes -NotePropertyValue @() -Force }
 if ($null -eq $state.sendTimesQuiet) { $state | Add-Member -NotePropertyName sendTimesQuiet -NotePropertyValue @() -Force }
 
@@ -460,7 +459,6 @@ while ($true) {
     $lines = @()
     $lastTime = [DateTime]::MinValue
     $lastOtherTime = [DateTime]::MinValue
-    $lastOtherId = ''
     # For the affinity gate: who spoke recently, and whether anyone other than the
     # current speaker @-ed her.
     $recentSpeakers = New-Object System.Collections.ArrayList
@@ -523,7 +521,6 @@ while ($true) {
       $t = ''
       $mentionsMe = $false
       $replyToMe = $false
-      $replyHint = ''
       $rawText = ''
       if ($m.message -is [array]) {
         $parts = @()
@@ -608,7 +605,6 @@ while ($true) {
             }
             elseif ($aq -eq 'all') { $parts += '@' + [char]0x5168 + [char]0x4F53 }
             else {
-              $an = if ($msgNick.ContainsKey([string]$m.message_id)) { '' } else { '' }
               $parts += '@' + $aq
             }
           }
@@ -651,7 +647,6 @@ while ($true) {
       $who = [string]$m.sender.user_id
       if ($who -ne $selfId) {
         $lastOtherTime = $mt
-        $lastOtherId = $who
         # Keep only the tail so an old message from someone else does not keep the
         # gate open forever.
         [void]$recentSpeakers.Add($who)

@@ -26,7 +26,6 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root    = '<WORKDIR>\napcat'
-$relPath = Join-Path $root 'autochat.relations.json'
 $statePath = Join-Path $root 'agentchat.state.json'
 $logPath   = Join-Path $root 'agentchat.log'
 $promptPath = Join-Path $root 'agentchat.prompt.txt'

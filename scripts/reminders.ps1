@@ -37,7 +37,12 @@ if (Test-Path $__marker) {
 # fixed bug keeps reproducing for hours.
 $scriptStartWrite = (Get-Item $PSCommandPath).LastWriteTime
 
-$root      = '<WORKDIR>'
+# Derived from this script's own location - the repo copy had the path
+# sanitised to a literal '<WORKDIR>' string, which points at nothing.
+$root = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $root 'napcat'))) {
+  $root = Split-Path -Parent $root
+}
 $notesDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya" folder
 $remPath   = Join-Path $notesDir 'reminders.json'
 $statePath = Join-Path $notesDir 'reminders.state.json'

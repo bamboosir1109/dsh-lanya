@@ -11,7 +11,12 @@
 
 $ErrorActionPreference = 'Continue'
 
-$root      = '<WORKDIR>'
+# Derived from this script's own location - the repo copy had the path
+# sanitised to a literal '<WORKDIR>' string, which points at nothing.
+$root = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $root 'napcat'))) {
+  $root = Split-Path -Parent $root
+}
 $lanyaDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)
 $logPath   = Join-Path $lanyaDir 'late-night.log'
 $remPath   = Join-Path $lanyaDir 'reminders.json'
