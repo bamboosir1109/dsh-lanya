@@ -1,7 +1,8 @@
 # Proactive greetings, restricted to people she ALREADY has a real memory of.
 #
-# Why the restriction: only greet people she already has a real memory of. So a candidate must have BOTH:
-#   - a profile file  <dafeiyu>\people\<qq>.md  (this is what she writes after a real
+# Why the restriction: the owner asked for "主动招呼，但是需要保证这个人是之前已经
+# 聊过有记忆的人". So a candidate must have BOTH:
+#   - a profile file  <lanya>\people\<qq>.md  (this is what she writes after a real
 #     exchange), AND
 #   - an actual message from or to them somewhere in her readable history.
 # Having a profile is not enough on its own: she could have created one from a
@@ -10,7 +11,7 @@
 # Everything else - daytime only, a low daily cap, "do not repeat the same person
 # on consecutive days" - exists to keep this from becoming spam.
 #
-# Registered as DSH-Dafeiyu-Greet (hourly; it decides for itself whether to act).
+# Registered as DSH-Lanya-Greet (hourly; it decides for itself whether to act).
 
 # --- 隐藏控制台窗口 ---------------------------------------------------------
 # 由计划任务用 python.exe 启动时，Windows 会先弹一个黑框再跑脚本。用户看到的
@@ -23,24 +24,6 @@
 # 一看到它的标记文件就立刻退出——窗口存在的时间从"整个运行时长"缩到进程启动那
 # 一瞬。删除任务能彻底解决，但那需要管理员权限。
 import os as _os
-def _find_dsh_root():
-    """找 DSH 装在哪。
-
-    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
-    """
-    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = []
-    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
-        cands.append(os.path.join(base, "DSH"))
-    for d in "CDEFG":
-        cands.append(d + ":\\DSH")
-    for c in cands:
-        if os.path.isfile(os.path.join(c, rel)):
-            return c
-    return cands[0]
-
-
 import time as _time
 try:
     _mk = _os.path.join(r"<WORKDIR>\napcat", "scheduler-in-plugin.flag")
@@ -67,19 +50,57 @@ import time
 import urllib.request
 
 NAPCAT = "http://127.0.0.1:8720"
-TOKEN = "<ONEBOT_TOKEN>"
-ADMIN = "YOUR_ADMIN_QQ"          # the owner; she should not "greet" him like a stranger
+# The OneBot token is a live credential; it does not belong in source, where
+# every copy of the file carries it. Read it from NapCat's own config instead.
+TOKEN = ""
+try:
+    _nb = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "framework", "config", "onebot11.json")
+    if os.path.isfile(_nb):
+        with open(_nb, encoding="utf-8-sig") as _fh:
+            _nd = json.load(_fh)
+        _hs = ((_nd.get("network") or {}).get("httpServers") or [])
+        if _hs:
+            TOKEN = str(_hs[0].get("token") or "")
+except Exception:
+    pass
+ADMIN = ""          # the owner; she should not "greet" him like a stranger
+# Read it from config - it is identity, not source.
+try:
+    _root2 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _dn2 in ("大肥鱼"):
+        _cp2 = os.path.join(_root2, _dn2, "lanya-config.json")
+        if os.path.isfile(_cp2):
+            with open(_cp2, encoding="utf-8-sig") as _fh2:
+                _cd2 = json.load(_fh2)
+            _a = _cd2.get("adminQQ") or []
+            if isinstance(_a, list):
+                ADMIN = str(_a[0]) if _a else ""
+            elif _a:
+                ADMIN = str(_a)
+            break
+except Exception:
+    pass
 
-DAFEIYU = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c")      # "Dafeiyu"
-PEOPLE = os.path.join(DAFEIYU, "people")
-CHATS = os.path.join(DAFEIYU, "chats")
+LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")      # "Lanya"
+PEOPLE = os.path.join(LANYA, "people")
+CHATS = os.path.join(LANYA, "chats")
 PROMPT = os.path.join(r"<WORKDIR>\napcat", "greet.prompt.txt")
-STATE = os.path.join(DAFEIYU, "greet.state.json")
-LOG = os.path.join(DAFEIYU, "greet.log")
-SENT = os.path.join(DAFEIYU, "sent-log.txt")
+STATE = os.path.join(LANYA, "greet.state.json")
+LOG = os.path.join(LANYA, "greet.log")
+SENT = os.path.join(LANYA, "sent-log.txt")
 
-DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                   "resources", "runtime", "cli", "bin", "dsh.cmd")
+# DSH install root - found, not assumed, so the repo carries no drive letter.
+DSH = ""
+try:
+    _rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    for _d in "CDEFG":
+        _c = _d + ":\\DSH"
+        if os.path.isfile(os.path.join(_c, _rel)):
+            DSH = os.path.join(_c, _rel)
+            break
+except Exception:
+    pass
 MAX_PER_DAY = 2
 DAY_START, DAY_END = 10, 22
 
@@ -122,7 +143,7 @@ def save(path, obj):
 
 
 def profiles():
-    """QQ-number filenames only - a nickname filename never matches."""
+    """QQ-number filenames only - she once saved one as admin.md and it never matched."""
     out = {}
     for p in glob.glob(os.path.join(PEOPLE, "*.md")):
         stem = os.path.splitext(os.path.basename(p))[0]
@@ -172,7 +193,7 @@ def ask_agent(task):
 
 
 def main():
-    os.makedirs(DAFEIYU, exist_ok=True)
+    os.makedirs(LANYA, exist_ok=True)
     now = time.localtime()
     if not (DAY_START <= now.tm_hour < DAY_END):
         log("outside daytime window; exit")

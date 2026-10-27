@@ -1,7 +1,8 @@
 # Steal memes from the group, classified by a vision model.
 #
 # Why not size heuristics: the first attempt guessed from dimensions and let news
-# screenshots through - she re-posted one and a groupmate called it out. Why not a local VLM: a multimodal model can already
+# screenshots through - she re-posted one and a groupmate called it out
+# ("你发图不对，没有关联"). Why not a local VLM: a multimodal model can already
 # read images through the agent, so there is no reason to download several GB and
 # burn VRAM on a second model.
 #
@@ -30,29 +31,9 @@
 # 面板上可以关掉「偷表情包」和「自动分类」。这一段必须在任何逻辑之前跑，
 # 否则配置改了不生效。
 import os as _mo
-def _find_dsh_root():
-    """找 DSH 装在哪。
-
-    别写死盘符。先看环境变量，再看自己这一级往上，再看各盘根目录。
-    """
-    rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = []
-    for base in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
-        cands.append(os.path.join(base, "DSH"))
-    for d in "CDEFG":
-        cands.append(d + ":\\DSH")
-    for c in cands:
-        if os.path.isfile(os.path.join(c, rel)):
-            return c
-    return cands[0]
-
-
 try:
-    import json
-    import os as _mj
-    _mroot = _mo.path.dirname(_mo.path.dirname(_mo.path.abspath(__file__)))
-    _mcfg = _mo.path.join(_mroot, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json")
+    import json as _mj
+    _mcfg = _mo.path.join(r"<WORKDIR>", "\u5c9a\u5a05", "lanya-memes-config.json")
     with open(_mcfg, "r", encoding="utf-8") as _mfh:
         _mdata = _mj.load(_mfh)
     if _mdata.get("stealEnabled") is False:
@@ -69,7 +50,7 @@ except Exception:
 import os as _os
 import time as _time
 try:
-    _mk = _os.path.join(_mroot, "napcat", "scheduler-in-plugin.flag")
+    _mk = _os.path.join(r"<WORKDIR>\napcat", "scheduler-in-plugin.flag")
     if _os.path.exists(_mk) and (_time.time() - _os.path.getmtime(_mk)) < 1800:
         raise SystemExit(0)
 except SystemExit:
@@ -99,23 +80,63 @@ import time
 import urllib.request
 
 NAPCAT = "http://127.0.0.1:8720"
-TOKEN = os.environ.get("ONEBOT_TOKEN", "请改成你 NapCat 里配的 token")
-GROUP = "你的群号"
+# Neither the token nor the group id belongs in the source. The token was
+# sitting here in plain text, which means every copy of this file carried a live
+# credential; the group id was hardcoded so the script could only ever work
+# against one group.
+#
+# Both are read from the install now:
+#   token -> framework/config/onebot11.json
+#   group -> <root>/<dataDir>/lanya-config.json
+NAPCAT_TOKEN = ""
+GROUP = ""
+try:
+    _nb = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "framework", "config", "onebot11.json")
+    if os.path.isfile(_nb):
+        with open(_nb, encoding="utf-8-sig") as _fh:
+            _nd = json.load(_fh)
+        _hs = ((_nd.get("network") or {}).get("httpServers") or [])
+        if _hs:
+            NAPCAT_TOKEN = str(_hs[0].get("token") or "")
+except Exception:
+    pass
+try:
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _dn in ("大肥鱼"):
+        _cp = os.path.join(_root, _dn, "lanya-config.json")
+        if os.path.isfile(_cp):
+            with open(_cp, encoding="utf-8-sig") as _fh:
+                _cd = json.load(_fh)
+            GROUP = str(_cd.get("fanGroupQQ") or _cd.get("fanGroup") or "")
+            break
+except Exception:
+    pass
+TOKEN = NAPCAT_TOKEN
 LOOKBACK = 60
 
-DAFEIYU = os.path.join(ROOT, "\u5927\u80a5\u9c7c")      # "Dafeiyu"
-MEMES = os.path.join(DAFEIYU, "memes")
+LANYA = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")      # "Lanya"
+MEMES = os.path.join(LANYA, "memes")
 OUT = os.path.join(MEMES, "stolen")
 REJ = os.path.join(MEMES, "rejected")
 STAGE = os.path.join(MEMES, "_stage")
 INDEX = os.path.join(MEMES, "stolen-index.md")
 REJINDEX = os.path.join(MEMES, "rejected-index.md")
-LOG = os.path.join(DAFEIYU, "steal.log")
+LOG = os.path.join(LANYA, "steal.log")
 SEEN = os.path.join(MEMES, ".seen.json")
-PROMPT = os.path.join(ROOT, "napcat", "classify-meme.prompt.txt")
+PROMPT = os.path.join(r"<WORKDIR>\napcat", "classify-meme.prompt.txt")
 
-DSH = os.path.join(os.environ.get("DSH_ROOT") or _find_dsh_root(),
-                   "resources", "runtime", "cli", "bin", "dsh.cmd")
+# DSH install root - found, not assumed, so the repo carries no drive letter.
+DSH = ""
+try:
+    _rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
+    for _d in "CDEFG":
+        _c = _d + ":\\DSH"
+        if os.path.isfile(os.path.join(_c, _rel)):
+            DSH = os.path.join(_c, _rel)
+            break
+except Exception:
+    pass
 OK_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 # Images per classifier call. Handing a few hundred paths to one call overflows the
 # model's context and it only answers for the first handful.

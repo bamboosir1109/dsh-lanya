@@ -31,7 +31,27 @@ $sayScript = Join-Path $root 'say.ps1'
 $localScript = Join-Path $root 'say-local.ps1'
 $localSpeed = 1.0
 $cfgPath   = Join-Path $root 'balance-alert.config.json'
-$groupId   = 'YOUR_GROUP_ID'
+# Group id must come from config. It used to be the literal string
+# "YOUR_GROUP_ID" - a placeholder left behind by a sanitising pass - which meant
+# sharing a note or sending a voice message to a group that does not exist.
+# In QQ that shows up as a phantom chat whose name is YOUR_GROUP_ID.
+$groupId = ''
+try {
+  if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'project_conf.ps1')
+  }
+} catch { }
+try {
+  $cfgFile = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')
+  if (Test-Path $cfgFile) {
+    $cj = Get-Content $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cj.fanGroupQQ) { $groupId = [string]$cj.fanGroupQQ }
+    if (-not $groupId -and $cj.fanGroup) { $groupId = [string]$cj.fanGroup }
+  }
+} catch { }
+if (-not $groupId) {
+  try { $groupId = [string](Get-ProjectConfValue 'fanGroup' '') } catch { }
+}
 $adminQQ   = 'YOUR_ADMIN_QQ'
 
 function Write-Log([string]$m) {
