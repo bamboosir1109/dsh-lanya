@@ -120,9 +120,10 @@ def main():
             continue
         if not any(a in s for a in SEND_ACTIONS):
             continue
-        # Do not audit the auditor: its own pattern table contains the very
-        # placeholder strings it looks for.
-        if os.path.abspath(p) == os.path.abspath(__file__):
+        # Do not audit the auditor: its docstring and pattern table contain the
+        # very placeholder strings it looks for. Skip by name, not by path - a
+        # copy of this file lives in the repo as well.
+        if os.path.basename(p) == "audit_send.py":
             continue
 
         rel = os.path.relpath(p, os.path.dirname(REPO))
