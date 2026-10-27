@@ -283,6 +283,27 @@ function Ask-Agent([string]$task) {
 Write-Log ('lifeloop start: interval=' + $IntervalMinutes + 'min window=' + $WindowStart + '-' + $WindowEnd + ' dryRun=' + [bool]$DryRun)
 
 while ($true) {
+  # Watchdog: make sure the other runtime pieces are actually up.
+  #
+  # This loop runs under Task Scheduler, so a process it starts is NOT reaped
+  # when some transient parent shell exits - which is exactly why the keep-alive
+  # belongs here and not in a startup hook. Spawning the same thing from an
+  # ordinary shell silently fails: the child is gone within seconds and nothing
+  # gets logged anywhere.
+  #
+  # Cheap: a few process checks at most once every ten minutes, and it only
+  # starts what is actually missing.
+  try {
+    if (-not $script:lastWatchdog) { $script:lastWatchdog = [datetime]::MinValue }
+    if (((Get-Date) - $script:lastWatchdog).TotalMinutes -ge 10) {
+      $script:lastWatchdog = Get-Date
+      $sa = Join-Path $root 'start-all.ps1'
+      if (Test-Path $sa) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $sa 2>$null
+      }
+    }
+  } catch { }
+
   $hour = (Get-Date).Hour
   if ($hour -lt $WindowStart -or $hour -ge $WindowEnd) {
     if ($Once) { Write-Log 'outside window, exit'; break }

@@ -128,4 +128,39 @@ Write-Host '  === result ==='
 Get-ScheduledTask -TaskName 'DSH-*' -ErrorAction SilentlyContinue |
   Sort-Object TaskName |
   ForEach-Object { Note ($_.TaskName.PadRight(24) + $_.State) }
+
+# --- pieces that had NO task at all ---------------------------------------
+#
+# These three are why a reboot left the whole thing dark: the panel was 404,
+# nothing periodic ran (no supervisor), and the Bilibili job silently stopped.
+# Registering them here means one elevated run fixes all of it for good.
+#
+# Note: Register-ScheduledTask needs elevation. Running this script as a normal
+# user fails with "Access is denied" for every entry - that is expected, not a
+# bug in the script.
+
+if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Panel' -ErrorAction SilentlyContinue)) {
+  $a1 = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
+    -Argument ('"' + (Join-Path $napcat 'lanya-panel-server.py') + '"')
+  $t1 = New-ScheduledTaskTrigger -AtLogOn
+  $s1 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -RestartInterval (New-TimeSpan -Minutes 2) -RestartCount 999
+  Register-ScheduledTask -TaskName 'DSH-Lanya-Panel' -Action $a1 -Trigger $t1 `
+    -Settings $s1 -Force | Out-Null
+  Note 'DSH-Lanya-Panel  <-  19389'
+}
+
+if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-PanelStatic' -ErrorAction SilentlyContinue)) {
+  $a2 = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
+    -Argument ('"' + (Join-Path $napcat 'lanya-panel-server.py') + '" --port 19388')
+  $t2 = New-ScheduledTaskTrigger -AtLogOn
+  $s2 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -RestartInterval (New-TimeSpan -Minutes 2) -RestartCount 999
+  Register-ScheduledTask -TaskName 'DSH-Lanya-PanelStatic' -Action $a2 -Trigger $t2 `
+    -Settings $s2 -Force | Out-Null
+  Note 'DSH-Lanya-PanelStatic  <-  19388'
+}
+
 Write-Host ''
