@@ -118,16 +118,38 @@ $mentionCapPerHour = 12
 # How long an unanswered @ stays pending. Long enough that a missed poll does not
 # lose it, short enough that a day-old mention does not resurrect.
 $pendingMaxMin = 30
-# Last-resort lines when the model refuses to answer a direct @ twice in a row.
-# These must sound like her: short, no pleasantries, slightly cheeky. Built from
-# code points because this file has to stay pure ASCII.
-$mentionFallback = @(
-  ([string][char]0x6B38),                                            # ei
-  ([string][char]0x554A + [char]0xFF1F),                             # a?
-  ([string][char]0x5728),                                            # zai
-  ([string][char]0x548B + [char]0x4E86),                             # zenme le
-  ([string][char]0x5E72 + [char]0x55EF + [char]0xFF1F),              # gan ma?
-  ([string][char]0x53EB + [char]0x6211 + [char]0x5E72 + [char]0x55EF) # jiao wo gan ma
+# Fallbacks, split by what the other person actually said. A bare "zai" is fine
+# after a joke and useless after a real question, so the caller picks the bucket.
+#
+#   question -> they asked something and need a real answer
+#   remark   -> they said something; a short acknowledgement fits
+#   minimal  -> nothing better available
+$fbQuestion = @(
+  ([string][char]0x4F60 + [char]0x8BF4),                                  # ni shuo
+  ([string][char]0x554A + [char]0xFF1F),                                  # a?
+  ([string][char]0x5565 + [char]0x4E8B),                                  # sha shi
+  ([string][char]0x4EC0 + [char]0x4E48 + [char]0x95EE + [char]0x9898)     # shenme wenti
+)
+$fbRemark = @(
+  ([string][char]0x55EF),                                                 # en
+  ([string][char]0x54E6),                                                 # o
+  ([string][char]0x6B38),                                                 # ei
+  ([string][char]0x884C + [char]0x5427)                                   # xing ba
+)
+$fbMinimal = @(([string][char]0x5728))                                    # zai
+
+# Markers that mean "they asked a question". Tested against the @-message text.
+$qMarkers = @(
+  ([string][char]0xFF1F),
+  '?',
+  ([string][char]0x600E + [char]0x4E48),                                  # zenme
+  ([string][char]0x4EC0 + [char]0x4E48),                                  # shenme
+  ([string][char]0x4E3A + [char]0x4EC0 + [char]0x4E48),                   # weishenme
+  ([string][char]0x80FD + [char]0x4E0D + [char]0x80FD),                   # nengbuneng
+  ([string][char]0x662F + [char]0x4E0D + [char]0x662F),                   # shibushi
+  ([string][char]0x55CE),                                                 # ma
+  ([string][char]0x5462),                                                 # ne
+  ([string][char]0x600E + [char]0x6837)                                   # zenyang
 )
 
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
@@ -453,6 +475,15 @@ while ($true) {
     # mention from one buried in the 30-message window.
     $lastMentionTime = [DateTime]::MinValue
     $lastMentionQQ = ''
+    # The text of the newest @-mention, so a fallback can tell a question from a
+    # remark instead of guessing.
+    $lastMentionText = ''
+    # Per-person threads. In a busy group several conversations run at once, and
+    # without this she answers one person's question to another.
+    $heLast = @{}
+    $meLast = @{}
+    $heOrder = New-Object System.Collections.ArrayList
+    $lastSpeakerForThread = ''
     foreach ($m in $hj.data.messages) {
       $t = ''
       $mentionsMe = $false
@@ -529,9 +560,15 @@ while ($true) {
         if ($mt -gt $lastMentionTime) {
           $lastMentionTime = $mt
           $lastMentionQQ = $who
+          $lastMentionText = $rawText
         }
       }
       if ($who -eq $selfId) {
+        # Her own line. Attribute it to whoever spoke just before, so each thread
+        # knows what she already answered.
+        if ($lastSpeakerForThread) {
+          $meLast[$lastSpeakerForThread] = $t
+        }
         # Her own line. Use the real directory name, not a hardcoded one.
         $me = [string]$dataDirName
         $lines += ([string][char]0x6211 + '(' + $me + ')' + [char]0x4E4B + [char]0x524D + [char]0x8BF4 + ': ' + $t)
@@ -544,6 +581,9 @@ while ($true) {
         $tag = ''
         if ($role -eq 'admin' -or $role -eq 'owner') { $tag = '[' + [char]0x7FA4 + [char]0x4E3B + ']' }
         $lines += ($disp + '(' + $who + ')' + $tag + ': ' + $t)
+        $heLast[$who] = $t
+        $lastSpeakerForThread = $who
+        if ($heOrder -notcontains $who) { [void]$heOrder.Add($who) }
       }
     }
     if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
@@ -595,6 +635,40 @@ while ($true) {
         }
         if ($blocks.Count -gt 0) { $peopleText = ($blocks -join "`n`n") }
       }
+    }
+    catch { }
+
+    # Thread summary: who she is mid-conversation with, and where each got to.
+    $threadText = ''
+    try {
+      $takeThread = @($heOrder | Select-Object -Last 5)
+      $tb = @()
+      foreach ($q in $takeThread) {
+        $nm2 = ''
+        foreach ($mid in $msgNick.Keys) {
+          if ($msgOwner[$mid] -eq [string]$q) { $nm2 = $msgNick[$mid]; break }
+        }
+        if (-not $nm2) { $nm2 = [string]$q }
+        $he = ''
+        $me = ''
+        if ($heLast.ContainsKey([string]$q)) { $he = [string]$heLast[[string]$q] }
+        if ($meLast.ContainsKey([string]$q)) { $me = [string]$meLast[[string]$q] }
+        if ($he.Length -gt 40) { $he = $he.Substring(0, 40) + '...' }
+        if ($me.Length -gt 40) { $me = $me.Substring(0, 40) + '...' }
+        $item = '- ' + $nm2 + ' (' + [string]$q + ')' + [char]0xFF1A +     # colon
+                [char]0x4ED6 + [char]0x6700 + [char]0x8FD1 + [char]0x8BF4 + # ta zuijin shuo
+                [char]0x300C + $he + [char]0x300D                            # quote
+        if ($me) {
+          $item += [char]0xFF0C + [char]0x4F60 + [char]0x56DE + [char]0x8FC7 + # , ni huiguo
+                   [char]0x300C + $me + [char]0x300D
+        }
+        elseif ($he) {
+          $item += [char]0xFF08 + [char]0x4F60 + [char]0x8FD8 + [char]0x6CA1 + # (ni hai mei
+                   [char]0x56DE + [char]0xFF09                                      # hui)
+        }
+        if ($he) { $tb += $item }
+      }
+      if ($tb.Count -gt 0) { $threadText = ($tb -join "`n") }
     }
     catch { }
 
@@ -679,6 +753,14 @@ while ($true) {
     }
     if ($outsideWindow -and $triggerKey -eq 'mention') {
       Write-Log ('outside window (' + $hour + 'h) but addressed - answering anyway')
+    }
+
+    # Was the @-mention a question? Decides which fallback bucket is appropriate.
+    $isQuestion = $false
+    if ($lastMentionText) {
+      foreach ($qm in $qMarkers) {
+        if ($lastMentionText.Contains($qm)) { $isQuestion = $true; break }
+      }
     }
 
     # Remember the unanswered @ so a failed attempt does not lose it.
@@ -886,6 +968,7 @@ while ($true) {
       Replace('{{TRIGGER}}', $triggerText).
   Replace('{{MEME_TAGS}}', $memeTags).
   Replace('{{PEOPLE}}', $peopleText).
+  Replace('{{THREADS}}', $threadText).
   Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
@@ -906,15 +989,41 @@ while ($true) {
     # being ignored after being @-ed.
     if ($triggerKey -eq 'mention' -and $verdict -notlike 'SPEAK*') {
       Write-Log ('mention but agent said [' + $verdict + '] - retrying with an explicit order')
-      $retryTask = $task + "`n`n" +
-        'REMINDER: you were @-ed directly. You must answer. Output SPEAK and one short line. SILENT is not allowed here.'
+      # Second attempt uses a much smaller task, not the full prompt again.
+      # The model already declined the long version once; asking the same thing
+      # louder does not work. Strip it down to: who, what they said, answer them.
+      $retryTask = ''
+      $retryTask += 'Someone in a QQ group @-ed you and is waiting. Answer them.' + "`n`n"
+      if ($lastMentionQQ) {
+        $retryTask += ('Their QQ: ' + $lastMentionQQ) + "`n"
+        $rn = ''
+        foreach ($mid in $msgNick.Keys) {
+          if ($msgOwner[$mid] -eq [string]$lastMentionQQ) { $rn = $msgNick[$mid]; break }
+        }
+        if ($rn) { $retryTask += ('Their name: ' + $rn) + "`n" }
+      }
+      if ($lastMentionText) {
+        $retryTask += ('What they said: ' + $lastMentionText) + "`n"
+      }
+      $retryTask += "`n"
+      $retryTask += ('You are ' + [string]$dataDirName + ', a 20-year-old in a group chat. ' +
+        'Reply the way you type on a phone: one short line, no pleasantries, no brackets, no stage directions.') + "`n"
+      $retryTask += "`n"
+      $retryTask += 'Output exactly two lines:'
+      $retryTask += "`n"
+      $retryTask += 'SPEAK'
+      $retryTask += "`n"
+      $retryTask += '<your one-line reply>'
       $answer = (Ask-Agent $retryTask).Trim()
       $rows = @($answer -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
       $verdict = if ($rows.Count -gt 0) { $rows[0].Trim().ToUpper() } else { '' }
       Write-Log ('retry verdict=' + $verdict)
       if ($verdict -notlike 'SPEAK*') {
         # Still nothing usable. Say something short rather than leaving them on read.
-        $rows = @('SPEAK', ($mentionFallback | Get-Random))
+        if ($isQuestion) { $pick = $fbQuestion | Get-Random }
+        elseif ($lastMentionText) { $pick = $fbRemark | Get-Random }
+        else { $pick = $fbMinimal | Get-Random }
+        $rows = @('SPEAK', $pick)
         $verdict = 'SPEAK'
         Write-Log 'retry failed - using a fallback line'
       }
@@ -927,7 +1036,8 @@ while ($true) {
 
     $reply = if ($rows.Count -ge 2) { $rows[1].Trim() } else { ($rows[0] -replace '^SPEAK[:\s]*', '').Trim() }
     if ($reply -eq '' -and $triggerKey -eq 'mention') {
-      $reply = ($mentionFallback | Get-Random)
+      if ($isQuestion) { $reply = $fbQuestion | Get-Random }
+      else { $reply = $fbRemark | Get-Random }
       Write-Log ('SPEAK with an empty line on a mention - using a fallback line')
     }
     if ($reply -eq '') { Write-Log 'SPEAK but empty line; skip'; if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }
@@ -948,7 +1058,8 @@ while ($true) {
     if ($reply -match $stageRe) {
       Write-Log ('suppressed stage-direction reply: ' + $reply)
       if ($triggerKey -eq 'mention') {
-        $reply = ($mentionFallback | Get-Random)
+        if ($isQuestion) { $reply = $fbQuestion | Get-Random }
+      else { $reply = $fbRemark | Get-Random }
         Write-Log 'mention + stage direction - using a fallback line'
       }
       else {
