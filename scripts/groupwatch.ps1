@@ -458,7 +458,6 @@ while ($true) {
     $lastTime = [DateTime]::MinValue
     $lastOtherTime = [DateTime]::MinValue
     $lastOtherId = ''
-    $newCount = 0
     # For the affinity gate: who spoke recently, and whether anyone other than the
     # current speaker @-ed her.
     $recentSpeakers = New-Object System.Collections.ArrayList
@@ -485,7 +484,6 @@ while ($true) {
         if ($qj.nickname) { $selfNames += [string]$qj.nickname }
       }
     } catch { }
-    $repliedToMeHere = $false
     $addressedByOther = $false
     # An @ she has not answered yet is remembered across polls. Without this the
     # mention "expires" three minutes after it was sent and she can never come
@@ -813,6 +811,31 @@ while ($true) {
     if ($freshMention) { $triggerKey = 'mention' }
     elseif ($idleMin -ge $QuietMinutes) { $triggerKey = 'quiet' }
     else { $triggerKey = 'active' }
+
+    # Nothing new to react to? Do not spend a model call on it.
+    #
+    # The old code called the agent every single poll whether or not the group
+    # had moved, so a quiet hour cost sixty model calls for nothing. lastMsgTime
+    # existed in the state file for exactly this purpose but was only ever read.
+    $prevLast = 0
+    try { $prevLast = [long]$state.lastMsgTime } catch { $prevLast = 0 }
+    $curLast = 0
+    if ($lastTime -gt [DateTime]::MinValue) {
+      $curLast = [long]([DateTimeOffset]$lastTime).ToUnixTimeSeconds()
+    }
+    # Advance the marker on every poll, not only on the ones that reach the
+    # reply. Otherwise a run that is cut short (hourly cap, cooldown) leaves
+    # lastMsgTime at 0 and the guard below can never fire.
+    try { $state.lastMsgTime = [long]$curLast } catch { }
+    if ($triggerKey -eq 'active' -and $prevLast -gt 0 -and $curLast -le $prevLast) {
+      Write-Log ('no new messages since last poll (last=' + $curLast + ') - skipping without a model call')
+      # Persist the marker before skipping. Without this the skip path jumped
+      # straight to the next poll, Save-State was never reached, and after a
+      # restart lastMsgTime was 0 again - so the guard could not fire until she
+      # had replied at least once.
+      Save-State
+      if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
+    }
 
     # Night: only a direct @ gets through. Everything else waits for the window.
     if ($outsideWindow -and $triggerKey -ne 'mention') {
