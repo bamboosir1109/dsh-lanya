@@ -484,6 +484,13 @@ while ($true) {
     $meLast = @{}
     $heOrder = New-Object System.Collections.ArrayList
     $lastSpeakerForThread = ''
+    # Who actually addressed her (either an @/reply, or she answered them).
+    # THREADS is limited to these - the rest of the group is background.
+    $directedToMe = @{}
+    # Per-person latest line, for the speaker roll-up.
+    $speakerLast = @{}
+    $speakerOrder = New-Object System.Collections.ArrayList
+    $speakerName = @{}
     foreach ($m in $hj.data.messages) {
       $t = ''
       $mentionsMe = $false
@@ -568,6 +575,7 @@ while ($true) {
         # knows what she already answered.
         if ($lastSpeakerForThread) {
           $meLast[$lastSpeakerForThread] = $t
+          $directedToMe[[string]$lastSpeakerForThread] = $true
         }
         # Her own line. Use the real directory name, not a hardcoded one.
         $me = [string]$dataDirName
@@ -580,10 +588,18 @@ while ($true) {
         $role = [string]$m.sender.role
         $tag = ''
         if ($role -eq 'admin' -or $role -eq 'owner') { $tag = '[' + [char]0x7FA4 + [char]0x4E3B + ']' }
-        $lines += ($disp + '(' + $who + ')' + $tag + ': ' + $t)
+        # Mark whether this line was aimed at her, so the roll-up can say so.
+        $aimed = ''
+        if ($mentionsMe) { $aimed = ' [@' + [char]0x4F60 + ']' }
+        elseif ($replyToMe) { $aimed = ' [' + [char]0x56DE + [char]0x4F60 + ']' }
+        $lines += ($disp + '(' + $who + ')' + $tag + ': ' + $t + $aimed)
         $heLast[$who] = $t
         $lastSpeakerForThread = $who
         if ($heOrder -notcontains $who) { [void]$heOrder.Add($who) }
+        if ($mentionsMe -or $replyToMe) { $directedToMe[[string]$who] = $true }
+        $speakerLast[[string]$who] = $t
+        $speakerName[[string]$who] = $disp
+        if ($speakerOrder -notcontains $who) { [void]$speakerOrder.Add($who) }
       }
     }
     if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
@@ -641,7 +657,9 @@ while ($true) {
     # Thread summary: who she is mid-conversation with, and where each got to.
     $threadText = ''
     try {
-      $takeThread = @($heOrder | Select-Object -Last 5)
+      # THREADS: only people who @-ed her or whom she answered.
+      $onlyTheirs = @($heOrder | Where-Object { $directedToMe.ContainsKey([string]$_) })
+      $takeThread = @($onlyTheirs | Select-Object -Last 5)
       $tb = @()
       foreach ($q in $takeThread) {
         $nm2 = ''
@@ -669,6 +687,31 @@ while ($true) {
         if ($he) { $tb += $item }
       }
       if ($tb.Count -gt 0) { $threadText = ($tb -join "`n") }
+    }
+    catch { }
+
+    # Speaker roll-up: instead of one flat pile of 30 lines, list who said what
+    # last, and whether it was aimed at her. This is the "so I know who is
+    # actually talking to me" part.
+    $speakerText = ''
+    try {
+      $takeSpk = @($speakerOrder | Select-Object -Last 7)
+      $sb = @()
+      foreach ($q in $takeSpk) {
+        $qk = [string]$q
+        if (-not $speakerLast.ContainsKey($qk)) { continue }
+        $line2 = $speakerLast[$qk]
+        if ($line2.Length -gt 46) { $line2 = $line2.Substring(0, 46) + '...' }
+        $nm3 = if ($speakerName.ContainsKey($qk)) { $speakerName[$qk] } else { $qk }
+        $aim = ''
+        if ($directedToMe.ContainsKey($qk)) {
+          if ($meLast.ContainsKey($qk)) { $aim = ' (' + [char]0x4F60 + [char]0x5DF2 + [char]0x7ECF + [char]0x56DE + [char]0x8FC7 + ')' }   # (ni yijing huiguo)
+          else { $aim = ' (' + [char]0x5728 + [char]0x8DDF + [char]0x4F60 + [char]0x8BF4 + [char]0x8BDD + [char]0xFF0C + [char]0x4F60 + [char]0x8FD8 + [char]0x6CA1 + [char]0x56DE + ')' }   # (zai gen ni shuohua, ni hai mei hui)
+        }
+        $sb += ('- ' + $nm3 + ' (' + $qk + ')' + [char]0xFF1A +
+                [char]0x300C + $line2 + [char]0x300D + $aim)
+      }
+      if ($sb.Count -gt 0) { $speakerText = ($sb -join "`n") }
     }
     catch { }
 
@@ -969,6 +1012,7 @@ while ($true) {
   Replace('{{MEME_TAGS}}', $memeTags).
   Replace('{{PEOPLE}}', $peopleText).
   Replace('{{THREADS}}', $threadText).
+  Replace('{{SPEAKERS}}', $speakerText).
   Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
