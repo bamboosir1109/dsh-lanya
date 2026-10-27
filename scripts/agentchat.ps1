@@ -25,12 +25,21 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root    = 'E:\DSH work\napcat'
+# Derived from this script's own location: <root>\napcat\<file>.
+$root = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $root 'napcat'))) {
+  $root = Split-Path -Parent $root
+}
 $relPath = Join-Path $root 'autochat.relations.json'
 $statePath = Join-Path $root 'agentchat.state.json'
 $logPath   = Join-Path $root 'agentchat.log'
 $promptPath = Join-Path $root 'agentchat.prompt.txt'
-$dsh     = 'E:\DSH\resources\runtime\cli\bin\dsh.cmd'
+# DSH install root - found, not assumed.
+$dsh = ''
+foreach ($d in 'CDEFG') {
+  $cand = Join-Path ($d + ':\') ('DSH\resources\runtime\cli\bin\dsh.cmd')
+  if (Test-Path $cand) { $dsh = $cand; break }
+}
 $napcat  = Get-Content (Join-Path $root 'balance-alert.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
 function Write-Log([string]$m) {
@@ -88,7 +97,15 @@ $hj = $history | ConvertFrom-Json
 if ($hj.retcode -ne 0) { Write-Log ('history fetch failed: ' + $history); exit 1 }
 
 $lines = @()
-$selfId = '156204141'
+# Her own QQ, read from config.
+$selfId = ''
+try {
+  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) ('岚娅\lanya-config.json')
+  if (Test-Path $cf) {
+    $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cj.botQQ) { $selfId = [string]$cj.botQQ }
+  }
+} catch { }
 foreach ($m in $hj.data.messages) {
   $t = ''
   if ($m.message -is [array]) {

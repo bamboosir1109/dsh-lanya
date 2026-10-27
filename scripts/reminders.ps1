@@ -1,15 +1,15 @@
 # Reminder daemon for Lanya.
 #
 # Why this exists: QQ sessions run with sandbox=workspace-write and approval=ask.
-# Inside E:\DSH work she can read/write freely, but anything needing elevation has
+# Inside <WORKDIR> she can read/write freely, but anything needing elevation has
 # no approval answerer in QQ and fails closed. Scheduling tasks from inside a QQ
 # turn therefore does not work. So the scheduling lives HERE (one fixed task that
 # runs forever), and she only has to write a plain JSON file inside her own folder.
 #
 # reminders.json entries (array):
-#   { "text": "...", "at": "2026-10-11T18:00:00", "target": "1278801309" }
+#   { "text": "...", "at": "2026-10-11T18:00:00", "target": "YOUR_ADMIN_QQ" }
 #       fires once at that local time, then is removed
-#   { "text": "...", "daily": "09:00", "target": "1278801309" }
+#   { "text": "...", "daily": "09:00", "target": "YOUR_ADMIN_QQ" }
 #       fires every day at that time, stays in the file
 #   "target" is optional and defaults to the admin QQ below.
 #
@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Continue'
 # (see the SCHEDULE table in dsh-lanya/lib/index.js). Bail out immediately so the
 # scheduled task becomes a no-op instead of spawning a second powershell every
 # minute just to call the tick.
-$__marker = Join-Path 'E:\DSH work\napcat' 'scheduler-in-plugin.flag'
+$__marker = Join-Path $PSScriptRoot 'scheduler-in-plugin.flag'
 if (Test-Path $__marker) {
   if (((Get-Date) - (Get-Item $__marker).LastWriteTime).TotalMinutes -lt 30) { exit 0 }
 }
@@ -37,13 +37,27 @@ if (Test-Path $__marker) {
 # fixed bug keeps reproducing for hours.
 $scriptStartWrite = (Get-Item $PSCommandPath).LastWriteTime
 
-$root      = 'E:\DSH work'
+# Derived from this script's own location: <root>\napcat\<file>.
+$root = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $root 'napcat'))) {
+  $root = Split-Path -Parent $root
+}
 $notesDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya" folder
 $remPath   = Join-Path $notesDir 'reminders.json'
 $statePath = Join-Path $notesDir 'reminders.state.json'
 $logPath   = Join-Path $notesDir 'reminders.log'
-$cfgPath   = 'E:\DSH work\napcat\balance-alert.config.json'
-$adminQQ   = '1278801309'
+$cfgPath = Join-Path $root 'napcat\balance-alert.config.json'
+# The owner's QQ, read from config.
+$adminQQ = ''
+try {
+  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) ('岚娅\lanya-config.json')
+  if (Test-Path $cf) {
+    $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+    $a = $cj.adminQQ
+    if ($a -is [array]) { if ($a.Count -gt 0) { $adminQQ = [string]$a[0] } }
+    elseif ($a) { $adminQQ = [string]$a }
+  }
+} catch { }
 $groupId = ''
 try {
   $cfgFile = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')

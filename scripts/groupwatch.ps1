@@ -111,7 +111,11 @@ $MemeEvery = 1
 # with the hourly conversation budget. Fresh means "within this many minutes,
 # and after my own last line" - otherwise the same old mention would keep
 # waking her up after she already answered it.
-$mentionFreshMin = 3
+# Ten minutes, not three. The poll runs every 60s, but a poll can be delayed by
+# a restart or a slow agent call, and a mention that lands just before one of
+# those was being lost for good. pendingMention covers the retry; this window is
+# what gets it into pendingMention in the first place.
+$mentionFreshMin = 10
 # Separate ceiling so a spam wave cannot machine-gun her. Well above anything a
 # normal group produces.
 $mentionCapPerHour = 12
@@ -203,7 +207,30 @@ $affinityPath = Join-Path (Join-Path $workDir $dataDirName) 'affinity.json'
 $logPath    = Join-Path $root 'groupwatch.log'
 $cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
-$selfId     = 'BOT_QQ'
+# Her own QQ. This was the literal string "BOT_QQ" - a placeholder left behind
+# by a sanitising pass - so every "$aq -eq $selfId" comparison was comparing a
+# real QQ number against the text "BOT_QQ" and never matched.
+#
+# That silently disabled the two most important signals:
+#   - @-mentions were never recognised (so she ignored people calling her)
+#   - her own messages were not recognised as hers (so [reply-to-you] never
+#     resolved and she could re-answer lines she had already answered)
+#
+# Read from config, and as a fallback ask NapCat who is logged in.
+$selfId = ''
+try {
+  $cf = Join-Path (Join-Path $workDir $dataDirName) 'lanya-config.json'
+  if (Test-Path $cf) {
+    $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cj.botQQ) { $selfId = [string]$cj.botQQ }
+  }
+} catch { }
+if (-not $selfId) {
+  try {
+    $li = (Invoke-NapCat 'get_login_info' @{}) | ConvertFrom-Json
+    if ($li.data.user_id) { $selfId = [string]$li.data.user_id }
+  } catch { }
+}
 
 function Get-MemeIfDue {
   # Pick a neutral, low-risk mood. Deliberately not angry or sad: attaching

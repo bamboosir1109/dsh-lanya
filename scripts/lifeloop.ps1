@@ -80,7 +80,19 @@ try {
 if (-not $groupId) {
   try { $groupId = [string](Get-ProjectConfValue 'fanGroup' '') } catch { }
 }
-$adminQQ    = 'YOUR_ADMIN_QQ'
+# The owner's QQ. This was the literal string "YOUR_ADMIN_QQ" - a placeholder
+# from a sanitising pass - so alerts, shared notes and voice messages were all
+# addressed to a user that does not exist ("cannot get user info" from NapCat).
+$adminQQ = ''
+try {
+  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')
+  if (Test-Path $cf) {
+    $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+    $a = $cj.adminQQ
+    if ($a -is [array]) { if ($a.Count -gt 0) { $adminQQ = [string]$a[0] } }
+    elseif ($a) { $adminQQ = [string]$a }
+  }
+} catch { }
 
 function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
