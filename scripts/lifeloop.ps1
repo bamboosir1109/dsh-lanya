@@ -315,6 +315,7 @@ try {
       # name out in literally a dozen places, so renaming the character silently
       # pointed her at a directory that does not exist.
       Replace('{{DIR}}', [string]$dafeiyuDir).
+      Replace('{{NUTCAT}}', [string]$root).
       Replace('{{IDLE}}', [string]$idleMin).
       Replace('{{FRIENDS}}', $friendsBlock)
 

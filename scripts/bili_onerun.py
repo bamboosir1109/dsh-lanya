@@ -175,7 +175,30 @@ def _is_cliche(text):
 # ---------------------------------------------------------------------------
 # 生成评论
 # ---------------------------------------------------------------------------
-def gen_comment(title, up, content="", mention=False):
+def watch_frames(bvid, every=0, max_frames=12):
+    """Download the video and pull real frames out of it.
+
+    Returns ([], reason) on failure - never raises, because not being able to
+    see the picture is not a good reason to skip writing the comment.
+    """
+    import json as _j
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "bili_watch.py")
+    if not os.path.isfile(script):
+        return [], "bili_watch.py missing"
+    args = [sys.executable, script, bvid, "--max=%d" % max_frames]
+    if every:
+        args.append("--every=%d" % every)
+    try:
+        p = subprocess.run(args, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=900)
+        data = _j.loads((p.stdout or "").strip() or "{}")
+        return list(data.get("frames") or []), str(data.get("error") or "")
+    except Exception as e:
+        return [], str(e)[:150]
+
+
+def gen_comment(title, up, content="", mention=False, frames=None):
     """让 headless agent 写一句评论。
 
     顺序很重要：内容放最前面。之前塞在中间，模型当没看见。
@@ -183,6 +206,14 @@ def gen_comment(title, up, content="", mention=False):
     persona = _persona_snippet()
     memory = _memory_snippet()
     ex = _examples(persona)
+
+    # Frames first when we have them: seeing the picture beats reading a
+    # transcript of it. The agent has read_image and can look at these files.
+    if frames:
+        prompt += ("这个视频的画面我抽成了几张图，按时间顺序排：\n")
+        for _f in frames[:12]:
+            prompt += "| " + _f + "\n"
+        prompt += ("\n用 read_image 看其中几帧再写。\n\n")
 
     prompt = "下面是一条视频里的内容摘录：\n"
     prompt += "\n".join("| " + ln for ln in (content or "")[:1200].splitlines())
@@ -523,7 +554,14 @@ def run_one(do_comment=True, mention=False):
         if do_comment:
             result["step"] = "comment"
             for _try in range(3):
-                cand = gen_comment(pick["title"], pick["up"], content=content)
+                if _try == 0:
+                    _fr, _why = watch_frames(pick["bv"])
+                    if _fr:
+                        log("watched %d real frames" % len(_fr))
+                    else:
+                        log("could not extract frames: %s" % (_why or "?")[:80])
+                cand = gen_comment(pick["title"], pick["up"], content=content,
+                                   frames=_fr)
                 if cand and not _is_cliche(cand):
                     comment = cand
                     break
