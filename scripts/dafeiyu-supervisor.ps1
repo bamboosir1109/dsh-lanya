@@ -26,7 +26,6 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $root  = $PSScriptRoot
-$dafeiyu = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)
 $logPath = Join-Path $root 'dafeiyu-supervisor.log'
 $py = 'python'
 $ps = 'powershell.exe'
