@@ -102,6 +102,23 @@ if (Test-Path $bd) {
 Write-Host ''
 Write-Host '  === periodic ==='
 
+# The supervisor drives every other periodic job (budget, chats, steal,
+# napcat-heal, greetd, memory, bili, bili-social). Without it registered,
+# none of them run at all - which is why Bilibili sat untouched for a day.
+if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Supervisor' -ErrorAction SilentlyContinue)) {
+  $act = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+               (Join-Path $napcat 'lanya-supervisor.ps1') + '"')
+  $trg = New-ScheduledTaskTrigger -AtLogOn
+  $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName 'DSH-Lanya-Supervisor' -Action $act -Trigger $trg `
+    -Settings $set -Force | Out-Null
+  Note 'DSH-Lanya-Supervisor  <-  lanya-supervisor.ps1'
+}
+else { Note 'DSH-Lanya-Supervisor  already exists, left alone' }
+
+
 # This is the one that was missing. Without it budget.json never updates, so the
 # allowance silently does nothing and every figure on the panel is stale.
 RepeatTask 'DSH-Lanya-Budget' 'budget.ps1' 5

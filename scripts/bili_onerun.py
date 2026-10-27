@@ -25,34 +25,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from bili_mcp import BiliMCP
 
-# 集中配置。读不到 config/project.json 或者 project_conf 没跟着装，
-# 就退回下面这些字面量 —— 也就是改之前写死的值。
-try:
-    import project_conf as _pc
-except Exception:
-    _pc = None
-
-
-def _conf(key, default):
-    if _pc is None:
-        return default
-    try:
-        return _pc.get(key, default)
-    except Exception:
-        return default
-
-
-COMMENT_MAX_LEN = int(_conf("bili.commentMaxLen", 30))    # 评论上限字数
-WATCH_CANDIDATES = int(_conf("bili.watchCandidates", 4))  # 最多尝试几条视频
-COMMENT_RETRIES = int(_conf("bili.commentRetries", 3))    # 评论写不满意重试几次
-
 WORK = os.path.dirname(HERE)
 SEEN = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty", "seen.md")
 PERSONA_FILE = os.path.join(WORK, "napcat", "persona.md")
-DAFEIYU_DIR = os.path.join(WORK, "\u5927\u80a5\u9c7c")
-INTEREST_FILE = os.path.join(DAFEIYU_DIR, "bili-interests.json")
-CHAT_DIR = os.path.join(DAFEIYU_DIR, "chats")
-CONFIG_FILE = os.path.join(DAFEIYU_DIR, "dafeiyu-config.json")
+LANYA_DIR = os.path.join(WORK, "\u5c9a\u5a05")
+INTEREST_FILE = os.path.join(LANYA_DIR, "bili-interests.json")
+CHAT_DIR = os.path.join(LANYA_DIR, "chats")
+CONFIG_FILE = os.path.join(LANYA_DIR, "lanya-config.json")
 def _find_dsh():
     """找 dsh.cmd。
 
@@ -97,7 +76,7 @@ def admin_bili():
     """管理员的 B 站账号，用来在评论里 @ 他。
 
     以前写死在源码里 —— 那是别人的账号，不该出现在公开仓库。
-    现在从 dafeiyu-config.json 读，没配就返回空（也就不 @ 了）。
+    现在从 lanya-config.json 读，没配就返回空（也就不 @ 了）。
     """
     c = _cfg()
     return (str(c.get("adminBiliName") or "").strip(),
@@ -214,7 +193,7 @@ def gen_comment(title, up, content="", mention=False):
         "- 必须提到内容里的某个具体东西（一个词、一件事、一句话）\n"
         "- 不许评价视频本身好不好，不许说三连/先赞为敬/用心/加油/神作/"
         "DNA动了/含金量/助眠/后劲这类话\n"
-        "- 不超过 %d 字，口语，一句话\n\n" % COMMENT_MAX_LEN)
+        "- 不超过 30 字，口语，一句话\n\n")
     if ex:
         prompt += ("这个人平时这么说话（学口气，别抄）：\n"
                    + "\u3001".join(ex[:10]) + "\n\n")
@@ -312,7 +291,7 @@ def record_memory(title, up, comment, bv, feeling=""):
         if feeling:
             text += "\uff0c" + feeling[:24]
         if comment:
-            text += "\uff0c\u7559\u4e86\u53e5\u300c%s\u300d" % comment[:COMMENT_MAX_LEN]
+            text += "\uff0c\u7559\u4e86\u53e5\u300c%s\u300d" % comment[:30]
         text += "\u3002" + bv
 
         now = int(time.time() * 1000)
@@ -355,7 +334,7 @@ def save_interests(up, topic):
     if topic:
         topics = [topic] + [t for t in topics if t != topic]
     try:
-        os.makedirs(DAFEIYU_DIR, exist_ok=True)
+        os.makedirs(LANYA_DIR, exist_ok=True)
         with open(INTEREST_FILE, "w", encoding="utf-8") as fh:
             json.dump({"ups": ups[:20], "topics": topics[:30]},
                       fh, ensure_ascii=False, indent=1)
@@ -518,7 +497,7 @@ def run_one(do_comment=True, mention=False):
         result["step"] = "watch"
         content = ""
         tried = []
-        for c in cands[:WATCH_CANDIDATES]:
+        for c in cands[:4]:
             body, title, up, sub = _content_of(m, c["bv"])
             tried.append(c["bv"])
             if body:
@@ -543,7 +522,7 @@ def run_one(do_comment=True, mention=False):
         # 3 写评论
         if do_comment:
             result["step"] = "comment"
-            for _try in range(COMMENT_RETRIES):
+            for _try in range(3):
                 cand = gen_comment(pick["title"], pick["up"], content=content)
                 if cand and not _is_cliche(cand):
                     comment = cand
