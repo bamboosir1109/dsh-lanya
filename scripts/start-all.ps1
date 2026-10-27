@@ -40,10 +40,10 @@ Note '--- start-all begin ---'
 
 # 1. Panel API (19389) and the static one (19388). Both are the same script.
 if (-not (Test-Port 19389)) {
-  Spawn 'C:\Python314\python.exe' @('E:\\DSH work\\napcat\lanya-panel-server.py') 'panel-api:19389'
+  Spawn 'python' @((Join-Path $root 'lanya-panel-server.py')) 'panel-api:19389'
 }
 if (-not (Test-Port 19388)) {
-  Spawn 'C:\Python314\python.exe' @('E:\\DSH work\\napcat\lanya-panel-server.py', '--port', '19388') 'panel-static:19388'
+  Spawn 'python' @((Join-Path $root 'lanya-panel-server.py'), '--port', '19388') 'panel-static:19388'
 }
 
 # 2. Supervisor - it is what drives budget, chats, steal, greet, memory, bili.
@@ -66,7 +66,7 @@ foreach ($d in $daemons) {
   $p = Join-Path $root $d.f
   if (-not (Test-Path $p)) { Note ('missing: ' + $d.f); continue }
   if ($d.py) {
-    Spawn 'C:\Python314\python.exe' @($p) $d.f
+    Spawn 'python' @($p) $d.f
   } else {
     Spawn 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
           '-File', $p) $d.f
