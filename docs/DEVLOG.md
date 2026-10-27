@@ -1123,7 +1123,7 @@ NapCat 发语音
 | `YOUR_ADMIN_QQ` / `YOUR_ADMIN_QQ2` | `YOUR_ADMIN_QQ` |
 | `YOUR_GROUP_ID` | `YOUR_GROUP_ID` |
 | `BOT_QQ` | `BOT_QQ` |
-| `1669412389` | `FRIEND_QQ` |
+| `FRIEND_QQ` | 已经替换过 |
 | `~` | `~` |
 | `<WORKDIR>` | `<WORKDIR>` / `<YOUR_WORKDIR>` |
 | `大肥鱼` | `大肥鱼` |
@@ -1492,7 +1492,7 @@ function Spawn($exe, $args, $label) {        # ❌ $args 是自动变量
 
 **踩到的坑**：
 
-- ffmpeg 对 8.3 短路径（`C:\Users\BAMBOO~1\...`）会 **I/O error**，要写完整路径
+- ffmpeg 对 8.3 短路径（8.3 格式的短路径（形如 `XXX~1`））会 **I/O error**，要写完整路径
 - ffmpeg 直接读 B 站 CDN 的 URL 会 **403**（`-headers` 被 PowerShell 吃掉），改成 Python 下载再本地抽帧
 
 ---
@@ -1515,7 +1515,7 @@ function Spawn($exe, $args, $label) {        # ❌ $args 是自动变量
 所以 `admin_bili()` 返回空，**@ 从来没生效**。补上之后：
 
 ```
-admin_bili() => ('ADMIN_BILI_NAME', '120487504')
+admin_bili() => ('ADMIN_BILI_NAME', 'ADMIN_BILI_UID')
 ```
 
 ---
