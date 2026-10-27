@@ -24,6 +24,11 @@ param(
 # Repo root: <root>/napcat/xxx.ps1 -> <root>
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+$null = Test-QqUnifiedMode
 
 # ---- shared project config ------------------------------------------------
 # Reads <repo>\config\project.json. The helper carries the same defaults, so a
@@ -41,7 +46,7 @@ $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927
 
 # $root is the napcat folder; her files live one level up. Same mistake as
 # everywhere else in this script family.
-$workDir = Split-Path -Parent $PSScriptRoot
+$workDir = Get-ProjectWorkDir
 $dafeiyuDir  = Join-Path $workDir $dataDirName
 # %USERPROFILE% is cmd syntax; PowerShell does not expand it in a plain string,
 # so this stayed literal and Test-Path always failed. The script then logged
@@ -162,6 +167,18 @@ Write-Log ('today=' + $today + ' spent=' + $status.spent + ' limit=' + $Limit + 
 
 # Tell her once per day when the budget runs out.
 if ($Notify -and $exhausted -and $status.notifiedFor -ne $today) {
+  if (Test-QqUnifiedMode) {
+    try {
+      $receipt = Submit-QqObservation -Scope (Get-QqObservationScope -Target admin) -Kind 'budget.exhausted' -Producer 'budget' -EventId ('budget:exhausted:' + $today) -Payload @{ date = $today; status_path = $outPath }
+      Write-Log ('budget observation state=' + $receipt.state + '; no delivery occurred')
+    } catch {
+      Write-Log 'budget observation failed; notification receipt unchanged'
+      exit 1
+    }
+    # Pending evidence is not a delivered QQ message. Keep notifiedFor intact.
+    exit 0
+  }
+  Assert-QqLegacyAction 'send_private_msg'
   Add-Type -AssemblyName System.Net.Http
   $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $client = New-Object System.Net.Http.HttpClient

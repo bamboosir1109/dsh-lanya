@@ -15,9 +15,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
+import { createReminderObserver } from './reminder-observer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -27,11 +28,6 @@ export const inject = ['systemPrompt']
 export const PERSONA_SECTION = 'dafeiyu:persona'
 export const AFFINITY_SECTION = 'dafeiyu:affinity'
 
-// ESM 没有 __dirname，从 import.meta.url 推
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const DEFAULT_PERSONA = path.join(HERE, '..', 'napcat', 'persona.md')
-const DEFAULT_AFFINITY = '<WORKDIR>\\<dataDir>\\affinity.json'
-const NAPCAT_DIR = '<WORKDIR>\\napcat'
 
 // 常驻部件实测只有一百多 MB，3 GB 阈值足够松。
 // 一旦看到 3 GB 就说明有人在堆积了，不是正常波动。
@@ -40,13 +36,13 @@ const STRAY_AGE_MIN = 6
 
 const COMPONENTS = [
   { tag: 'groupwatch',  kind: 'daemon', match: 'groupwatch\\.ps1',      desc: '盯群，决定要不要插话' },
-  { tag: 'lifeloop',    kind: 'daemon', match: 'lifeloop\\.ps1',        desc: '自主活动（玩、上网、写东西）' },
+  { tag: 'mind',        kind: 'timer',  match: 'mind\\.py',             desc: '自主计划（按次运行）' },
   { tag: 'voicedaemon', kind: 'daemon', match: 'voicedaemon\\.ps1',     desc: '语音队列 → 合成 → 发送' },
   { tag: 'browserd',    kind: 'server', match: 'browserd\\.py',         desc: '她的浏览器' },
-  { tag: 'works',       kind: 'server', match: 'http\\.server 19388',   desc: '作品站 (19388)' },
+  { tag: 'works',       kind: 'server', match: 'lanya-panel-server\\.py', desc: '控制台服务' },
   { tag: 'tts',         kind: 'server', match: 'api_v2\\.py',           desc: '本地语音 (9880)' },
-  { tag: 'supervisor',  kind: 'timer',  match: 'dafeiyu-supervisor\\.ps1', desc: '总管（若已注册任务）' },
-  { tag: 'tick',        kind: 'timer',  match: 'dafeiyu-tick\\.ps1',      desc: '到期作业（挂在 reminders 上）' },
+  { tag: 'supervisor',  kind: 'timer',  match: '(?:lanya|dafeiyu)-supervisor\\.ps1', desc: '外部调度器' },
+  { tag: 'tick',        kind: 'timer',  match: '(?:lanya|dafeiyu)-tick\\.ps1', desc: '旧版到期作业' },
   { tag: 'napcat',      kind: 'bridge', match: 'napimain',              desc: 'NapCat 注入进程' },
   { tag: 'headless',    kind: 'agent',  match: '--profile headless',    desc: '无头 agent（堆积就是它）' }
 ]
@@ -55,7 +51,7 @@ const SCRIPTS = {
   groupwatch: 'groupwatch.ps1',
   lifeloop: 'lifeloop.ps1',
   voicedaemon: 'voicedaemon.ps1',
-  supervisor: 'dafeiyu-supervisor.ps1',
+  supervisor: 'lanya-supervisor.ps1',
   'napcat-heal': 'napcat-heal.ps1',
   'kill-strays': 'kill-strays.ps1',
   'settings-guard': 'settings-guard.py'
@@ -63,6 +59,18 @@ const SCRIPTS = {
 
 function readText(file) {
   try { return fs.readFileSync(file, 'utf8').trim() } catch { return '' }
+}
+
+export function readReminderDocument(file, { state = false } = {}) {
+  let raw
+  try { raw = fs.readFileSync(file) } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+  const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw))
+  const object = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+  if (state ? !object : !object && !Array.isArray(parsed)) throw new Error('Invalid persisted reminder document')
+  return parsed
 }
 
 /** 把 affinity.json 压成几行给模型看。只提有明确态度的，neutral 不占篇幅。 */
@@ -155,12 +163,14 @@ async function collectState() {
   }
 }
 
-function psDetached(script) {
-  const full = path.join(NAPCAT_DIR, script)
+export async function launchScript(script, napcatDir, pythonExecutable = 'python') {
+  const full = path.join(napcatDir, script)
   if (!fs.existsSync(full)) throw new Error('\u627e\u4e0d\u5230 ' + script)
-  const child = spawn('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full],
+  const isPython = script.endsWith('.py')
+  const child = spawn(isPython ? pythonExecutable : 'powershell.exe',
+    isPython ? [full] : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full],
     { detached: true, stdio: 'ignore', windowsHide: true })
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
   child.unref()
   return child.pid
 }
@@ -329,11 +339,17 @@ function readBody(req) {
 }
 
 export function apply(ctx, config = {}) {
-  const personaFile = typeof config.personaFile === 'string' ? config.personaFile : DEFAULT_PERSONA
-  const affinityFile = typeof config.affinityFile === 'string' ? config.affinityFile : DEFAULT_AFFINITY
   if (config.enabled === false) {
     ctx.logger?.info?.('dsh-lanya \u5df2\u505c\u7528')
     return
+  }
+  const runtime = resolveRuntime(config)
+  const { personaFile, affinityFile, project } = runtime
+  const NAPCAT_DIR = runtime.napcatDir
+  const DAFEIYU_DIR = runtime.dataDir
+  const configFile = () => {
+    const current = path.join(DAFEIYU_DIR, 'lanya-config.json')
+    return fs.existsSync(current) ? current : path.join(DAFEIYU_DIR, 'dafeiyu-config.json')
   }
 
   ctx.effect(
@@ -376,14 +392,11 @@ export function apply(ctx, config = {}) {
   // 同样的投递口径（target=group 发群，否则当 QQ 号发私聊），额外支持 image。
   // 已触发过的记录写进 state 文件，避免重启后同一条重复发。
   // 提醒清单在她自己的目录里，不在 napcat 下。
-  const DAFEIYU_DIR = '<WORKDIR>/\u5927\u80a5\u9c7c'
   const REMINDERS_FILE = path.join(DAFEIYU_DIR, 'reminders.json')
-  const REMINDERS_STATE = path.join(DAFEIYU_DIR, 'reminders-plugin-state.json')
-  const ADMIN_QQ = '你的管理员QQ'
-  const FAN_GROUP = '你的群号'
+  const REMINDERS_STATE = path.join(DAFEIYU_DIR, 'reminders.state.json')
 
   function readJsonSafe(file, fallback) {
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
+    return readJson(file, fallback)
   }
 
   function napcatConf() {
@@ -392,23 +405,48 @@ export function apply(ctx, config = {}) {
 
   async function napcatSend(pathname, payload) {
     const conf = napcatConf()
-    const base = String(conf.napcatHttp || 'http://127.0.0.1:8720').replace(/\/+$/, '')
-    const token = String(conf.napcatToken || '')
+    const base = String(conf.napcatHttp || 'http://127.0.0.1:' + (project.onebotPort || 8720)).replace(/\/+$/, '')
+    const onebot = readJsonSafe(path.join(NAPCAT_DIR, 'framework', 'config', 'onebot11.json'), {})
+    const token = String(conf.napcatToken || onebot.network?.httpServers?.[0]?.token || '')
     const r = await fetch(base + pathname, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
     })
-    return r.json().catch(() => ({}))
+    if (!r.ok) throw new Error('OneBot HTTP ' + r.status)
+    const result = await r.json()
+    if (result.status !== 'ok' || Number(result.retcode) !== 0) throw new Error('OneBot rejected delivery')
+    return result
   }
 
-  async function fireReminder(r) {
+  function reminderScope(r) {
+    const identity = readJsonSafe(configFile(), {})
+    const admin = Array.isArray(identity.adminQQ) ? identity.adminQQ[0] : identity.adminQQ
+    const target = String(!r.target || r.target === 'admin' ? (admin || '') : r.target)
+    const value = target === 'group' ? String(identity.fanGroupQQ || identity.fanGroup || '') : target
+    if (!/^[1-9][0-9]*$/.test(value)) throw new Error('No configured reminder conversation')
+    return (target === 'group' ? 'group:' : 'private:') + value
+  }
+  const observeReminder = createReminderObserver({
+    directory: path.join(DAFEIYU_DIR, 'decision-inbox'),
+    workspaceKey: process.platform === 'win32' ? runtime.workDir.toLowerCase() : runtime.workDir,
+    agentKey: String(project.decisions?.agentPreset || ''), resolveScope: reminderScope
+  })
+  async function fireReminder(r, context) {
+    const mode = project.decisions?.mode || 'unified'
+    if (mode === 'unified') return observeReminder(r, context)
+    if (mode !== 'legacy') throw new Error('Unknown decision mode; reminder retained')
     const text = String(r.text || '')
     const image = String(r.image || '')
-    const target = String(r.target || ADMIN_QQ)
+    const identity = readJsonSafe(configFile(), {})
+    const admin = Array.isArray(identity.adminQQ) ? identity.adminQQ[0] : identity.adminQQ
+    const target = String(!r.target || r.target === 'admin' ? (admin || '') : r.target)
     const mention = String(r.mention || '')
 
     if (target === 'group') {
+      const group = String(identity.fanGroupQQ || identity.fanGroup || '')
+      if (!/^\d+$/.test(group)) throw new Error('No configured reminder group')
       let msg
       if (image || mention) {
         msg = []
@@ -418,8 +456,9 @@ export function apply(ctx, config = {}) {
       } else {
         msg = text
       }
-      return napcatSend('/send_group_msg', { group_id: FAN_GROUP, message: msg })
+      return napcatSend('/send_group_msg', { group_id: group, message: msg })
     }
+    if (!/^\d+$/.test(target)) throw new Error('No configured reminder recipient')
     return napcatSend('/send_private_msg', { user_id: target, message: text })
   }
 
@@ -428,64 +467,32 @@ export function apply(ctx, config = {}) {
   async function checkReminders() {
     if (remindersBusy) return
     remindersBusy = true
+    let releaseLock
     try {
-      const raw = readJsonSafe(REMINDERS_FILE, null)
+      releaseLock = acquireReminderLock(DAFEIYU_DIR)
+      if (!releaseLock) return
+      const raw = readReminderDocument(REMINDERS_FILE)
       if (!raw) return
       const list = Array.isArray(raw) ? raw : [raw]
-      const state = readJsonSafe(REMINDERS_STATE, {}) || {}
-      const now = new Date()
-      const todayKey = now.toISOString().slice(0, 10)
-      const nowHm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0')
-
-      const keep = []
-      let changed = false
-
-      for (let i = 0; i < list.length; i++) {
-        const r = list[i]
-        if (!r || typeof r !== 'object') continue
-        let fired = false
-
-        if (r.at) {
-          const due = new Date(r.at)
-          const key = 'at:' + i + ':' + r.at
-          if (!Number.isNaN(due.getTime()) && now >= due && !state[key]) {
-            try { await fireReminder(r); state[key] = Date.now(); fired = true } catch { }
-          }
-          // 一次性提醒：发过了就不留。没到期的保留。
-          if (fired) { changed = true; continue }
-          if (!Number.isNaN(due.getTime()) && now >= due && state[key]) { changed = true; continue }
-        }
-
-        if (r.daily) {
-          const hm = String(r.daily)
-          const key = 'daily:' + i + ':' + hm + ':' + todayKey
-          if (hm === nowHm && !state[key]) {
-            try { await fireReminder(r); state[key] = Date.now() } catch { }
-          }
-          keep.push(r)
-          continue
-        }
-
-        // 既无 at 也无 daily 的条目原样保留
-        if (!r.at) keep.push(r)
+      const legacy = readReminderDocument(path.join(DAFEIYU_DIR, 'reminders-plugin-state.json'), { state: true }) || {}
+      const state = { ...legacy, ...(readReminderDocument(REMINDERS_STATE, { state: true }) || {}) }
+      const before = fs.readFileSync(REMINDERS_FILE, 'utf8')
+      const persistState = (current) => {
+        fs.writeFileSync(REMINDERS_STATE + '.tmp', JSON.stringify(current, null, 2), 'utf8')
+        fs.renameSync(REMINDERS_STATE + '.tmp', REMINDERS_STATE)
       }
-
-      if (changed) {
-        try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(keep, null, 2), 'utf8') } catch { }
-      }
-
-      // 清理过期的状态键，别让它无限涨
-      const cutoff = Date.now() - 7 * 24 * 3600 * 1000
-      let pruned = false
-      for (const k of Object.keys(state)) {
-        if (typeof state[k] === 'number' && state[k] < cutoff) { delete state[k]; pruned = true }
-      }
-      if (pruned || Object.keys(state).length > 0) {
-        try { fs.writeFileSync(REMINDERS_STATE, JSON.stringify(state), 'utf8') } catch { }
+      const result = await processReminders(list, state, new Date(), fireReminder, { persistState })
+      // Persist successful delivery first. If list replacement fails, the state
+      // still prevents the delivered item from being sent again.
+      persistState(result.state)
+      if (JSON.stringify(list) !== JSON.stringify(result.keep) && fs.readFileSync(REMINDERS_FILE, 'utf8') === before) {
+        fs.writeFileSync(REMINDERS_FILE + '.tmp', JSON.stringify(result.keep, null, 2), 'utf8')
+        fs.renameSync(REMINDERS_FILE + '.tmp', REMINDERS_FILE)
       }
     } catch {
       // 提醒出问题不能影响别的作业
     } finally {
+      releaseLock?.()
       remindersBusy = false
     }
   }
@@ -495,8 +502,8 @@ export function apply(ctx, config = {}) {
   // 面板和它的 API 跑在一个独立的小 HTTP 服务上（19389），因为跨端口写请求会被
   // DSH 的 web 服务器直接拒掉。那个服务是普通进程，会死；这里每 30 秒探一次，
   // 死了就拉起来——不依赖任何计划任务，也就不会有窗口闪。
-  const PANEL_PORT = 19389
-  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'dafeiyu-panel-server.py')
+  const PANEL_PORT = Number(project.panelPort || 19389)
+  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'lanya-panel-server.py')
   let panelBusy = false
 
   async function ensurePanelServer() {
@@ -509,14 +516,15 @@ export function apply(ctx, config = {}) {
       try {
         const ac = new AbortController()
         const to = setTimeout(() => ac.abort(), 2000)
-        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/dafeiyu-state.json', { signal: ac.signal })
+        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/api/config', { signal: ac.signal })
         clearTimeout(to)
         ok = res.ok
       } catch { ok = false }
       if (ok) return
-      const child = spawn('python', [PANEL_SCRIPT], {
+      const child = spawn(config.pythonExecutable || 'python', [PANEL_SCRIPT, '--port', String(PANEL_PORT)], {
         detached: true, stdio: 'ignore', windowsHide: true
       })
+      child.on('error', (error) => ctx.logger?.warn?.('panel process could not start: ' + error.code))
       child.unref()
     } catch {
       // 看护失败不该影响别的作业
@@ -531,7 +539,6 @@ export function apply(ctx, config = {}) {
   // 那些属于「这台机器上是谁在用」，放进 dafeiyu-config.json，只在本机存在。
   // 每次组装提示词时现读，改配置立刻生效。
   // DAFEIYU_DIR 在这个函数后面才定义，所以路径要惰性求值，别在模块层就拼。
-  const configFile = () => path.join(DAFEIYU_DIR, 'dafeiyu-config.json')
 
   function identityText() {
     const c = readJsonSafe(configFile(), null)
@@ -581,6 +588,7 @@ export function apply(ctx, config = {}) {
   // 用 setInterval 而不是 setTimeout 递归：间隔稳定，不会因为某次作业耗时长而漂移。
   const SCHEDULE = [
     { name: 'state',          everySec: 30,   script: 'dafeiyu-state.ps1' },
+    { name: 'mind',           everySec: 60,   script: 'mind.py' },
     { name: 'strays',         everySec: 300,  script: 'kill-strays.ps1' },
     { name: 'settings',       everySec: 300,  script: 'settings-guard.py' },
     { name: 'bridge',         everySec: 600,  script: 'napcat-heal.ps1' },
@@ -590,9 +598,22 @@ export function apply(ctx, config = {}) {
     { name: 'memory',         everySec: 21600, script: 'memory-maintenance.py' },
     { name: 'patchcheck',     everySec: 86400, script: 'check-patches.ps1' }
   ]
+  if (config.scheduleBili === true) {
+    SCHEDULE.push(
+      { name: 'bili', everySec: 10800, script: 'bili_onerun.py', args: ['--mention'] },
+      { name: 'bili-social', everySec: 5400, script: 'bili_social.py', args: ['--max=3'] }
+    )
+  }
 
   const MARKER = path.join(NAPCAT_DIR, 'scheduler-in-plugin.flag')
-  try { fs.writeFileSync(MARKER, String(Date.now())) } catch { }
+  const schedulerEnabled = config.schedulerEnabled !== false
+  const writeMarker = () => {
+    if (!schedulerEnabled) return
+    try {
+      fs.writeFileSync(MARKER, JSON.stringify({ version: 2, pid: process.pid, at: Date.now(),
+        jobs: ['reminders', ...SCHEDULE.map((job) => job.name)] }))
+    } catch { }
+  }
   // 这个标记文件的作用：让 dafeiyu-tick.ps1 知道自己不用再干活了，避免两套调度
   // 同时跑、把同一个作业做两遍。
 
@@ -604,9 +625,10 @@ export function apply(ctx, config = {}) {
     const full = path.join(NAPCAT_DIR, job.script)
     if (!fs.existsSync(full)) return
     running.add(job.name)
-    const exe = job.script.endsWith('.py') ? 'python' : 'powershell.exe'
-    const args = exe === 'python'
-      ? [full]
+    const isPython = job.script.endsWith('.py')
+    const exe = isPython ? (config.pythonExecutable || 'python') : 'powershell.exe'
+    const args = isPython
+      ? [full, ...(job.args || [])]
       : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full]
     try {
       const child = spawn(exe, args, { windowsHide: true, stdio: 'ignore' })
@@ -620,6 +642,8 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => {
+    if (!schedulerEnabled) return
+    writeMarker()
     // 启动后先等一会儿，别和 DSH 自己的启动抢资源
     const boot = setTimeout(() => {
       const started = Date.now()
@@ -633,6 +657,7 @@ export function apply(ctx, config = {}) {
     void checkReminders()
 
     const timer = setInterval(() => {
+      writeMarker()
       const now = Date.now()
       let budget = 2   // 一个 tick 最多起两个子进程，别一次全涌出来
       for (const j of SCHEDULE) {
@@ -651,7 +676,9 @@ export function apply(ctx, config = {}) {
       clearInterval(timer)
       clearInterval(remindTimer)
       clearInterval(panelTimer)
-      try { fs.unlinkSync(MARKER) } catch { }
+      try {
+        if (readJson(MARKER, {}).pid === process.pid) fs.unlinkSync(MARKER)
+      } catch { }
     }
   }, 'dsh-lanya: built-in scheduler')
 
@@ -705,7 +732,7 @@ export function apply(ctx, config = {}) {
         if (op === 'stop') { sendJson(res, 200, { ok: true, stopped: await stopComponent(target) }); return }
         const script = SCRIPTS[target]
         if (!script) throw new Error('\u8fd9\u4e2a\u90e8\u4ef6\u4e0d\u80fd\u7531\u9762\u677f\u64cd\u4f5c\uff1a' + target)
-        sendJson(res, 200, { ok: true, ran: script, pid: psDetached(script) })
+        sendJson(res, 200, { ok: true, ran: script, pid: await launchScript(script, NAPCAT_DIR, config.pythonExecutable || 'python') })
       } catch (e) {
         sendJson(res, 400, { ok: false, error: String((e && e.message) || e) })
       }
@@ -716,7 +743,7 @@ export function apply(ctx, config = {}) {
       const op = String(body.op || '')
       const spec = String(body.spec || '').trim()
       if (!spec) { sendJson(res, 400, { ok: false, log: '\u7f3a\u5c11\u5305\u540d\u6216\u5730\u5740' }); return }
-      const cli = '<DSH_ROOT>\\resources\\runtime\\cli\\bin\\dsh.cmd'
+      const cli = config.dshExecutable || process.env.DSH_CLI || 'dsh'
       try {
         const { stdout, stderr } = await execFileAsync(cli, ['plugin', '--profile', 'desktop', op, spec],
           { timeout: 15 * 60 * 1000, maxBuffer: 32 * 1024 * 1024, windowsHide: true })
@@ -737,7 +764,7 @@ export function apply(ctx, config = {}) {
       const name2 = String(body.name || '').trim()
       const want = body.enabled !== false
       if (!name2) { sendJson(res, 400, { ok: false, error: 'missing name' }); return }
-      const pkgFile = '%USERPROFILE%\\.dsh\\profiles\\desktop\\package.json'
+      const pkgFile = path.join(os.homedir(), '.dsh', 'profiles', 'desktop', 'package.json')
       try {
         const raw = fs.readFileSync(pkgFile, 'utf8')
         const doc = JSON.parse(raw)

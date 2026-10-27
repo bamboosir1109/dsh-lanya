@@ -27,5 +27,9 @@
     "diaryInCorpus": 60,
     "compressOver": 120,
     "compressTo": 80
+  },
+  "decisions": {
+    "mode": "unified",
+    "agentPreset": ""
   }
 }

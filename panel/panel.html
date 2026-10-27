@@ -366,6 +366,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <button class="preset" onclick="doAction('kill-strays')"><div class="t">清理卡住的进程</div><div class="d">清掉卡住的后台任务</div></button>
       <button class="preset" onclick="doAction('napcat-elevated')"><div class="t">确保 QQ 在线</div><div class="d">会弹 UAC，点「是」</div></button>
       <button class="preset" onclick="doAction('settings-guard')"><div class="t">检查参数</div><div class="d">和基准值比对</div></button>
+      <a class="preset url" href="./phone.html" target="_blank" rel="noopener"><div class="t">真实 Android 手机</div><div class="d">查看设备截屏并操作，离线时禁用</div></a>
     </div>
     <div class="out" id="ovOut"></div>
   </div>
@@ -631,12 +632,9 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memNew" placeholder="让她记住一件事（短句，别写作文）"
              style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')addMemory()">
-      <select id="memTrack" style="width:110px">
-        <option value="agent">我自己的</option>
-        <option value="user">关于爸爸</option>
-      </select>
-      <button class="pri" onclick="addMemory()">记住</button>
+      <button class="pri" id="memAdd" onclick="addMemory()" disabled>记住</button>
     </div>
+    <p class="note">添加前请在下方选择记忆范围；修改和移除按条目原范围及版本校验。</p>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memSearch" placeholder="搜记忆…（关键词/相似度）" style="flex:1;min-width:160px"
              onkeydown="if(event.key==='Enter') memSmartSearch()">
@@ -659,15 +657,21 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card" style="margin-top:14px">
     <h3>可塑性</h3>
     <p class="note">
-      记忆不只存在数据库里 —— 日记和刷过的视频也算。
-      相似的条目可以合并，太多会自动压缩。
+      先选记忆范围，再预览或执行。合并与压缩会保留原文和恢复批次。
+      下方统计与搜索是管理视图；维护只作用于所选范围。
     </p>
+    <label for="memOwner">维护范围（轨道 / 层级 / 工作区 / agent）</label>
+    <select id="memOwner" style="width:100%;margin:8px 0" onchange="memOwnerChange()">
+      <option value="">先选择记忆范围</option>
+    </select>
+    <div class="note" id="memOwnerInfo">尚未选择；共享空键也需要明确选择。</div>
     <div class="filelist" id="memCorpus"></div>
     <div class="btnrow" style="margin-top:10px">
       <button onclick="memCorpusLoad()">看看有多少</button>
-      <button onclick="memConsolidate(true)">预览合并</button>
-      <button class="pri" onclick="memConsolidate(false)">合并</button>
-      <button onclick="memCompress()">压缩</button>
+      <button id="memMergePreview" onclick="memConsolidate(true)" disabled>预览合并</button>
+      <button id="memMergeApply" class="pri" onclick="memConsolidate(false)" disabled>合并</button>
+      <button id="memCompressPreview" onclick="memCompress(true)" disabled>预览压缩</button>
+      <button id="memCompressApply" onclick="memCompress(false)" disabled>压缩</button>
       <button onclick="memTrimSeen()">收判重表</button>
     </div>
     <div class="out" id="memCorpusOut"></div>
@@ -2405,21 +2409,28 @@ function startEditMemory(row, e){
     + '<button class="fdel">×</button>';
   const ta = row.querySelector('textarea');
   row.querySelector('.sm').onclick = function(){
-    saveMemoryEdit(e.id, ta.value);
+    saveMemoryEdit(e, ta.value);
   };
   row.querySelector('.fdel').onclick = function(){
-    deleteMemory(e.id, old);
+    deleteMemory(e);
   };
   ta.focus();
 }
 
-async function saveMemoryEdit(id, text){
+function memoryEntrySelection(entry){
+  if(!entry || !['track','scope','workspace_key','agent_key'].every(k => typeof entry[k] === 'string')
+    || !Number.isInteger(entry.version) || entry.version < 1 || !entry.id){
+    throw new Error('条目范围或版本缺失，请刷新后重试');
+  }
+  return {track:entry.track, scope:entry.scope, workspace_key:entry.workspace_key, agent_key:entry.agent_key};
+}
+async function saveMemoryEdit(entry, text){
   const t = String(text || '').trim();
   if(!t){ show('memOut', '不能存空的。'); return; }
   try{
     const j = await api('/memory/edit', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: id, text: t })
+      body: JSON.stringify({ id: entry.id, text: t, selection: memoryEntrySelection(entry), expected_version: entry.version })
     });
     if(!j.ok) throw new Error(j.error || '失败');
     show('memOut', '改好了。');
@@ -2471,11 +2482,12 @@ async function addMemory(){
   const inp = $('memNew');
   const text = inp ? inp.value.trim() : '';
   if(!text){ show('memOut', '先写点什么。'); return; }
-  const track = $('memTrack') ? $('memTrack').value : 'agent';
+  const selection = memSelectedOwner();
+  if(!selection){ show('memOut', '请在下方明确选择记忆范围后再添加。'); return; }
   try{
     const j = await api('/memory/add', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ text: text, track: track })
+      body: JSON.stringify({ text: text, selection: selection })
     });
     if(!j.ok) throw new Error(j.error || '失败');
     if(inp) inp.value = '';
@@ -2484,14 +2496,14 @@ async function addMemory(){
   }catch(e){ show('memOut', '没记住：' + e.message); }
 }
 
-async function deleteMemory(id, text){
+async function deleteMemory(entry){
   try{
     const j = await api('/memory/delete', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: id })
+      body: JSON.stringify({ id: entry.id, selection: memoryEntrySelection(entry), expected_version: entry.version })
     });
     if(!j.ok) throw new Error(j.error || '失败');
-    show('memOut', '删掉了：' + String(text).slice(0, 30));
+    show('memOut', '已归档移除，可用变更记录恢复：' + String(j.change_id || ''));
     loadMemoryOverview();
   }catch(e){ show('memOut', '删不掉：' + e.message); }
 }
@@ -2499,6 +2511,54 @@ async function deleteMemory(id, text){
 // 服务端检索：BM25 + 中文 bigram，比子串过滤准得多。
 // 搜"看过什么"能命中"在 B 站看了…"，搜"白饭"能按相关度排序。
 // 可塑性：语料统计 / 合并 / 压缩
+let memOwners = [];
+function memSelectedOwner(){
+  const select = $('memOwner');
+  if(!select || select.value === '') return null;
+  const owner = memOwners[Number(select.value)];
+  if(!owner) return null;
+  return {track:owner.track, scope:owner.scope,
+    workspace_key:owner.workspace_key, agent_key:owner.agent_key};
+}
+function memOwnerChange(){
+  const owner = memSelectedOwner();
+  ['memAdd','memMergePreview','memMergeApply','memCompressPreview','memCompressApply'].forEach(function(id){
+    if($(id)) $(id).disabled = !owner;
+  });
+  const info = $('memOwnerInfo');
+  if(info) info.textContent = owner ? '只维护当前选择；原文保留在恢复批次中。'
+    : '尚未选择；共享空键也需要明确选择。';
+}
+async function memOwnersLoad(){
+  const select = $('memOwner');
+  if(!select) return;
+  const previous = memSelectedOwner();
+  try{
+    const j = await api('/memory/owners', null, true);
+    if(!j.ok) throw new Error(j.error || '读取范围失败');
+    memOwners = Array.isArray(j.owners) ? j.owners : [];
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = ''; placeholder.textContent = '先选择记忆范围';
+    select.appendChild(placeholder);
+    memOwners.forEach(function(owner, index){
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = [owner.track, owner.scope,
+        owner.workspace_key === '' ? '工作区共享空键' : owner.workspace_key,
+        owner.agent_key === '' ? 'agent共享空键' : owner.agent_key].join(' / ')
+        + '（' + owner.count + ' 条）';
+      select.appendChild(option);
+      if(previous && ['track','scope','workspace_key','agent_key'].every(function(key){
+        return previous[key] === owner[key];
+      })) select.value = String(index);
+    });
+    memOwnerChange();
+  }catch(e){
+    memOwners = []; select.value = ''; memOwnerChange();
+    if($('memOwnerInfo')) $('memOwnerInfo').textContent = '范围读取失败：' + e.message;
+  }
+}
 async function memCorpusLoad(){
   const box = $('memCorpus');
   const out = $('memCorpusOut');
@@ -2519,8 +2579,7 @@ async function memCorpusLoad(){
         box.appendChild(d);
       });
     if(j.mergeable){
-      if(out) out.textContent = '能合并 ' + j.mergeable + ' 组，合完约 '
-        + j.dbAfterMerge + ' 条。';
+      if(out) out.textContent = '全库管理统计：能合并 ' + j.mergeable + ' 组。';
     }else if(out){
       out.textContent = '没有可以合并的。';
     }
@@ -2547,35 +2606,42 @@ async function memTrimSeen(){
 
 async function memConsolidate(dry){
   const out = $('memCorpusOut');
+  const selection = memSelectedOwner();
+  if(!selection){ if(out) out.textContent = '先选择记忆范围。'; return; }
+  dry = dry !== false;
   if(out) out.textContent = dry ? '看会怎么合…' : '合并中…';
   try{
     const j = await api('/memory/consolidate', { method:'POST',
       headers:{'content-type':'application/json'},
-      body: JSON.stringify({ dry: dry }) });
+      body: JSON.stringify({ dry: dry, selection: selection }) });
     if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
     if(out){
       out.textContent = (dry ? '预览：' : '合并了：')
-        + (j.merges || 0) + ' 组，' + (j.before || 0) + ' → '
-        + ((j.before || 0) - (j.merges || 0)) + ' 条'
+        + (j.merges || 0) + ' 组，所选范围原有 ' + (j.before || 0) + ' 条'
+        + (j.batch_id ? ('\n恢复批次：' + j.batch_id) : '')
         + (j.sample && j.sample.length ? ('\n例：' + j.sample[0]) : '');
     }
-    if(!dry) memCorpusLoad();
+    if(!dry) loadMemoryOverview();
   }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
-async function memCompress(){
+async function memCompress(dry){
   const out = $('memCorpusOut');
-  if(out) out.textContent = '压缩中…';
+  const selection = memSelectedOwner();
+  if(!selection){ if(out) out.textContent = '先选择记忆范围。'; return; }
+  dry = dry !== false;
+  if(out) out.textContent = dry ? '预览压缩…' : '压缩中…';
   try{
     const j = await api('/memory/compress', { method:'POST',
-      headers:{'content-type':'application/json'}, body: '{}' });
+      headers:{'content-type':'application/json'}, body: JSON.stringify({dry:dry, selection:selection}) });
     if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
     if(out){
       out.textContent = j.note ? j.note
-        : ('合并 ' + (j.merged||0) + ' 组，砍掉 ' + (j.trimmed||0)
-           + ' 条，剩 ' + (j.left||0) + ' 条');
+        : ((dry ? '预览：' : '') + '合并 ' + (j.merged||0) + ' 组，归档 ' + (j.trimmed||0)
+           + ' 条，剩 ' + (j.left||0) + ' 条'
+           + (j.batch_id ? ('\n恢复批次：' + j.batch_id) : ''));
     }
-    memCorpusLoad();
+    if(!dry) loadMemoryOverview();
   }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
@@ -2667,6 +2733,7 @@ async function memGraph(){
 }
 
 async function loadMemoryOverview(){
+  await memOwnersLoad();
   try{
     const j = await api('/memory', null, true);
     if(!j.ok) return;
@@ -2685,7 +2752,7 @@ async function loadMemoryOverview(){
       }else if((c.proposals || 0) > 0){
         note.textContent = '还没有真正写进长期记忆的条目，但有 '
           + c.proposals + ' 条待审的会话摘要在排队。下面列出来了，'
-          + '内容可能带着隐私，建议直接驳回。';
+          + '核对来源和内容后再决定保留。';
       }else{
         note.textContent = '她目前没有沉淀下来的长期记忆——'
           + '聊天记录和日记在管用，但自动记忆这一层还空着。';
@@ -2704,7 +2771,7 @@ async function loadMemoryOverview(){
           const n = document.createElement('div');
           n.className = 'dsc';
           n.style.padding = '4px 12px 8px';
-          n.textContent = '另外有 ' + np + ' 条待审的会话摘要在排队（带隐私，建议驳回）';
+          n.textContent = '另外有 ' + np + ' 条待审会话摘要，需要核对来源和内容。';
           pl.appendChild(n);
         }
         ents.forEach(function(e){
@@ -2727,7 +2794,7 @@ async function loadMemoryOverview(){
           };
           d.querySelector('.fdel').onclick = function(ev){
             ev.stopPropagation();
-            deleteMemory(e.id, e.text);
+            deleteMemory(e);
           };
           pl.appendChild(d);
         });

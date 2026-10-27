@@ -7,22 +7,27 @@
 由调度器每 30 秒跑一次。写的都是只读快照，不会动任何源数据。
 """
 import io
-# 根目录按脚本位置推算：<root>/napcat/xxx.py -> <root>
-ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 import json
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(ROOT, "\u5927\u80a5\u9c7c", "made")
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts")
+                if os.path.basename(HERE).lower() == "server" else HERE)
+import project_conf
 
-sys.path.insert(0, HERE)
+ROOT = project_conf.work_dir()
+OUT = os.path.join(project_conf.data_dir(), "made")
 
 # 直接复用面板服务里的数据函数，保证两边口径一致
 import importlib.util
 
-spec = importlib.util.spec_from_file_location(
-    "lps", os.path.join(HERE, "dafeiyu-panel-server.py"))
+_panel = next((os.path.join(HERE, name) for name in
+               ("panel-server.py", "lanya-panel-server.py", "dafeiyu-panel-server.py")
+               if os.path.isfile(os.path.join(HERE, name))), None)
+if _panel is None:
+    raise FileNotFoundError("panel-server.py is not installed beside make_snapshots.py")
+spec = importlib.util.spec_from_file_location("lps", _panel)
 lps = importlib.util.module_from_spec(spec)
 try:
     spec.loader.exec_module(lps)
@@ -31,7 +36,7 @@ except SystemExit:
 
 
 def dump(name, obj):
-    path = os.path.join(OUT, "dafeiyu-" + name + ".json")
+    path = os.path.join(OUT, "lanya-" + name + ".json")
     try:
         with io.open(path, "w", encoding="utf-8", newline="") as fh:
             json.dump(obj, fh, ensure_ascii=False)
@@ -102,7 +107,7 @@ def main():
         print("  bili:", e)
 
     try:
-        with io.open(os.path.join(ROOT, "\u5927\u80a5\u9c7c", "dafeiyu-memes-config.json"),
+        with io.open(lps.MEMECFG,
                      "r", encoding="utf-8") as fh:
             if dump("memes-config", {"ok": True, "config": json.load(fh)}):
                 ok += 1

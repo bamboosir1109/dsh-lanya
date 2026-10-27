@@ -51,6 +51,8 @@ import subprocess
 import sys
 import tempfile
 
+from project_conf import data_dir, work_dir
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -60,8 +62,8 @@ HOME = os.path.expanduser("~")
 BILI_HOME = os.path.join(HOME, ".dsh", "bili-duty")
 sys.path.insert(0, BILI_HOME)
 
-WORK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(WORK, "\u5c9a\u5a05")
+WORK = work_dir()
+DATA = data_dir()
 FRAMEDIR = os.path.join(DATA, "made", "_videoframes")
 
 # 640 是实测能读清屏幕文字的下限；再大只是白占带宽。
@@ -137,13 +139,13 @@ async def fetch(bvid):
                           "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"),
            "Referer": "https://www.bilibili.com/video/" + bvid}
     os.makedirs(FRAMEDIR, exist_ok=True)
-    local = os.path.join(FRAMEDIR, "_src.m4s")
     async with aiohttp.ClientSession(headers=hdr) as sess:
         async with sess.get(url, timeout=aiohttp.ClientTimeout(total=600)) as r:
             if r.status != 200:
                 raise RuntimeError("stream http %d" % r.status)
             body = await r.read()
-    with open(local, "wb") as fh:
+    fd, local = tempfile.mkstemp(prefix="_src_", suffix=".m4s", dir=FRAMEDIR)
+    with os.fdopen(fd, "wb") as fh:
         fh.write(body)
     return local, title, duration, len(body)
 
@@ -163,7 +165,7 @@ def extract(src, outdir, interval, max_frames, t_from=0, t_to=0):
     cmd = [ff, "-hide_banner", "-loglevel", "error"]
     if t_from and t_from > 0:
         cmd += ["-ss", str(t_from)]
-    if t_to and t_to > t_from > 0:
+    if t_to and t_to > t_from >= 0:
         cmd += ["-t", str(t_to - t_from)]
     cmd += ["-i", src, "-vf", vf, "-vsync", "vfr",
             "-frames:v", str(max_frames), "-q:v", "3", "-y",
@@ -247,6 +249,7 @@ def main():
                 pass
 
     result = {"ok": False, "bvid": bvid}
+    src = None
     try:
         src, title, duration, size = asyncio.run(fetch(bvid))
         result.update({"title": title, "duration": duration,
@@ -264,12 +267,14 @@ def main():
         result["count"] = len(frames)
         result["sheets"] = sheets
         result["frames"] = frames
-        try:
-            os.remove(src)
-        except Exception:
-            pass
     except Exception as e:
         result["error"] = str(e)[:300]
+    finally:
+        if src and os.path.isfile(src):
+            try:
+                os.remove(src)
+            except OSError:
+                pass
 
     print(json.dumps(result, ensure_ascii=False, indent=1))
     return 0 if result.get("ok") else 1

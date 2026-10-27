@@ -10,6 +10,14 @@
 # message text is read from reminders.json as UTF-8.
 
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  Write-Output 'paused: unified scheduler owns night observations; reminder records preserved'
+  exit 3
+}
 
 # Derived from this script's own location - the repo copy had the path
 # sanitised to a literal '<WORKDIR>' string, which points at nothing.
@@ -61,6 +69,7 @@ $hdr = @{ Authorization = 'Bearer ' + [string]$napcat.napcatToken }
 $base = ([string]$napcat.napcatHttp).TrimEnd('/')
 
 function Invoke-Api([string]$action, $obj) {
+  Assert-QqLegacyAction $action
   $json = $obj | ConvertTo-Json -Compress -Depth 6
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   return Invoke-RestMethod -Uri ($base + '/' + $action) -Method Post -Headers $hdr -ContentType 'application/json; charset=utf-8' -Body $bytes

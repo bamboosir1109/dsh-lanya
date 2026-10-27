@@ -1,5 +1,9 @@
 # 大肥鱼 · 开发日志（详细版）
 
+> 历史记录：本文件保留当时的排查过程，旧路径、旧工具名、待办和验证结果不代表当前状态。
+> 当前使用说明见 [安装](INSTALL.md)、[架构](ARCHITECTURE.md)、[维护与发布](MAINTENANCE.md)、[已知限制](LIMITATIONS.md)。
+> 不要照抄本文件中的整份 profile 配置或旧发布步骤到已有安装。
+
 > 给「接手的人 / 下一个我」看的技术手册。
 > 当前对话撑不住的时候，从这里开始。
 >
@@ -2058,9 +2062,9 @@ Spawn 'python' @('<WORKDIR-ESCAPED>\\napcat\\lanya-panel-server.py')   # ← 双
 
 ```python
 ESCAPED_SUBS = [
-    (r"E:\\\\DSH work", "<WORKDIR>"),
-    (r"E:\\\\DSH\\", "<DSH_ROOT>\\\\"),
-    (r"C:\\\\Users\\\\bamboosir120", "~"),
+    (r"<ESCAPED_WORKDIR>", "<WORKDIR>"),
+    (r"<ESCAPED_DSH_ROOT>", "<DSH_ROOT>"),
+    (r"<ESCAPED_USER_HOME>", "~"),
 ]
 ```
 

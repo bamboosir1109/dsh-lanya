@@ -17,58 +17,32 @@
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+_HELPERS = os.path.join(os.path.dirname(HERE), "scripts")
+if os.path.basename(HERE).lower() == "server":
+    sys.path.insert(0, _HELPERS)
+else:
+    sys.path.insert(0, HERE)
+import project_conf
 
-
-def _project_conf():
-    """config/project.json, or {} when it is missing/unreadable."""
-    try:
-        with open(os.path.join(REPO, "config", "project.json"), "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        return doc if isinstance(doc, dict) else {}
-    except Exception:
-        return {}
-
-
-def _data_dir_name():
-    """Her data folder is <workdir>/<name>/.
-
-    The repo ships a generic name (大肥鱼) and a personalised install usually
-    renames it, so hardcoding one of them makes the other install look empty.
-    Pick whichever candidate actually holds her files: a directory that exists
-    but is an empty leftover (an old rename, a partial install) must not win
-    over the one with the config, budget and meme index in it.
-    """
-    markers = ("lanya-config.json", "budget.json", "lanya-tunables.json",
-               "activities.json", "lanya-memes-tags.json")
-    want = str(_project_conf().get("dataDirName") or "").strip()
-    best = ""
-    best_score = -1
-    for cand in (want, "\u5927\u80a5\u9c7c", "\u5c9a\u5a05"):
-        if not cand:
-            continue
-        base = os.path.join(REPO, cand)
-        if not os.path.isdir(base):
-            continue
-        score = sum(1 for m in markers if os.path.isfile(os.path.join(base, m)))
-        if score > best_score:
-            best, best_score = cand, score
-    if best and best_score > 0:
-        return best
-    return want or "\u5c9a\u5a05"
-
-
-DATA_NAME = _data_dir_name()
-DATA = os.path.join(REPO, DATA_NAME)
+REPO = project_conf.work_dir()
+DATA = project_conf.data_dir()
+DATA_NAME = os.path.basename(DATA)
 ROOT = os.path.join(DATA, "made")
 NAPCAT = os.path.join(REPO, "napcat")
-PERSONA = os.path.join(NAPCAT, DATA_NAME + "-\u4eba\u8bbe\u6b63\u6587.md")
+_PERSONA_NAME = DATA_NAME + "-\u4eba\u8bbe\u6b63\u6587.md"
+_PERSONAS = [os.environ.get("LANYA_PERSONA_FILE"), os.path.join(NAPCAT, "persona.md"),
+             os.path.join(NAPCAT, _PERSONA_NAME), os.path.join(DATA, _PERSONA_NAME)]
+# An explicit override is authoritative even before the file is created.
+PERSONA = (os.path.abspath(os.path.expanduser(_PERSONAS[0])) if _PERSONAS[0] else
+           next((p for p in _PERSONAS[1:] if os.path.isfile(p)), _PERSONAS[1]))
 CONFIG  = os.path.join(DATA, "lanya-config.json")
 TUNABLES = os.path.join(DATA, "lanya-tunables.json")
 MEMECFG  = os.path.join(DATA, "lanya-memes-config.json")
@@ -76,20 +50,28 @@ MEME_TAGS = os.path.join(DATA, "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
-# DSH install root. Found rather than assumed.
-DSH_ROOT = os.environ.get("DSH_ROOT") or ""
-if not DSH_ROOT:
-    _rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
-    for _d in "CDEFG":
-        _c = _d + ":\\DSH"
-        if os.path.isfile(os.path.join(_c, _rel)):
-            DSH_ROOT = _c
-            break
-    if not DSH_ROOT:
-        DSH_ROOT = "D:\\DSH"
+def _configured_path(env_name, key, default=""):
+    value = os.environ.get(env_name) or project_conf.get(key, default)
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(str(value)))) if value else ""
 
-DSH_CLI = os.path.join(DSH_ROOT,
-                      "resources", "runtime", "cli", "bin", "dsh.cmd")
+
+def _executable_paths(env_name, key, command, extra=()):
+    paths = [_configured_path(env_name, key), shutil.which(command), *extra]
+    return list(dict.fromkeys(p for p in paths if p))
+
+
+DSH_ROOT = _configured_path("DSH_ROOT", "dshRoot")
+_DSH_ON_PATH = shutil.which("dsh.cmd") or shutil.which("dsh")
+if not DSH_ROOT:
+    # A conventional sibling installation remains discoverable without a
+    # machine-specific drive or a hardcoded author installation directory.
+    _sibling = os.path.join(os.path.dirname(REPO), "DSH")
+    if os.path.isfile(os.path.join(_sibling, "resources", "runtime", "cli", "bin", "dsh.cmd")):
+        DSH_ROOT = _sibling
+DSH_CLI = (os.path.join(DSH_ROOT, "resources", "runtime", "cli", "bin", "dsh.cmd")
+           if DSH_ROOT else (_DSH_ON_PATH or "dsh.cmd"))
+TTS_START = _configured_path("LANYA_TTS_START_SCRIPT", "tts.startScript",
+                             os.path.join(REPO, "tts", "start-tts-server.ps1"))
 
 SCRIPTS = {
     "groupwatch": "groupwatch.ps1",
@@ -109,36 +91,44 @@ SCRIPTS = {
 
 
 def start_napcat_elevated():
-    """Launch the NapCat injection with a UAC prompt.
+    """Delegate to the existing local launcher after checking injection files.
 
-    napimain refuses to do anything without elevation, and killing QQ without
-    being able to inject would just leave the user offline. So this is the only
-    path that actually works - and it means one UAC click, every time.
+    The local launcher owns QQ discovery and its preflight checks. Never kill
+    QQ from this server, or build a second, divergent injection command here.
     """
-    inner = (
-        'taskkill /IM QQ.exe /F >nul 2>nul & timeout /t 4 /nobreak >nul & '
-        'cd /d "' + os.path.join(NAPCAT, "framework") + '" && '
-        'napimain.exe "C:\\software\\QQNT\\QQ.exe" '
-        '"os.path.join(NAPCAT, "framework", "napiloader.dll")" '
-        'os.path.join(NAPCAT, "framework", "nativeLoader.cjs")'
-    )
+    launcher = _configured_path("LANYA_NAPCAT_LAUNCHER", "napcat.startScript",
+        os.path.join(NAPCAT, "\u542f\u52a8NapCat-\u6b63\u786e.cmd"))
+    for file in (launcher, *(os.path.join(NAPCAT, "framework", name) for name in
+                            ("napimain.exe", "napiloader.dll", "nativeLoader.cjs"))):
+        if not os.path.isfile(file):
+            raise FileNotFoundError("NapCat launcher preflight failed: " + os.path.basename(file))
+    quoted = launcher.replace("'", "''")
+    working = os.path.dirname(launcher).replace("'", "''")
     ps = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        "Start-Process cmd.exe -ArgumentList '/c','" + inner.replace("'", "''") + "' -Verb RunAs"
+        # This explicitly requested launcher is interactive: its window must
+        # stay open to keep the injected QQ process alive.
+        "Start-Process -FilePath '" + quoted + "' -WorkingDirectory '" + working +
+        "' -Verb RunAs -WindowStyle Normal -PassThru -ErrorAction Stop | Select-Object -ExpandProperty Id"
     ]
     p = subprocess.run(ps, capture_output=True, timeout=120,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return p.returncode
+    if p.returncode:
+        raise RuntimeError("NapCat launcher was not started; elevation may have been cancelled")
+    output = (p.stdout or b"").decode("utf-8", "replace").strip()
+    if not output.isdigit():
+        raise RuntimeError("NapCat launcher did not return a process id")
+    return int(output)
 
 
 # 有些部件不能当普通脚本起：解释器不同、工作目录不同、还要带参数。
 SPECIAL = {
     "tts": {
-        "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
-        "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
-        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
-                 "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
+        "exe": "powershell.exe",
+        "cwd": os.path.dirname(TTS_START),
+        "script": TTS_START,
+        "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", TTS_START],
     },
 }
 
@@ -146,8 +136,8 @@ SPECIAL = {
 def run_script(name):
     sp = SPECIAL.get(name)
     if sp:
-        if not os.path.isfile(sp["exe"]) and not sp["exe"].lower().endswith(".exe"):
-            pass
+        if not os.path.isfile(sp["script"]):
+            raise FileNotFoundError("Configure tts.startScript or LANYA_TTS_START_SCRIPT")
         p = subprocess.Popen(
             [sp["exe"]] + sp["args"], cwd=sp["cwd"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -200,27 +190,28 @@ TASKS = {
 TOOLS = [
     {"key": "napcat", "name": "NapCat", "kind": "QQ 注入框架",
      "paths": [os.path.join(REPO, "napcat", "framework", "napimain.exe")],
-     "port": 8720,
+      "port": project_conf.get("onebotPort", 8720),
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
-     "paths": [r"C:\software\QQNT\QQ.exe"],
+     "paths": _executable_paths("QQ_EXE", "tools.qqExecutable", "QQ.exe"),
      "proc": "QQ.exe",
      "note": "机器人小号登录的地方。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
-     "paths": [os.path.join(DSH_ROOT, "DeepSeek Harness.exe")],
+     "paths": [os.path.join(DSH_ROOT, "DeepSeek Harness.exe")] if DSH_ROOT else [],
      "port": 19387,
      "note": "整个系统跑在里面。插件都挂在它上面。"},
     {"key": "node", "name": "Node.js", "kind": "运行时",
-     "paths": [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
+     "paths": _executable_paths("NODE_EXE", "tools.nodeExecutable", "node", (
+         [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe")] if DSH_ROOT else [])),
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
-     "paths": [r"C:\Python314\python.exe", r"C:\code\anaconda\python.exe"],
+     "paths": _executable_paths("LANYA_PYTHON", "tools.pythonExecutable", "python", [sys.executable]),
      "note": "面板服务、表情包处理、刷 B 站都靠它。"},
     {"key": "python-tts", "name": "Python (语音环境)", "kind": "专用环境",
-     "paths": [r"C:\code\anaconda\envs\gptsovits\python.exe"],
-     "note": "语音合成单独一个环境，因为依赖版本和主环境冲突。"},
+     "paths": _executable_paths("LANYA_TTS_PYTHON", "tts.pythonExecutable", "python-tts", [TTS_START]),
+     "note": "独立语音环境由本机 TTS 启动脚本管理。"},
     {"key": "git", "name": "Git", "kind": "版本控制",
-     "paths": [r"C:\code\Git\cmd\git.exe"],
+     "paths": _executable_paths("GIT_EXE", "tools.gitExecutable", "git"),
      "note": "拉插件、更新插件用。"},
 ]
 
@@ -525,13 +516,18 @@ _AID_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty",
 
 
 def _bili_cred():
-    try:
-        with open(os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty",
-                               "bili_credential.json"), "r",
-                  encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
+    """Use the login writer's path, with the legacy location as a fallback."""
+    home = os.path.join(os.path.expanduser("~"), ".dsh")
+    for folder in (os.path.join(home, "bili-duty"), home):
+        try:
+            with open(os.path.join(folder, "bili_credential.json"), "r",
+                      encoding="utf-8-sig") as fh:
+                cred = json.load(fh)
+            if isinstance(cred, dict) and cred.get("sessdata") and cred.get("bili_jct"):
+                return cred
+        except (OSError, ValueError):
+            continue
+    return {}
 
 
 def _bili_cookie(c):
@@ -758,7 +754,7 @@ def bili_snapshot():
 #
 # 她的记忆现在散在几处：memento 的审计流水（谁在什么时候写了什么）、
 # 人物档案、日记、随笔。分开看就是四套东西，合成一个视图才能管。
-# 这里只读，不改——写记忆要走 memento 自己的流程，别绕过它。
+# 模型写入仍走 memento；面板操作使用独立、可恢复的维护事务。
 # ---------------------------------------------------------------------------
 MEMENTO_DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 
@@ -776,6 +772,36 @@ def memento_rows(sql, args=(), limit=200):
         return rows
     except Exception:
         return []
+
+
+def memory_owner_choices():
+    from memory_context import list_owners, workspace_key_of, agent_key_of
+    owners = list_owners(db_path=MEMENTO_DB)
+    configured = dict(scope="workspace", workspace_key=workspace_key_of(project_conf.work_dir()),
+                      agent_key=agent_key_of(project_conf.get("decisions.agentPreset", "") or ""))
+    for track in ("user", "agent"):
+        selected = dict(configured, track=track)
+        if not any(all(row.get(key) == value for key, value in selected.items()) for row in owners):
+            owners.append(dict(selected, count=0, origin="configured"))
+    return owners
+
+
+def memory_mutation(operation, body):
+    from memory_mutations import mutate
+    return mutate(operation, body, db_path=MEMENTO_DB, apply=True)
+
+
+def memory_maintenance(operation, body):
+    from memory_context import maintenance_selection
+    selection = maintenance_selection(body.get("selection"))
+    dry = body.get("dry", True)
+    if type(dry) is not bool:
+        raise ValueError("dry must be true or false")
+    if operation not in ("consolidate", "compress"):
+        raise ValueError("Unknown memory maintenance operation")
+    import memory_plastic
+    result = getattr(memory_plastic, operation)(dry=dry, **selection)
+    return dict(result, selection=selection, view="maintenance")
 
 
 def memory_overview():
@@ -798,7 +824,8 @@ def memory_overview():
     # 所以永远显示"还没有写进长期记忆"。
     try:
         entries = memento_rows(
-            "SELECT id, track, scope, text, tags, created_at, recall_count "
+            "SELECT id, track, scope, workspace_key, agent_key, text, source, tags, version, "
+            "created_at, updated_at, recall_count "
             "FROM entries ORDER BY created_at DESC LIMIT 200")
     except Exception:
         entries = []
@@ -811,7 +838,8 @@ def memory_overview():
         "diary": len(list_dir_files("diary")),
         "notes": len(list_dir_files("notes")),
     }
-    return {"counts": counts, "audit": audit, "proposals": props, "entries": entries, "snapshotOnly": snapshot_count > 0}
+    return {"view": "management", "counts": counts, "audit": audit, "proposals": props,
+            "entries": entries, "snapshotOnly": snapshot_count > 0}
 
 
 # -*- coding: utf-8 -*-
@@ -832,10 +860,10 @@ import os
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
-DSH_ROOT = os.path.join(os.path.expanduser("~"), ".dsh")
-PACKS = os.path.join(DSH_ROOT, "meme-packs")
+DSH_HOME = os.path.join(os.path.expanduser("~"), ".dsh")
+PACKS = os.path.join(DSH_HOME, "meme-packs")
 DSH_MEME = os.path.join(
-    DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
+    DSH_HOME, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
 LANYA_MEMES = os.path.join(DATA, "memes")
 
@@ -1231,9 +1259,67 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _android_error(self, error):
+        from android_panel import PanelAndroidError
+        if isinstance(error, PanelAndroidError):
+            return self._json(error.http_status, {"ok": False, "status": "error",
+                "code": error.code, "error": str(error), "shot_id": ""})
+        return self._json(503, {"ok": False, "status": "error", "code": "adapter_error",
+            "error": type(error).__name__, "shot_id": ""})
+
+    def _android_post(self):
+        # Android controls accept the local panel/works origins, never arbitrary
+        # websites using the older panel API's permissive CORS policy.
+        from android_panel import AndroidPanel, PanelAndroidError
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlparse(origin)
+            ports = {int(project_conf.get("panelPort", 19389)),
+                     int(project_conf.get("panelStaticPort", 19388)), self.server.server_port}
+            if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
+                    or parsed.port not in ports or parsed.username or parsed.password
+                    or parsed.path or parsed.query or parsed.fragment):
+                raise PanelAndroidError("origin", "Android control requires a local panel origin", 403)
+        try:
+            size = int(self.headers.get("content-length") or 0)
+            if not 0 < size <= 16 * 1024:
+                raise ValueError()
+            body = json.loads(self.rfile.read(size).decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise PanelAndroidError("bad_job", "Invalid Android JSON body", 400) from None
+        return self._json(202, AndroidPanel().submit(body))
+
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path in ("/api/android/status", "/api/android/shot"):
+            try:
+                from android_panel import AndroidPanel, PanelAndroidError
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if any(len(values) != 1 for values in query.values()):
+                    raise PanelAndroidError("bad_query", "Android query fields must be unique", 400)
+                adapter = AndroidPanel()
+                serial = query.get("serial", [None])[0]
+                if path.endswith("/status"):
+                    return self._json(200, adapter.status(serial))
+                raw = adapter.image(serial, query.get("shot_id", [None])[0])
+                self.send_response(200)
+                self.send_header("content-type", "image/png")
+                self.send_header("content-length", str(len(raw)))
+                self.send_header("cache-control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("pragma", "no-cache")
+                self.send_header("expires", "0")
+                self.send_header("x-content-type-options", "nosniff")
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            except Exception as error:
+                return self._android_error(error)
+        if path == "/api/memory/owners":
+            try:
+                return self._json(200, {"ok": True, "view": "management", "owners": memory_owner_choices()})
+            except Exception as error:
+                return self._json(200, {"ok": False, "owners": [], "error": str(error)[:200]})
         if path == "/api/memory/corpus":
             # 三个来源各多少条：数据库 / 日记 / 判重表（刷过哪些视频）
             try:
@@ -1244,6 +1330,7 @@ class Handler(SimpleHTTPRequestHandler):
                 mergeable = sum(1 for g in groups if _mp.merge_group(g))
                 return self._json(200, {
                     "ok": True, "stats": st,
+                    "view": "management",
                     "mergeable": mergeable,
                     "dbAfterMerge": len(groups),
                     "thresholds": {"merge": _mp.COMPRESS_OVER,
@@ -1263,9 +1350,9 @@ class Handler(SimpleHTTPRequestHandler):
             lim = max(1, min(50, lim))
             try:
                 import memory_index as _mi
-                idx = _mi.Index()
+                idx = _mi.Index.management()
                 hits = idx.search(kw, limit=lim) if kw else []
-                return self._json(200, {"ok": True, "q": kw,
+                return self._json(200, {"ok": True, "view": "management", "q": kw,
                                         "total": idx.n, "hits": hits})
             except Exception as e:
                 return self._json(200, {"ok": False, "hits": [],
@@ -1274,8 +1361,8 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/memory/graph":
             try:
                 import memory_index as _mi
-                g = _mi.Index().graph()
-                return self._json(200, dict(ok=True, **g))
+                g = _mi.Index.management().graph()
+                return self._json(200, dict(ok=True, view="management", **g))
             except Exception as e:
                 return self._json(200, {"ok": False, "nodes": [], "edges": [],
                                         "error": str(e)[:200]})
@@ -1361,17 +1448,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/bili/login/credential":
             # 凭证在就算登录过——bili-qr.json 只是"这一轮扫码"的临时状态，
             # 用户扫完以后它会一直停在 waiting，不能拿它判断登没登录。
-            cred = os.path.join(os.path.expanduser("~"), ".dsh", "bili_credential.json")
-            ok = False
-            uid = ""
-            if os.path.isfile(cred):
-                try:
-                    with open(cred, "r", encoding="utf-8") as fhc:
-                        cc = json.load(fhc)
-                    ok = bool(cc.get("sessdata")) and bool(cc.get("bili_jct"))
-                    uid = str(cc.get("dedeuserid") or "")
-                except Exception:
-                    pass
+            cc = _bili_cred()
+            ok = bool(cc.get("sessdata")) and bool(cc.get("bili_jct"))
+            uid = str(cc.get("dedeuserid") or "")
             return self._json(200, {"ok": True, "loggedIn": ok, "uid": uid})
 
         if path == "/api/bili/login/status":
@@ -1503,16 +1582,8 @@ class Handler(SimpleHTTPRequestHandler):
                 a["ready"] = None          # None = 不依赖部件
                 a["why"] = ""
                 if b == "bili-duty":
-                    crit = os.path.join(os.path.expanduser("~"), ".dsh",
-                                        "bili_credential.json")
-                    okcred = False
-                    if os.path.isfile(crit):
-                        try:
-                            with open(crit, "r", encoding="utf-8") as fhc2:
-                                cc2 = json.load(fhc2)
-                            okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
-                        except Exception:
-                            okcred = False
+                    cc2 = _bili_cred()
+                    okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
                     a["ready"] = okcred
                     a["why"] = "B 站已登录" if okcred else "还没登录 B 站（去刷 B 站页扫码）"
                 elif b:
@@ -1807,14 +1878,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/android/job":
+            try:
+                return self._android_post()
+            except Exception as error:
+                return self._android_error(error)
         body = self._read()
 
         if path == "/api/memory/consolidate":
             try:
-                import memory_plastic as _mp
-                dry = body.get("dry") is True
-                r = _mp.consolidate(dry=dry)
+                r = memory_maintenance("consolidate", body)
                 return self._json(200, dict(ok=True, **r))
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
@@ -1829,10 +1905,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/memory/compress":
             try:
-                import memory_plastic as _mp
-                dry = body.get("dry") is True
-                r = _mp.compress(dry=dry)
+                r = memory_maintenance("compress", body)
                 return self._json(200, dict(ok=True, **r))
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
@@ -2017,7 +2093,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     "bili-duty", "duty.md")
                 if not os.path.isfile(duty):
                     return self._json(200, {"ok": False, "error": "duty.md not found"})
-                dsh = os.path.join(DSH_ROOT, "resources", "runtime", "cli", "bin", "dsh.cmd")
+                dsh = DSH_CLI
                 if not os.path.isfile(dsh):
                     return self._json(200, {"ok": False, "error": "dsh.cmd not found"})
                 with open(duty, "r", encoding="utf-8", errors="replace") as fhd:
@@ -2394,32 +2470,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": str(e)[:300]})
 
         if path == "/api/memory/edit":
-            eid = str(body.get("id") or "").strip()
-            text = str(body.get("text") or "").strip()
-            if not eid or not text:
-                return self._json(400, {"ok": False, "error": "need id and text"})
-            if len(text) > 400:
-                return self._json(400, {"ok": False, "error": "too long (max 400)"})
             try:
-                import sqlite3 as _sq4, time as _t4
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c4 = _sq4.connect(db)
-                row = c4.execute("SELECT text FROM entries WHERE id = ?", (eid,)).fetchone()
-                if not row:
-                    c4.close()
-                    return self._json(404, {"ok": False, "error": "not found"})
-                c4.execute("UPDATE entries SET text = ?, updated_at = ? WHERE id = ?",
-                           (text, int(_t4.time() * 1000), eid))
-                c4.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (int(_t4.time() * 1000), "edit-panel", None, None, eid,
-                     text, "edited via panel", "panel", None))
-                c4.commit()
-                c4.close()
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("edit", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/activities/add":
             try:
@@ -2526,58 +2583,22 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/memory/add":
-            text = str(body.get("text") or "").strip()
-            track = str(body.get("track") or "agent")
-            if track not in ("user", "agent"):
-                track = "agent"
-            if not text:
-                return self._json(400, {"ok": False, "error": "empty text"})
-            if len(text) > 400:
-                return self._json(400, {"ok": False, "error": "too long (max 400)"})
             try:
-                import sqlite3 as _sq, uuid as _uuid, time as _t
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c = _sq.connect(db)
-                now = int(_t.time() * 1000)
-                eid = str(_uuid.uuid4())[:8] + "-" + _uuid.uuid4().hex[:8]
-                c.execute(
-                    "INSERT INTO entries (id, track, scope, workspace_key, text, source, "
-                    "created_at, updated_at, session_id, agent_key, tags, version) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (eid, track, "workspace", "", text, "panel", now, now, None, "", "[]", 1))
-                c.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (now, "add-panel", track, "workspace", eid, text, "added via panel", "panel", None))
-                c.commit()
-                c.close()
-                return self._json(200, {"ok": True, "id": eid})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("add", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/memory/delete":
-            eid = str(body.get("id") or "").strip()
-            if not eid:
-                return self._json(400, {"ok": False, "error": "missing id"})
             try:
-                import sqlite3 as _sq, time as _t
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c = _sq.connect(db)
-                row = c.execute("SELECT text FROM entries WHERE id = ?", (eid,)).fetchone()
-                if not row:
-                    c.close()
-                    return self._json(404, {"ok": False, "error": "not found"})
-                c.execute("DELETE FROM entries WHERE id = ?", (eid,))
-                c.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (int(_t.time() * 1000), "delete-panel", None, None, eid,
-                     row[0], "deleted via panel", "panel", None))
-                c.commit()
-                c.close()
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("delete", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/files/delete":
             key = str(body.get("dir") or "")
@@ -2701,7 +2722,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
+    port = int(os.environ.get("LANYA_PANEL_PORT") or project_conf.get("panelPort", 19389))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])

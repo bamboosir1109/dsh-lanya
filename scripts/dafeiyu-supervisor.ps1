@@ -79,7 +79,7 @@ function Invoke-Job($j) {
   try {
     # Quote every argument that contains a space. Passing the array straight to
     # -ArgumentList let Windows split "<reminders.ps1>" at the
-    # space, so powershell got "-File $env:DSH_ROOT" and every job failed instantly.
+    # space, so powershell received a truncated script path and every job failed instantly.
     $quoted = @()
     foreach ($a in $j.args) {
       if ($a -match '\s') { $quoted += ('"' + $a + '"') } else { $quoted += $a }

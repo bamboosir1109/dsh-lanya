@@ -77,6 +77,13 @@ if (Test-Path $confHelper) { . $confHelper }
 if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
   function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
 }
+$decisionHelper = Join-Path $PSScriptRoot 'qq_reply_decision.ps1'
+if (-not (Test-Path $decisionHelper)) { throw 'Missing QQ reply decision helper' }
+. $decisionHelper
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
 # An explicit -PollSeconds on the command line still wins; the config only
 # replaces the DEFAULT, which is the same 60 seconds either way.
 if (-not $PSBoundParameters.ContainsKey('PollSeconds')) {
@@ -90,7 +97,7 @@ $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927
 # were all being read as empty.
 # Use $PSScriptRoot, not $root: at this point $root still holds the PARENT
 # of the script folder, so Split-Path -Parent $root would give the drive root.
-$workDir = Split-Path -Parent $PSScriptRoot
+$workDir = Get-ProjectWorkDir
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +114,8 @@ $workDir = Split-Path -Parent $PSScriptRoot
 # almost never does, so this is the real mechanism.
 $MemeEvery = 1
 
-# Being @-ed is a direct question, not ambient chatter, so it must not compete
-# with the hourly conversation budget. Fresh means "within this many minutes,
+# A mention is a candidate decision event. It does not require speech or lift
+# silence. Keep the existing separate rate limits. Fresh means "within this many minutes,
 # and after my own last line" - otherwise the same old mention would keep
 # waking her up after she already answered it.
 # Ten minutes, not three. The poll runs every 60s, but a poll can be delayed by
@@ -122,40 +129,6 @@ $mentionCapPerHour = 4
 # How long an unanswered @ stays pending. Long enough that a missed poll does not
 # lose it, short enough that a day-old mention does not resurrect.
 $pendingMaxMin = 30
-# Fallbacks, split by what the other person actually said. A bare "zai" is fine
-# after a joke and useless after a real question, so the caller picks the bucket.
-#
-#   question -> they asked something and need a real answer
-#   remark   -> they said something; a short acknowledgement fits
-#   minimal  -> nothing better available
-$fbQuestion = @(
-  ([string][char]0x4F60 + [char]0x8BF4),                                  # ni shuo
-  ([string][char]0x554A + [char]0xFF1F),                                  # a?
-  ([string][char]0x5565 + [char]0x4E8B),                                  # sha shi
-  ([string][char]0x4EC0 + [char]0x4E48 + [char]0x95EE + [char]0x9898)     # shenme wenti
-)
-$fbRemark = @(
-  ([string][char]0x55EF),                                                 # en
-  ([string][char]0x54E6),                                                 # o
-  ([string][char]0x6B38),                                                 # ei
-  ([string][char]0x884C + [char]0x5427)                                   # xing ba
-)
-$fbMinimal = @(([string][char]0x5728))                                    # zai
-
-# Markers that mean "they asked a question". Tested against the @-message text.
-$qMarkers = @(
-  ([string][char]0xFF1F),
-  '?',
-  ([string][char]0x600E + [char]0x4E48),                                  # zenme
-  ([string][char]0x4EC0 + [char]0x4E48),                                  # shenme
-  ([string][char]0x4E3A + [char]0x4EC0 + [char]0x4E48),                   # weishenme
-  ([string][char]0x80FD + [char]0x4E0D + [char]0x80FD),                   # nengbuneng
-  ([string][char]0x662F + [char]0x4E0D + [char]0x662F),                   # shibushi
-  ([string][char]0x55CE),                                                 # ma
-  ([string][char]0x5462),                                                 # ne
-  ([string][char]0x600E + [char]0x6837)                                   # zenyang
-)
-
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
 if (Test-Path $budgetPath) {
   try {
@@ -268,10 +241,10 @@ function Write-Log([string]$m) {
 # history read fails, which looks like "she stopped posting memes" from the
 # outside.
 if (-not $GroupId) {
-  $cfgPath = Join-Path (Join-Path $workDir $dataDirName) 'lanya-config.json'
-  if (Test-Path $cfgPath) {
+  $identityConfigPath = Join-Path (Join-Path $workDir $dataDirName) 'lanya-config.json'
+  if (Test-Path $identityConfigPath) {
     try {
-      $cfg0 = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $cfg0 = Get-Content $identityConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
       if ($cfg0.fanGroup) { $GroupId = [string]$cfg0.fanGroup }
       if (-not $GroupId -and $cfg0.fanGroupQQ) { $GroupId = [string]$cfg0.fanGroupQQ }
     } catch { }
@@ -309,6 +282,7 @@ $memeRoots = @(
 )
 
 function Invoke-NapCat([string]$action, $bodyObj) {
+  Assert-QqLegacyAction $action
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)
@@ -338,7 +312,7 @@ function Invoke-NapCat([string]$action, $bodyObj) {
 # Read the child's stdout as RAW BYTES and decode them ourselves. Reading it as
 # text (ReadToEndAsync) used the console codepage and turned a UTF-8 reply into
 # mojibake on its way to QQ, so the group saw garbage instead of Chinese.
-function Ask-Agent([string]$task) {
+function Ask-Agent([string]$task, [int]$TimeoutMilliseconds = 180000) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = 'cmd.exe'
   $psi.Arguments = '/c ""' + $dsh + '" --profile headless -"'
@@ -351,16 +325,27 @@ function Ask-Agent([string]$task) {
 
   $p = [System.Diagnostics.Process]::Start($psi)
   $ms = New-Object System.IO.MemoryStream
-  $copyTask = $p.StandardOutput.BaseStream.CopyToAsync($ms)
-  $errTask = $p.StandardError.ReadToEndAsync()
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($task)
-  $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-  $p.StandardInput.BaseStream.Flush()
-  $p.StandardInput.Close()
-  if (-not $p.WaitForExit(180000)) { try { $p.Kill() } catch { } }
-  try { $copyTask.Wait(10000) | Out-Null } catch { }
-  $errTask.Wait(3000) | Out-Null
-  $raw = $ms.ToArray()
+  try {
+    $copyTask = $p.StandardOutput.BaseStream.CopyToAsync($ms)
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($task)
+    $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $p.StandardInput.BaseStream.Flush()
+    $p.StandardInput.Close()
+    if (-not $p.WaitForExit($TimeoutMilliseconds)) {
+      try { $p.Kill() } catch { }
+      throw (New-Object System.TimeoutException('Agent timed out; partial output discarded'))
+    }
+    if (-not $copyTask.Wait(10000) -or -not $errTask.Wait(3000)) {
+      throw (New-Object System.TimeoutException('Agent output did not complete'))
+    }
+    if ($p.ExitCode -ne 0) { throw 'Agent exited unsuccessfully; output discarded' }
+    $raw = $ms.ToArray()
+  }
+  finally {
+    $ms.Dispose()
+    $p.Dispose()
+  }
   if ($raw.Length -eq 0) { return '' }
   # UTF-16LE with BOM (this is what the headless profile emits)
   if ($raw.Length -ge 2 -and $raw[0] -eq 0xFF -and $raw[1] -eq 0xFE) {
@@ -501,9 +486,6 @@ while ($true) {
     # mention from one buried in the 30-message window.
     $lastMentionTime = [DateTime]::MinValue
     $lastMentionQQ = ''
-    # The text of the newest @-mention, so a fallback can tell a question from a
-    # remark instead of guessing.
-    $lastMentionText = ''
     # Per-person threads. In a busy group several conversations run at once, and
     # without this she answers one person's question to another.
     $heLast = @{}
@@ -657,7 +639,6 @@ while ($true) {
         if ($mt -gt $lastMentionTime) {
           $lastMentionTime = $mt
           $lastMentionQQ = $who
-          $lastMentionText = $rawText
         }
       }
       if ($who -eq $selfId) {
@@ -692,7 +673,25 @@ while ($true) {
         if ($speakerOrder -notcontains $who) { [void]$speakerOrder.Add($who) }
       }
     }
-    if ($lines.Count -eq 0) { Start-Sleep -Seconds $PollSeconds; continue }
+    if ($lines.Count -eq 0) {
+      if ($Once) { break }
+      Start-Sleep -Seconds $PollSeconds
+      continue
+    }
+
+    if (Test-QqUnifiedMode) {
+      # The WS owner alone records actual QQ inbound events. This producer may
+      # only offer a quiet-period observation, never answer an @ or call an LLM.
+      $lastObservedAt = 0L
+      if ($lastTime -gt [DateTime]::MinValue) {
+        $lastObservedAt = ([DateTimeOffset]$lastTime).ToUnixTimeSeconds()
+      }
+      $receipt = Submit-QqQuietObservation -GroupId $GroupId -LastMessageAt $lastObservedAt -QuietMinutes $QuietMinutes -Now ([DateTimeOffset]$now)
+      if ($receipt) { Write-Log ('quiet observation state=' + $receipt.state + '; no delivery occurred') }
+      if ($Once) { break }
+      Start-Sleep -Seconds $PollSeconds
+      continue
+    }
 
     # Per-person dossiers. Without this she treats a regular like a stranger and
     # a newcomer like an old friend - the dossiers existed but were never fed
@@ -948,15 +947,7 @@ while ($true) {
       continue
     }
     if ($outsideWindow -and $triggerKey -eq 'mention') {
-      Write-Log ('outside window (' + $hour + 'h) but addressed - answering anyway')
-    }
-
-    # Was the @-mention a question? Decides which fallback bucket is appropriate.
-    $isQuestion = $false
-    if ($lastMentionText) {
-      foreach ($qm in $qMarkers) {
-        if ($lastMentionText.Contains($qm)) { $isQuestion = $true; break }
-      }
+      Write-Log ('outside window (' + $hour + 'h) but addressed - evaluating the mention')
     }
 
     # Remember the unanswered @ so a failed attempt does not lose it.
@@ -1088,8 +1079,8 @@ while ($true) {
 
     $triggerText = if ($triggerKey -eq 'mention') {
       'SOMEONE @-ED YOU ' + [math]::Round(($now - $lastMentionTime).TotalMinutes,1) +
-      ' minutes ago and is waiting for your answer. Reply to them. Do not go SILENT, ' +
-      'do not change the subject, do not answer someone else - answer the person who @-ed you.'
+      ' minutes ago. This is a candidate event, not an obligation to answer. ' +
+      'Decide SPEAK or SILENT from the current conversation; an @ does not lift silence.'
     }
     elseif ($triggerKey -eq 'quiet') {
       'group has been silent for ' + [math]::Round($idleMin,0) + ' minutes - you may start a topic'
@@ -1169,111 +1160,22 @@ while ($true) {
   Replace('{{CHAR_NAME}}', $dataDirName)
 
     Write-Log ('asking agent: trigger=' + $triggerKey + ' idle=' + [math]::Round($idleMin,1) + 'min sinceMine=' + [math]::Round($sinceMine,1) + 'min sent2h=' + $perHour)
-    $answer = (Ask-Agent $task).Trim()
-
-    # NOTE: wrap in @() - a single-line answer makes -split return a bare string,
-    # and then $rows[0] is a [char] (no .Trim()), which threw here before.
-    $rows = @($answer -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
-    $verdict = if ($rows.Count -gt 0) { $rows[0].Trim().ToUpper() } else { '' }
-    Write-Log ('verdict=' + $verdict)
-
-    # A direct @ is a question. Silence is not an acceptable answer to it, so ask
-    # the model once more with the instruction spelled out, and if it still
-    # refuses, reply anyway with something minimal.
-    #
-    # The prompt already forbade this (checked: {{TRIGGER}} says "Do not go
-    # SILENT"), and the model still returned SILENT - which is why people were
-    # being ignored after being @-ed.
-    if ($triggerKey -eq 'mention' -and $verdict -notlike 'SPEAK*') {
-      Write-Log ('mention but agent said [' + $verdict + '] - retrying with an explicit order')
-      # Second attempt uses a much smaller task, not the full prompt again.
-      # The model already declined the long version once; asking the same thing
-      # louder does not work. Strip it down to: who, what they said, answer them.
-      $retryTask = ''
-      $retryTask += 'Someone in a QQ group @-ed you and is waiting. Answer them.' + "`n`n"
-      if ($lastMentionQQ) {
-        $retryTask += ('Their QQ: ' + $lastMentionQQ) + "`n"
-        $rn = ''
-        foreach ($mid in $msgNick.Keys) {
-          if ($msgOwner[$mid] -eq [string]$lastMentionQQ) { $rn = $msgNick[$mid]; break }
-        }
-        if ($rn) { $retryTask += ('Their name: ' + $rn) + "`n" }
-      }
-      if ($lastMentionText) {
-        $retryTask += ('What they said: ' + $lastMentionText) + "`n"
-      }
-      $retryTask += "`n"
-      $retryTask += ('You are ' + [string]$dataDirName + ', a 20-year-old in a group chat. ' +
-        'Reply the way you type on a phone: one short line, no pleasantries, no brackets, no stage directions.') + "`n"
-      $retryTask += "`n"
-      $retryTask += 'Output exactly two lines:'
-      $retryTask += "`n"
-      $retryTask += 'SPEAK'
-      $retryTask += "`n"
-      $retryTask += '<your one-line reply>'
-      $answer = (Ask-Agent $retryTask).Trim()
-      $rows = @($answer -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
-      $verdict = if ($rows.Count -gt 0) { $rows[0].Trim().ToUpper() } else { '' }
-      Write-Log ('retry verdict=' + $verdict)
-      if ($verdict -notlike 'SPEAK*') {
-        # Still nothing usable. Say something short rather than leaving them on read.
-        if ($isQuestion) { $pick = $fbQuestion | Get-Random }
-        elseif ($lastMentionText) { $pick = $fbRemark | Get-Random }
-        else { $pick = $fbMinimal | Get-Random }
-        $rows = @('SPEAK', $pick)
-        $verdict = 'SPEAK'
-        Write-Log 'retry failed - using a fallback line'
-      }
-    }
-
-    if ($verdict -notlike 'SPEAK*') {
-      Write-Log 'SILENT - staying quiet'
+    $decision = Get-QqReplyDecision -Task $task -Ask { param($prompt) Ask-Agent $prompt }
+    Write-Log ('decision=' + $decision.Action + ' reason=' + $decision.Reason + ' error=' + $decision.ErrorType)
+    if ($decision.Action -cne 'SPEAK') {
+      # SILENT and failed/invalid decisions authorize neither text nor images.
+      # Do not ask again, acknowledge silence or invent a fallback line.
+      Save-State
       if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
     }
-
-    $reply = if ($rows.Count -ge 2) { $rows[1].Trim() } else { ($rows[0] -replace '^SPEAK[:\s]*', '').Trim() }
-    if ($reply -eq '' -and $triggerKey -eq 'mention') {
-      if ($isQuestion) { $reply = $fbQuestion | Get-Random }
-      else { $reply = $fbRemark | Get-Random }
-      Write-Log ('SPEAK with an empty line on a mention - using a fallback line')
-    }
-    if ($reply -eq '') { Write-Log 'SPEAK but empty line; skip'; if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break } }
-
-    # Guard: never post a stage direction.
-    #
-    # She started emitting parentheticals instead of just not replying.
-    # as her way of saying she would not join in. That is a note to herself, not
-    # something a person says out loud, and it reads bizarrely in a group. The
-    # prompt now forbids it; this is the belt-and-braces check.
-    #
-    # The full-width brackets are built from code points on purpose: PowerShell 5.1
-    # reads this file as ANSI/GBK, so literal U+FF08/U+FF09/U+3010/U+3011 bytes
-    # decode to the wrong characters and the pattern would silently never match.
-    $open  = '[' + ([char]0xFF08) + '(' + '\[' + ([char]0x3010) + ']'
-    $close = '[' + ([char]0xFF09) + ')' + '\]' + ([char]0x3011) + ']'
-    $stageRe = '^\s*' + $open + '.*' + $close + '\s*$'
-    if ($reply -match $stageRe) {
-      Write-Log ('suppressed stage-direction reply: ' + $reply)
-      if ($triggerKey -eq 'mention') {
-        if ($isQuestion) { $reply = $fbQuestion | Get-Random }
-      else { $reply = $fbRemark | Get-Random }
-        Write-Log 'mention + stage direction - using a fallback line'
-      }
-      else {
-        if (-not $Once) { Start-Sleep -Seconds $PollSeconds; continue } else { break }
-      }
-    }
+    $reply = $decision.Text
 
     # Optional third line "IMG <mood>" asks for a meme picked at random from that
     # mood folder. The model only chooses the mood; the file choice is random here
     # so the same shot does not repeat.
     $imgPath = $null
-    if ($rows.Count -ge 3 -and $rows[2].Trim() -and
-        $rows[2] -notmatch '^\s*IMG\s+([a-z0-9_-]+)\s*$') {
-      Write-Log ('third line present but not a valid IMG directive: ' + $rows[2].Trim().Substring(0, [Math]::Min(40, $rows[2].Trim().Length)))
-    }
-    if ($rows.Count -ge 3 -and $rows[2] -match '^\s*IMG\s+([a-z0-9_-]+)\s*$') {
-      $mood = $Matches[1].ToLower()
+    if ($decision.ImageTag) {
+      $mood = $decision.ImageTag.ToLower()
       # The prompt lists the real folder names, but the model invents its own
       # sometimes ("see", "baka", "sigh") and then nothing matches and she sends
       # no picture at all. Map the near misses onto a folder that exists.

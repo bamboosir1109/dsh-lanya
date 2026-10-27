@@ -25,7 +25,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$root  = '<WORKDIR>\napcat'
+$root = $PSScriptRoot
+if ($env:LANYA_WORKDIR) { $root = Join-Path $env:LANYA_WORKDIR 'napcat' }
 $logPath = Join-Path $root 'lanya-supervisor.log'
 $py = 'python'
 $ps = 'powershell.exe'
@@ -54,7 +55,7 @@ $jobs = @(
   # Her planning loop. This is what replaced lifeloop's random wake-up timer:
   # she now keeps a plan across rounds and revises it when somebody talks to
   # her. Runs every few minutes; the actual spacing comes from her own ETA.
-  @{ n = 'mind';        m = 4;     exe = $py; args = @((Join-Path $root 'mind.py')) },
+  @{ n = 'mind';        m = 1;     exe = $py; args = @((Join-Path $root 'mind.py')) },
   @{ n = 'bili';        m = 180;   exe = $py; args = @((Join-Path $root 'bili_onerun.py'), '--mention') },
   @{ n = 'bili-social'; m = 90;    exe = $py; args = @((Join-Path $root 'bili_social.py'), '--max=3') },
   @{ n = 'patchcheck'; m = 1440;   exe = $ps; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', (Join-Path $root 'check-patches.ps1')) }
@@ -79,12 +80,41 @@ if ($List) {
 
 if ($jobs.Count -eq 0) { Write-Sup 'no jobs available'; exit 1 }
 
+# A second supervisor must not start a second set of timers.
+try {
+  $supervisorLock = [IO.File]::Open((Join-Path $root 'lanya-supervisor.lock'),
+    [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  if ($supervisorLock.SafeFileHandle.IsInvalid) { throw 'Cannot hold supervisor lock' }
+} catch {
+  Write-Output 'supervisor already running'
+  exit 0
+}
+
+function Test-PluginOwnsJob([string]$jobName) {
+  $marker = Join-Path $root 'scheduler-in-plugin.flag'
+  try {
+    if (-not (Test-Path -LiteralPath $marker)) { return $false }
+    if (((Get-Date) - (Get-Item -LiteralPath $marker).LastWriteTime).TotalSeconds -gt 120) { return $false }
+    $lease = Get-Content -LiteralPath $marker -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($lease.version -ne 2 -or -not $lease.pid -or -not ($lease.jobs -contains $jobName)) { return $false }
+    return ($null -ne (Get-Process -Id $lease.pid -ErrorAction SilentlyContinue))
+  } catch { return $false }
+}
+
 Write-Sup ('supervisor start: ' + $jobs.Count + ' jobs')
 
 $last = @{}
 foreach ($j in $jobs) { $last[$j.n] = [datetime]::MinValue }
 
 function Invoke-Job($j) {
+  if (Test-PluginOwnsJob $j.n) { return }
+  if ($j.n -eq 'budget') {
+    $standalone = Get-ScheduledTask -TaskName 'DSH-Lanya-Budget' -ErrorAction SilentlyContinue
+    if ($standalone -and $standalone.State -ne 'Disabled') {
+      $budgetScript = Join-Path $root 'budget.ps1'
+      if (@($standalone.Actions | Where-Object { $_.Arguments -like ('*' + $budgetScript + '*') }).Count -gt 0) { return }
+    }
+  }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   try {
     # Quote every argument that contains a space. Passing the array straight to

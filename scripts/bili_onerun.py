@@ -23,12 +23,13 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from bili_mcp import BiliMCP
+from bili_mcp import BiliMCP, VENV_PY
+from project_conf import data_dir, work_dir
 
-WORK = os.path.dirname(HERE)
+WORK = work_dir()
 SEEN = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty", "seen.md")
 PERSONA_FILE = os.path.join(WORK, "napcat", "persona.md")
-LANYA_DIR = os.path.join(WORK, "\u5c9a\u5a05")
+LANYA_DIR = data_dir()
 INTEREST_FILE = os.path.join(LANYA_DIR, "bili-interests.json")
 CHAT_DIR = os.path.join(LANYA_DIR, "chats")
 CONFIG_FILE = os.path.join(LANYA_DIR, "lanya-config.json")
@@ -186,7 +187,9 @@ def watch_frames(bvid, every=0, max_frames=36):
                           "bili_watch.py")
     if not os.path.isfile(script):
         return [], "bili_watch.py missing"
-    args = [sys.executable, script, bvid, "--max=36"]
+    python = VENV_PY if os.path.isfile(VENV_PY) else sys.executable
+    args = [python, script, bvid,
+            "--max=%d" % max(1, min(60, int(max_frames)))]
     if every:
         args.append("--every=%d" % every)
     try:
@@ -485,6 +488,10 @@ def _content_of(m, bv):
 # 跑一轮
 # ---------------------------------------------------------------------------
 def run_one(do_comment=True, mention=False):
+    from decision_events import unified_decisions_enabled
+    if unified_decisions_enabled():
+        from autonomy_observers import entertainment_review
+        return entertainment_review(do_comment=do_comment, mention=mention)
     result = {"ok": False, "step": "", "error": ""}
     already = seen_bvs()
     comment = ""
