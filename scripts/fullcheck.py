@@ -51,7 +51,7 @@ PLACEHOLDER = re.compile(
     r"=\s*['\"](YOUR_[A-Z_]+|BOT_QQ|PLACEHOLDER|<[A-Z_]+>)['\"]")
 # 真实业务标识（线上文件里出现是正常的，仓库里出现是泄露）
 REAL_ID = re.compile(r"\b(?:YOUR_ADMIN_QQ|YOUR_ADMIN_QQ|BOT_QQ|YOUR_GROUP_ID|"
-                     r"3253570774|FRIEND_QQ)\b")
+                     r"AVOIDED_QQ|FRIEND_QQ)\b")
 AUTOVARS = ("args", "input", "this", "matches", "error", "host", "pwd")
 # 这几个前缀的变量是 PowerShell/DSH 自己的，不要算死变量
 IGNORE_VARS = {"root", "workDir", "here", "PSScriptRoot", "PSCommandPath",
