@@ -1,0 +1,20 @@
+{
+  "source": "https://registry.npmjs.org/dsh-onebot-qq/0.8.1",
+  "tarball_sha256": "1d14df9dbad9c01eff8acc5b7104b8f52ad50bd58b5f4e070b7fa0b8dbbbc4e4",
+  "license": "BSD-3-Clause",
+  "files": {
+    "lib/bridge.js": "7420ae1b947b826f756290c2cc5ed32a892dce590b9a426162d58bfc4034c873",
+    "lib/outbound.js": "576ad56d13b89a15a01032695092f444d37c6d54aaf72fd51420cdefe2e22b9d",
+    "lib/inbound.js": "6a46071d7149230802787c79a666e63cdba4f033e47e4ce643cc27738b12240e",
+    "lib/tools.js": "6ba93c708119ecd62164ac8634273b64fb8ca8970124054b614da0ebfb221e1e",
+    "lib/prompt.js": "e7fd1d51bdeafed4bf98b3a110d7d87b73973adbc06f177937d4493f385241ad",
+    "lib/replay.js": "73f0c8f0241c5943b578e772a4814a0c9b257881c1400a6ec87d00960e2d7cef",
+    "lib/split.js": "b0abd196fda7252197c1ba8e96638d7bfcfc09ba615431e0ecbcfe99e1be8bec",
+    "lib/chat.js": "7f619081c3bd59fcf9a819cb27d1f29085891bfd190f1f76efa609c266d873ce",
+    "lib/cq.js": "5f325388919788d042793853e71aad6eb872e87b5236c9e19aa05a395a883e98",
+    "lib/registry.js": "0688d2d536fe0b3adb4675b3854245fac1e5061a799d8a79344c2b2264561d3c",
+    "lib/interim.js": "5a7e56739039584a4bd6f03719dfd9c57703e8fb13f0774ee023aa8fdf6d28ef",
+    "LICENSE": "d29575c8c48fd56e0de6cf59ce70c49cb25ccd24cae34767c04c64c6f730e8bb",
+    "package.json": "67f4095b56d5da9ca1ecfb130f70cf9700309183f0855a7325d285a4b5ef2f93"
+  }
+}

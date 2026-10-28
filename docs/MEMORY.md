@@ -30,6 +30,16 @@ python -B scripts/memory_native_history.py --db ABSOLUTE_PRIVATE_DB --restore BA
 
 ## 当前行为
 
+### 会话原文与长期事实分开核验
+
+`memory_recall` 的历史会话分支与 entries 长期事实查询是两个入口。原 memento 0.5.23 的历史分支只按目录和时间筛会话，不能由此证明同目录下不同聊天或 preset 的原文隔离；事实库的范围过滤也不能替它提供证明。
+
+独立 `patch_memento_recall_scope.py` 在可见性和原生历史补丁之后应用。模型参数不能选择历史 owner：执行入口在任何异步调用前冻结可信当前 session ID、绝对 cwd 与 preset；session ID 或绝对 cwd 缺失时不调用 session-query。宿主未指定 preset 时保留其空共享键，但仍要求精确 session ID。候选 header 和读取结果的 header 都须匹配同一 ID、规范目录与 preset，才提取本逻辑会话的原文。父会话继承前缀按实际事件条数排除，命中数与片段只从当前会话事件重新计算；不会用继承片段的命中数声称当前会话有结果。
+
+现有 session-query 和 OneBot 创建元数据没有可证明的跨 session 聊天归属，因此此层不按目录、名称或 ID 前缀猜测旧聊天。跨 session 原文召回需要另接可信聊天 registry；缺少 `inheritedEventCount` 的旧查询服务也不给历史原文。长期 entries 的合法共享范围、事实查询、历史归档和恢复保持各自语义，不将这项限制扩展成禁用长期记忆。安装与撤回见 [维护](MAINTENANCE.md#原生会话历史范围补丁)。
+
+### 机械维护与无损压缩
+
 `scripts/memory_plastic.py` 提供下面的本地维护与压缩操作。相似度只在相同 track、scope、workspace_key、agent_key 内组织候选，不能证明不同事实可互相替代。普通事实、视频和混合候选统一生成 `dsh-memory-capsule/v1` 派生胶囊，不再保留最新一条来替代其他正文，也不截短标题或丢弃混合组中的普通事实。
 
 胶囊是有界的无损文本封套：首行为 `dsh-memory-capsule/v1`，每个不同正文之前保存单行 JSON header，包含正文 UTF-8 字节数、SHA256 和原 ID、时间、版本、来源及其余 SQL 元数据映射。header 换行后直接存连续的原文正文，再跟一个换行；读取按字节数划分，因此正文里的多行、引号或伪 header 不会改变对应关系。完全同文只存一份正文，各原条目的元数据仍分别保留。原文不作 JSON 转义，原生 memento 的 SQL 子串查询也能命中原句。

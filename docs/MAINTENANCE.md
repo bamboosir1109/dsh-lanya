@@ -145,7 +145,7 @@ python -B scripts/patch_bili_main_agent.py --plugin-dir ABSOLUTE_BILI_PACKAGE --
 
 ## 原生 memento 历史补丁
 
-`scripts/patch_memento_history.py` 针对已审阅的 memento 0.5.23 generic store/protocol 及依赖哈希。顺序是先应用可见性补丁，再预览原生历史补丁；撤回必须先历史、后可见性。未知形状或不完整补丁会拒绝，不整包替换、不访问记忆库。测试用原生代码保留 Apache-2.0 LICENSE 和第三方声明。
+`scripts/patch_memento_history.py` 针对已审阅的 memento 0.5.23 generic store/protocol 及依赖哈希。顺序是先应用可见性补丁，再预览原生历史补丁；撤回必须先移除后加的会话范围层，再历史、后可见性。未知形状或不完整补丁会拒绝，不整包替换、不访问记忆库。测试用原生代码保留 Apache-2.0 LICENSE 和第三方声明。
 
 ```powershell
 # 对已完成 visibility 补丁的包预览
@@ -161,6 +161,24 @@ python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKA
 
 两个补丁共享 OS 文件锁，排除同时操作同一包的维护进程；锁文件保留，不按 PID/时间删除。host-stopped 仍是操作者断言。应用保存完整私有原件，以新 inode 替换文件，保护共享 HardLink 源。多文件应用不是整批原子操作；中断后使用其 prepared manifest 重新预检，已知 before/after 的部分状态可恢复，任何后续编辑先整批拒绝。程序撤回保留数据库及全部 native history，不自动恢复事实；事实恢复单独按 [MEMORY](MEMORY.md#原生历史恢复) 执行。
 
+## 原生会话历史范围补丁
+
+`scripts/patch_memento_recall_scope.py` 是 memento 0.5.23 的独立增量层。它要求可见性与原生事实历史两层已完整匹配，只改 `index.mjs` 并新增 `lib/lanya-memento-recall-scope.mjs`，不访问事实库或真实会话服务。缺少可信当前 session/cwd、preset 不一致或继承边界无效时，历史原文不返回；长期事实查询不受此限制，详见 [MEMORY](MEMORY.md#会话原文与长期事实分开核验)。
+
+```powershell
+# 只读预览；未知版本、旧层变化或后续修改拒绝
+python -B scripts/patch_memento_recall_scope.py --package-root ABSOLUTE_MEMENTO_PACKAGE
+
+# 停止对应宿主，核对新的 preview fingerprint 后执行
+python -B scripts/patch_memento_recall_scope.py --package-root ABSOLUTE_MEMENTO_PACKAGE --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 撤回顺序：本范围层 → 原生事实历史层 → 可见性层
+python -B scripts/patch_memento_recall_scope.py --package-root ABSOLUTE_MEMENTO_PACKAGE --restore-manifest ABSOLUTE_RECALL_SCOPE_PATCH_JSON
+python -B scripts/patch_memento_recall_scope.py --package-root ABSOLUTE_MEMENTO_PACKAGE --restore-manifest ABSOLUTE_RECALL_SCOPE_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+同包共享 OS 锁；保存完整私有原件、生成模块与 prepared manifest，新 inode 替换保护 HardLink 源。中断后先按 prepared manifest 做整批恢复预检，不假定多文件替换原子完成，不覆盖后续修改或回滚记忆数据。`--host-stopped` 只声明对应宿主已停，不表示其他面板或数据库 writer 都已停止。
+
 ## OneBot 离线 replay 隔离补丁
 
 `scripts/patch_onebot_replay.py` 是 `lanya-onebot-replay-isolation-v1` 独立增量层，针对已完成 policy V1 的已审阅 OneBot 0.8.1。它校验原 V1 私有 manifest、原件、安装 marker、生成模块和当前文件身份，只修改 `lib/bridge.js`、`lib/replay.js`、`lib/inbound.js`，不改原 V1 marker。未知版本、后续修改、生成模块漂移或不完整状态先拒绝。
@@ -172,7 +190,7 @@ python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --
 # 停止对应宿主后，使用刚取得的指纹和新的私有备份目录
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --policy-manifest ABSOLUTE_POLICY_V1_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
 
-# 先撤 replay 增量层：预检后显式执行；其后才可撤原 policy V1
+# 若存在内容出口层，先撤该层；然后撤 replay，最后才可撤原 policy V1
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
 ```
@@ -180,6 +198,26 @@ python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --
 `--host-stopped` 是操作者断言；工具不启动或停止宿主。私有备份不得放进公开源码或安装包。应用和恢复使用包内 OS 文件锁、全批预检、逐项身份重查与最终整批读回；新 inode 替换切断 HardLink。多文件写入不是整批原子事务，中断时保留 prepared manifest 和完整原件；用该层自己的 `--restore-manifest` 预检已知 before/after 的部分状态，任何未知后续修改都拒绝覆盖。锁文件保留，不按 PID 或时间删除。恢复只改程序及该层 marker，不读取或删除生产 policy、队列、会话与记忆。
 
 隔离后的 replay 保留操作员明确选择的录制输入与报告输出；这两条路径仍是显式文件操作，勿指向生产状态文件。bridge 构造前改用新建临时目录，不读默认 policy 配置、不认领 inbox、不调用记忆/能力 helper，不下载媒体或写本机跨聊日志。录制 agent 只记录 followup；真实注入仍标记为非 live，不借诊断入口取得控制权限。离线回放通过只证明解析与隔离，不能替代已加载主 agent 的真实静默/恢复验收。测试中的原 replay 模块保留原包 BSD 3-Clause LICENSE。
+
+## OneBot 内容出口补丁
+
+`scripts/patch_onebot_egress.py` 是 OneBot 0.8.1 的独立增量层，要求 policy V1 与 replay 隔离层的私有 manifest、原件、安装 marker 和当前文件一致。它修改 `lib/bridge.js`、`lib/outbound.js`、`lib/lanya-policy-adapter.js`，新增 `lib/lanya-qq-egress.js`，不改旧层的源码或 marker。未知版本、父层变化和不完整状态拒绝。
+
+```powershell
+# 默认只预览；使用上一层 replay 的私有 patch.json
+python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --replay-manifest ABSOLUTE_REPLAY_PATCH_JSON
+
+# 对应宿主停止后，绑定本次指纹和新的私有备份目录
+python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --replay-manifest ABSOLUTE_REPLAY_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 撤回顺序：内容出口层 → replay 隔离层 → policy V1
+python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_EGRESS_PATCH_JSON
+python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_EGRESS_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+普通消息、媒体说明和原始消息调用在最终出口校验相同的内容规则。普通叙述气泡最多 40 个 Unicode 字素，不拼接溢出内容，不用假图片文字占位；代码、完整链接、错误和明确步骤保留完整。角色扮演例外仅来自当前可信实时入站中的明确邀请，引用、旧历史或模型参数不能授予例外，详见 [决策协议](DECISIONS.md#qq-内容与许可分别校验)。
+
+内容清理不授予发送许可。每个分段仍绑定原 turn/ticket 并重新校验；静默或版本变化停止余段，部分发送与未知结果分别保留，未知结果不自动重发。补丁器沿用包内 OS 锁、全批预检、新 inode 替换、私有原件与 prepared manifest；中断后按该层记录预检恢复，不覆盖后续编辑或回滚生产 policy、队列及记忆。`--host-stopped` 不表示所有工作区 writer 都已停止。测试中的上游原生代码保留 BSD 3-Clause LICENSE 与来源哈希。
 
 ## 提交与隐私
 

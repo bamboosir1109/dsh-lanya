@@ -56,6 +56,16 @@ class PackageTests(unittest.TestCase):
             "tests/fixtures/onebot_replay/lib/replay.js",
             "tests/fixtures/onebot_replay/run-case.mjs",
             "tests/fixtures/onebot_replay/LICENSE",
+            "scripts/patch_memento_recall_scope.py", "plugin/lib/memento-recall-scope.mjs",
+            "scripts/patch_onebot_egress.py", "plugin/lib/qq-egress.js",
+            "tests/fixtures/memento_native_0_5_23/index.mjs",
+            "tests/fixtures/memento_native_0_5_23/lib/extract.mjs",
+            "tests/fixtures/onebot_egress/lib/bridge.js",
+            "tests/fixtures/onebot_egress/lib/inbound.js",
+            "tests/fixtures/onebot_egress/lib/outbound.js",
+            "tests/fixtures/onebot_egress/native-host.mjs",
+            "tests/fixtures/onebot_egress/provenance.json",
+            "tests/fixtures/onebot_egress/LICENSE",
         }
         self.assertFalse(required - paths, "Missing packaged runtime files: " + repr(required - paths))
         self.assertNotIn("docs/cordis.patch.yml", paths)

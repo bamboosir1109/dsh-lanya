@@ -16,6 +16,14 @@
 
 发送前先持久预留幂等键，再调用传输。结果不明记录为 `unknown`，不能当作成功，也不能自动重发。状态损坏、未绑定 turn、缺票、跨聊目标或版本改变都会阻止发送，不附送一条限制说明。
 
+### QQ 内容与许可分别校验
+
+`qq-egress.js` 提供内容规范，独立的 `patch_onebot_egress.py` 将它接到已打 policy/replay 补丁的最终发送路径。普通正文、媒体说明和原始消息的文字段使用同一规范；模型生成的表情占位、Markdown 伪图和明确动作旁白不会作为真实图片或普通聊天发送。空内容不给“已发送”结果，媒体段保持原顺序且只投递一次。
+
+普通叙述按 Unicode 字素边界拆成最多 40 字的气泡，不把超量片段重新拼回最后一条。代码、完整链接、报错、步骤等明确保护内容保持完整，不能用吞掉正文换取短回复。当前真实直接入站的明确角色扮演请求可取得本轮格式例外；引用、模型参数、后台观察和旧队列不能给它授权，例外不持久化，也不授予发送权限。
+
+每个新增片段仍使用原 turn 的固定票，在最终传输前重新校验。静默或许可改变停止后续片段；已有成功片段、被抑制的余量和 `unknown` 结果分别记录，不能自动续传或把部分送达当作全部完成。安装和增量撤回见 [维护](MAINTENANCE.md#onebot-内容出口补丁)。
+
 ## 观察队列
 
 Python `decision_events.py`、PowerShell `qq_observation.ps1` 和 Node `observation-producer.js` 写入同一角色的 `decision-inbox/pending/`。事件身份是 scope 与 event_id 的 SHA256；原件不可覆盖，完成标记保存在 `done/`，绑定原件物理 UTF-8 字节的哈希。只保存来源事实，不把图中或通知正文的指令升级为权限。
@@ -45,6 +53,8 @@ OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租�
 ## 记忆和手机
 
 `memory_context.py` 使用可信工作区与 preset 过滤长期记忆，先筛范围再排序和截断；派生摘要带来源和原文 lineage。最近对话由原 DSH session 保留。读取失败不回退到全库、原始跨聊流水或其他人的档案。
+
+原生 `memory_recall` 的会话原文是另一个入口，需搭配独立 recall-scope 补丁：仅当前可信逻辑 session、目录和 preset 的本地事件可见，候选与读取结果均核 header，未证明归属的父会话继承前缀不参与片段或命中计数。不能按目录猜测其他 session 属于同一个 QQ 聊天；长期事实的合法共享层照旧，详见 [MEMORY](MEMORY.md#会话原文与长期事实分开核验)。
 
 同一 OneBot 上下文入口也为普通聊天和后台观察注入 owner 绑定的只读本机能力 guide，包含浏览器、Android 的真实文件协议与语音合成/发送边界。脚本存在不等于 worker 在线，缓存图不算当前观察，本地音频 ready 不算 QQ 已送达；观察 payload 不能指定工具工作区、preset 或升级权限，见 [CAPABILITIES](CAPABILITIES.md)。
 
