@@ -22,6 +22,70 @@ test('ordinary inline actions/placeholders disappear, ordinary parentheses remai
   assert.equal(cleanText('给你看![图](x.png)'), '给你看')
 })
 
+test('complete inline images consume balanced or escaped destinations and optional titles only', () => {
+  const images = [
+    '![图](https://example.invalid/a_(b).png)',
+    '![图](https://example.invalid/a_(b_(c)).png "图 (标题)")',
+    String.raw`![图](https://example.invalid/a_\(b\).png '图 \'标题\'')`,
+    String.raw`![图](a_\)b.png "图 \"标题\"")`,
+    String.raw`![图](a_(b).png (图 \(标题\)))`,
+    '![图](<https://example.invalid/a_(b).png> "标题")',
+    String.raw`![转义\]说明](a_(b).png)`,
+    '![图]()',
+  ]
+  for (const image of images) {
+    assert.equal(cleanText(image), '', image)
+    assert.equal(cleanText('前文' + image + '后文（含税）f(x)。'), '前文后文（含税）f(x)。', image)
+  }
+  assert.equal(cleanText('甲' + images[0] + '乙' + images[1] + '丙'), '甲乙丙')
+})
+
+test('image stripping preserves literal code, technical JSON, ordinary URLs and escaped image examples', () => {
+  const image = '![图](https://example.invalid/a_(b).png "标题")'
+  const inline = '`' + image + '`', fenced = '```markdown\n' + image + '\n```'
+  const tildeFenced = '~~~markdown\n' + image + '\n~~~'
+  assert.equal(cleanText(inline), inline)
+  assert.equal(cleanText(fenced), fenced)
+  assert.equal(cleanText(tildeFenced), tildeFenced)
+  assert.deepEqual(textParts(tildeFenced), [{ text: tildeFenced, verbatim: true }])
+  assert.equal(cleanText('前文' + image + inline + fenced + '后文'), '前文' + inline + fenced + '后文')
+  const data = JSON.stringify({ example: image, action: '（歪头）', meme: '[表情: 笑]' })
+  assert.equal(cleanText(data, styleFromInbound(live('请给我完整配置'))), data)
+  const url = 'https://example.invalid/a_(b).png'
+  assert.equal(cleanText('完整网址 ' + url + ' 后文（含税）'), '完整网址 ' + url + ' 后文（含税）')
+  const link = '[普通链接](' + url + ' "标题")'
+  assert.equal(cleanText(link + '后文'), link + '后文')
+  const escaped = String.raw`字面 \![图](https://example.invalid/a_(b).png)`
+  assert.equal(cleanText(escaped), escaped)
+  const urlWithMarkers = 'https://example.invalid/![literal](a_(b).png)'
+  assert.equal(cleanText(urlWithMarkers), urlWithMarkers)
+})
+
+test('incomplete image or title syntax cannot consume later prose or cross a line', () => {
+  for (const value of [
+    '前文![图](https://example.invalid/a_(b).png 后文。',
+    '前文![图](a.png "没有结束) 后文。',
+    '前文![图](a.png "标题" 真实正文)后文。',
+    String.raw`前文![图](a.png\ 后文)下一句。`,
+    '前文![图](a.png\n后文)下一句。',
+    '前文![图](a.png\\\n后文)下一句。',
+    '前文![图](a.png "标题\\\n后文")下一句。',
+  ]) assert.equal(cleanText(value), value)
+})
+
+test('balanced pseudo-image-only output never reaches any text-bearing QQ transport', async () => {
+  const image = '![图](https://example.invalid/a_(b).png "标题")'
+  let calls = 0
+  for (const [action, params] of [
+    ['send_msg', { user_id: 101, message: image }],
+    ['send_group_ai_record', { group_id: 101, text: image, character: 'synthetic' }],
+  ]) await assert.rejects(() => dispatchEgress(action, params, NORMAL_STYLE,
+    async () => { calls++; return { message_id: 'synthetic' } }), (error) => error.status === 'suppressed')
+  assert.equal(calls, 0)
+  const plan = planEgress('send_msg', { user_id: 101, message: [text('前文' + image + '后文')] })
+  assert.equal(plan[0].params.message[0].data.text, '前文后文')
+})
+
 test('real live direct invitation only; negative, quoted, observation and arguments cannot grant RP', () => {
   assert.equal(styleFromInbound(live('我们来角色扮演，进入剧情')).roleplay, true)
   for (const input of [live('不要角色扮演'), live('这里提到了角色扮演'), live('“我们来角色扮演”是什么意思'),

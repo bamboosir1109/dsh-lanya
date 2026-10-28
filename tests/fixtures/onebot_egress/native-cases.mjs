@@ -62,6 +62,23 @@ test('native ordinary final, caption and raw terminal all share content shaping'
   assert.equal(sent[1].params.message.filter((s) => s.type === 'image').length, 1)
 })
 
+test('native balanced image links leave no path fragments in final caption or raw text', async (t) => {
+  const h = await setup(t)
+  await h.receive('聊聊天'); h.start(); await h.decide()
+  const image = '![图](https://example.invalid/a_(b).png "标题 (图)")'
+  await h.send('前文' + image + '后文')
+  await h.tools.get('qq_send_image').execute({ sources: ['https://example.invalid/real.png'], caption: '说明' + image + '结束' }, h.exec())
+  await h.raw('send_msg', { user_id: 101, message: '原始' + image + '完整' })
+  const sent = h.calls.filter((c) => c.action === 'send_msg')
+  assert.deepEqual(sent.map((c) => c.params.message.filter((s) => s.type === 'text').map((s) => s.data.text).join('')), ['前文后文', '说明结束', '原始完整'])
+  assert.equal(sent.flatMap((c) => c.params.message).filter((s) => s.type === 'image').length, 1)
+  const previousCalls = h.calls.length
+  await h.send(image)
+  assert.equal(h.calls.length, previousCalls)
+  const snapshot = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
+  assert.equal(new Set(snapshot.deliveries.map((d) => d.ticketId)).size, 1)
+})
+
 test('native long ordinary reply preserves 105 chars as 40/40/25 with one ticket', async (t) => {
   const h = await setup(t)
   await h.receive('聊聊天'); h.start(); await h.decide(); await h.send('哈'.repeat(105))

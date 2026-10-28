@@ -44,7 +44,7 @@ export function styleFromInbound(inbound) {
 // The complete protected span stays intact even when it exceeds a chat bubble.
 function spans(text, technical = false) {
   if (technical && structuredData(text)) return [{ text, protected: true }]
-  const pattern = /```[^\n]*\n[\s\S]*?(?:```|$)|```[\s\S]*?```|`[^`\n]+`|\[\[qq_forward\]\][\s\S]*?\[\[\/qq_forward\]\]|https?:\/\/[^\s<>]+/g
+  const pattern = /```[^\n]*\n[\s\S]*?(?:```|$)|```[\s\S]*?```|~~~[^\n]*\n[\s\S]*?(?:~~~|$)|`[^`\n]+`|\[\[qq_forward\]\][\s\S]*?\[\[\/qq_forward\]\]|https?:\/\/[^\s<>]+/g
   const output = []
   let at = 0
   for (const match of text.matchAll(pattern)) {
@@ -65,10 +65,94 @@ function structuredData(text) {
 }
 
 const obviousAction = /^(?:(?:轻轻|微微|慢慢|忽然|偷偷|用力|小声|默默|忍不住|笑着|有点|稍微)\s*)?(?:歪头|叹气|摇头|点头|撇嘴|眨眼|小声|偷笑|坏笑|蹭蹭|蹭你|炸毛|叉腰|扶额|摊手|抱住你|咬你|尾巴(?:摇|摇了摇|晃|晃了晃|甩|翘|垂下来)|耳朵(?:抖|抖了抖|竖起来|耷拉下来|动了动)|低下头|抬起头|凑近|笑出声)(?:了|一下|一声|起来|着|中)?[。！!~～]?$/
+
+// Return the end of a complete, single-line Markdown image. A destination may
+// contain balanced/escaped parentheses; its optional title has its own closing
+// delimiter. Incomplete syntax is left alone rather than eating later prose.
+function inlineImageEnd(text, start) {
+  let at = start + 2, brackets = 1
+  for (; at < text.length; at++) {
+    const char = text[at]
+    if (char === '\n' || char === '\r') return null
+    if (char === '\\') {
+      if (!text[at + 1] || /[\r\n]/.test(text[at + 1])) return null
+      at++; continue
+    }
+    if (char === '[') brackets++
+    if (char === ']' && --brackets === 0) break
+  }
+  if (brackets || text[++at] !== '(') return null
+  at++
+  while (text[at] === ' ' || text[at] === '\t') at++
+  if (text[at] === '<') {
+    for (at++; at < text.length && text[at] !== '>'; at++) {
+      if (text[at] === '\n' || text[at] === '\r' || text[at] === '<') return null
+      if (text[at] === '\\') {
+        if (!text[at + 1] || /[\r\n]/.test(text[at + 1])) return null
+        at++
+      }
+    }
+    if (text[at++] !== '>') return null
+  } else {
+    let parentheses = 0
+    for (; at < text.length; at++) {
+      const char = text[at]
+      if (char === '\n' || char === '\r') return null
+      if (char === '\\') {
+        if (!text[at + 1] || /\s/u.test(text[at + 1])) return null
+        at++; continue
+      }
+      if (char === '(') parentheses++
+      else if (char === ')') {
+        if (!parentheses) return at + 1
+        parentheses--
+      } else if (/\s/u.test(char)) {
+        if (parentheses) return null
+        break
+      }
+    }
+    if (parentheses) return null
+  }
+  const separator = at
+  while (text[at] === ' ' || text[at] === '\t') at++
+  if (text[at] === ')') return at + 1
+  const opener = text[at], closer = opener === '(' ? ')' : opener
+  if (at === separator || !['"', "'", '('].includes(opener)) return null
+  for (at++; at < text.length; at++) {
+    const char = text[at]
+    if (char === '\n' || char === '\r' || (opener === '(' && char === '(')) return null
+    if (char === '\\') {
+      if (!text[at + 1] || /[\r\n]/.test(text[at + 1])) return null
+      at++; continue
+    }
+    if (char === closer) break
+  }
+  if (text[at++] !== closer) return null
+  while (text[at] === ' ' || text[at] === '\t') at++
+  return text[at] === ')' ? at + 1 : null
+}
+
+function withoutInlineImages(text) {
+  // Recognize code and ordinary URLs first, so literal image examples and URL
+  // paths remain intact. A complete image is consumed before its inner URL.
+  const tokens = /```[^\n]*\n[\s\S]*?(?:```|$)|```[\s\S]*?```|~~~[^\n]*\n[\s\S]*?(?:~~~|$)|`[^`\n]+`|https?:\/\/[^\s<>]+|!\[/g
+  const output = []
+  let from = 0, match
+  while ((match = tokens.exec(text))) {
+    if (match[0] !== '![') continue
+    let slashes = 0
+    for (let at = match.index - 1; at >= 0 && text[at] === '\\'; at--) slashes++
+    if (slashes % 2) continue
+    const end = inlineImageEnd(text, match.index)
+    if (end === null) continue
+    output.push(text.slice(from, match.index))
+    from = tokens.lastIndex = end
+  }
+  return output.join('') + text.slice(from)
+}
+
 function cleanProse(text, style) {
-  // A Markdown image is an unsupported request, never a fake "[图片]" result.
-  let result = text.replace(/!\[[^\]\n]*\]\([^\n]*?\)/g, '')
-    .replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
+  let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
     result = result.replace(/[（(]([^（）()\n]{1,40})[）)]/g, (whole, action) => obviousAction.test(action.trim()) ? '' : whole)
       .replace(/\*([^*\n]{1,40})\*/g, (whole, action) => obviousAction.test(action.trim()) ? '' : whole)
@@ -86,8 +170,7 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (typeof value !== 'string') throw new TypeError('QQ text must be a string')
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
-  const withoutImages = value.replace(/```[^\n]*\n[\s\S]*?(?:```|$)|```[\s\S]*?```|`[^`\n]+`|!\[[^\]\n]*\]\([^\n]*?\)/g,
-    (token) => token.startsWith('![') ? '' : token)
+  const withoutImages = withoutInlineImages(value)
   return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
 }
 

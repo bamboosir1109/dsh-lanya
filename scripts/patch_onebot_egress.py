@@ -21,6 +21,10 @@ MARKER = '// LANYA_EGRESS_PATCH_V1\n'
 INSTALLED_MARKER = 'lib/lanya-egress.patch.json'
 TARGETS = ('lib/bridge.js', 'lib/outbound.js', 'lib/lanya-policy-adapter.js')
 GENERATED = 'lib/lanya-qq-egress.js'
+# The only pre-images canonical module reviewed for an existing V1 layer.
+# This is not a general source-drift allowance and never authorizes an upgrade.
+LEGACY_GENERATED_SHA256 = '0dbefbf80daf51734689906d81062cf82c2cabe24f29c986e58b8e2544ddeec1'
+IMAGES_MARKER = 'lib/lanya-egress-images.patch.json'
 
 
 def transform(name, raw):
@@ -165,6 +169,8 @@ def parents(plugin, replay_manifest):
 
 def inspect(plugin_dir, replay_manifest, restore_manifest=None):
     plugin = ordinary_path(plugin_dir)
+    if os.path.lexists(ordinary_path(plugin / IMAGES_MARKER)):
+        raise PatchError('Restore the independent egress-images layer before egress V1')
     base, expected, parent, watched, installed = parents(plugin, replay_manifest)
     source, sig = read_regular(REPO / 'plugin/lib/qq-egress.js')
     watched[str(REPO / 'plugin/lib/qq-egress.js')] = dict(sha256=sha256(source), signature=sig)
@@ -205,12 +211,26 @@ def inspect(plugin_dir, replay_manifest, restore_manifest=None):
     outputs[GENERATED] = source
     before = {name: sha256(raw) for name, (raw, _) in originals.items()}
     after = {name: sha256(raw) for name, raw in outputs.items()}
+    generated = ordinary_path(plugin / GENERATED)
+    if record and record['after'][GENERATED] != after[GENERATED]:
+        if record['after'][GENERATED] != LEGACY_GENERATED_SHA256:
+            raise PatchError('Unknown recorded egress module source drift')
+        # A complete old layer is inspected against its exact installed bytes.
+        # An interrupted layer may have no generated file; explicit restore
+        # needs only its pinned digest, never a fabricated/recreated old module.
+        if os.path.lexists(generated):
+            legacy, _ = read_regular(generated)
+            if sha256(legacy) != LEGACY_GENERATED_SHA256:
+                raise PatchError('Unknown/later generated egress module')
+            outputs[GENERATED] = legacy
+        else:
+            outputs.pop(GENERATED)
+        after[GENERATED] = LEGACY_GENERATED_SHA256
     if record and (record['before'] != before or record['after'] != after):
         raise PatchError('Egress source/transform differs from recorded layer')
     for name in TARGETS:
         if sha256(installed[name][0]) not in (before[name], after[name]):
             raise PatchError('Later/unknown egress target change')
-    generated = ordinary_path(plugin / GENERATED)
     if os.path.lexists(generated):
         meta = identity(generated)
         if record is None or meta['sha256'] != after[GENERATED]:

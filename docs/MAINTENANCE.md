@@ -190,7 +190,7 @@ python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --
 # 停止对应宿主后，使用刚取得的指纹和新的私有备份目录
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --policy-manifest ABSOLUTE_POLICY_V1_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
 
-# 若存在内容出口层，先撤该层；然后撤 replay，最后才可撤原 policy V1
+# 若存在 images 层，先撤 images 与内容出口层；然后撤 replay，最后才可撤原 policy V1
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON
 python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
 ```
@@ -210,7 +210,7 @@ python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --
 # 对应宿主停止后，绑定本次指纹和新的私有备份目录
 python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --replay-manifest ABSOLUTE_REPLAY_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
 
-# 撤回顺序：内容出口层 → replay 隔离层 → policy V1
+# 若有 images 增量，先撤该层；然后：内容出口层 → replay 隔离层 → policy V1
 python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_EGRESS_PATCH_JSON
 python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_EGRESS_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
 ```
@@ -218,6 +218,26 @@ python -B scripts/patch_onebot_egress.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --
 普通消息、媒体说明和原始消息调用在最终出口校验相同的内容规则。普通叙述气泡最多 40 个 Unicode 字素，不拼接溢出内容，不用假图片文字占位；代码、完整链接、错误和明确步骤保留完整。角色扮演例外仅来自当前可信实时入站中的明确邀请，引用、旧历史或模型参数不能授予例外，详见 [决策协议](DECISIONS.md#qq-内容与许可分别校验)。
 
 内容清理不授予发送许可。每个分段仍绑定原 turn/ticket 并重新校验；静默或版本变化停止余段，部分发送与未知结果分别保留，未知结果不自动重发。补丁器沿用包内 OS 锁、全批预检、新 inode 替换、私有原件与 prepared manifest；中断后按该层记录预检恢复，不覆盖后续编辑或回滚生产 policy、队列及记忆。`--host-stopped` 不表示所有工作区 writer 都已停止。测试中的上游原生代码保留 BSD 3-Clause LICENSE 与来源哈希。
+
+## OneBot 伪图解析增量层
+
+旧内容模块遇到 URL 中的平衡圆括号会过早结束 Markdown 图片匹配，留下 `.png)` 一类尾部。修复整体移除完整单行 inline 图片，支持嵌套/转义圆括号、尖括号目标及双引号、单引号或圆括号标题；代码、可信技术上下文中的完整 JSON、普通链接和其余正文保留。未闭合、坏标题或跨行语法保守保留，不吞后续正文，也不生成假图片占位。
+
+`scripts/patch_onebot_egress_images.py` 是独立的 `lanya-onebot-egress-images-v1` 层。它绑定已审阅 egress V1 私有 manifest 及其父链，只替换 `lib/lanya-qq-egress.js`，新增 `lib/lanya-egress-images.patch.json`；旧层 marker 原样保留。旧 V1 检查只兼容明确审阅过的旧模块哈希，不接受任意漂移。新装 V1 若已记录当前 canonical 模块且没有 images 层，预览返回 `not_needed`、`applied=false`，不创建备份或 marker。
+
+```powershell
+# 默认预览；父 manifest 是现有 egress V1 的私有 patch.json
+python -B scripts/patch_onebot_egress_images.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --egress-manifest ABSOLUTE_EGRESS_PATCH_JSON
+
+# 对应宿主已停止，使用本次预览指纹及新的私有备份根
+python -B scripts/patch_onebot_egress_images.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --egress-manifest ABSOLUTE_EGRESS_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 先撤 images，再撤 egress → replay → policy；先预检，再显式执行
+python -B scripts/patch_onebot_egress_images.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_IMAGES_PATCH_JSON
+python -B scripts/patch_onebot_egress_images.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_IMAGES_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+`--host-stopped` 仍是操作者断言，不会停止进程或证明全工作区停写；应用和恢复都要 fresh 指纹。私有备份须在公开源码与安装包之外，保留原模块、哈希和本层 manifest；中断后的部分状态先按该层 manifest 预检恢复，未知父层或后续编辑拒绝覆盖。替换使用新 inode，避免改写 HardLink 共享原件。恢复仅撤本层程序与 marker，不倒回 policy、队列、会话或记忆。源码及隔离验证不代表运行实例已经升级，也不代替真实 QQ 格式或媒体验收。
 
 ## 提交与隐私
 
