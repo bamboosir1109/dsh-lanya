@@ -126,7 +126,10 @@ async def main():
     log("browserd start")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, proxy={"server": PROXY})
+        launch_options = {"headless": True}
+        if PROXY:
+            launch_options["proxy"] = {"server": PROXY}
+        browser = await p.chromium.launch(**launch_options)
         ctx = await browser.new_context(viewport=VIEWPORT, locale="zh-CN")
         page = await ctx.new_page()
 
