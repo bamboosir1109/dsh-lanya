@@ -40,6 +40,7 @@ button:disabled{opacity:.4;cursor:not-allowed}.row{display:flex;flex-wrap:wrap;g
       <label for="serial">固定设备 serial</label><input id="serial" readonly aria-label="固定设备 serial">
       <div class="row"><button id="capture" disabled>截取屏幕</button><button id="refresh">刷新状态</button></div>
       <div id="status" role="status" aria-live="polite">正在读取本地接口</div>
+      <div id="claimWait" class="meta" role="status" aria-live="polite" hidden></div>
       <div id="error" role="alert" hidden></div>
       <label for="gesture">在真实截图上操作</label>
       <select id="gesture"><option value="tap">点按</option><option value="longtap">长按</option><option value="swipe">拖动滑动</option></select>
@@ -86,6 +87,15 @@ function fail(message){
   clearFrame('离线、失败或截图已失效');
   el('status').textContent = '不可操作';
   el('error').textContent = message; el('error').hidden = false;
+}
+function showClaimWait(info){
+  const target = el('claimWait');
+  target.hidden = !info;
+  target.textContent = '';
+  if (!info) return;
+  const age = Number.isSafeInteger(info.age_seconds) && info.age_seconds >= 0
+    ? '按文件时间估算已等待 ' + info.age_seconds + ' 秒。' : '等待时长暂无法确认。';
+  target.textContent = '仍有操作结果未确认。' + age + '持续等待时，先核对设备状态。';
 }
 async function request(path, options){
   const controller = new AbortController();
@@ -145,6 +155,7 @@ async function refreshStatus(){
       state.serial = data.serial; el('serial').value = data.serial;
     }
     if (data.serial !== state.serial) throw new Error('设备 serial 已改变，请重新打开页面');
+    showClaimWait(data.claim_wait);
     if (state.seq === null && data.ok === true) {
       el('status').textContent = '点击「截取屏幕」获取新的设备画面'; controls(); return;
     }

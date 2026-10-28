@@ -52,6 +52,10 @@ class PackageTests(unittest.TestCase):
             "tests/fixtures/memento_native_0_5_23/native-tool.mjs",
             "tests/fixtures/memento_native_0_5_23/LICENSE.md",
             "tests/fixtures/memento_native_0_5_23/THIRD_PARTY_NOTICES.md",
+            "scripts/patch_onebot_replay.py",
+            "tests/fixtures/onebot_replay/lib/replay.js",
+            "tests/fixtures/onebot_replay/run-case.mjs",
+            "tests/fixtures/onebot_replay/LICENSE",
         }
         self.assertFalse(required - paths, "Missing packaged runtime files: " + repr(required - paths))
         self.assertNotIn("docs/cordis.patch.yml", paths)

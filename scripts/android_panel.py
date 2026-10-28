@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import time
 import uuid
 
@@ -99,6 +100,49 @@ class AndroidPanel:
             raise PanelAndroidError("invalid_state", "Invalid Android request sequence")
         return seq
 
+    def _claim_wait(self):
+        """Read-only queue diagnostics, never evidence of worker death or permission.
+
+        A claim keeps the queued file's mtime when renamed, so its age is only
+        approximate file waiting time, not an action start time. Do not parse
+        its contents or follow links, and never use age to discard/replay it.
+        """
+        try:
+            with os.scandir(self.directory) as entries:
+                claims = [entry for entry in entries
+                          if entry.name.startswith("cmd.claim-") and entry.name.endswith(".json")]
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return dict(present=None, count=None, age_seconds=None,
+                        detail="metadata_unavailable", result="unknown")
+        if not claims:
+            return None
+        info = dict(present=True, count=len(claims), age_seconds=None,
+                    detail="waiting", result="unknown")
+        ages = []
+        try:
+            now = self.now()
+            if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
+                info["detail"] = "clock_anomaly"
+                return info
+            for claim in claims:
+                metadata = claim.stat(follow_symlinks=False)
+                if (not stat.S_ISREG(metadata.st_mode) or
+                        getattr(metadata, "st_file_attributes", 0) & 0x400):
+                    info["detail"] = "link_or_non_regular"
+                    return info
+                age = now - metadata.st_mtime
+                if not math.isfinite(age) or age < 0:
+                    info["detail"] = "clock_anomaly"
+                    return info
+                ages.append(age)
+        except OSError:
+            info["detail"] = "metadata_unavailable"
+            return info
+        info["age_seconds"] = math.floor(max(ages))
+        return info
+
     def _snapshot(self):
         """Validate one complete result; old PNGs never act as a fallback."""
         if not self.is_running(self.directory / "worker.lock"):
@@ -158,7 +202,7 @@ class AndroidPanel:
             self._target(serial)
         try:
             result, _, age = self._snapshot()
-            return dict(ok=True, status="observed", serial=self.serial, seq=result["seq"],
+            response = dict(ok=True, status="observed", serial=self.serial, seq=result["seq"],
                         shot_id=result["shot_id"], width=result["width"], height=result["height"],
                         captured_at=result["captured_at"], age_seconds=age, max_age=self.max_age,
                         note=str(result.get("note") or "")[:400])
@@ -168,7 +212,9 @@ class AndroidPanel:
                 seq = self._sequence(self._json("panel-request.json", optional=True))
             except PanelAndroidError:
                 seq = 0
-            return self._base(state, error.code, str(error), seq=seq)
+            response = self._base(state, error.code, str(error), seq=seq)
+        response["claim_wait"] = self._claim_wait()
+        return response
 
     def image(self, serial, shot_id):
         self._target(serial)

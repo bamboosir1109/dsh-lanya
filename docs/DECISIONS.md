@@ -56,4 +56,10 @@ OneBot 接入由 `scripts/patch_onebot_policy.py` 生成可预览补丁，仅识
 
 回退用同一工具的 `--restore-manifest PRIVATE_BACKUP/patch.json`，默认预检；执行还需 `--apply --host-stopped --expected-fingerprint`。整批核对原件、现有 before/after 与生成文件；后续修改拒绝覆盖。回退程序不删除 policy、原始消息或观察记录。
 
+### 离线 replay 的独立隔离层
+
+已打 policy V1 的 OneBot 包还需 `patch_onebot_replay.py`，否则原 replay 构造 bridge 时仍可能读取生产 policy 配置并启动观察 consumer。新层在构造前选择临时 policy、停用 pump、记忆和能力 helper；入站解析继续运行，媒体下载与本机跨聊日志写入被阻止。原操作员指定的录制文件输入、报告文件输出保留，其他状态只在本次新建临时目录内使用，成功或异常后清理。
+
+这不改变 `lanyaInjected` 的非真实入站判定，也不提供主模型静默/恢复的真实会话验收。离线录制 agent 只记录 followup，不调用模型或 QQ/B 站网络；内置 file inject 的 dry-run 不能据此当作所有工具的全局隔离。补丁必须接在原 V1 manifest 后，回退先撤 replay 层再撤 V1，见 [维护步骤](MAINTENANCE.md#onebot-离线-replay-隔离补丁)。
+
 `install.ps1` 只复制程序，保护身份、人设和本机配置。新副本与旧独立发送进程必须协调切换，不能混用。`decisions.mode=legacy` 只是显式回退开关，不会自动卸载 OneBot 补丁、恢复数据或启动旧调度器。主模型运行时写记忆仍由 memento 服务负责；维护操作与恢复见 [MEMORY](MEMORY.md)。

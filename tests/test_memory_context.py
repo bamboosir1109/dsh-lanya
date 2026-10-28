@@ -262,7 +262,18 @@ class MemoryContextTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["applied"], 1)
         self.assertEqual(result["selection"], self.owner)
-        self.assertEqual({row[0] for row in self.rows()}, {"new", "foreign-old", "foreign-new"})
+        self.assertEqual({row[0] for row in self.rows() if row[0].startswith("foreign-")},
+                         {"foreign-old", "foreign-new"})
+        capsule = next(row for row in self.rows() if row[0].startswith("plastic-"))
+        stream = io.BytesIO(capsule[1].encode("utf-8"))
+        self.assertEqual(stream.readline(), b"dsh-memory-capsule/v1\n")
+        ids = set()
+        while line := stream.readline():
+            header = json.loads(line)
+            ids.update(entry["id"] for entry in header["entries"])
+            self.assertEqual(len(stream.read(header["text_bytes"])), header["text_bytes"])
+            self.assertEqual(stream.read(1), b"\n")
+        self.assertEqual(ids, {"old", "new"})
 
     def test_current_shared_owner_panel_compression_preserves_foreign_owner(self):
         shared = dict(self.owner, workspace_key="", agent_key="")
@@ -271,11 +282,66 @@ class MemoryContextTests(unittest.TestCase):
                         tags='["bili"]', created_at=index, **shared)
         self.insert("foreign-old")
         self.insert("foreign-new")
+        before = self.rows()
         with mock.patch.object(self.plastic, "COMPRESS_OVER", 4), mock.patch.object(self.plastic, "COMPRESS_TO", 2):
             status, result = self.post("/api/memory/compress", dict(selection=shared, dry=False))
         self.assertEqual(status, 200)
-        self.assertEqual(result["trimmed"], 3)
-        self.assertEqual({row[0] for row in self.rows()}, {"shared3", "shared4", "foreign-old", "foreign-new"})
+        self.assertEqual(result["trimmed"], 0)
+        self.assertFalse(result["soft_target_met"])
+        self.assertEqual(self.rows(), before)
+
+    def test_numeric_and_date_queries_use_fact_body_before_and_after_capsules(self):
+        date = "2026-11-04"
+        target = self.insert("date-fact", text="丙承诺于2026-11-04归还护照。", version=42)
+        partner = self.insert("date-partner", text="丙明确不吃花生，取票仍未完成。")
+        unrelated = self.insert("other-date", text="乙的出发时间是2026-12-05。", source=date, session_id=date)
+        other_partner = self.insert("other-partner", text="乙在南门进入候车室。", source=date, session_id=date)
+        self.insert("number-fact", text="丁需要等待42分钟。")
+        self.assertIn(date, self.index.tokens(date))
+        self.assertIn("42", self.index.tokens("42"))
+        before = self.context.build_context(self.cwd, self.preset, date, db_path=str(self.db))
+        self.assertEqual([row["id"] for row in before["memories"]], ["date-fact"])
+        self.assertEqual([hit["id"] for hit in self.index.Index.for_model(self.cwd, self.preset).search("42")],
+                         ["number-fact"])
+        groups = [[dict(target, _src="db"), dict(partner, _src="db")],
+                  [dict(unrelated, _src="db"), dict(other_partner, _src="db")]]
+        self.plastic.apply_merges([self.plastic.merge_group(group) for group in groups], dry=False)
+        packet = self.context.build_context(self.cwd, self.preset, date, db_path=str(self.db))
+        self.assertEqual(len(packet["memories"]), 1)
+        self.assertIn(target["text"], packet["memories"][0]["text"])
+        self.assertEqual({row["id"] for row in packet["originals"]}, {"date-fact", "date-partner"})
+        self.assertEqual([hit["id"] for hit in self.index.Index.for_model(self.cwd, self.preset).search("42")],
+                         ["number-fact"])
+
+    def test_capsule_lexical_decoder_checks_lengths_hashes_and_raw_fake_headers(self):
+        raw = '丙不吃"花生"。\\原文\n' + 'dsh-memory-capsule/v1\n{"text_bytes":0}\n2026-11-04承诺。'
+        first = self.insert("raw-one", text=raw)
+        second = self.insert("raw-two", text=raw, created_at=3)
+        merge = self.plastic.merge_group([first, second])
+        entry = dict(text=merge["text"], source="memory_plastic:derived")
+        self.assertEqual(self.index._search_text(entry), raw)
+        self.assertIn("2026-11-04", self.index.tokens(self.index._search_text(entry)))
+        prefix, header_raw, body = entry["text"].split("\n", 2)
+        header = json.loads(header_raw)
+        for change in ({"text_bytes": header["text_bytes"] - 1}, {"text_sha256": "0" * 64},
+                       {"text_bytes": True}, {"entries": [{}] * 9}):
+            bad = dict(header, **change)
+            tampered = prefix + "\n" + json.dumps(bad, ensure_ascii=False) + "\n" + body
+            with self.assertRaisesRegex(ValueError, "Invalid memory capsule"):
+                self.index._search_text(dict(entry, text=tampered))
+
+    def test_capsule_entities_use_only_raw_body_not_metadata(self):
+        synthetic_numeric_metadata = str(10 ** 5 + 17)
+        first = self.insert("entity-one", text="正文讨论《原文书名》，承诺仍有效。",
+                            source=synthetic_numeric_metadata + "《元数据书名》")
+        second = self.insert("entity-two", text="正文讨论《原文书名》，承诺仍有效。", created_at=3)
+        merge = self.plastic.merge_group([first, second])
+        entry = dict(first, text=merge["text"], source="memory_plastic:derived")
+        index = self.index.Index.for_model(self.cwd, self.preset, entries=[entry])
+        found = set(index.entries[0]["ent"])
+        self.assertIn(("book", "原文书名"), found)
+        self.assertNotIn(("book", "元数据书名"), found)
+        self.assertNotIn(("person", synthetic_numeric_metadata), found)
 
     def cli(self, payload, argv=None):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")

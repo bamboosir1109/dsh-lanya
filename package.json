@@ -24,6 +24,7 @@
     "tests/fixtures/**/*.js",
     "tests/fixtures/**/*.mjs",
     "tests/fixtures/**/package.json",
+    "tests/fixtures/**/LICENSE",
     "tests/fixtures/**/*.md",
     "config/project.json",
     "install.ps1",

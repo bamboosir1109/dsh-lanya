@@ -21,7 +21,7 @@ class Element {
 
 async function fixture(initial={ok:false, status:'error', serial, code:'capture_required', error:'Capture a new screenshot'}) {
   const elements = new Map()
-  for (const id of ['shot', 'capture', 'refresh', 'placeholder', 'frameInfo', 'status', 'error', 'serial', 'gesture', 'text', 'package', 'textForm', 'startForm']) {
+  for (const id of ['shot', 'capture', 'refresh', 'placeholder', 'frameInfo', 'status', 'claimWait', 'error', 'serial', 'gesture', 'text', 'package', 'textForm', 'startForm']) {
     elements.set(id, new Element())
   }
   const image = elements.get('shot'); image.hidden = true; image.naturalWidth = 2; image.naturalHeight = 3
@@ -101,6 +101,41 @@ test('pending is not success; actions enable only after matching screenshot actu
   assert.equal(f.image.hidden, false)
   assert.ok(f.buttons.every(button => !button.disabled))
   assert.match(f.elements.get('status').textContent, /真实截图/)
+})
+
+test('fresh and old claims show read-only unknown-result diagnostics without replay or enabling actions', async () => {
+  for (const age of [2, 86400]) {
+    const f = await fixture()
+    f.status({ok:false, status:'pending', serial, seq:2, code:'pending', claim_wait:{
+      present:true, count:1, age_seconds:age, detail:'waiting', result:'unknown'}})
+    await f.functions.submit('shot')
+    const before = f.requests.filter(request => request.body).length
+    assert.equal(f.elements.get('claimWait').hidden, false)
+    assert.match(f.elements.get('claimWait').textContent, new RegExp('等待 ' + age + ' 秒'))
+    assert.match(f.elements.get('claimWait').textContent, /仍有操作结果未确认.*先核对设备状态/)
+    assert.doesNotMatch(f.elements.get('claimWait').textContent, /claim|worker|处理中|已停止|自动重试/)
+    assert.equal(f.elements.get('capture').disabled, true)
+    assert.ok(f.buttons.every(button => button.disabled))
+    assert.equal(f.image.hidden, true)
+    f.intervals.find(timer => timer.ms === 1500).fn(); await f.flush()
+    await f.functions.submit('key', {key:'HOME'})
+    await f.functions.submit('shot')
+    assert.equal(f.requests.filter(request => request.body).length, before)
+  }
+})
+
+test('unverifiable claim age is explicit and its diagnostics clear after queue completion', async () => {
+  const f = await fixture({ok:false, status:'offline', serial, code:'worker_offline', error:'offline',
+    claim_wait:{present:true, count:1, age_seconds:null, detail:'clock_anomaly', result:'unknown'}})
+  assert.match(f.elements.get('claimWait').textContent, /等待时长暂无法确认/)
+  assert.match(f.elements.get('claimWait').textContent, /仍有操作结果未确认/)
+  assert.equal(f.elements.get('error').textContent, 'offline')
+  assert.ok(f.buttons.every(button => button.disabled))
+  f.status({ok:false, status:'error', serial, code:'capture_required', claim_wait:null})
+  await f.functions.refreshStatus()
+  assert.equal(f.elements.get('claimWait').hidden, true)
+  assert.equal(f.elements.get('claimWait').textContent, '')
+  assert.ok(f.buttons.every(button => button.disabled))
 })
 
 test('an action carries the displayed serial and shot id and immediately removes the old image', async () => {

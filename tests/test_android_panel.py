@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import struct
 import sys
 import tempfile
@@ -121,6 +122,94 @@ class AndroidPanelTests(unittest.TestCase):
         claimed.unlink()
         self.assert_code("busy", self.adapter.submit, self.job())
         self.assertEqual(self.adapter.status()["seq"], response["seq"])
+
+    def test_claim_wait_is_read_only_for_fresh_and_old_requests(self):
+        claim = self.directory / "cmd.claim-fixture.json"
+        for age in (3, 86400):
+            with self.subTest(age=age):
+                original = b'{"action":"tap","seq":7}'
+                claim.write_bytes(original)
+                os.utime(claim, (self.clock - age, self.clock - age))
+                before = claim.stat()
+                response = self.adapter.status()
+                self.assertEqual(response["status"], "pending")
+                self.assertEqual(response["claim_wait"], {
+                    "present": True, "count": 1, "age_seconds": age,
+                    "detail": "waiting", "result": "unknown"})
+                self.assertEqual(response["shot_id"], "")
+                self.assert_code("busy", self.adapter.submit, self.job())
+                self.assert_code("busy", self.adapter.submit, self.job("tap", x=0, y=0))
+                self.assert_code("pending", self.adapter.image, self.adapter.serial, self.view["shot_id"])
+                self.assertEqual(claim.read_bytes(), original)
+                self.assertEqual(claim.stat().st_mtime_ns, before.st_mtime_ns)
+                self.assertFalse((self.directory / "cmd.json").exists())
+        self.live = False
+        response = self.adapter.status()
+        self.assertEqual(response["code"], "worker_offline")
+        self.assertEqual(response["claim_wait"]["age_seconds"], 86400)
+        self.assertTrue(claim.exists())
+
+    def test_malformed_claim_body_is_not_read_or_interpreted_as_completion(self):
+        claim = self.directory / "cmd.claim-bad.json"
+        claim.write_bytes(b'not JSON\x00')
+        os.utime(claim, (self.clock - 8, self.clock - 8))
+        response = self.adapter.status()
+        self.assertEqual(response["claim_wait"]["age_seconds"], 8)
+        self.assertEqual(response["claim_wait"]["result"], "unknown")
+        self.assertEqual(response["code"], "pending")
+        self.assert_code("busy", self.adapter.submit, self.job())
+        self.assertEqual(claim.read_bytes(), b'not JSON\x00')
+
+    def test_claim_wait_reports_clock_anomaly_without_negative_or_guessed_age(self):
+        claim = self.directory / "cmd.claim-fixture.json"
+        claim.write_bytes(b'{}')
+        os.utime(claim, (self.clock + 30, self.clock + 30))
+        for now in (self.clock, float("nan"), float("inf")):
+            with self.subTest(now=now):
+                with mock.patch.object(self.adapter, "now", return_value=now):
+                    response = self.adapter.status()
+                self.assertIsNone(response["claim_wait"]["age_seconds"])
+                self.assertEqual(response["claim_wait"]["detail"], "clock_anomaly")
+                self.assertEqual(response["code"], "pending")
+        self.assert_code("busy", self.adapter.submit, self.job())
+
+    def test_claim_link_and_unreadable_metadata_are_not_followed_or_given_age(self):
+        # Deterministic symlink/reparse metadata seam: Windows may deny creating
+        # actual symlinks. The real queue filename still blocks all submissions.
+        claim = self.directory / "cmd.claim-fixture.json"
+        claim.write_bytes(b'unchanged unknown request')
+        variants = [
+            (SimpleNamespace(st_mode=stat.S_IFLNK, st_mtime=0, st_file_attributes=0), "link_or_non_regular"),
+            (SimpleNamespace(st_mode=stat.S_IFREG, st_mtime=0, st_file_attributes=0x400), "link_or_non_regular"),
+            (PermissionError("fixture unreadable"), "metadata_unavailable"),
+        ]
+        for metadata, detail in variants:
+            with self.subTest(detail=detail):
+                entry = mock.Mock(name="claim entry")
+                entry.name = claim.name
+                if isinstance(metadata, Exception): entry.stat.side_effect = metadata
+                else: entry.stat.return_value = metadata
+                scan = mock.MagicMock()
+                scan.__enter__.return_value = iter([entry])
+                with mock.patch.object(self.module.os, "scandir", return_value=scan):
+                    diagnostic = self.adapter._claim_wait()
+                entry.stat.assert_called_once_with(follow_symlinks=False)
+                self.assertEqual(diagnostic["detail"], detail)
+                self.assertIsNone(diagnostic["age_seconds"])
+                self.assertEqual(self.adapter.status()["code"], "pending")
+                self.assert_code("busy", self.adapter.submit, self.job())
+        self.assertEqual(claim.read_bytes(), b'unchanged unknown request')
+
+    def test_multiple_claims_use_oldest_file_time_and_no_claim_hides_diagnostic(self):
+        self.assertIsNone(self.adapter.status()["claim_wait"])
+        for suffix, age in (("one", 4), ("two", 19)):
+            claim = self.directory / ("cmd.claim-" + suffix + ".json")
+            claim.write_bytes(b'{}')
+            os.utime(claim, (self.clock - age, self.clock - age))
+        response = self.adapter.status()
+        self.assertEqual(response["claim_wait"]["count"], 2)
+        self.assertEqual(response["claim_wait"]["age_seconds"], 19)
+        self.assert_code("busy", self.adapter.submit, self.job())
 
     def test_real_worker_function_roundtrip_uses_only_inert_adb_fixture(self):
         from androidd import AndroidWorker, atomic_json

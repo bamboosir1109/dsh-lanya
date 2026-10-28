@@ -26,6 +26,7 @@ BV 号、标签。既能看"谁被提到过"，也能从一个人跳到跟他有
   python memory_index.py --cwd WORKSPACE --agent-preset PRESET --search "keyword"
   python memory_index.py --management --graph
 """
+import hashlib
 import json
 import math
 import os
@@ -43,6 +44,7 @@ DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 # ---------------------------------------------------------------------------
 _ASCII = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{1,30}")
 _BV = re.compile(r"BV[0-9A-Za-z]{10}")
+_NUMERIC = re.compile(r"(?<![A-Za-z0-9_])\d+(?:[-./:]\d+)*(?![A-Za-z0-9_])")
 _BOOK = re.compile(r"\u300a([^\u300b]{2,30})\u300b")   # 《…》
 _QQ = re.compile(r"\b[1-9]\d{5,11}\b")
 
@@ -63,6 +65,10 @@ def tokens(text):
         out.append(m.group(0).lower())
     for m in _BV.finditer(text):
         out.append(m.group(0).lower())
+    # Keep a full date/compound number as one token; do not match a numeric
+    # suffix inside an ASCII identifier. Capsule metadata is excluded below.
+    for m in _NUMERIC.finditer(text):
+        out.append(m.group(0))
     # 中文：连续汉字段切 bigram
     for seg in re.findall(r"[\u4e00-\u9fff]+", text):
         if len(seg) == 1:
@@ -73,6 +79,43 @@ def tokens(text):
             if bg not in _STOP:
                 out.append(bg)
     return out
+
+
+def _search_text(entry):
+    """Decode only bounded, hash-checked capsule bodies for lexical ranking."""
+    text = entry.get("text") or ""
+    magic = b"dsh-memory-capsule/v1\n"
+    if entry.get("source") != "memory_plastic:derived" or not text.startswith(magic.decode()):
+        return text
+    try:
+        raw = text.encode("utf-8")
+        if len(raw) > 8192:
+            raise ValueError("Capsule exceeds bound")
+        pos = len(magic)
+        bodies = []
+        original_count = 0
+        while pos < len(raw):
+            boundary = raw.index(b"\n", pos)
+            header = json.loads(raw[pos:boundary])
+            if (not isinstance(header, dict) or set(header) != {"entries", "text_bytes", "text_sha256"}
+                    or type(header["text_bytes"]) is not int or header["text_bytes"] < 0
+                    or not isinstance(header["entries"], list) or not header["entries"]
+                    or any(not isinstance(item, dict) for item in header["entries"])):
+                raise ValueError("Invalid capsule header")
+            original_count += len(header["entries"])
+            start = boundary + 1
+            end = start + header["text_bytes"]
+            body = raw[start:end]
+            if (original_count > 8 or len(body) != header["text_bytes"] or raw[end:end + 1] != b"\n"
+                    or hashlib.sha256(body).hexdigest() != header["text_sha256"]):
+                raise ValueError("Invalid capsule body")
+            bodies.append(body.decode("utf-8"))
+            pos = end + 1
+        if not bodies:
+            raise ValueError("Empty capsule")
+        return "\n".join(bodies)
+    except (KeyError, TypeError, ValueError, UnicodeError) as error:
+        raise ValueError("Invalid memory capsule") from error
 
 
 def entities(text):
@@ -122,8 +165,9 @@ class Index:
         self.entries = [dict(row) for row in entries if management or visible(row, owner)]
         self.management_view = management
         for row in self.entries:
-            row["tok"] = tokens(row.get("text") or "")
-            row["ent"] = entities(row.get("text") or "")
+            search_text = _search_text(row)
+            row["tok"] = tokens(search_text)
+            row["ent"] = entities(search_text)
             try:
                 tags = row.get("taglist")
                 if not isinstance(tags, list):

@@ -161,6 +161,26 @@ python -B scripts/patch_memento_history.py --package-root ABSOLUTE_MEMENTO_PACKA
 
 两个补丁共享 OS 文件锁，排除同时操作同一包的维护进程；锁文件保留，不按 PID/时间删除。host-stopped 仍是操作者断言。应用保存完整私有原件，以新 inode 替换文件，保护共享 HardLink 源。多文件应用不是整批原子操作；中断后使用其 prepared manifest 重新预检，已知 before/after 的部分状态可恢复，任何后续编辑先整批拒绝。程序撤回保留数据库及全部 native history，不自动恢复事实；事实恢复单独按 [MEMORY](MEMORY.md#原生历史恢复) 执行。
 
+## OneBot 离线 replay 隔离补丁
+
+`scripts/patch_onebot_replay.py` 是 `lanya-onebot-replay-isolation-v1` 独立增量层，针对已完成 policy V1 的已审阅 OneBot 0.8.1。它校验原 V1 私有 manifest、原件、安装 marker、生成模块和当前文件身份，只修改 `lib/bridge.js`、`lib/replay.js`、`lib/inbound.js`，不改原 V1 marker。未知版本、后续修改、生成模块漂移或不完整状态先拒绝。
+
+```powershell
+# 默认只读预览；POLICY_V1_PATCH_JSON 是原 policy 补丁的私有 patch.json
+python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --policy-manifest ABSOLUTE_POLICY_V1_PATCH_JSON
+
+# 停止对应宿主后，使用刚取得的指纹和新的私有备份目录
+python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --policy-manifest ABSOLUTE_POLICY_V1_PATCH_JSON --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 先撤 replay 增量层：预检后显式执行；其后才可撤原 policy V1
+python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON
+python -B scripts/patch_onebot_replay.py --plugin-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_REPLAY_BACKUP_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+`--host-stopped` 是操作者断言；工具不启动或停止宿主。私有备份不得放进公开源码或安装包。应用和恢复使用包内 OS 文件锁、全批预检、逐项身份重查与最终整批读回；新 inode 替换切断 HardLink。多文件写入不是整批原子事务，中断时保留 prepared manifest 和完整原件；用该层自己的 `--restore-manifest` 预检已知 before/after 的部分状态，任何未知后续修改都拒绝覆盖。锁文件保留，不按 PID 或时间删除。恢复只改程序及该层 marker，不读取或删除生产 policy、队列、会话与记忆。
+
+隔离后的 replay 保留操作员明确选择的录制输入与报告输出；这两条路径仍是显式文件操作，勿指向生产状态文件。bridge 构造前改用新建临时目录，不读默认 policy 配置、不认领 inbox、不调用记忆/能力 helper，不下载媒体或写本机跨聊日志。录制 agent 只记录 followup；真实注入仍标记为非 live，不借诊断入口取得控制权限。离线回放通过只证明解析与隔离，不能替代已加载主 agent 的真实静默/恢复验收。测试中的原 replay 模块保留原包 BSD 3-Clause LICENSE。
+
 ## 提交与隐私
 
 ```powershell
