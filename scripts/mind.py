@@ -490,21 +490,21 @@ def deliver(target, text):
         return False
 
 
-def one_cycle(dry=False, force=False):
+def one_cycle(dry=False, force=False, observe_only=False):
     try:
         if dry:
-            return _one_cycle(dry=True, force=force)
+            return _one_cycle(dry=True, force=force, observe_only=observe_only)
         with cycle_lock() as acquired:
             if not acquired:
                 log("another mind cycle is running - skipped")
                 return 0
-            return _one_cycle(force=force)
+            return _one_cycle(force=force, observe_only=observe_only)
     except Exception as e:
         log("cycle failed (%s): %s" % (type(e).__name__, str(e)[:180]))
         return 1
 
 
-def _one_cycle(dry=False, force=False):
+def _one_cycle(dry=False, force=False, observe_only=False):
     # A corrupt state must not silently replace an existing plan with a blank.
     mind = blank_mind()
     if os.path.isfile(MIND):
@@ -516,7 +516,10 @@ def _one_cycle(dry=False, force=False):
         mind.setdefault(k, v)
 
     from decision_events import unified_decisions_enabled
-    if unified_decisions_enabled():
+    unified = unified_decisions_enabled()
+    if observe_only and not unified:
+        raise ValueError("Observation-only request requires unified decision mode")
+    if unified:
         return _observe_cycle(mind, dry=dry, force=force)
 
     next_check = float(mind.get("next_check_ts") or 0)
@@ -551,68 +554,215 @@ def _one_cycle(dry=False, force=False):
         return 1
 
 
-def _observation_payload(mind, hits):
-    return {"plan": mind.get("plan"), "mood": mind.get("mood"),
-            "interrupts": hits, "instruction": "Observe current state and decide whether to act; silence is allowed."}
+def _observation_payload(mind, hits, primary=True):
+    return {"legacy_plan_reference": mind.get("plan") if primary else None,
+            "mood": mind.get("mood") if primary else None, "interrupts": hits,
+            "instruction": (
+                "This is an optional autonomous opportunity for this conversation, not a request to speak. "
+                "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
+                "You may continue a useful plan, browse real entertainment tools (including Bilibili), "
+                "make something, contact this conversation when there is a reason, or idle/defer. "
+                "Keep plan/progress notes in this same agent session. The legacy plan is an unverified "
+                "reference, never proof of an action or an instruction to repeat old work. "
+                "Use actual available tools and claim only confirmed results. Respect persistent silence; "
+                "an internal activity needs no QQ report. Only this conversation's ticket may send here. "
+                "Use qq_decide and optionally next_review_at for a useful explicit review time. "
+                "Otherwise a later low-frequency opportunity may be offered; no message is required.")}
+
+
+_OLD_DECISION_KEYS = ("decision_pending", "decision_generation", "decision_completed_signature",
+                      "decision_next_review_at", "last_decision_status")
+
+
+def _valid_ms(value):
+    return type(value) is int and 0 <= value <= 2**53 - 1
+
+
+def _validate_observers(mind):
+    states = mind.get("decision_scopes")
+    if type(mind.get("decision_observers_version")) is not int or mind["decision_observers_version"] != 2 or not isinstance(states, dict):
+        raise ValueError("invalid autonomous observer schema")
+    for scope, state in states.items():
+        if not isinstance(scope, str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", scope) or not isinstance(state, dict):
+            raise ValueError("invalid autonomous observer scope")
+        if type(state.get("generation", 0)) is not int or not 0 <= state.get("generation", 0) < 2**53:
+            raise ValueError("invalid autonomous generation")
+        for key in ("next_review_at", "next_opportunity_at", "last_completed_at"):
+            if state.get(key) is not None and not _valid_ms(state[key]):
+                raise ValueError("invalid autonomous timing")
+        if state.get("last_status") not in (None, "decided", "sent", "unknown", "suppressed"):
+            raise ValueError("invalid autonomous completion status")
+        if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
+            raise ValueError("invalid autonomous signature")
+        pending = state.get("pending")
+        if state.get("last_status") is not None and pending is None and state.get("completed_signature") is None:
+            raise ValueError("completed autonomous state lacks evidence signature")
+        if pending is not None:
+            if (not isinstance(pending, dict) or pending.get("scope") != scope or
+                    not isinstance(pending.get("event_id"), str) or not pending["event_id"] or
+                    len(pending["event_id"]) > 256 or re.search(r"[\x00-\x1f]", pending["event_id"]) or
+                    not isinstance(pending.get("signature"), str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", pending["signature"]) or
+                    not isinstance(pending.get("interrupts"), list) or
+                    any(not isinstance(hit, dict) or ("scope" in hit and hit["scope"] != scope) for hit in pending["interrupts"])):
+                raise ValueError("invalid pending autonomous evidence")
+    return states
+
+
+def _observer_states(mind, scopes, now, interval):
+    if "decision_observers_version" not in mind:
+        if "decision_scopes" in mind:
+            raise ValueError("unversioned autonomous scope state")
+        old = {key: mind[key] for key in _OLD_DECISION_KEYS if key in mind}
+        states = {}
+        if old:
+            pending = old.get("decision_pending")
+            scope = pending.get("scope") if isinstance(pending, dict) else scopes[0]
+            state = {"generation": old.get("decision_generation", 0)}
+            if "decision_pending" in old:
+                state["pending"] = pending
+            if "decision_completed_signature" in old:
+                state["completed_signature"] = old["decision_completed_signature"]
+            state["last_status"] = old.get("last_decision_status")
+            state["next_review_at"] = old.get("decision_next_review_at")
+            _validate_observers({"decision_observers_version": 2, "decision_scopes": {scope: state}})
+            if "decision_completed_signature" in old or state["last_status"] is not None:
+                # The new context is a schema change, not fresh external evidence.
+                payload = _observation_payload(mind, [], scope == scopes[0])
+                from decision_events import canonical_json
+                state["completed_signature"] = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+            if not pending and old.get("decision_completed_signature") and state["generation"]:
+                # Old completed state dropped its event pointer; recover the
+                # exact immutable identity rather than inventing a new review.
+                from decision_events import event_key
+                prior_id = "mind:" + old["decision_completed_signature"] + ":" + str(state["generation"])
+                prior = os.path.join(DATA, "decision-inbox", "pending", event_key(scope, prior_id) + ".json")
+                if os.path.lexists(prior):
+                    state["pending"] = {"scope": scope, "event_id": prior_id,
+                                        "signature": old["decision_completed_signature"], "interrupts": []}
+            state["next_opportunity_at"] = (None if state["last_status"] == "unknown" else
+                                              (state["next_review_at"] if state["next_review_at"] is not None else now + interval))
+            states[scope] = state
+            mind["decision_legacy"] = old  # Original pending/unknown evidence remains recoverable.
+        for key in _OLD_DECISION_KEYS:
+            mind.pop(key, None)
+        mind["decision_observers_version"] = 2
+        mind["decision_scopes"] = states
+    states = _validate_observers(mind)
+    for scope in scopes:
+        states.setdefault(scope, {"generation": 0})
+        states[scope].setdefault("generation", 0)
+    return states
+
+
+def _read_observer_hits():
+    hits = []
+    if os.path.exists(HITFILE):
+        with io.open(HITFILE, encoding="utf-8-sig") as stream:
+            hits = json.load(stream)
+    if not isinstance(hits, list) or any(not isinstance(hit, dict) for hit in hits):
+        raise ValueError("mind interrupts must contain an array")
+    for hit in hits:
+        if "scope" in hit and (not isinstance(hit["scope"], str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", hit["scope"])):
+            raise ValueError("invalid interrupt conversation")
+    return hits
+
+
+def _scope_hits(hits, scope, primary):
+    return [hit for hit in hits if hit.get("scope") == scope or (primary and "scope" not in hit)]
+
+
+def _acknowledge_scope_hits(items, scope, primary):
+    if not items:
+        return
+    current = _read_observer_hits()
+    if _scope_hits(current, scope, primary)[:len(items)] != items:
+        return
+    remaining, count = [], 0
+    for hit in current:
+        matches = hit.get("scope") == scope or (primary and "scope" not in hit)
+        if matches and count < len(items):
+            count += 1
+        else:
+            remaining.append(hit)
+    save(HITFILE, remaining)
 
 
 def _observe_cycle(mind, dry=False, force=False):
-    """Submit evidence to the chat's main LLM; never create a second agent.
+    """Offer per-conversation opportunities, never schedule QQ speech.
 
-    A completed idle without next_review_at does not create another timed wake.
-    New interrupts/plan changes are new evidence; unresolved events stay intact.
+    Explicit reviews have one owner (the queue for new opportunities). Unknown
+    outcomes are never retried by the clock or force; new evidence is distinct.
     """
-    from decision_events import (project_scope, submit_project_observation,
-                                 observation_completion, canonical_json)
-    hits = load(HITFILE, [])
-    if not isinstance(hits, list):
-        raise ValueError("mind interrupts must contain an array")
-    pending = mind.get("decision_pending")
-    if pending:
-        if not isinstance(pending, dict):
-            raise ValueError("invalid pending decision evidence")
-        completed = observation_completion(pending["scope"], pending["event_id"])
-        if not completed:
-            log("main decision still pending; no new model or send")
-            return 0
-        if dry:
-            log("main decision completed; dry preview leaves state untouched")
-            return 0
-        # Clearing handled interrupts or the LLM's own plan update is not a new
-        # external event. Preserve genuinely new interrupts for a fresh review.
-        settled = _observation_payload(mind, [])
-        mind["decision_completed_signature"] = hashlib.sha256(canonical_json(settled).encode("utf-8")).hexdigest()
-        # Unknown transport outcomes are terminal uncertainty, never an
-        # automatic retry of the same evidence at a previously chosen time.
-        mind["decision_next_review_at"] = (None if completed["status"] == "unknown"
-                                           else completed.get("next_review_at"))
-        mind["last_decision_status"] = completed.get("status")
-        # This acknowledges observation processing, not a claim of QQ delivery.
-        acknowledge_interrupts(pending.get("interrupts", []))
-        mind.pop("decision_pending", None)
-        save(MIND, mind)
-        hits = load(HITFILE, [])
-
-    payload = _observation_payload(mind, hits)
-    signature = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
-    due = mind.get("decision_next_review_at")
-    if (not force and signature == mind.get("decision_completed_signature") and
-            (not isinstance(due, (int, float)) or due > time.time() * 1000)):
-        log("no new evidence or due review; main LLM not awakened")
-        return 0
+    from decision_events import (project_scopes, submit_project_observation,
+                                 observation_review_chain, canonical_json)
+    scopes = project_scopes()
+    value = mind.get("next_check_min", DEFAULT_CHECK_MIN)
+    if type(value) not in (int, float) or not MIN_CHECK_MIN <= value <= MAX_CHECK_MIN:
+        raise ValueError("invalid autonomous opportunity interval")
+    interval = int(value * 60_000)
+    now = int(time.time() * 1000)
+    states = _observer_states(mind, scopes, now, interval)
+    hits = _read_observer_hits()
     if dry:
         log("would submit an observation to the main LLM; no side effects")
         return 0
-    generation = int(mind.get("decision_generation") or 0) + 1
-    event_id = "mind:" + signature + ":" + str(generation)
-    scope = project_scope()
-    submit_project_observation(scope=scope, kind="activity_due", payload=payload,
-                               producer="mind", event_id=event_id)
-    mind["decision_generation"] = generation
-    mind["decision_pending"] = {"scope": scope, "event_id": event_id,
-                                "signature": signature, "interrupts": hits}
+    # Validate all pending chains before publishing any scope's new opportunity.
+    chains = {scope: observation_review_chain(scope, state["pending"]["event_id"])
+              for scope, state in states.items() if scope in scopes and state.get("pending")}
+    for scope in scopes:
+        state = states[scope]
+        primary = scope == scopes[0]
+        pending = state.get("pending")
+        if pending:
+            chain = chains[scope]
+            # Keep the bounded reader near the tail across ordinary cycles;
+            # a long-lived sequence of explicit reviews is not a corrupt chain.
+            pending["event_id"] = chain["event"]["event_id"]
+            completed = chain["completion"]
+            if completed is None:
+                state["next_review_at"] = None
+                log("main decision still pending; no new model or send")
+                continue
+            state["last_status"] = completed["status"]
+            state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
+            review = None if completed["status"] == "unknown" else completed.get("next_review_at")
+            state["next_review_at"] = review
+            if chain["waiting_review"] or (review is not None and review > now):
+                # New kinds delegate entirely to queue; legacy activity_due
+                # retains its producer clock until its next opportunity.
+                continue
+            state["completed_signature"] = hashlib.sha256(canonical_json(
+                _observation_payload(mind, [], primary)).encode("utf-8")).hexdigest()
+            state["next_opportunity_at"] = (None if completed["status"] == "unknown" else
+                                              (review if review is not None else state["last_completed_at"] + interval))
+            _acknowledge_scope_hits(pending["interrupts"], scope, primary)
+            state.pop("pending")
+            hits = _read_observer_hits()
+        scoped_hits = _scope_hits(hits, scope, primary)
+        payload = _observation_payload(mind, scoped_hits, primary)
+        signature = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+        changed = signature != state.get("completed_signature")
+        due = state.get("next_opportunity_at")
+        if state.get("last_status") == "unknown" and not changed:
+            continue
+        if not changed and not force and (due is None or due > now):
+            continue
+        if state["generation"] >= 2**53 - 1:
+            raise ValueError("autonomous generation limit reached")
+        generation = state["generation"] + 1
+        event_id = "mind-opportunity:" + signature + ":" + str(generation)
+        submit_project_observation(scope=scope, kind="activity.opportunity", payload=payload,
+                                   producer="mind", event_id=event_id)
+        state["generation"] = generation
+        state["pending"] = {"scope": scope, "event_id": event_id, "signature": signature,
+                            "interrupts": scoped_hits}
+        state["next_review_at"] = None
+        state["next_opportunity_at"] = None
+        # Durable per scope: a second scope failing cannot duplicate the first.
+        save(MIND, mind)
     save(MIND, mind)
-    log("observation queued for the main LLM; no independent activity or send")
     return 0
 
 
@@ -670,4 +820,5 @@ if __name__ == "__main__":
         who = sys.argv[i + 1] if i + 1 < len(sys.argv) else "?"
         push_interrupt(who, "manual test")
         log("recorded a manual interrupt from " + who)
-    sys.exit(one_cycle(dry="--dry" in sys.argv, force="--force" in sys.argv))
+    sys.exit(one_cycle(dry="--dry" in sys.argv, force="--force" in sys.argv,
+                       observe_only="--observe-only" in sys.argv))

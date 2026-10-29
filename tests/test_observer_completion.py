@@ -19,8 +19,8 @@ class ObserverCompletionTests(unittest.TestCase):
         self.complete(status="unknown", next_review=1_060_000)
         self.assertEqual(self.mind.one_cycle(), 0)
         saved = self.mind.load(self.mind.MIND, {})
-        self.assertEqual(saved["last_decision_status"], "unknown")
-        self.assertIsNone(saved["decision_next_review_at"])
+        self.assertEqual(saved["decision_scopes"]["private:101"]["last_status"], "unknown")
+        self.assertIsNone(saved["decision_scopes"]["private:101"]["next_review_at"])
         self.clock.return_value = 1060
         self.mind.one_cycle()
         self.clock.return_value += 86400
@@ -61,7 +61,7 @@ class ObserverCompletionTests(unittest.TestCase):
         marker_path = self.data / "decision-inbox" / "done" / event.name
         marker_path.write_text(json.dumps({"version": 1, "event_sha256": hashlib.sha256(event.read_bytes()).hexdigest()}), encoding="utf-8")
         self.assertEqual(self.mind.one_cycle(), 1)
-        self.assertIn("decision_pending", self.mind.load(self.mind.MIND, {}))
+        self.assertIn("pending", self.mind.load(self.mind.MIND, {})["decision_scopes"]["private:101"])
         self.assertEqual(len(self.pending()), 1)
 
     def test_idempotent_publication_rejects_an_invalid_done_marker(self):

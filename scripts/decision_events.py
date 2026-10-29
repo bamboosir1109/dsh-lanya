@@ -198,6 +198,72 @@ def project_scope(target="admin"):
     return prefix + value
 
 
+def project_scopes():
+    """One private owner and, when configured, one separate group opportunity."""
+    from project_conf import data_dir, get
+    config = Path(data_dir()) / "lanya-config.json"
+    identity = json.loads(config.read_text(encoding="utf-8-sig")) if config.is_file() else {}
+    if not isinstance(identity, dict):
+        raise ObservationError("Invalid project identity configuration")
+    admin = identity.get("adminQQ")
+    if isinstance(admin, list):
+        admin = admin[0] if admin else ""
+    group = identity.get("fanGroupQQ")
+    if group in (None, ""):
+        group = identity.get("fanGroup")
+    if group in (None, ""):
+        group = get("fanGroup", "")
+    values = [("private:", admin)]
+    if group not in (None, ""):
+        values.append(("group:", group))
+    scopes = []
+    for prefix, value in values:
+        if isinstance(value, bool) or not re.fullmatch(r"[1-9][0-9]*", str(value or "")):
+            raise ObservationError("Invalid configured observation conversation")
+        scopes.append(prefix + str(value))
+    return scopes
+
+
+def observation_review_chain(scope, event_id, directory=None, limit=128):
+    """Read immutable queue successors; never publish a second review owner.
+
+    activity_due/reminder.due are legacy producer-owned. All other kinds use
+    the queue's main-review identity. An existing successor is always verified
+    before following it, including legacy events made by an earlier version.
+    """
+    if directory is None:
+        from project_conf import data_dir
+        directory = Path(data_dir()) / "decision-inbox"
+    base = _plain_directory(directory)
+    _plain_directory(base / "pending")
+    _plain_directory(base / "done")
+    for _ in range(limit):
+        key = event_key(scope, event_id)
+        target = base / "pending" / (key + ".json")
+        event = validate_event(_read_regular(target))
+        if event["scope"] != scope or event["event_id"] != event_id:
+            raise ObservationError("Invalid review observation identity")
+        completion = observation_completion(scope, event_id, directory=base)
+        result = {"event": event, "completion": completion, "waiting_review": False}
+        if completion is None or completion["status"] == "unknown" or "next_review_at" not in completion:
+            return result
+        due = completion["next_review_at"]
+        successor_id = "main-review:" + key + ":" + str(due)
+        child = base / "pending" / (event_key(scope, successor_id) + ".json")
+        if not os.path.lexists(child):
+            result["waiting_review"] = event["kind"] not in ("activity_due", "reminder.due")
+            return result
+        expected = dict(event, event_id=successor_id, producer="main-review", created_at=due,
+                        payload=dict(event["payload"], review_context={
+                            "parent_observation_key": key, "parent_event_id": event_id,
+                            "previous_decision_id": completion["decision_id"], "scheduled_at": due}))
+        actual = validate_event(_read_regular(child))
+        if canonical_json(actual) != canonical_json(expected):
+            raise ObservationError("Review successor conflicts with immutable evidence")
+        event_id = successor_id
+    raise ObservationError("Review chain exceeds its bounded length")
+
+
 def observation_completion(scope, event_id, directory=None):
     if directory is None:
         from project_conf import data_dir

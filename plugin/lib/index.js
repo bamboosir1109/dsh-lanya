@@ -57,6 +57,87 @@ const SCRIPTS = {
   'settings-guard': 'settings-guard.py'
 }
 
+const RETIRED_UNIFIED = new Set(['lifeloop', 'voicedaemon', 'supervisor', 'tick'])
+const AUTONOMY_STATUS = new Set(['unknown', 'offline', 'waiting', 'scheduled', 'processing', 'uncertain', 'legacy'])
+const AUTONOMY_REASON = new Set(['metadata_unavailable', 'scheduler_metadata_invalid', 'scheduler_stale',
+  'scheduler_owner_unverified', 'consumer_owner_unverified', 'main_review_scheduled', 'decision_pending',
+  'previous_outcome_unknown', 'waiting_for_opportunity', 'legacy_mode'])
+const unknownAutonomy = () => ({ mode: 'unknown', managed_by: 'main_agent', status: 'unknown',
+  reason: 'metadata_unavailable', can_request_check: false })
+
+export function sanitizeAutonomy(value) {
+  if (!value || !['unified', 'legacy', 'unknown'].includes(value.mode) ||
+      !AUTONOMY_STATUS.has(value.status) || !AUTONOMY_REASON.has(value.reason) ||
+      typeof value.can_request_check !== 'boolean' || value.can_request_check &&
+      (value.mode !== 'unified' || !['waiting', 'scheduled', 'processing', 'uncertain'].includes(value.status) ||
+        value.scheduler_verified !== true || value.consumer_verified !== true)) return unknownAutonomy()
+  const out = { mode: value.mode, managed_by: value.mode === 'legacy' ? 'legacy_task' : 'main_agent',
+    status: value.status, reason: value.reason,
+    can_request_check: value.mode === 'unified' && value.can_request_check === true }
+  if (value.observer && typeof value.observer === 'object') {
+    const keys = ['schema_version', 'scope_count', 'pending_count', 'scheduled_review_count', 'unknown_count',
+      'last_completed_at', 'next_review_at', 'next_opportunity_at']
+    if (keys.every(key => value.observer[key] === null || Number.isSafeInteger(value.observer[key]) && value.observer[key] >= 0)) {
+      out.observer = Object.fromEntries(keys.map(key => [key, value.observer[key]]))
+    }
+  }
+  return out
+}
+
+function runtimeDecisionMode(runtime) {
+  const decisions = runtime.project.decisions ?? {}
+  if (!decisions || typeof decisions !== 'object' || Array.isArray(decisions)) throw new Error('Invalid decision configuration')
+  const mode = decisions.mode ?? 'unified'
+  if (!['unified', 'legacy'].includes(mode)) throw new Error('Invalid decision mode; independent activity refused')
+  return mode
+}
+
+// Both panel entrypoints use the same lock/cooldown and verified owner in the
+// Python API. An unavailable API never falls back to the retired Life loop.
+export async function panelAutonomy(runtime, { check = false, fetchImpl = globalThis.fetch } = {}) {
+  const port = runtime.project.panelPort ?? 19389
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid panel API port')
+  try {
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/autonomy' + (check ? '/check' : ''), {
+      method: check ? 'POST' : 'GET', cache: 'no-store', signal: AbortSignal.timeout(4000),
+      ...(check ? { headers: { 'content-type': 'application/json' }, body: '{}' } : {})
+    })
+    const value = await response.json()
+    if (!check) return response.ok ? sanitizeAutonomy(value.autonomy) : unknownAutonomy()
+    if (response.ok && value.ok === true && value.observation_only === true && value.decision_completed === false &&
+        ['requested', 'already_requested'].includes(value.status) && typeof value.producer_started === 'boolean') {
+      return { ok: true, status: value.status, observation_only: true, producer_started: value.producer_started,
+        decision_completed: false, note: value.status === 'requested'
+          ? '已请求主 agent 检查；观察提交不代表活动或发送已完成' : '已有检查请求，没有重复启动' }
+    }
+  } catch { }
+  if (!check) return unknownAutonomy()
+  return { ok: false, error: '主 agent 调度状态未确认，检查未提交' }
+}
+
+export function decorateAutonomyComponents(state, autonomy) {
+  return { ...state, autonomy, components: (state.components || []).map(row =>
+    ['lifeloop', 'mind'].includes(row.tag) && autonomy.mode !== 'legacy'
+      ? { ...row, kind: 'timer', managed_by: 'main_agent', control: 'request_check', status: autonomy.status, autonomy }
+      : autonomy.mode !== 'legacy' && RETIRED_UNIFIED.has(row.tag) ? { ...row, control: 'retired' } : row) }
+}
+
+export async function componentAction(runtime, body, deps = {}) {
+  const target = String(body.target || ''), op = String(body.op || 'run')
+  const mode = runtimeDecisionMode(runtime)
+  if (mode !== 'legacy' && ['lifeloop', 'mind'].includes(target)) {
+    if (!['run', 'start', 'restart', 'check'].includes(op)) throw new Error('统一模式只能请求检查，不停止主 agent')
+    return (deps.autonomy || panelAutonomy)(runtime, { check: true })
+  }
+  if (mode !== 'legacy' && RETIRED_UNIFIED.has(target)) throw new Error('统一模式已停用这个独立循环')
+  if (op === 'stop') return { ok: true, stopped: await (deps.stop || stopComponent)(target) }
+  if (!['run', 'start', 'restart'].includes(op)) throw new Error('Unsupported component action')
+  const script = SCRIPTS[target]
+  if (!script) throw new Error('这个部件不能由面板操作：' + target)
+  return { ok: true, ran: script,
+    pid: await (deps.launch || launchScript)(script, runtime.napcatDir, runtime.pythonExecutable || runtime.project.pythonExecutable || 'python') }
+}
+
 function readText(file) {
   try { return fs.readFileSync(file, 'utf8').trim() } catch { return '' }
 }
@@ -164,6 +245,10 @@ async function collectState() {
 }
 
 export async function launchScript(script, napcatDir, pythonExecutable = 'python') {
+  if (/^(?:lifeloop|voicedaemon|(?:lanya|dafeiyu)-(?:supervisor|tick))\.ps1$/i.test(script) &&
+      runtimeDecisionMode(resolveRuntime({ workDir: path.dirname(napcatDir) })) !== 'legacy') {
+    throw new Error('统一模式已停用这个独立循环')
+  }
   const full = path.join(napcatDir, script)
   if (!fs.existsSync(full)) throw new Error('\u627e\u4e0d\u5230 ' + script)
   const isPython = script.endsWith('.py')
@@ -261,6 +346,9 @@ pre{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10
 <script>
 const $ = (id) => document.getElementById(id);
 function cls(n){ return n === 0 ? 'off' : (n > 1 ? 'warn' : 'on'); }
+function managedLabel(a){ return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
+  processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[a.status] || '主 agent 调度状态未确认'; }
+let actionPending = false;
 
 async function refresh(){
   try{
@@ -278,14 +366,21 @@ async function refresh(){
     tb.innerHTML = '';
     for (const c of s.components){
       const tr = document.createElement('tr');
+      const managed = c.control === 'request_check';
+      const state = managed ? managedLabel(c.autonomy || {}) : c.desc;
+      const color = managed ? ((c.autonomy || {}).can_request_check ? 'on' : 'warn') : cls(c.count);
+      const controls = managed ? '<button data-t="' + c.tag + '" data-op="check"' +
+        (actionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>' :
+        c.control === 'retired' ? '统一模式已停用独立循环' :
+        '<button data-t="' + c.tag + '" data-op="start">启动</button> ' +
+        '<button class="danger" data-t="' + c.tag + '" data-op="stop">停止</button>';
       const aged = c.aging > 0 ? ' <span class="dot bad"></span>' : '';
       tr.innerHTML =
-        '<td><span class="dot ' + cls(c.count) + '"></span>' + c.tag + aged + '</td>' +
-        '<td class="muted">' + c.desc + '</td>' +
+        '<td><span class="dot ' + color + '"></span>' + c.tag + aged + '</td>' +
+        '<td class="muted">' + state + '</td>' +
         '<td class="num">' + c.count + '</td>' +
         '<td class="num">' + c.mb + '</td>' +
-        '<td><button data-t="' + c.tag + '" data-op="start">启动</button> ' +
-        '<button class="danger" data-t="' + c.tag + '" data-op="stop">停止</button></td>';
+        '<td>' + controls + '</td>';
       tb.appendChild(tr);
     }
     tb.querySelectorAll('button').forEach(b => { b.onclick = () => act(b.dataset.t, b.dataset.op); });
@@ -293,14 +388,18 @@ async function refresh(){
 }
 
 async function act(target, op){
+  if(actionPending) return;
+  actionPending = true;
   $('out').textContent = '执行 ' + (op || 'run') + ' ' + target + ' …';
   try{
     const r = await fetch('/dsh-lanya/api/action', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({ target, op: op || 'run' })
     });
-    $('out').textContent = JSON.stringify(await r.json(), null, 2);
+    const j = await r.json();
+    $('out').textContent = j.observation_only ? j.note : JSON.stringify(j, null, 2);
   }catch(e){ $('out').textContent = '失败：' + e.message; }
+  actionPending = false;
   refresh();
 }
 
@@ -723,7 +822,13 @@ export function apply(ctx, config = {}) {
     route('/dsh-lanya/index.html', html)
 
     route('/dsh-lanya/api/state', async (req, res) => {
-      try { sendJson(res, 200, await collectState()) }
+      try {
+        const current = resolveRuntime(config)
+        const autonomy = runtimeDecisionMode(current) === 'legacy'
+          ? { mode: 'legacy', managed_by: 'legacy_task', status: 'legacy', reason: 'legacy_mode', can_request_check: false }
+          : await panelAutonomy(current)
+        sendJson(res, 200, decorateAutonomyComponents(await collectState(), autonomy))
+      }
       catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }) }
     })
 
@@ -732,10 +837,8 @@ export function apply(ctx, config = {}) {
       const target = String(body.target || '')
       const op = String(body.op || 'run')
       try {
-        if (op === 'stop') { sendJson(res, 200, { ok: true, stopped: await stopComponent(target) }); return }
-        const script = SCRIPTS[target]
-        if (!script) throw new Error('\u8fd9\u4e2a\u90e8\u4ef6\u4e0d\u80fd\u7531\u9762\u677f\u64cd\u4f5c\uff1a' + target)
-        sendJson(res, 200, { ok: true, ran: script, pid: await launchScript(script, NAPCAT_DIR, config.pythonExecutable || 'python') })
+        const result = await componentAction({ ...resolveRuntime(config), pythonExecutable: config.pythonExecutable }, { target, op })
+        sendJson(res, result.ok ? 200 : 409, result)
       } catch (e) {
         sendJson(res, 400, { ok: false, error: String((e && e.message) || e) })
       }

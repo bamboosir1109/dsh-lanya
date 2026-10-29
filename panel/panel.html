@@ -859,7 +859,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="stats">
     <div class="stat"><div class="k">今天花的</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">上限 —</div></div>
-    <div class="stat"><div class="k">最近说过</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
+    <div class="stat"><div class="k">自主调度状态</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
   </div>
 
   <div class="card">
@@ -881,10 +881,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
 
   <div class="card">
-    <h3>她刚才在做什么</h3>
-    <p class="note">最近 12 条记录，倒序。每 15 分钟她会醒一次。</p>
+    <h3>自主活动检查</h3>
+    <p class="note">主 agent 根据观察决定是否行动。请求检查不代表已开始活动或发送消息。</p>
     <div class="filelist" id="liveLog"></div>
-    <div class="btnrow"><button onclick="loadLive()">刷新</button></div>
+    <div class="btnrow"><button id="liveCheck" onclick="doAction('lifeloop','actOut')" disabled>请求检查</button><button onclick="loadLive()">刷新</button></div>
   </div>
 </div>
 
@@ -1145,23 +1145,35 @@ function num(id){
 function fmtSize(n){ return n<1024 ? n+' B' : (n<1048576 ? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(1)+' MB'); }
 function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 
+let componentActionPending = false;
+function autonomyLabel(a){
+  return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
+    processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',
+    offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[(a || {}).status] || '主 agent 调度状态未确认';
+}
 async function doAction(target, outId){
+  if(componentActionPending) return;
+  componentActionPending = true;
   const oid = outId || 'ovOut';
   show(oid, '正在执行：' + target + ' …');
   try{
     const j = await api('/action', { method:'POST', headers:{'content-type':'application/json'},
                                      body: JSON.stringify({ target }) });
-    if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
+    if(j.ok && j.observation_only) show(oid, j.note || '检查请求已提交；活动是否执行由主 agent 决定。');
+    else if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
     else if(j.ok && j.task) show(oid, '已触发：' + j.task + '\n几秒后状态会刷新。');
     else if(j.ok) show(oid, '已启动：' + target + '（进程 ' + j.pid + '）');
     else show(oid, '失败：' + (j.error || j.log || '未知原因'));
   }catch(e){ show(oid, '发不出去：' + e.message); }
+  componentActionPending = false;
+  if(target === 'lifeloop' || target === 'mind') { loadActivities(); loadLive(); }
   setTimeout(refreshOverview, 3000);
 }
 
 const PART = {
   groupwatch:['群监听','盯着群，决定要不要插话'],
   lifeloop:['自主活动','自己玩、上网、写东西'],
+  mind:['自主活动','主 agent 根据观察决定是否行动'],
   voicedaemon:['语音守护','把要说的话合成语音发出去'],
   browserd:['浏览器','她上网用的浏览器'],
   works:['作品站','她的游戏和小工具挂在这里'],
@@ -1202,9 +1214,7 @@ async function loadBrand(){
 
 async function refreshOverview(){
   try{
-    const r = await fetch('./lanya-state.json?t=' + Date.now(), { cache:'no-store' });
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const s = await r.json();
+    const s = await api('/state', null, true);
     const m = s.memory;
     setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
     setHtml('sMem', m.lanyaMb + '<small>MB</small>');
@@ -1228,15 +1238,18 @@ async function refreshOverview(){
     tb.innerHTML = '';
     comps.forEach(c => {
       const meta = PART[c.tag] || [c.tag, ''];
-      const cls = c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
+      const managed = c.control === 'request_check';
+      const cls = managed ? ((c.autonomy || {}).can_request_check ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
       const canStart = ['groupwatch','lifeloop','voicedaemon','browserd','works','tts'].indexOf(c.tag) >= 0;
-      const btn = canStart
+      const btn = managed
+        ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')"' + (componentActionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>'
+        : c.control === 'retired' ? '<span class="dsc">统一模式已停用独立循环</span>' : canStart
         ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')">' + (c.count>0?'重启':'启动') + '</button>'
         : '<span class="dsc">—</span>';
       const aging = c.aging > 0 ? ' <span style="color:#ff9b9b;font-size:11px">卡住 ' + c.aging + '</span>' : '';
       const tr = document.createElement('tr');
       tr.innerHTML = '<td><span class="dot ' + cls + '"></span><span class="nm">' + meta[0] + '</span>' + aging + '</td>'
-        + '<td class="dsc">' + meta[1] + '</td>'
+        + '<td class="dsc">' + (managed ? autonomyLabel(c.autonomy) : meta[1]) + '</td>'
         + '<td class="num">' + c.count + '</td>'
         + '<td class="num">' + c.mb + ' MB</td>'
         + '<td class="op">' + btn + '</td>';
@@ -1962,9 +1975,22 @@ async function loadLive(){
   try{
     const j = await api('/live', null, true);
     const l = j.live || {};
+    const check = $('liveCheck');
+    if(check) { check.hidden = !l.autonomy; check.disabled = componentActionPending || !(l.autonomy || {}).can_request_check; }
     if(l.money){
       setHtml('liveMoney', (l.money.spent ?? 0) + '<small>元</small>');
       setText('liveMoneySub', l.money.exhausted ? '今天花完了' : ('上限 ' + (l.money.limit ?? '—') + ' 元'));
+    }
+    if(l.autonomy){
+      const a = l.autonomy, o = a.observer || {};
+      setText('liveLast', autonomyLabel(a));
+      setText('liveLastAt', o.last_completed_at ? '上次观察处理于 ' + new Date(o.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
+      const rows = [autonomyLabel(a), '观察提交后，是否娱乐或会话由主 agent 决定。'];
+      if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
+      if(o.next_opportunity_at) rows.push('下次普通机会：' + new Date(o.next_opportunity_at).toLocaleString('zh-CN'));
+      const box = $('liveLog');
+      if(box){ box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); }); }
+      return;
     }
     setText('liveLast', (l.last || '还没说过什么').slice(0, 40));
     setText('liveLastAt', l.lastAt ? String(l.lastAt).slice(0, 16).replace('T', ' ') : '');

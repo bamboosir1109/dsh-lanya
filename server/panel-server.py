@@ -21,6 +21,10 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import stat
+import sqlite3
+import contextlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -134,6 +138,8 @@ SPECIAL = {
 
 
 def run_script(name):
+    if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
+        raise ValueError("Unified mode retires this independent loop; request a main-agent check")
     sp = SPECIAL.get(name)
     if sp:
         if not os.path.isfile(sp["script"]):
@@ -180,6 +186,256 @@ TASKS = {
     "works":       "DSH-Lanya-Works",
     "tts":         "DSH-Lanya-TTS",
 }
+
+
+_AUTONOMY_REQUEST_LOCK = threading.Lock()
+_AUTONOMY_REQUEST = {"at": 0.0, "process": None}
+_RETIRED_UNIFIED = frozenset(("lifeloop", "voicedaemon", "supervisor", "tick"))
+
+
+def decision_mode():
+    # Actions must not reuse cached legacy permission after a configuration change.
+    config = project_conf.load(reload=True)
+    decisions = config.get("decisions", {})
+    if not isinstance(decisions, dict):
+        raise ValueError("Invalid decision configuration")
+    mode = decisions.get("mode", "unified")
+    if mode not in ("unified", "legacy"):
+        raise ValueError("Invalid decision mode; independent activity refused")
+    return mode
+
+
+def _ordinary_metadata(path):
+    absolute = os.path.abspath(path)
+    current = absolute
+    while True:
+        if os.path.lexists(current):
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("Metadata link refused")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return absolute
+
+
+def _read_metadata(path, limit=1024 * 1024):
+    path = _ordinary_metadata(path)
+    before = os.stat(path)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+        raise ValueError("Invalid metadata file")
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    with open(path, "rb") as stream:
+        raw = stream.read(limit + 1)
+        if signature(os.fstat(stream.fileno())) != signature(before):
+            raise ValueError("Metadata changed")
+    if len(raw) != before.st_size or signature(os.stat(path)) != signature(before):
+        raise ValueError("Metadata changed")
+    value = json.loads(raw.decode("utf-8-sig"))
+    if not isinstance(value, dict):
+        raise ValueError("Metadata object required")
+    return value
+
+
+def _scheduler_owner_verified(pid, marker_at):
+    """Read-only Windows handle check; never use Python os.kill on Windows."""
+    if os.name != "nt" or not DSH_ROOT:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    api.OpenProcess.restype = wintypes.HANDLE
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    api.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    api.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+    handle = api.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False if ctypes.get_last_error() == 87 else None
+    try:
+        exit_code = wintypes.DWORD()
+        size = wintypes.DWORD(32768)
+        image = ctypes.create_unicode_buffer(size.value)
+        born, ended, kernel, user = (ctypes.c_uint64() for _ in range(4))
+        if (not api.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                or not api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size))
+                or not api.GetProcessTimes(handle, ctypes.byref(born), ctypes.byref(ended), ctypes.byref(kernel), ctypes.byref(user))):
+            return None
+        expected = os.path.normcase(os.path.join(DSH_ROOT, "DeepSeek Harness.exe"))
+        return (exit_code.value == 259 and os.path.normcase(image.value) == expected
+                and (born.value - 116444736000000000) // 10000 <= marker_at)
+    finally:
+        api.CloseHandle(handle)
+
+
+def _consumer_matches(pid):
+    file = _ordinary_metadata(os.path.join(DATA, "decision-inbox", "consumer.sqlite"))
+    if not os.path.isfile(file):
+        return False
+    if os.path.isfile(file + "-wal") and not os.path.isfile(file + "-shm"):
+        return None
+    from pathlib import Path
+    with contextlib.closing(sqlite3.connect(Path(file).as_uri() + "?mode=ro", uri=True, timeout=0.2, isolation_level=None)) as db:
+        deadline = time.monotonic() + 0.3
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+        db.execute("PRAGMA query_only=ON")
+        db.execute("BEGIN")
+        if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            return None
+        rows = db.execute("SELECT id,pid FROM consumer ORDER BY id LIMIT 3").fetchall()
+        db.rollback()
+    return rows == [(1, pid)]
+
+
+def _mind_metadata(value):
+    """Aggregate only control metadata; never return plan, scope or event IDs."""
+    version = value.get("decision_observers_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("Unknown observer metadata schema")
+    rows = value.get("decision_scopes", {}) if version == 2 else {"legacy": {
+        "pending": value.get("decision_pending"), "next_review_at": value.get("decision_next_review_at"),
+        "last_status": value.get("last_decision_status"), "next_opportunity_at": None,
+    }}
+    if not isinstance(rows, dict) or len(rows) > 128:
+        raise ValueError("Invalid observer metadata")
+    out = {"schema_version": version, "scope_count": len(rows), "pending_count": 0,
+           "scheduled_review_count": 0, "unknown_count": 0, "last_completed_at": None,
+           "next_review_at": None, "next_opportunity_at": None}
+    for key, row in rows.items():
+        if (not isinstance(row, dict) or version == 2 and
+                (not isinstance(key, str) or re.fullmatch(r"(?:private|group):[1-9][0-9]*", key) is None)):
+            raise ValueError("Invalid observer owner metadata")
+        if row.get("pending") is not None:
+            if not isinstance(row["pending"], dict):
+                raise ValueError("Invalid pending metadata")
+            out["pending_count"] += 1
+        status = row.get("last_status")
+        if status not in (None, "decided", "sent", "unknown", "suppressed"):
+            raise ValueError("Invalid decision status")
+        out["unknown_count"] += int(status == "unknown")
+        for field in ("last_completed_at", "next_review_at", "next_opportunity_at"):
+            when = row.get(field)
+            if when is not None:
+                if type(when) is not int or not 0 <= when <= 9007199254740991:
+                    raise ValueError("Invalid observer timestamp")
+                previous = out[field]
+                out[field] = when if previous is None else (max(previous, when) if field == "last_completed_at" else min(previous, when))
+        out["scheduled_review_count"] += int(row.get("next_review_at") is not None)
+    return out
+
+
+def autonomy_snapshot(now=None, owner_probe=None):
+    result = {"mode": "unknown", "managed_by": "main_agent", "status": "unknown",
+              "reason": "metadata_unavailable", "can_request_check": False}
+    try:
+        mode = decision_mode()
+        result["mode"] = mode
+        if mode == "legacy":
+            return dict(result, managed_by="legacy_task", status="legacy", reason="legacy_mode")
+        stamp = _read_metadata(os.path.join(NAPCAT, "scheduler-in-plugin.flag"), 65536)
+        pid, at, jobs = stamp.get("pid"), stamp.get("at"), stamp.get("jobs")
+        if (stamp.get("version") != 2 or type(pid) is not int or not 0 < pid <= 0xffffffff
+                or type(at) is not int or not isinstance(jobs, list) or "mind" not in jobs
+                or len(jobs) > 64 or not all(isinstance(job, str) and len(job) <= 128 for job in jobs)):
+            return dict(result, reason="scheduler_metadata_invalid")
+        age = ((time.time() if now is None else now) * 1000 - at) / 1000
+        if not -5 <= age <= 120:
+            return dict(result, status="offline", reason="scheduler_stale")
+        owner = (owner_probe or _scheduler_owner_verified)(pid, at)
+        if owner is not True:
+            return dict(result, status="offline" if owner is False else "unknown", reason="scheduler_owner_unverified")
+        lease = _consumer_matches(pid)
+        if lease is not True:
+            return dict(result, status="offline" if lease is False else "unknown", reason="consumer_owner_unverified")
+        mind_file = os.path.join(DATA, "mind.json")
+        summary = _mind_metadata(_read_metadata(mind_file) if os.path.isfile(mind_file) else {})
+        if summary["scheduled_review_count"]:
+            status, reason = "scheduled", "main_review_scheduled"
+        elif summary["pending_count"]:
+            status, reason = "processing", "decision_pending"
+        elif summary["unknown_count"]:
+            status, reason = "uncertain", "previous_outcome_unknown"
+        else:
+            status, reason = "waiting", "waiting_for_opportunity"
+        return dict(result, status=status, reason=reason, can_request_check=True,
+                    scheduler_verified=True, consumer_verified=True, observer=summary)
+    except (OSError, ValueError, TypeError, sqlite3.Error, project_conf.ConfigError):
+        return result
+
+
+def decorate_autonomy_components(components, status):
+    output = []
+    for original in components:
+        row = dict(original)
+        if row.get("tag") in ("lifeloop", "mind") and status.get("mode") != "legacy":
+            row.update(kind="timer", managed_by="main_agent", autonomy=status,
+                       control="request_check", status=status["status"])
+        elif row.get("tag") in _RETIRED_UNIFIED and status.get("mode") != "legacy":
+            row["control"] = "retired"
+        output.append(row)
+    return output
+
+
+def request_autonomy_check():
+    global _AUTONOMY_REQUEST
+    status = autonomy_snapshot()
+    if status.get("mode") != "unified" or status.get("can_request_check") is not True:
+        return {"ok": False, "code": "autonomy_unavailable", "error": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4\uff0c\u672a\u542f\u52a8\u65e7\u5faa\u73af", "autonomy": status}
+    with _AUTONOMY_REQUEST_LOCK:
+        now = time.monotonic()
+        previous = _AUTONOMY_REQUEST["process"]
+        if previous is not None and (previous.poll() is None or now - _AUTONOMY_REQUEST["at"] < 15):
+            return {"ok": True, "status": "already_requested", "observation_only": True,
+                    "producer_started": False, "decision_completed": False,
+                    "note": "\u5df2\u6709\u68c0\u67e5\u8bf7\u6c42\uff0c\u6ca1\u6709\u91cd\u590d\u542f\u52a8"}
+        script = _ordinary_metadata(os.path.join(NAPCAT, "mind.py"))
+        if not os.path.isfile(script):
+            return {"ok": False, "code": "observer_missing", "error": "mind.py \u89c2\u5bdf\u751f\u4ea7\u8005\u4e0d\u5b58\u5728"}
+        try:
+            process = subprocess.Popen([str(project_conf.get("pythonExecutable", sys.executable) or sys.executable), script, "--force", "--observe-only"],
+                                       cwd=NAPCAT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError:
+            return {"ok": False, "code": "observer_start_failed", "error": "\u89c2\u5bdf\u751f\u4ea7\u8005\u542f\u52a8\u5931\u8d25\uff0c\u6ca1\u6709\u6267\u884c\u6d3b\u52a8"}
+        _AUTONOMY_REQUEST = {"at": now, "process": process}
+        return {"ok": True, "status": "requested", "observation_only": True,
+                "producer_started": True, "decision_completed": False,
+                "note": "\u5df2\u8bf7\u6c42\u4e3b agent \u68c0\u67e5\u3002\u53ea\u63d0\u4ea4\u89c2\u5bdf\uff0c\u4e0d\u4ee3\u8868\u5df2\u5f00\u59cb\u6d3b\u52a8\u6216\u53d1\u9001\u6d88\u606f"}
+
+
+def autonomy_label(status):
+    return {"waiting": "\u4e3b agent \u6258\u7ba1\uff0c\u7b49\u5f85\u81ea\u4e3b\u673a\u4f1a", "scheduled": "\u4e3b agent \u6258\u7ba1\uff0c\u5df2\u7ea6\u590d\u67e5",
+            "processing": "\u4e3b agent \u6258\u7ba1\uff0c\u89c2\u5bdf\u5f85\u5904\u7406", "uncertain": "\u4e3b agent \u6258\u7ba1\uff0c\u4e0a\u6b21\u7ed3\u679c\u672a\u77e5",
+            "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u65e7\u7248\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
+
+
+def panel_state_snapshot():
+    try:
+        value = _read_metadata(os.path.join(ROOT, "lanya-state.json"), 4 * 1024 * 1024)
+    except (OSError, ValueError, TypeError):
+        value = {"at": None, "memory": {}, "components": [], "plugins": []}
+    status = autonomy_snapshot()
+    value["autonomy"] = status
+    value["components"] = decorate_autonomy_components(value.get("components") or [], status)
+    return value
+
+
+def control_action(body):
+    target, op = str(body.get("target") or ""), str(body.get("op") or "run")
+    if target in ("lifeloop", "mind"):
+        mode = decision_mode()
+        if mode != "legacy":
+            if op not in ("run", "start", "restart", "check"):
+                return {"ok": False, "error": "\u7edf\u4e00\u6a21\u5f0f\u53ea\u63a5\u53d7\u8bf7\u6c42\u68c0\u67e5\uff0c\u4e0d\u505c\u6b62\u4e3b agent"}
+            return request_autonomy_check()
+    if op not in ("run", "start", "restart"):
+        return {"ok": False, "error": "Unsupported component action"}
+    result = run_task(target)
+    if result is not None:
+        return result
+    return {"ok": True, "pid": run_script(target)}
 
 
 
@@ -293,7 +549,31 @@ def tools_snapshot():
     return [tool_status(x) for x in TOOLS]
 
 
+def decode_task_output(raw, oem_encoding=None):
+    """schtasks writes the Windows OEM codepage, not UTF-8."""
+    if not raw:
+        return ""
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        encoding = "utf-16"
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    else:
+        if oem_encoding is None:
+            if os.name == "nt":
+                import ctypes
+                oem_encoding = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
+            else:
+                oem_encoding = "utf-8"
+        encoding = oem_encoding
+    try:
+        return raw.decode(encoding, "strict").strip()
+    except (UnicodeError, LookupError):
+        return "Windows task output could not be decoded (" + encoding + ")"
+
+
 def run_task(name):
+    if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
+        raise ValueError("Unified mode retires this scheduled task; request a main-agent check")
     task = TASKS.get(name)
     if not task:
         return None
@@ -304,8 +584,7 @@ def run_task(name):
     )
     ok = p.returncode == 0
     return {"ok": ok, "task": task,
-            "log": (p.stdout or b"").decode("utf-8", "replace").strip()
-                   or (p.stderr or b"").decode("utf-8", "replace").strip()}
+            "log": decode_task_output(p.stdout) or decode_task_output(p.stderr)}
 
 
 
@@ -963,7 +1242,8 @@ def meme_groups():
 
 _ACT_LABEL = {
     "groupwatch": ("\u81ea\u5df1\u6c34\u7fa4", "\u76ef\u7740\u7c89\u4e1d\u7fa4\uff0c\u89c9\u5f97\u8be5\u8bf4\u8bdd\u5c31\u63d2\u4e00\u53e5"),
-    "lifeloop": ("\u81ea\u5df1\u8fc7\u65e5\u5b50", "\u6bcf 15 \u5206\u949f\u9192\u4e00\u6b21\uff0c\u81ea\u5df1\u627e\u70b9\u4e8b\u505a"),
+    "lifeloop": ("\u81ea\u5df1\u8fc7\u65e5\u5b50", "\u81ea\u5df1\u5b89\u6392\u6d3b\u52a8\uff0c\u662f\u5426\u6267\u884c\u7531\u5f53\u524d\u8c03\u5ea6\u6a21\u5f0f\u51b3\u5b9a"),
+    "mind": ("\u81ea\u4e3b\u6d3b\u52a8", "\u4e3b agent \u6839\u636e\u89c2\u5bdf\u51b3\u5b9a\u662f\u5426\u884c\u52a8"),
     "voicedaemon": ("\u53d1\u8bed\u97f3", "\u628a\u8981\u8bf4\u7684\u8bdd\u5408\u6210\u8bed\u97f3\u53d1\u51fa\u53bb"),
     "tts": ("\u8bed\u97f3\u5f15\u64ce", "\u672c\u5730\u5408\u6210\u58f0\u97f3"),
     "browserd": ("\u4e0a\u7f51\u901b", "\u7528\u6d4f\u89c8\u5668\u770b\u7f51\u9875\u3001\u8bfb\u6587\u7ae0"),
@@ -1161,7 +1441,7 @@ def scheduled_tasks():
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
             capture_output=True, timeout=40,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        text = (p.stdout or b"").decode("mbcs", "replace")
+        text = decode_task_output(p.stdout)
     except Exception:
         return []
     # 中文 Windows 下 schtasks 的表头是中文，DictReader 靠列名取不到，
@@ -1292,6 +1572,10 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/autonomy":
+            return self._json(200, {"ok": True, "autonomy": autonomy_snapshot()})
+        if path == "/api/state":
+            return self._json(200, panel_state_snapshot())
         if path in ("/api/android/status", "/api/android/shot"):
             try:
                 from android_panel import AndroidPanel, PanelAndroidError
@@ -1573,6 +1857,8 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 st3 = {}
 
+            autonomy = autonomy_snapshot()
+            data["autonomy"] = autonomy
             def comp_count(tag):
                 c = st3.get(tag)
                 return int(c.get("count") or 0) if c else 0
@@ -1586,6 +1872,10 @@ class Handler(SimpleHTTPRequestHandler):
                     okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
                     a["ready"] = okcred
                     a["why"] = "B 站已登录" if okcred else "还没登录 B 站（去刷 B 站页扫码）"
+                elif b in ("lifeloop", "mind") and autonomy["mode"] != "legacy":
+                    a["ready"] = autonomy["can_request_check"]
+                    a["why"] = autonomy_label(autonomy)
+                    a["managed_by"] = "main_agent"
                 elif b:
                     n = comp_count(b)
                     a["ready"] = n > 0
@@ -1599,6 +1889,18 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/live":
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
             out = {"log": [], "last": "", "lastAt": "", "nextIn": ""}
+            autonomy = autonomy_snapshot()
+            if autonomy["mode"] != "legacy":
+                # Old Life logs are not evidence of current main-agent activity.
+                out["autonomy"] = autonomy
+                out["statusLabel"] = autonomy_label(autonomy)
+                try:
+                    budget = _read_metadata(BUDGET)
+                    out["money"] = {key: budget.get(key, False if key == "exhausted" else 0)
+                                    for key in ("spent", "limit", "exhausted")}
+                except (OSError, ValueError, TypeError):
+                    pass
+                return self._json(200, {"ok": True, "live": out})
             try:
                 lf = tail_file(os.path.join(LANYA_DIR_, "lifeloop.log"), 12)
                 out["log"] = [x.strip() for x in (lf or "").splitlines() if x.strip()]
@@ -1883,6 +2185,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._android_post()
             except Exception as error:
                 return self._android_error(error)
+        if path == "/api/autonomy/check":
+            try:
+                size = int(self.headers.get("content-length", "0"))
+                if not 0 <= size <= 1024:
+                    raise ValueError()
+                raw = self.rfile.read(size)
+                body = json.loads(raw.decode("utf-8")) if size else {}
+                if not isinstance(body, dict) or body:
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                return self._json(400, {"ok": False, "error": "Check request takes no owner or event parameters"})
+            result = request_autonomy_check()
+            return self._json(200 if result["ok"] else 409, result)
         body = self._read()
 
         if path == "/api/memory/consolidate":
@@ -2113,6 +2428,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/action":
+            if not isinstance(body, dict):
+                return self._json(400, {"ok": False, "error": "Invalid component action"})
             target = str(body.get("target") or "")
             # NapCat 注入必须提权，否则 napimain 什么都不做。与其静默失败，
             # 不如直接弹 UAC 让用户点一下——这是唯一合法的路径。
@@ -2124,13 +2441,8 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception as e:
                     return self._json(500, {"ok": False, "error": str(e)})
             try:
-                # 能映射到计划任务的，走任务（无窗口）；其余才直接起脚本。
-                tr = run_task(target)
-                if tr is not None:
-                    return self._json(200 if tr["ok"] else 500,
-                                      {"ok": tr["ok"], "task": tr["task"], "log": tr["log"]})
-                pid = run_script(target)
-                return self._json(200, {"ok": True, "pid": pid})
+                result = control_action(body)
+                return self._json(200 if result["ok"] else 409, result)
             except Exception as e:
                 return self._json(400, {"ok": False, "error": str(e)})
 
