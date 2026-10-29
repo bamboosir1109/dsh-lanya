@@ -18,8 +18,9 @@ Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness�
 | [真实安卓](docs/ANDROID.md) | 模拟器前提、固定设备、截图与动作校验 |
 | [已知限制](docs/LIMITATIONS.md) | 外部依赖、当前边界、尚未验证的能力 |
 | [更新日志](CHANGELOG.md) | 版本变化；未发布改动单独列出 |
+| [开发日志](docs/DEVLOG.md) | 按日期记录实现、验证、部署和剩余验收，保留早期排查笔记 |
 
-[DEVLOG](https://github.com/bamboosir1109/dsh-lanya/blob/main/docs/DEVLOG.md) 和 [QQ 分段补丁记录](docs/PATCH-qq-burst.md) 保留历史排查过程；执行当前安装或运维时，以以上当前手册和代码为准。
+[开发日志中的早期记录](docs/DEVLOG.md#早期排查记录) 和 [QQ 分段补丁记录](docs/PATCH-qq-burst.md) 保留当时的排查过程；执行当前安装或运维时，以以上当前手册和代码为准。
 
 ## 能做什么
 
