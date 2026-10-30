@@ -5,8 +5,9 @@
 #   $p = Get-ProjectConfValue 'panelStaticPort' 19388
 #   $s = Get-ProjectConfValue 'daemon.pollSeconds' 60
 #
-# If config/project.json is missing or unreadable the built-in defaults below are
-# used, so a missing file never changes behaviour -- only an edited one does.
+# Defaults apply only when no candidate exists. An explicit missing override or
+# an unreadable/invalid first existing file stops activity, never falls back to
+# a lower-priority legacy sender configuration.
 #
 # ASCII-ONLY ON PURPOSE. Windows PowerShell 5.1 decodes a BOM-less .ps1 as ANSI,
 # so any non-ASCII byte in here is a syntax error waiting to happen. The Chinese
@@ -33,32 +34,56 @@ $script:ProjectConfDefaults = @{
     budget          = @{
         dailyLimit = 1.0
     }
+    mind            = @{
+        opportunityMin = 6
+    }
+    decisions       = @{
+        mode = 'unified'
+        agentPreset = ''
+    }
 }
 
 $script:ProjectConfCache = $null
+$script:ProjectConfSelectedPath = $null
+$script:ProjectConfHere = $PSScriptRoot
 
-function Get-ProjectConfPath {
+function Get-ProjectWorkDir {
+    if ($env:LANYA_WORKDIR) { return [IO.Path]::GetFullPath($env:LANYA_WORKDIR) }
+    $project = $script:ProjectConfHere
+    if ((Split-Path -Leaf $project) -in @('scripts', 'server')) {
+        $project = Split-Path -Parent $project
+    }
+    return (Split-Path -Parent $project)
+}
+
+function Get-ProjectDataDir {
+    return (Join-Path (Get-ProjectWorkDir) ([string](Get-ProjectConfValue 'dataDirName')))
+}
+
+function Get-ProjectConfCandidates {
     # Where project.json may live. Repo layout has scripts/ and server/ one level
     # below the root; the installed flat layout has the scripts in napcat/.
     # Try both, never hardcode a drive.
-    $here = $PSScriptRoot
-    if (-not $here) {
-        try { $here = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { $here = '' }
-    }
+    $here = $script:ProjectConfHere
     $cands = @()
     if ($env:LANYA_PROJECT_CONFIG) { $cands += $env:LANYA_PROJECT_CONFIG }
     if ($here) {
-        $up1 = Split-Path -Parent $here
-        $up2 = if ($up1) { Split-Path -Parent $up1 } else { '' }
-        foreach ($b in @($here, $up1, $up2)) {
+        $workspace = Get-ProjectWorkDir
+        $bases = @($here, $workspace)
+        if ((Split-Path -Leaf $here) -in @('scripts', 'server')) {
+            $bases = @((Split-Path -Parent $here), $workspace, $here)
+        }
+        foreach ($b in $bases) {
             if ($b) { $cands += (Join-Path $b 'config\project.json') }
         }
     }
     if ((Get-Location).Path) { $cands += (Join-Path (Get-Location).Path 'config\project.json') }
-    foreach ($p in $cands) {
-        if (Test-Path -LiteralPath $p) { return $p }
-    }
-    return $null
+    return @($cands | Select-Object -Unique)
+}
+
+function Get-ProjectConfPath {
+    $null = Get-ProjectConf
+    return $script:ProjectConfSelectedPath
 }
 
 function ConvertTo-ProjectConfTable($Node) {
@@ -104,25 +129,44 @@ function Get-ProjectConf {
         Returns the project config as a nested hashtable, with the built-in
         defaults filling any key the file does not set. Cached per runspace.
     #>
-    if ($null -ne $script:ProjectConfCache) { return $script:ProjectConfCache }
+    param([switch]$Reload)
+    if (-not $Reload -and $null -ne $script:ProjectConfCache) { return $script:ProjectConfCache }
+    # A failed reload must revoke any old cached legacy authority.
+    $script:ProjectConfCache = $null
     $fileData = @{}
-    $path = Get-ProjectConfPath
-    if ($path) {
+    $script:ProjectConfSelectedPath = $null
+    try {
+        $explicit = if ($env:LANYA_PROJECT_CONFIG) { [IO.Path]::GetFullPath($env:LANYA_PROJECT_CONFIG) } else { $null }
+        $candidates = Get-ProjectConfCandidates
+    } catch { Throw-ProjectConfigError }
+    foreach ($path in $candidates) {
         try {
-            $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
-            if ($raw -and $raw.Trim() -ne '') {
-                $obj = $raw | ConvertFrom-Json
-                $conv = ConvertTo-ProjectConfTable $obj
-                if ($conv -is [System.Collections.IDictionary]) { $fileData = $conv }
+            if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) {
+                if ($explicit -and [IO.Path]::GetFullPath($path) -eq $explicit) { Throw-ProjectConfigError }
+                continue
             }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop)) { Throw-ProjectConfigError }
+            # Get-Content can silently replace invalid UTF-8 bytes. Reject
+            # encoding corruption rather than accepting a changed config.
+            $raw = ([Text.UTF8Encoding]::new($false, $true)).GetString([IO.File]::ReadAllBytes($path)).TrimStart([char]0xFEFF)
+            if (-not $raw -or -not $raw.TrimStart().StartsWith('{')) { Throw-ProjectConfigError }
+            $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $obj -or $obj.GetType().FullName -ne 'System.Management.Automation.PSCustomObject') { Throw-ProjectConfigError }
+            $fileData = ConvertTo-ProjectConfTable $obj
+            $script:ProjectConfSelectedPath = [IO.Path]::GetFullPath($path)
+            break
         }
-        catch {
-            # A broken file must not take the machine down - fall back to defaults.
-            $fileData = @{}
-        }
+        catch { Throw-ProjectConfigError }
     }
     $script:ProjectConfCache = Merge-ProjectConfTable $script:ProjectConfDefaults $fileData
     return $script:ProjectConfCache
+}
+
+function Throw-ProjectConfigError {
+    # No parser exception, private JSON excerpt or config pathname is exposed.
+    $exception = [System.InvalidOperationException]::new('Project configuration invalid or unavailable; activity refused')
+    throw [System.Management.Automation.ErrorRecord]::new(
+        $exception, 'ConfigError', [System.Management.Automation.ErrorCategory]::InvalidData, $null)
 }
 
 function Get-ProjectConfValue {
@@ -149,8 +193,11 @@ function Get-ProjectConfValue {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    # Run directly: print what is in effect, handy when checking a machine.
-    $p = Get-ProjectConfPath
-    Write-Output ('config: ' + $(if ($p) { $p } else { '(none - using defaults)' }))
-    Get-ProjectConf | ConvertTo-Json -Depth 6
+    try {
+        $null = Get-ProjectConf
+        Write-Output 'project_config_ok'
+    } catch {
+        Write-Error 'ConfigError: project configuration unavailable; activity refused' -ErrorAction Continue
+        exit 1
+    }
 }

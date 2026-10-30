@@ -24,17 +24,21 @@
 5. `$args` / `$input` / `$this` / `$matches` 被当参数名
 6. 只赋值不使用的变量
 7. `catch { }` 完全静默吞错
-8. 硬编码的真实业务号（QQ / 群 / token）
-9. 写文件后没有回读验证
+8. 源码身份字段硬编码数字账号（完整隐私扫描另用 privacy-scan.py）
 
 用法
 ----
     python fullcheck.py
     python fullcheck.py --quiet     只报问题
+    python fullcheck.py --root <source-tree>
+    python fullcheck.py --live --root <installed-napcat>
 """
+import argparse
 import io
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -43,15 +47,18 @@ try:
 except Exception:
     pass
 
-LIVE = r"<WORKDIR>\napcat"
-REPO = r"<WORKDIR>\dsh-lanya"
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE) if os.path.basename(HERE).lower() in ("scripts", "tests") else HERE
+REPORT_ROOT = REPO
+LIVE_MODE = False
 
 # 这些都是「看起来有值、其实是别人的账号」的形状
 PLACEHOLDER = re.compile(
     r"=\s*['\"](YOUR_[A-Z_]+|BOT_QQ|PLACEHOLDER|<[A-Z_]+>)['\"]")
 # 真实业务标识（线上文件里出现是正常的，仓库里出现是泄露）
-REAL_ID = re.compile(r"\b(?:YOUR_ADMIN_QQ|YOUR_ADMIN_QQ|BOT_QQ|YOUR_GROUP_ID|"
-                     r"AVOIDED_QQ|FRIEND_QQ)\b")
+REAL_ID = re.compile(
+    r"(?i)\b(?:adminQQ|botQQ|selfId|fanGroupQQ|group_?id|user_?id|adminUsers)"
+    r"\b['\"]?\s*[:=]\s*(?:\[\s*)?['\"]?\d{5,11}\b")
 AUTOVARS = ("args", "input", "this", "matches", "error", "host", "pwd")
 # 这几个前缀的变量是 PowerShell/DSH 自己的，不要算死变量
 IGNORE_VARS = {"root", "workDir", "here", "PSScriptRoot", "PSCommandPath",
@@ -61,17 +68,24 @@ IGNORE_VARS = {"root", "workDir", "here", "PSScriptRoot", "PSCommandPath",
 
 problems = []
 notes = []
+_PS_AST = {}
 
 
 def add(kind, path, line, msg):
-    problems.append((kind, os.path.relpath(path, r"<WORKDIR>"), line, msg))
+    problems.append((kind, display_path(path), line, msg))
+
+
+def display_path(path):
+    return os.path.relpath(path, REPORT_ROOT)
 
 
 def read(p):
     try:
-        return io.open(p, encoding="utf-8", errors="ignore").read()
-    except Exception:
-        return ""
+        with io.open(p, encoding="utf-8-sig") as fh:
+            return fh.read()
+    except (OSError, UnicodeError) as e:
+        add("读取失败", p, 0, str(e)[:100])
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -79,29 +93,52 @@ def read(p):
 # ---------------------------------------------------------------------------
 def check_syntax(p, s):
     if p.endswith(".ps1"):
-        ps = ("$e=$null;$t=$null;"
-              "[System.Management.Automation.Language.Parser]::ParseFile("
-              "'%s',[ref]$t,[ref]$e)|Out-Null;"
-              "if($e){'L'+$e[0].Extent.StartLineNumber+': '+$e[0].Message}" % p)
+        ps = ("[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+              "$e=$null;$t=$null;"
+              "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+              "'%s',[ref]$t,[ref]$e);" % p.replace("'", "''"))
+        ps += (
+            "$defs=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)"
+            "|ForEach-Object {@{name=$_.Name;line=$_.Extent.StartLineNumber}});"
+            "$calls=@();foreach($cmd in $ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true)){"
+            "$ancestor=$cmd.Parent;$deferred=$false;while($ancestor){"
+            "if($ancestor -is [System.Management.Automation.Language.FunctionDefinitionAst]){$deferred=$true;break};"
+            "$ancestor=$ancestor.Parent};if(-not $deferred){"
+            "$calls+=@{name=$cmd.GetCommandName();line=$cmd.Extent.StartLineNumber}}};"
+            "@{errors=@($e|ForEach-Object {@{line=$_.Extent.StartLineNumber;message=$_.Message}});"
+            "definitions=$defs;commands=$calls}|ConvertTo-Json -Compress -Depth 5")
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, text=True, timeout=90)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
         out = (r.stdout or "").strip()
-        if out:
-            add("语法", p, out.split(":")[0], out[:120])
+        if r.returncode:
+            add("检查器", p, 0, "PowerShell parser failed: " + (r.stderr or "")[:100])
+            return
+        try:
+            info = json.loads(out)
+        except (ValueError, TypeError):
+            add("检查器", p, 0, "PowerShell parser returned no usable AST")
+            return
+        _PS_AST[p] = info
+        for error in info.get("errors") or []:
+            add("语法", p, error.get("line", 0), str(error.get("message", ""))[:120])
     elif p.endswith(".py"):
         try:
             compile(s, p, "exec")
         except SyntaxError as e:
             add("语法", p, e.lineno or 0, str(e.msg)[:100])
     elif p.endswith((".js", ".mjs")):
-        node = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-runtimes",
-                            "dsh-primary-runtime", "dependencies", "node",
-                            "bin", "node.exe")
-        if os.path.isfile(node):
+        node = shutil.which("node")
+        if not node:
+            bundled = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-runtimes",
+                                  "dsh-primary-runtime", "dependencies", "node", "bin", "node.exe")
+            node = bundled if os.path.isfile(bundled) else None
+        if node:
             r = subprocess.run([node, "--check", p], capture_output=True,
                                text=True, timeout=60)
             if r.returncode != 0:
                 add("语法", p, 0, (r.stderr or "")[:120])
+        else:
+            add("检查器", p, 0, "Node.js not found; JavaScript syntax was not checked")
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +147,8 @@ def check_syntax(p, s):
 def check_ascii(p):
     if not p.endswith(".ps1"):
         return
-    b = open(p, "rb").read()
+    with open(p, "rb") as fh:
+        b = fh.read()
     bad = sum(1 for x in b if x > 127)
     if bad:
         add("非ASCII", p, 0, "%d 个字节 >127（PS 5.1 会当 GBK 解析）" % bad)
@@ -137,24 +175,19 @@ def check_placeholder(p, s):
 def check_def_before_use(p, s):
     if not p.endswith(".ps1"):
         return
-    defs = {}
-    for m in re.finditer(r"^\s*function\s+([A-Za-z][\w\-]*)\s*[\(\{]", s, re.M):
-        defs[m.group(1).lower()] = s[:m.start()].count("\n") + 1
-    if not defs:
-        return
-    for name, dline in defs.items():
-        # 找第一个「像调用」的位置（行首或赋值右侧出现 名字 + 空格 or 参数）
-        pat = re.compile(r"(?<![\w\-$])" + re.escape(name) + r"\s+[\'\"\$\@{(\d]", re.I)
-        for m in pat.finditer(s):
-            ln = s[:m.start()].count("\n") + 1
-            if ln >= dline:
-                break
-            line = s.splitlines()[ln - 1].strip()
-            if line.startswith("#") or line.lower().startswith("function"):
-                continue
-            add("调用早于定义", p, ln,
-                "%s() 定义在 L%d，这里就调了" % (name, dline))
-            break
+    # A call inside a function body is deferred until that function is invoked.
+    # Textual ordering there is not an execution-order bug. Use parser extents
+    # and actual command nodes, not regex matches in comments/string literals.
+    info = _PS_AST.get(p, {})
+    defs = {d["name"].lower(): d["line"] for d in info.get("definitions") or []}
+    reported = set()
+    for command in info.get("commands") or []:
+        name = str(command.get("name") or "").lower()
+        line = command["line"]
+        if name in defs and line < defs[name] and name not in reported:
+            add("调用早于定义", p, line,
+                "%s() 定义在 L%d，这里就调了" % (name, defs[name]))
+            reported.add(name)
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +235,7 @@ def check_silent_catch(p, s):
         empties += 1
     total = len(re.findall(r"\bcatch\b", s))
     if total and empties == total and total >= 3:
-        notes.append((os.path.relpath(p, r"<WORKDIR>"),
+        notes.append((display_path(p),
                       "全部 %d 个 catch 都是空的 —— 任何错误都不会留痕" % total))
 
 
@@ -210,11 +243,11 @@ def check_silent_catch(p, s):
 # 8. 真实标识是否进了仓库
 # ---------------------------------------------------------------------------
 def check_repo_ids(p, s):
-    if not p.startswith(REPO):
+    if LIVE_MODE or os.path.basename(p).startswith("test_"):
         return
     for m in REAL_ID.finditer(s):
         ln = s[:m.start()].count("\n") + 1
-        add("仓库含真实号", p, ln, s.splitlines()[ln - 1].strip()[:70])
+        add("仓库含硬编码业务号", p, ln, "身份字段含数字账号；应从用户配置读取")
 
 
 # ---------------------------------------------------------------------------
@@ -225,47 +258,78 @@ def walk(base, exts):
     for root, dirs, files in os.walk(base):
         dirs[:] = [d for d in dirs if d not in
                    (".git", "__pycache__", "node_modules", ".venv",
-                    "_archive", "uv-cache", "uv-python")]
+                    "_archive", "_scratch", "_backup", "framework", "shell",
+                    "uv-cache", "uv-python")]
         for f in files:
             if f.endswith(exts):
                 out.append(os.path.join(root, f))
-    return out
+    return sorted(out)
 
 
-def main():
-    quiet = "--quiet" in sys.argv
+def main(argv=None):
+    global REPORT_ROOT, LIVE_MODE
+    parser = argparse.ArgumentParser(description="Check source files, or an explicit installed runtime.")
+    parser.add_argument("--root", help="Explicit tree to scan (repository or installed napcat directory)")
+    parser.add_argument("--live", action="store_true", help="Scan installed napcat; reject runtime placeholder values")
+    parser.add_argument("--quiet", action="store_true", help="Only print findings and totals")
+    args = parser.parse_args(argv)
+    if args.root:
+        base = os.path.abspath(args.root)
+    elif args.live:
+        workspace = os.environ.get("LANYA_WORKDIR") or (
+            os.path.dirname(REPO) if os.path.basename(HERE).lower() in ("scripts", "tests") else os.path.dirname(HERE))
+        base = os.path.join(workspace, "napcat")
+    else:
+        base = REPO
+    REPORT_ROOT = base
+    LIVE_MODE = args.live or (not args.root and os.path.basename(HERE).lower() == "napcat")
+    problems.clear()
+    notes.clear()
+    _PS_AST.clear()
+    quiet = args.quiet
     exts = (".ps1", ".py", ".js", ".mjs")
-    targets = walk(LIVE, exts) + walk(os.path.join(REPO, "scripts"), exts) \
-        + walk(os.path.join(REPO, "tests"), exts)
+    targets = walk(base, exts)
 
     # 跳过模式文件：它们的活就是存这些形状
     skip = {"verify_privacy.py", "privacy-scan.py", "audit_send.py",
             "fullcheck.py"}
+    targets = [p for p in targets if os.path.basename(p) not in skip]
 
     print("=" * 76)
     print("  全文体检：%d 个文件" % len(targets))
     print("=" * 76)
     print()
 
+    if not targets:
+        print("  ❌ 没有可检查的源文件：" + base)
+        return 2
+
+    checked = 0
     for p in targets:
-        if os.path.basename(p) in skip:
-            continue
         s = read(p)
-        if not s:
+        if s is None:
             continue
-        check_syntax(p, s)
+        checked += 1
+        try:
+            check_syntax(p, s)
+        except (OSError, subprocess.SubprocessError) as e:
+            add("检查器", p, 0, str(e)[:100])
         check_ascii(p)
-        check_placeholder(p, s)
+        # Public source includes install templates. Only an installed runtime
+        # must have every account placeholder resolved to a configuration read.
+        if LIVE_MODE:
+            check_placeholder(p, s)
         check_def_before_use(p, s)
         check_autovars(p, s)
         check_dead_vars(p, s)
         check_silent_catch(p, s)
         check_repo_ids(p, s)
         if not quiet:
-            print("  查过 " + os.path.relpath(p, r"<WORKDIR>"))
+            print("  查过 " + display_path(p))
 
     print()
     print("=" * 76)
+    print("  已检查 %d 个文件" % checked)
     if problems:
         print("  ❌ %d 处问题" % len(problems))
         print()

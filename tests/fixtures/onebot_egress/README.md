@@ -1,0 +1,5 @@
+# Native OneBot egress fixture
+
+The lib program sources are unmodified dsh-onebot-qq 0.8.1 modules from the npm registry tarball, not locally customized installed files. Original BSD 3-Clause LICENSE and source attribution comments are retained. SHA-256 provenance is in provenance.json. The VM mocks host, model, network, renderer and storage boundaries. It executes the actual bridge/inbound/outbound/registry/interim/tools and transformed policy adapter against synthetic input and temporary policy state only.
+
+`native-cases.mjs` applies the public policy/replay/egress source transforms to these native consumers. The upstream inbound module does not contain the local profile/cross-chat block known to the older policy installer, so the fixture adds only the existing `observeInbound` seam directly. It does not claim this uncustomized tarball is an accepted installation manifest. Installer and rollback tests use the existing reviewed V1/replay manifest fixtures. The ordinary Node test wrapper runs each native case with VM support in a child process; no real model or QQ transport is created.

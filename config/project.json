@@ -20,6 +20,9 @@
   "budget": {
     "dailyLimit": 1.0
   },
+  "mind": {
+    "opportunityMin": 6
+  },
   "memory": {
     "seenKeep": 400,
     "archiveInCorpus": 300,
@@ -27,5 +30,9 @@
     "diaryInCorpus": 60,
     "compressOver": 120,
     "compressTo": 80
+  },
+  "decisions": {
+    "mode": "unified",
+    "agentPreset": ""
   }
 }

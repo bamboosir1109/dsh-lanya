@@ -6,19 +6,24 @@
 # keeps showing them, and the daily allowance never fires. The panel even listed
 # (note removed: source must stay ASCII-only)
 #
-# Safe to run repeatedly: every task is registered with -Force and a fixed
-# definition, so this doubles as a repair tool.
+# Existing definitions are preserved. Only missing tasks are registered.
 #
 # ASCII-only source.
 
+[CmdletBinding(SupportsShouldProcess = $true)]
+param([ValidateSet('External', 'Plugin')][string]$Scheduler = 'External')
+
 $ErrorActionPreference = 'Stop'
-# Find the work directory from this script's own location: it lives in
-# <root>\napcat\, so the parent of the parent is <root>.
-$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  # Fallback for a copy sitting directly under <root>.
-  $root = Split-Path -Parent $PSScriptRoot
+# -WhatIf is a read-only view of the complete registration plan.
+if ($WhatIfPreference) {
+  Write-Output ('Scheduler mode: ' + $Scheduler)
+  Write-Output 'Tasks: GroupWatch, Voice, Works, Browser, TTS, Panel, PanelStatic'
+  if ($Scheduler -eq 'External') { Write-Output 'Periodic work: Supervisor (includes mind.py ETA gate)' }
+  else { Write-Output 'Periodic work: DSH plugin plus Budget task; no extra Supervisor/Mind task' }
+  exit 0
 }
+. (Join-Path $PSScriptRoot 'project_conf.ps1')
+$root = Get-ProjectWorkDir
 $napcat = Join-Path $root 'napcat'
 
 function Note([string]$m) { Write-Host ('  ' + $m) }
@@ -64,7 +69,7 @@ Write-Host '  === long-running (start at logon) ==='
 
 # The things that must be alive whenever the machine is on.
 PS1Task 'DSH-GroupWatch'   'groupwatch.ps1'
-PS1Task 'DSH-Lanya-Life'   'lifeloop.ps1'
+# lifeloop retires when mind.py exists; autonomous work belongs to the scheduler.
 PS1Task 'DSH-Lanya-Voice'  'voicedaemon.ps1'
 PS1Task 'DSH-Lanya-Works'  'made-server.ps1'
 
@@ -105,7 +110,7 @@ Write-Host '  === periodic ==='
 # The supervisor drives every other periodic job (budget, chats, steal,
 # napcat-heal, greetd, memory, bili, bili-social). Without it registered,
 # none of them run at all - which is why Bilibili sat untouched for a day.
-if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Supervisor' -ErrorAction SilentlyContinue)) {
+if ($Scheduler -eq 'External' -and -not (Get-ScheduledTask -TaskName 'DSH-Lanya-Supervisor' -ErrorAction SilentlyContinue)) {
   $act = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
                (Join-Path $napcat 'lanya-supervisor.ps1') + '"')
@@ -121,7 +126,7 @@ else { Note 'DSH-Lanya-Supervisor  already exists, left alone' }
 
 # This is the one that was missing. Without it budget.json never updates, so the
 # allowance silently does nothing and every figure on the panel is stale.
-RepeatTask 'DSH-Lanya-Budget' 'budget.ps1' 5
+if ($Scheduler -eq 'Plugin') { RepeatTask 'DSH-Lanya-Budget' 'budget.ps1' 5 }
 
 Write-Host ''
 Write-Host '  === result ==='
@@ -140,7 +145,7 @@ Get-ScheduledTask -TaskName 'DSH-*' -ErrorAction SilentlyContinue |
 # bug in the script.
 
 if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Panel' -ErrorAction SilentlyContinue)) {
-  $a1 = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
+  $a1 = New-ScheduledTaskAction -Execute 'python' `
     -Argument ('"' + (Join-Path $napcat 'lanya-panel-server.py') + '"')
   $t1 = New-ScheduledTaskTrigger -AtLogOn
   $s1 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
@@ -152,7 +157,7 @@ if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Panel' -ErrorAction SilentlyCon
 }
 
 if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-PanelStatic' -ErrorAction SilentlyContinue)) {
-  $a2 = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
+  $a2 = New-ScheduledTaskAction -Execute 'python' `
     -Argument ('"' + (Join-Path $napcat 'lanya-panel-server.py') + '" --port 19388')
   $t2 = New-ScheduledTaskTrigger -AtLogOn
   $s2 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
@@ -164,27 +169,8 @@ if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-PanelStatic' -ErrorAction Silen
 }
 
 
-# ---------------------------------------------------------------------------
-# The planning loop. lifeloop used to wake her on a random timer; mind.py
-# replaced it with a plan that survives between rounds, and lifeloop now
-# retires itself. That makes this task the only thing driving her autonomous
-# activity - without it she just sits there between messages.
-#
-# It has to be a task, not a spawned process: anything started with
-# Start-Process gets reaped, and mind.py dies within seconds of being launched
-# that way.
-if (-not (Get-ScheduledTask -TaskName 'DSH-Lanya-Mind' -ErrorAction SilentlyContinue)) {
-  $am = New-ScheduledTaskAction -Execute 'C:\Python314\python.exe' `
-    -Argument ('"' + (Join-Path $napcat 'mind.py') + '"')
-  $tm1 = New-ScheduledTaskTrigger -AtLogOn
-  $tm2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 5)
-  $sm = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
-  Register-ScheduledTask -TaskName 'DSH-Lanya-Mind' -Action $am `
-    -Trigger @($tm1, $tm2) -Settings $sm -Force | Out-Null
-  Note 'DSH-Lanya-Mind  <-  mind.py'
-}
-
+# mind.py is a single cycle. The supervisor or the DSH plugin polls it;
+# ETA and its own file lock decide when work is actually due. Do not create
+# an independent Mind task as well. Existing legacy tasks are left untouched.
 Write-Host ''
+Write-Host 'Existing tasks were preserved. Review old Life/Mind tasks before enabling a second scheduler.'

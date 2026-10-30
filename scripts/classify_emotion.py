@@ -37,9 +37,12 @@ import re
 import subprocess
 import time
 import sys
+from project_conf import data_dir, work_dir
+from decision_events import unified_decisions_enabled
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DAFEIYU = os.path.join(ROOT, "\u5927\u80a5\u9c7c")
+ROOT = work_dir()
+DAFEIYU = data_dir()
 STOLEN = os.path.join(DAFEIYU, "memes", "stolen")
 PROMPT = os.path.join(HERE, "classify-emotion.prompt.txt")
 LOG = os.path.join(HERE, "classify-emotion.log")
@@ -94,6 +97,8 @@ def log(msg):
 
 
 def ask_agent(task):
+    if unified_decisions_enabled():
+        raise RuntimeError('Independent meme classifier disabled in unified mode')
     try:
         p = subprocess.run([DSH, "--profile", "headless", "-"],
                            input=task.encode("utf-8"),
@@ -145,6 +150,12 @@ def main():
             limit = int(sys.argv[sys.argv.index("--limit") + 1])
         except Exception:
             limit = 0
+
+    if unified_decisions_enabled():
+        from meme_observations import observe_existing_memes
+        result = observe_existing_memes(limit=limit or 20, dry=dry)
+        print(json.dumps(result, ensure_ascii=True))
+        return result
 
     if not acquire_lock():
         log("另一个分类进程在跑，这次跳过")

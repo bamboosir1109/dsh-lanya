@@ -17,58 +17,40 @@
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import threading
+import time
+import stat
+import sqlite3
+import contextlib
+import hashlib
+import math
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+with open(__file__, "rb") as _program:
+    _PANEL_SCRIPT_SHA256 = hashlib.sha256(_program.read()).hexdigest()
+_HELPERS = os.path.join(os.path.dirname(HERE), "scripts")
+if os.path.basename(HERE).lower() == "server":
+    sys.path.insert(0, _HELPERS)
+else:
+    sys.path.insert(0, HERE)
+import project_conf
 
-
-def _project_conf():
-    """config/project.json, or {} when it is missing/unreadable."""
-    try:
-        with open(os.path.join(REPO, "config", "project.json"), "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        return doc if isinstance(doc, dict) else {}
-    except Exception:
-        return {}
-
-
-def _data_dir_name():
-    """Her data folder is <workdir>/<name>/.
-
-    The repo ships a generic name (大肥鱼) and a personalised install usually
-    renames it, so hardcoding one of them makes the other install look empty.
-    Pick whichever candidate actually holds her files: a directory that exists
-    but is an empty leftover (an old rename, a partial install) must not win
-    over the one with the config, budget and meme index in it.
-    """
-    markers = ("lanya-config.json", "budget.json", "lanya-tunables.json",
-               "activities.json", "lanya-memes-tags.json")
-    want = str(_project_conf().get("dataDirName") or "").strip()
-    best = ""
-    best_score = -1
-    for cand in (want, "\u5927\u80a5\u9c7c", "\u5c9a\u5a05"):
-        if not cand:
-            continue
-        base = os.path.join(REPO, cand)
-        if not os.path.isdir(base):
-            continue
-        score = sum(1 for m in markers if os.path.isfile(os.path.join(base, m)))
-        if score > best_score:
-            best, best_score = cand, score
-    if best and best_score > 0:
-        return best
-    return want or "\u5c9a\u5a05"
-
-
-DATA_NAME = _data_dir_name()
-DATA = os.path.join(REPO, DATA_NAME)
+REPO = project_conf.work_dir()
+DATA = project_conf.data_dir()
+DATA_NAME = os.path.basename(DATA)
 ROOT = os.path.join(DATA, "made")
 NAPCAT = os.path.join(REPO, "napcat")
-PERSONA = os.path.join(NAPCAT, DATA_NAME + "-\u4eba\u8bbe\u6b63\u6587.md")
+_PERSONA_NAME = DATA_NAME + "-\u4eba\u8bbe\u6b63\u6587.md"
+_PERSONAS = [os.environ.get("LANYA_PERSONA_FILE"), os.path.join(NAPCAT, "persona.md"),
+             os.path.join(NAPCAT, _PERSONA_NAME), os.path.join(DATA, _PERSONA_NAME)]
+# An explicit override is authoritative even before the file is created.
+PERSONA = (os.path.abspath(os.path.expanduser(_PERSONAS[0])) if _PERSONAS[0] else
+           next((p for p in _PERSONAS[1:] if os.path.isfile(p)), _PERSONAS[1]))
 CONFIG  = os.path.join(DATA, "lanya-config.json")
 TUNABLES = os.path.join(DATA, "lanya-tunables.json")
 MEMECFG  = os.path.join(DATA, "lanya-memes-config.json")
@@ -76,20 +58,28 @@ MEME_TAGS = os.path.join(DATA, "lanya-memes-tags.json")
 
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 PROFILE_PKG = os.path.join(PROFILE, "package.json")
-# DSH install root. Found rather than assumed.
-DSH_ROOT = os.environ.get("DSH_ROOT") or ""
-if not DSH_ROOT:
-    _rel = os.path.join("resources", "runtime", "cli", "bin", "dsh.cmd")
-    for _d in "CDEFG":
-        _c = _d + ":\\DSH"
-        if os.path.isfile(os.path.join(_c, _rel)):
-            DSH_ROOT = _c
-            break
-    if not DSH_ROOT:
-        DSH_ROOT = "D:\\DSH"
+def _configured_path(env_name, key, default=""):
+    value = os.environ.get(env_name) or project_conf.get(key, default)
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(str(value)))) if value else ""
 
-DSH_CLI = os.path.join(DSH_ROOT,
-                      "resources", "runtime", "cli", "bin", "dsh.cmd")
+
+def _executable_paths(env_name, key, command, extra=()):
+    paths = [_configured_path(env_name, key), shutil.which(command), *extra]
+    return list(dict.fromkeys(p for p in paths if p))
+
+
+DSH_ROOT = _configured_path("DSH_ROOT", "dshRoot")
+_DSH_ON_PATH = shutil.which("dsh.cmd") or shutil.which("dsh")
+if not DSH_ROOT:
+    # A conventional sibling installation remains discoverable without a
+    # machine-specific drive or a hardcoded author installation directory.
+    _sibling = os.path.join(os.path.dirname(REPO), "DSH")
+    if os.path.isfile(os.path.join(_sibling, "resources", "runtime", "cli", "bin", "dsh.cmd")):
+        DSH_ROOT = _sibling
+DSH_CLI = (os.path.join(DSH_ROOT, "resources", "runtime", "cli", "bin", "dsh.cmd")
+           if DSH_ROOT else (_DSH_ON_PATH or "dsh.cmd"))
+TTS_START = _configured_path("LANYA_TTS_START_SCRIPT", "tts.startScript",
+                             os.path.join(REPO, "tts", "start-tts-server.ps1"))
 
 SCRIPTS = {
     "groupwatch": "groupwatch.ps1",
@@ -109,45 +99,57 @@ SCRIPTS = {
 
 
 def start_napcat_elevated():
-    """Launch the NapCat injection with a UAC prompt.
+    """Delegate to the existing local launcher after checking injection files.
 
-    napimain refuses to do anything without elevation, and killing QQ without
-    being able to inject would just leave the user offline. So this is the only
-    path that actually works - and it means one UAC click, every time.
+    The local launcher owns QQ discovery and its preflight checks. Never kill
+    QQ from this server, or build a second, divergent injection command here.
     """
-    inner = (
-        'taskkill /IM QQ.exe /F >nul 2>nul & timeout /t 4 /nobreak >nul & '
-        'cd /d "' + os.path.join(NAPCAT, "framework") + '" && '
-        'napimain.exe "C:\\software\\QQNT\\QQ.exe" '
-        '"os.path.join(NAPCAT, "framework", "napiloader.dll")" '
-        'os.path.join(NAPCAT, "framework", "nativeLoader.cjs")'
-    )
+    launcher = _configured_path("LANYA_NAPCAT_LAUNCHER", "napcat.startScript",
+        os.path.join(NAPCAT, "\u542f\u52a8NapCat-\u6b63\u786e.cmd"))
+    for file in (launcher, *(os.path.join(NAPCAT, "framework", name) for name in
+                            ("napimain.exe", "napiloader.dll", "nativeLoader.cjs"))):
+        if not os.path.isfile(file):
+            raise FileNotFoundError("NapCat launcher preflight failed: " + os.path.basename(file))
+    quoted = launcher.replace("'", "''")
+    working = os.path.dirname(launcher).replace("'", "''")
     ps = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        "Start-Process cmd.exe -ArgumentList '/c','" + inner.replace("'", "''") + "' -Verb RunAs"
+        # This explicitly requested launcher is interactive: its window must
+        # stay open to keep the injected QQ process alive.
+        "Start-Process -FilePath '" + quoted + "' -WorkingDirectory '" + working +
+        "' -Verb RunAs -WindowStyle Normal -PassThru -ErrorAction Stop | Select-Object -ExpandProperty Id"
     ]
     p = subprocess.run(ps, capture_output=True, timeout=120,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return p.returncode
+    if p.returncode:
+        raise RuntimeError("NapCat launcher was not started; elevation may have been cancelled")
+    output = (p.stdout or b"").decode("utf-8", "replace").strip()
+    if not output.isdigit():
+        raise RuntimeError("NapCat launcher did not return a process id")
+    return int(output)
 
 
 # 有些部件不能当普通脚本起：解释器不同、工作目录不同、还要带参数。
 SPECIAL = {
     "tts": {
-        "exe": r"C:\code\anaconda\envs\gptsovits\python.exe",
-        "cwd": os.path.join(REPO, "tts", "GPT-SoVITS"),
-        "args": ["-X", "utf8", "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
-                 "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
+        "exe": "powershell.exe",
+        "cwd": os.path.dirname(TTS_START),
+        "script": TTS_START,
+        "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", TTS_START],
     },
 }
 
 
 def run_script(name):
+    if name == "works":
+        raise ValueError("Works service belongs to the panel service supervisor")
+    if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
+        raise ValueError("Unified mode retires this independent loop; request a main-agent check")
     sp = SPECIAL.get(name)
     if sp:
-        if not os.path.isfile(sp["exe"]) and not sp["exe"].lower().endswith(".exe"):
-            pass
+        if not os.path.isfile(sp["script"]):
+            raise FileNotFoundError("Configure tts.startScript or LANYA_TTS_START_SCRIPT")
         p = subprocess.Popen(
             [sp["exe"]] + sp["args"], cwd=sp["cwd"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -192,6 +194,348 @@ TASKS = {
 }
 
 
+_AUTONOMY_REQUEST_LOCK = threading.Lock()
+_AUTONOMY_REQUEST = {"at": 0.0, "process": None}
+_RETIRED_UNIFIED = frozenset(("lifeloop", "voicedaemon", "supervisor", "tick"))
+
+
+def decision_mode():
+    # Actions must not reuse cached legacy permission after a configuration change.
+    config = project_conf.load(reload=True)
+    decisions = config.get("decisions", {})
+    if not isinstance(decisions, dict):
+        raise ValueError("Invalid decision configuration")
+    mode = decisions.get("mode", "unified")
+    if mode not in ("unified", "legacy"):
+        raise ValueError("Invalid decision mode; independent activity refused")
+    return mode
+
+
+def _ordinary_metadata(path):
+    absolute = os.path.abspath(path)
+    current = absolute
+    while True:
+        if os.path.lexists(current):
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("Metadata link refused")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return absolute
+
+
+def _read_metadata(path, limit=1024 * 1024):
+    path = _ordinary_metadata(path)
+    before = os.stat(path)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+        raise ValueError("Invalid metadata file")
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    with open(path, "rb") as stream:
+        raw = stream.read(limit + 1)
+        if signature(os.fstat(stream.fileno())) != signature(before):
+            raise ValueError("Metadata changed")
+    if len(raw) != before.st_size or signature(os.stat(path)) != signature(before):
+        raise ValueError("Metadata changed")
+    value = json.loads(raw.decode("utf-8-sig"))
+    if not isinstance(value, dict):
+        raise ValueError("Metadata object required")
+    return value
+
+
+def _scheduler_owner_verified(pid, marker_at):
+    """Read-only Windows handle check; never use Python os.kill on Windows."""
+    if os.name != "nt" or not DSH_ROOT:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    api.OpenProcess.restype = wintypes.HANDLE
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    api.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    api.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+    handle = api.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False if ctypes.get_last_error() == 87 else None
+    try:
+        exit_code = wintypes.DWORD()
+        size = wintypes.DWORD(32768)
+        image = ctypes.create_unicode_buffer(size.value)
+        born, ended, kernel, user = (ctypes.c_uint64() for _ in range(4))
+        if (not api.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                or not api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size))
+                or not api.GetProcessTimes(handle, ctypes.byref(born), ctypes.byref(ended), ctypes.byref(kernel), ctypes.byref(user))):
+            return None
+        expected = os.path.normcase(os.path.join(DSH_ROOT, "DeepSeek Harness.exe"))
+        return (exit_code.value == 259 and os.path.normcase(image.value) == expected
+                and (born.value - 116444736000000000) // 10000 <= marker_at)
+    finally:
+        api.CloseHandle(handle)
+
+
+def _consumer_matches(pid):
+    file = _ordinary_metadata(os.path.join(DATA, "decision-inbox", "consumer.sqlite"))
+    if not os.path.isfile(file):
+        return False
+    if os.path.isfile(file + "-wal") and not os.path.isfile(file + "-shm"):
+        return None
+    from pathlib import Path
+    with contextlib.closing(sqlite3.connect(Path(file).as_uri() + "?mode=ro", uri=True, timeout=0.2, isolation_level=None)) as db:
+        deadline = time.monotonic() + 0.3
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+        db.execute("PRAGMA query_only=ON")
+        db.execute("BEGIN")
+        if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            return None
+        rows = db.execute("SELECT id,pid FROM consumer ORDER BY id LIMIT 3").fetchall()
+        db.rollback()
+    return rows == [(1, pid)]
+
+
+def _mind_metadata(value):
+    """Aggregate only control metadata; never return plan, scope or event IDs."""
+    version = value.get("decision_observers_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("Unknown observer metadata schema")
+    rows = value.get("decision_scopes", {}) if version == 2 else {"legacy": {
+        "pending": value.get("decision_pending"), "next_review_at": value.get("decision_next_review_at"),
+        "last_status": value.get("last_decision_status"), "next_opportunity_at": None,
+    }}
+    if not isinstance(rows, dict) or len(rows) > 128:
+        raise ValueError("Invalid observer metadata")
+    out = {"schema_version": version, "scope_count": len(rows), "pending_count": 0, "error_count": 0,
+           "scheduled_review_count": 0, "unknown_count": 0, "last_completed_at": None,
+           "next_review_at": None, "next_opportunity_at": None}
+    for key, row in rows.items():
+        if (not isinstance(row, dict) or version == 2 and
+                (not isinstance(key, str) or re.fullmatch(r"(?:private|group):[1-9][0-9]*", key) is None)):
+            raise ValueError("Invalid observer owner metadata")
+        if row.get("pending") is not None:
+            if not isinstance(row["pending"], dict):
+                raise ValueError("Invalid pending metadata")
+            out["pending_count"] += 1
+        error = row.get("observer_error")
+        if error is not None:
+            if (not isinstance(error, dict) or not isinstance(error.get("error_class"), str) or
+                    not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", error["error_class"]) or
+                    any(type(error.get(key)) is not int or not 0 <= error[key] <= 9007199254740991
+                        for key in ("first_seen_at", "last_seen_at"))):
+                raise ValueError("Invalid observer error metadata")
+            out["error_count"] += 1
+        status = row.get("last_status")
+        if status not in (None, "decided", "sent", "unknown", "suppressed"):
+            raise ValueError("Invalid decision status")
+        out["unknown_count"] += int(status == "unknown")
+        for field in ("last_completed_at", "next_review_at", "next_opportunity_at"):
+            when = row.get(field)
+            if when is not None:
+                if type(when) is not int or not 0 <= when <= 9007199254740991:
+                    raise ValueError("Invalid observer timestamp")
+                previous = out[field]
+                out[field] = when if previous is None else (max(previous, when) if field == "last_completed_at" else min(previous, when))
+        out["scheduled_review_count"] += int(row.get("next_review_at") is not None)
+    return out
+
+
+def autonomy_snapshot(now=None, owner_probe=None):
+    result = {"mode": "unknown", "managed_by": "main_agent", "status": "unknown",
+              "reason": "metadata_unavailable", "can_request_check": False}
+    try:
+        mode = decision_mode()
+        result["mode"] = mode
+        if mode == "legacy":
+            return dict(result, managed_by="legacy_task", status="legacy", reason="legacy_mode")
+        stamp = _read_metadata(os.path.join(NAPCAT, "scheduler-in-plugin.flag"), 65536)
+        pid, at, jobs = stamp.get("pid"), stamp.get("at"), stamp.get("jobs")
+        if (stamp.get("version") != 2 or type(pid) is not int or not 0 < pid <= 0xffffffff
+                or type(at) is not int or not isinstance(jobs, list) or "mind" not in jobs
+                or len(jobs) > 64 or not all(isinstance(job, str) and len(job) <= 128 for job in jobs)):
+            return dict(result, reason="scheduler_metadata_invalid")
+        age = ((time.time() if now is None else now) * 1000 - at) / 1000
+        if not -5 <= age <= 120:
+            return dict(result, status="offline", reason="scheduler_stale")
+        owner = (owner_probe or _scheduler_owner_verified)(pid, at)
+        if owner is not True:
+            return dict(result, status="offline" if owner is False else "unknown", reason="scheduler_owner_unverified")
+        lease = _consumer_matches(pid)
+        if lease is not True:
+            return dict(result, status="offline" if lease is False else "unknown", reason="consumer_owner_unverified")
+        mind_file = os.path.join(DATA, "mind.json")
+        summary = _mind_metadata(_read_metadata(mind_file) if os.path.isfile(mind_file) else {})
+        if summary["error_count"]:
+            status, reason = "uncertain", "observer_evidence_missing"
+        elif summary["scheduled_review_count"]:
+            status, reason = "scheduled", "main_review_scheduled"
+        elif summary["pending_count"]:
+            status, reason = "processing", "decision_pending"
+        elif summary["unknown_count"]:
+            status, reason = "uncertain", "previous_outcome_unknown"
+        else:
+            status, reason = "waiting", "waiting_for_opportunity"
+        return dict(result, status=status, reason=reason, can_request_check=True,
+                    scheduler_verified=True, consumer_verified=True, observer=summary)
+    except (OSError, ValueError, TypeError, sqlite3.Error, project_conf.ConfigError):
+        return result
+
+
+def decorate_autonomy_components(components, status):
+    output = []
+    for original in components:
+        row = dict(original)
+        if row.get("tag") in ("lifeloop", "mind") and status.get("mode") != "legacy":
+            row.update(kind="timer", managed_by="main_agent", autonomy=status,
+                       control="request_check", status=status["status"])
+        elif row.get("tag") in _RETIRED_UNIFIED and status.get("mode") != "legacy":
+            row["control"] = "retired"
+        output.append(row)
+    return output
+
+
+def request_autonomy_check():
+    global _AUTONOMY_REQUEST
+    status = autonomy_snapshot()
+    if status.get("mode") != "unified" or status.get("can_request_check") is not True:
+        return {"ok": False, "code": "autonomy_unavailable", "error": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4\uff0c\u672a\u542f\u52a8\u65e7\u5faa\u73af", "autonomy": status}
+    with _AUTONOMY_REQUEST_LOCK:
+        now = time.monotonic()
+        previous = _AUTONOMY_REQUEST["process"]
+        if previous is not None and (previous.poll() is None or now - _AUTONOMY_REQUEST["at"] < 15):
+            return {"ok": True, "status": "already_requested", "observation_only": True,
+                    "producer_started": False, "decision_completed": False,
+                    "note": "\u5df2\u6709\u68c0\u67e5\u8bf7\u6c42\uff0c\u6ca1\u6709\u91cd\u590d\u542f\u52a8"}
+        script = _ordinary_metadata(os.path.join(NAPCAT, "mind.py"))
+        if not os.path.isfile(script):
+            return {"ok": False, "code": "observer_missing", "error": "mind.py \u89c2\u5bdf\u751f\u4ea7\u8005\u4e0d\u5b58\u5728"}
+        try:
+            process = subprocess.Popen([str(project_conf.get("pythonExecutable", sys.executable) or sys.executable), script, "--force", "--observe-only"],
+                                       cwd=NAPCAT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError:
+            return {"ok": False, "code": "observer_start_failed", "error": "\u89c2\u5bdf\u751f\u4ea7\u8005\u542f\u52a8\u5931\u8d25\uff0c\u6ca1\u6709\u6267\u884c\u6d3b\u52a8"}
+        _AUTONOMY_REQUEST = {"at": now, "process": process}
+        return {"ok": True, "status": "requested", "observation_only": True,
+                "producer_started": True, "decision_completed": False,
+                "note": "\u5df2\u8bf7\u6c42\u4e3b agent \u68c0\u67e5\u3002\u53ea\u63d0\u4ea4\u89c2\u5bdf\uff0c\u4e0d\u4ee3\u8868\u5df2\u5f00\u59cb\u6d3b\u52a8\u6216\u53d1\u9001\u6d88\u606f"}
+
+
+def autonomy_label(status):
+    if status.get("reason") == "observer_evidence_missing":
+        return "\u4e3b agent \u6258\u7ba1\uff0c\u90e8\u5206\u89c2\u5bdf\u8bc1\u636e\u7f3a\u5931"
+    return {"waiting": "\u4e3b agent \u6258\u7ba1\uff0c\u7b49\u5f85\u81ea\u4e3b\u673a\u4f1a", "scheduled": "\u4e3b agent \u6258\u7ba1\uff0c\u5df2\u7ea6\u590d\u67e5",
+            "processing": "\u4e3b agent \u6258\u7ba1\uff0c\u89c2\u5bdf\u5f85\u5904\u7406", "uncertain": "\u4e3b agent \u6258\u7ba1\uff0c\u4e0a\u6b21\u7ed3\u679c\u672a\u77e5",
+            "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u65e7\u7248\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
+
+
+def panel_state_snapshot():
+    candidates = []
+    for name in ("lanya-state.json", "dafeiyu-state.json"):
+        try:
+            file = os.path.join(ROOT, name)
+            value = _read_metadata(file, 4 * 1024 * 1024)
+            candidates.append((os.stat(file).st_mtime_ns, value))
+        except (OSError, ValueError, TypeError):
+            pass
+    value = max(candidates, key=lambda row: row[0])[1] if candidates else {"at": None, "memory": {}, "components": [], "plugins": []}
+    memory = value.setdefault("memory", {})
+    if "lanyaMb" not in memory and "dafeiyuMb" in memory:
+        memory["lanyaMb"] = memory["dafeiyuMb"]
+    status = autonomy_snapshot()
+    value["autonomy"] = status
+    value["components"] = decorate_autonomy_components(value.get("components") or [], status)
+    services = panel_services()
+    old = [row for row in value["components"] if row.get("tag") in ("works", "panel-api")]
+    value["components"] = [row for row in value["components"] if row.get("tag") not in ("works", "panel-api")]
+    for role, tag in (("works", "works"), ("api", "panel-api")):
+        service = services[role]
+        row = dict(next((row for row in old if row.get("tag") == tag), {}))
+        row.update(tag=tag, kind="server", service=service)
+        for field in ("count", "mb"):
+            if service[field] is not None:
+                row[field] = service[field]
+            else:
+                row.setdefault(field, None)
+        if role == "works":
+            row["control"] = "ensure_works"
+        value["components"].append(row)
+    delta = sum((row.get("mb") or 0) for row in value["components"] if row.get("tag") in ("works", "panel-api")) - sum((row.get("mb") or 0) for row in old)
+    for key in ("lanyaMb", "dafeiyuMb"):
+        if type(memory.get(key)) in (int, float):
+            memory[key] = round(memory[key] + delta, 1)
+    value["services"] = services
+    return value
+
+
+def panel_services():
+    ports = {"works": project_conf.get("panelStaticPort", 19388), "api": project_conf.get("panelPort", 19389)}
+    unknown = lambda: {role: {"role": role, "port": port, "count": None, "mb": None,
+                              "healthy": False, "status": "unknown", "listening": None} for role, port in ports.items()}
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:19387/dsh-lanya/api/services", timeout=12) as response:
+            raw = response.read(16385)
+            if len(raw) > 16384:
+                return unknown()
+        value = json.loads(raw.decode("utf-8"))
+        if value.get("ok") is not True:
+            return unknown()
+        result = {}
+        for role, port in ports.items():
+            row = value["services"][role]
+            if (row.get("role") != role or type(row.get("port")) is not int or row["port"] != port or
+                    type(row.get("healthy")) is not bool or row.get("status") not in ("healthy", "offline", "starting", "unhealthy", "blocked", "unknown") or
+                    row.get("listening") is not None and type(row["listening"]) is not bool or
+                    row.get("count") is not None and (type(row["count"]) is not int or row["count"] < 0) or
+                    row.get("mb") is not None and (type(row["mb"]) not in (int, float) or not math.isfinite(row["mb"]) or row["mb"] < 0) or
+                    row["healthy"] and (row["status"] != "healthy" or row["count"] != 1 or row["listening"] is not True)):
+                return unknown()
+            result[role] = {key: row.get(key) for key in ("role", "port", "count", "mb", "healthy", "status", "listening")}
+        return result
+    except Exception:
+        return unknown()
+
+
+def request_works_service():
+    try:
+        import urllib.request
+        request = urllib.request.Request("http://127.0.0.1:19387/dsh-lanya/api/action",
+            data=b'{"target":"works","op":"ensure"}', headers={"content-type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=25) as response:
+            raw = response.read(4097)
+        if len(raw) > 4096:
+            raise ValueError()
+        value = json.loads(raw.decode("utf-8"))
+        if (value.get("ok") is True and value.get("service_check") is True and type(value.get("healthy")) is bool
+                and value.get("status") in ("healthy", "starting")):
+            return {"ok": True, "service_check": True, "healthy": value["healthy"], "status": value["status"],
+                    "note": "\u670d\u52a1\u5df2\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u91cd\u590d\u542f\u52a8" if value["healthy"] else "\u5df2\u8bf7\u6c42\u540e\u53f0\u6062\u590d\uff0c\u7b49\u5f85\u771f\u5b9e\u5065\u5eb7\u68c0\u67e5"}
+    except Exception:
+        pass
+    return {"ok": False, "service_check": True, "healthy": False, "error": "\u4f5c\u54c1\u670d\u52a1\u770b\u62a4\u672a\u786e\u8ba4\uff0c\u672a\u89e6\u53d1\u65e7\u4efb\u52a1"}
+
+
+def control_action(body):
+    target, op = str(body.get("target") or ""), str(body.get("op") or "run")
+    if target == "works":
+        if op not in ("run", "start", "restart", "ensure"):
+            return {"ok": False, "error": "Works service is supervised; stop is not offered"}
+        return request_works_service()
+    if target in ("lifeloop", "mind"):
+        mode = decision_mode()
+        if mode != "legacy":
+            if op not in ("run", "start", "restart", "check"):
+                return {"ok": False, "error": "\u7edf\u4e00\u6a21\u5f0f\u53ea\u63a5\u53d7\u8bf7\u6c42\u68c0\u67e5\uff0c\u4e0d\u505c\u6b62\u4e3b agent"}
+            return request_autonomy_check()
+    if op not in ("run", "start", "restart"):
+        return {"ok": False, "error": "Unsupported component action"}
+    result = run_task(target)
+    if result is not None:
+        return result
+    return {"ok": True, "pid": run_script(target)}
+
+
 
 # ---------------------------------------------------------------------------
 # 外部工具：NapCat / QQ / Node / Python / Git / DSH 本身。
@@ -200,27 +544,28 @@ TASKS = {
 TOOLS = [
     {"key": "napcat", "name": "NapCat", "kind": "QQ 注入框架",
      "paths": [os.path.join(REPO, "napcat", "framework", "napimain.exe")],
-     "port": 8720,
+      "port": project_conf.get("onebotPort", 8720),
      "note": "注入进 QQ 的那一层。没有它，机器人连不上。"},
     {"key": "qq", "name": "QQ", "kind": "QQ 客户端",
-     "paths": [r"C:\software\QQNT\QQ.exe"],
+     "paths": _executable_paths("QQ_EXE", "tools.qqExecutable", "QQ.exe"),
      "proc": "QQ.exe",
      "note": "机器人小号登录的地方。"},
     {"key": "dsh", "name": "DeepSeek Harness", "kind": "宿主程序",
-     "paths": [os.path.join(DSH_ROOT, "DeepSeek Harness.exe")],
+     "paths": [os.path.join(DSH_ROOT, "DeepSeek Harness.exe")] if DSH_ROOT else [],
      "port": 19387,
      "note": "整个系统跑在里面。插件都挂在它上面。"},
     {"key": "node", "name": "Node.js", "kind": "运行时",
-     "paths": [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe"), r"C:\Program Files\nodejs\node.exe"],
+     "paths": _executable_paths("NODE_EXE", "tools.nodeExecutable", "node", (
+         [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe")] if DSH_ROOT else [])),
      "note": "插件是 JS 写的，靠它跑。"},
     {"key": "python", "name": "Python", "kind": "运行时",
-     "paths": [r"C:\Python314\python.exe", r"C:\code\anaconda\python.exe"],
+     "paths": _executable_paths("LANYA_PYTHON", "tools.pythonExecutable", "python", [sys.executable]),
      "note": "面板服务、表情包处理、刷 B 站都靠它。"},
     {"key": "python-tts", "name": "Python (语音环境)", "kind": "专用环境",
-     "paths": [r"C:\code\anaconda\envs\gptsovits\python.exe"],
-     "note": "语音合成单独一个环境，因为依赖版本和主环境冲突。"},
+     "paths": _executable_paths("LANYA_TTS_PYTHON", "tts.pythonExecutable", "python-tts", [TTS_START]),
+     "note": "独立语音环境由本机 TTS 启动脚本管理。"},
     {"key": "git", "name": "Git", "kind": "版本控制",
-     "paths": [r"C:\code\Git\cmd\git.exe"],
+     "paths": _executable_paths("GIT_EXE", "tools.gitExecutable", "git"),
      "note": "拉插件、更新插件用。"},
 ]
 
@@ -302,7 +647,33 @@ def tools_snapshot():
     return [tool_status(x) for x in TOOLS]
 
 
+def decode_task_output(raw, oem_encoding=None):
+    """schtasks writes the Windows OEM codepage, not UTF-8."""
+    if not raw:
+        return ""
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        encoding = "utf-16"
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    else:
+        if oem_encoding is None:
+            if os.name == "nt":
+                import ctypes
+                oem_encoding = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
+            else:
+                oem_encoding = "utf-8"
+        encoding = oem_encoding
+    try:
+        return raw.decode(encoding, "strict").strip()
+    except (UnicodeError, LookupError):
+        return "Windows task output could not be decoded (" + encoding + ")"
+
+
 def run_task(name):
+    if name == "works":
+        raise ValueError("Works service belongs to the panel service supervisor")
+    if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
+        raise ValueError("Unified mode retires this scheduled task; request a main-agent check")
     task = TASKS.get(name)
     if not task:
         return None
@@ -313,8 +684,7 @@ def run_task(name):
     )
     ok = p.returncode == 0
     return {"ok": ok, "task": task,
-            "log": (p.stdout or b"").decode("utf-8", "replace").strip()
-                   or (p.stderr or b"").decode("utf-8", "replace").strip()}
+            "log": decode_task_output(p.stdout) or decode_task_output(p.stderr)}
 
 
 
@@ -525,13 +895,18 @@ _AID_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty",
 
 
 def _bili_cred():
-    try:
-        with open(os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty",
-                               "bili_credential.json"), "r",
-                  encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
+    """Use the login writer's path, with the legacy location as a fallback."""
+    home = os.path.join(os.path.expanduser("~"), ".dsh")
+    for folder in (os.path.join(home, "bili-duty"), home):
+        try:
+            with open(os.path.join(folder, "bili_credential.json"), "r",
+                      encoding="utf-8-sig") as fh:
+                cred = json.load(fh)
+            if isinstance(cred, dict) and cred.get("sessdata") and cred.get("bili_jct"):
+                return cred
+        except (OSError, ValueError):
+            continue
+    return {}
 
 
 def _bili_cookie(c):
@@ -758,7 +1133,7 @@ def bili_snapshot():
 #
 # 她的记忆现在散在几处：memento 的审计流水（谁在什么时候写了什么）、
 # 人物档案、日记、随笔。分开看就是四套东西，合成一个视图才能管。
-# 这里只读，不改——写记忆要走 memento 自己的流程，别绕过它。
+# 模型写入仍走 memento；面板操作使用独立、可恢复的维护事务。
 # ---------------------------------------------------------------------------
 MEMENTO_DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 
@@ -776,6 +1151,36 @@ def memento_rows(sql, args=(), limit=200):
         return rows
     except Exception:
         return []
+
+
+def memory_owner_choices():
+    from memory_context import list_owners, workspace_key_of, agent_key_of
+    owners = list_owners(db_path=MEMENTO_DB)
+    configured = dict(scope="workspace", workspace_key=workspace_key_of(project_conf.work_dir()),
+                      agent_key=agent_key_of(project_conf.get("decisions.agentPreset", "") or ""))
+    for track in ("user", "agent"):
+        selected = dict(configured, track=track)
+        if not any(all(row.get(key) == value for key, value in selected.items()) for row in owners):
+            owners.append(dict(selected, count=0, origin="configured"))
+    return owners
+
+
+def memory_mutation(operation, body):
+    from memory_mutations import mutate
+    return mutate(operation, body, db_path=MEMENTO_DB, apply=True)
+
+
+def memory_maintenance(operation, body):
+    from memory_context import maintenance_selection
+    selection = maintenance_selection(body.get("selection"))
+    dry = body.get("dry", True)
+    if type(dry) is not bool:
+        raise ValueError("dry must be true or false")
+    if operation not in ("consolidate", "compress"):
+        raise ValueError("Unknown memory maintenance operation")
+    import memory_plastic
+    result = getattr(memory_plastic, operation)(dry=dry, **selection)
+    return dict(result, selection=selection, view="maintenance")
 
 
 def memory_overview():
@@ -798,7 +1203,8 @@ def memory_overview():
     # 所以永远显示"还没有写进长期记忆"。
     try:
         entries = memento_rows(
-            "SELECT id, track, scope, text, tags, created_at, recall_count "
+            "SELECT id, track, scope, workspace_key, agent_key, text, source, tags, version, "
+            "created_at, updated_at, recall_count "
             "FROM entries ORDER BY created_at DESC LIMIT 200")
     except Exception:
         entries = []
@@ -811,7 +1217,8 @@ def memory_overview():
         "diary": len(list_dir_files("diary")),
         "notes": len(list_dir_files("notes")),
     }
-    return {"counts": counts, "audit": audit, "proposals": props, "entries": entries, "snapshotOnly": snapshot_count > 0}
+    return {"view": "management", "counts": counts, "audit": audit, "proposals": props,
+            "entries": entries, "snapshotOnly": snapshot_count > 0}
 
 
 # -*- coding: utf-8 -*-
@@ -832,10 +1239,10 @@ import os
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
-DSH_ROOT = os.path.join(os.path.expanduser("~"), ".dsh")
-PACKS = os.path.join(DSH_ROOT, "meme-packs")
+DSH_HOME = os.path.join(os.path.expanduser("~"), ".dsh")
+PACKS = os.path.join(DSH_HOME, "meme-packs")
 DSH_MEME = os.path.join(
-    DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
+    DSH_HOME, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
 LANYA_MEMES = os.path.join(DATA, "memes")
 
@@ -935,7 +1342,8 @@ def meme_groups():
 
 _ACT_LABEL = {
     "groupwatch": ("\u81ea\u5df1\u6c34\u7fa4", "\u76ef\u7740\u7c89\u4e1d\u7fa4\uff0c\u89c9\u5f97\u8be5\u8bf4\u8bdd\u5c31\u63d2\u4e00\u53e5"),
-    "lifeloop": ("\u81ea\u5df1\u8fc7\u65e5\u5b50", "\u6bcf 15 \u5206\u949f\u9192\u4e00\u6b21\uff0c\u81ea\u5df1\u627e\u70b9\u4e8b\u505a"),
+    "lifeloop": ("\u81ea\u5df1\u8fc7\u65e5\u5b50", "\u81ea\u5df1\u5b89\u6392\u6d3b\u52a8\uff0c\u662f\u5426\u6267\u884c\u7531\u5f53\u524d\u8c03\u5ea6\u6a21\u5f0f\u51b3\u5b9a"),
+    "mind": ("\u81ea\u4e3b\u6d3b\u52a8", "\u4e3b agent \u6839\u636e\u89c2\u5bdf\u51b3\u5b9a\u662f\u5426\u884c\u52a8"),
     "voicedaemon": ("\u53d1\u8bed\u97f3", "\u628a\u8981\u8bf4\u7684\u8bdd\u5408\u6210\u8bed\u97f3\u53d1\u51fa\u53bb"),
     "tts": ("\u8bed\u97f3\u5f15\u64ce", "\u672c\u5730\u5408\u6210\u58f0\u97f3"),
     "browserd": ("\u4e0a\u7f51\u901b", "\u7528\u6d4f\u89c8\u5668\u770b\u7f51\u9875\u3001\u8bfb\u6587\u7ae0"),
@@ -1133,7 +1541,7 @@ def scheduled_tasks():
             ["schtasks.exe", "/query", "/fo", "CSV", "/v"],
             capture_output=True, timeout=40,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        text = (p.stdout or b"").decode("mbcs", "replace")
+        text = decode_task_output(p.stdout)
     except Exception:
         return []
     # 中文 Windows 下 schtasks 的表头是中文，DictReader 靠列名取不到，
@@ -1231,9 +1639,76 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _android_error(self, error):
+        from android_panel import PanelAndroidError
+        if isinstance(error, PanelAndroidError):
+            return self._json(error.http_status, {"ok": False, "status": "error",
+                "code": error.code, "error": str(error), "shot_id": ""})
+        return self._json(503, {"ok": False, "status": "error", "code": "adapter_error",
+            "error": type(error).__name__, "shot_id": ""})
+
+    def _android_post(self):
+        # Android controls accept the local panel/works origins, never arbitrary
+        # websites using the older panel API's permissive CORS policy.
+        from android_panel import AndroidPanel, PanelAndroidError
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlparse(origin)
+            ports = {int(project_conf.get("panelPort", 19389)),
+                     int(project_conf.get("panelStaticPort", 19388)), self.server.server_port}
+            if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
+                    or parsed.port not in ports or parsed.username or parsed.password
+                    or parsed.path or parsed.query or parsed.fragment):
+                raise PanelAndroidError("origin", "Android control requires a local panel origin", 403)
+        try:
+            size = int(self.headers.get("content-length") or 0)
+            if not 0 < size <= 16 * 1024:
+                raise ValueError()
+            body = json.loads(self.rfile.read(size).decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise PanelAndroidError("bad_job", "Invalid Android JSON body", 400) from None
+        return self._json(202, AndroidPanel().submit(body))
+
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/service-health":
+            port = self.server.server_port
+            role = "works" if port == project_conf.get("panelStaticPort", 19388) else "api" if port == project_conf.get("panelPort", 19389) else "unknown"
+            return self._json(200, {"ok": True, "service": "lanya-panel", "version": 1,
+                "pid": os.getpid(), "port": port, "role": role, "script_sha256": _PANEL_SCRIPT_SHA256})
+        if path == "/api/autonomy":
+            return self._json(200, {"ok": True, "autonomy": autonomy_snapshot()})
+        if path == "/api/state":
+            return self._json(200, panel_state_snapshot())
+        if path in ("/api/android/status", "/api/android/shot"):
+            try:
+                from android_panel import AndroidPanel, PanelAndroidError
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if any(len(values) != 1 for values in query.values()):
+                    raise PanelAndroidError("bad_query", "Android query fields must be unique", 400)
+                adapter = AndroidPanel()
+                serial = query.get("serial", [None])[0]
+                if path.endswith("/status"):
+                    return self._json(200, adapter.status(serial))
+                raw = adapter.image(serial, query.get("shot_id", [None])[0])
+                self.send_response(200)
+                self.send_header("content-type", "image/png")
+                self.send_header("content-length", str(len(raw)))
+                self.send_header("cache-control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("pragma", "no-cache")
+                self.send_header("expires", "0")
+                self.send_header("x-content-type-options", "nosniff")
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            except Exception as error:
+                return self._android_error(error)
+        if path == "/api/memory/owners":
+            try:
+                return self._json(200, {"ok": True, "view": "management", "owners": memory_owner_choices()})
+            except Exception as error:
+                return self._json(200, {"ok": False, "owners": [], "error": str(error)[:200]})
         if path == "/api/memory/corpus":
             # 三个来源各多少条：数据库 / 日记 / 判重表（刷过哪些视频）
             try:
@@ -1244,6 +1719,7 @@ class Handler(SimpleHTTPRequestHandler):
                 mergeable = sum(1 for g in groups if _mp.merge_group(g))
                 return self._json(200, {
                     "ok": True, "stats": st,
+                    "view": "management",
                     "mergeable": mergeable,
                     "dbAfterMerge": len(groups),
                     "thresholds": {"merge": _mp.COMPRESS_OVER,
@@ -1263,9 +1739,9 @@ class Handler(SimpleHTTPRequestHandler):
             lim = max(1, min(50, lim))
             try:
                 import memory_index as _mi
-                idx = _mi.Index()
+                idx = _mi.Index.management()
                 hits = idx.search(kw, limit=lim) if kw else []
-                return self._json(200, {"ok": True, "q": kw,
+                return self._json(200, {"ok": True, "view": "management", "q": kw,
                                         "total": idx.n, "hits": hits})
             except Exception as e:
                 return self._json(200, {"ok": False, "hits": [],
@@ -1274,8 +1750,8 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/memory/graph":
             try:
                 import memory_index as _mi
-                g = _mi.Index().graph()
-                return self._json(200, dict(ok=True, **g))
+                g = _mi.Index.management().graph()
+                return self._json(200, dict(ok=True, view="management", **g))
             except Exception as e:
                 return self._json(200, {"ok": False, "nodes": [], "edges": [],
                                         "error": str(e)[:200]})
@@ -1361,17 +1837,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/bili/login/credential":
             # 凭证在就算登录过——bili-qr.json 只是"这一轮扫码"的临时状态，
             # 用户扫完以后它会一直停在 waiting，不能拿它判断登没登录。
-            cred = os.path.join(os.path.expanduser("~"), ".dsh", "bili_credential.json")
-            ok = False
-            uid = ""
-            if os.path.isfile(cred):
-                try:
-                    with open(cred, "r", encoding="utf-8") as fhc:
-                        cc = json.load(fhc)
-                    ok = bool(cc.get("sessdata")) and bool(cc.get("bili_jct"))
-                    uid = str(cc.get("dedeuserid") or "")
-                except Exception:
-                    pass
+            cc = _bili_cred()
+            ok = bool(cc.get("sessdata")) and bool(cc.get("bili_jct"))
+            uid = str(cc.get("dedeuserid") or "")
             return self._json(200, {"ok": True, "loggedIn": ok, "uid": uid})
 
         if path == "/api/bili/login/status":
@@ -1487,13 +1955,12 @@ class Handler(SimpleHTTPRequestHandler):
             # 把每项活动绑到的部件状态查出来，页面才知道"能不能真干"
             st3 = {}
             try:
-                snap = os.path.join(ROOT, "lanya-state.json")
-                with open(snap, "r", encoding="utf-8") as fhs3:
-                    st3 = dict((c.get("tag"), c) for c in
-                               (json.load(fhs3).get("components") or []))
+                st3 = dict((c.get("tag"), c) for c in (panel_state_snapshot().get("components") or []))
             except Exception:
                 st3 = {}
 
+            autonomy = autonomy_snapshot()
+            data["autonomy"] = autonomy
             def comp_count(tag):
                 c = st3.get(tag)
                 return int(c.get("count") or 0) if c else 0
@@ -1503,18 +1970,18 @@ class Handler(SimpleHTTPRequestHandler):
                 a["ready"] = None          # None = 不依赖部件
                 a["why"] = ""
                 if b == "bili-duty":
-                    crit = os.path.join(os.path.expanduser("~"), ".dsh",
-                                        "bili_credential.json")
-                    okcred = False
-                    if os.path.isfile(crit):
-                        try:
-                            with open(crit, "r", encoding="utf-8") as fhc2:
-                                cc2 = json.load(fhc2)
-                            okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
-                        except Exception:
-                            okcred = False
+                    cc2 = _bili_cred()
+                    okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
                     a["ready"] = okcred
                     a["why"] = "B 站已登录" if okcred else "还没登录 B 站（去刷 B 站页扫码）"
+                elif b in ("lifeloop", "mind") and autonomy["mode"] != "legacy":
+                    a["ready"] = autonomy["can_request_check"]
+                    a["why"] = autonomy_label(autonomy)
+                    a["managed_by"] = "main_agent"
+                elif b == "works":
+                    service = (st3.get("works") or {}).get("service", {})
+                    a["ready"] = service.get("healthy") is True
+                    a["why"] = "\u4f5c\u54c1\u7ad9\u5065\u5eb7" if a["ready"] else "\u4f5c\u54c1\u7ad9\u5065\u5eb7\u672a\u786e\u8ba4"
                 elif b:
                     n = comp_count(b)
                     a["ready"] = n > 0
@@ -1528,6 +1995,18 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/live":
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
             out = {"log": [], "last": "", "lastAt": "", "nextIn": ""}
+            autonomy = autonomy_snapshot()
+            if autonomy["mode"] != "legacy":
+                # Old Life logs are not evidence of current main-agent activity.
+                out["autonomy"] = autonomy
+                out["statusLabel"] = autonomy_label(autonomy)
+                try:
+                    budget = _read_metadata(BUDGET)
+                    out["money"] = {key: budget.get(key, False if key == "exhausted" else 0)
+                                    for key in ("spent", "limit", "exhausted")}
+                except (OSError, ValueError, TypeError):
+                    pass
+                return self._json(200, {"ok": True, "live": out})
             try:
                 lf = tail_file(os.path.join(LANYA_DIR_, "lifeloop.log"), 12)
                 out["log"] = [x.strip() for x in (lf or "").splitlines() if x.strip()]
@@ -1807,14 +2286,32 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/android/job":
+            try:
+                return self._android_post()
+            except Exception as error:
+                return self._android_error(error)
+        if path == "/api/autonomy/check":
+            try:
+                size = int(self.headers.get("content-length", "0"))
+                if not 0 <= size <= 1024:
+                    raise ValueError()
+                raw = self.rfile.read(size)
+                body = json.loads(raw.decode("utf-8")) if size else {}
+                if not isinstance(body, dict) or body:
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                return self._json(400, {"ok": False, "error": "Check request takes no owner or event parameters"})
+            result = request_autonomy_check()
+            return self._json(200 if result["ok"] else 409, result)
         body = self._read()
 
         if path == "/api/memory/consolidate":
             try:
-                import memory_plastic as _mp
-                dry = body.get("dry") is True
-                r = _mp.consolidate(dry=dry)
+                r = memory_maintenance("consolidate", body)
                 return self._json(200, dict(ok=True, **r))
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
@@ -1829,10 +2326,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/memory/compress":
             try:
-                import memory_plastic as _mp
-                dry = body.get("dry") is True
-                r = _mp.compress(dry=dry)
+                r = memory_maintenance("compress", body)
                 return self._json(200, dict(ok=True, **r))
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
@@ -2017,7 +2514,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     "bili-duty", "duty.md")
                 if not os.path.isfile(duty):
                     return self._json(200, {"ok": False, "error": "duty.md not found"})
-                dsh = os.path.join(DSH_ROOT, "resources", "runtime", "cli", "bin", "dsh.cmd")
+                dsh = DSH_CLI
                 if not os.path.isfile(dsh):
                     return self._json(200, {"ok": False, "error": "dsh.cmd not found"})
                 with open(duty, "r", encoding="utf-8", errors="replace") as fhd:
@@ -2037,6 +2534,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/action":
+            if not isinstance(body, dict):
+                return self._json(400, {"ok": False, "error": "Invalid component action"})
             target = str(body.get("target") or "")
             # NapCat 注入必须提权，否则 napimain 什么都不做。与其静默失败，
             # 不如直接弹 UAC 让用户点一下——这是唯一合法的路径。
@@ -2048,13 +2547,8 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception as e:
                     return self._json(500, {"ok": False, "error": str(e)})
             try:
-                # 能映射到计划任务的，走任务（无窗口）；其余才直接起脚本。
-                tr = run_task(target)
-                if tr is not None:
-                    return self._json(200 if tr["ok"] else 500,
-                                      {"ok": tr["ok"], "task": tr["task"], "log": tr["log"]})
-                pid = run_script(target)
-                return self._json(200, {"ok": True, "pid": pid})
+                result = control_action(body)
+                return self._json(200 if result["ok"] else 409, result)
             except Exception as e:
                 return self._json(400, {"ok": False, "error": str(e)})
 
@@ -2394,32 +2888,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": str(e)[:300]})
 
         if path == "/api/memory/edit":
-            eid = str(body.get("id") or "").strip()
-            text = str(body.get("text") or "").strip()
-            if not eid or not text:
-                return self._json(400, {"ok": False, "error": "need id and text"})
-            if len(text) > 400:
-                return self._json(400, {"ok": False, "error": "too long (max 400)"})
             try:
-                import sqlite3 as _sq4, time as _t4
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c4 = _sq4.connect(db)
-                row = c4.execute("SELECT text FROM entries WHERE id = ?", (eid,)).fetchone()
-                if not row:
-                    c4.close()
-                    return self._json(404, {"ok": False, "error": "not found"})
-                c4.execute("UPDATE entries SET text = ?, updated_at = ? WHERE id = ?",
-                           (text, int(_t4.time() * 1000), eid))
-                c4.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (int(_t4.time() * 1000), "edit-panel", None, None, eid,
-                     text, "edited via panel", "panel", None))
-                c4.commit()
-                c4.close()
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("edit", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/activities/add":
             try:
@@ -2526,58 +3001,22 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/memory/add":
-            text = str(body.get("text") or "").strip()
-            track = str(body.get("track") or "agent")
-            if track not in ("user", "agent"):
-                track = "agent"
-            if not text:
-                return self._json(400, {"ok": False, "error": "empty text"})
-            if len(text) > 400:
-                return self._json(400, {"ok": False, "error": "too long (max 400)"})
             try:
-                import sqlite3 as _sq, uuid as _uuid, time as _t
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c = _sq.connect(db)
-                now = int(_t.time() * 1000)
-                eid = str(_uuid.uuid4())[:8] + "-" + _uuid.uuid4().hex[:8]
-                c.execute(
-                    "INSERT INTO entries (id, track, scope, workspace_key, text, source, "
-                    "created_at, updated_at, session_id, agent_key, tags, version) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (eid, track, "workspace", "", text, "panel", now, now, None, "", "[]", 1))
-                c.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (now, "add-panel", track, "workspace", eid, text, "added via panel", "panel", None))
-                c.commit()
-                c.close()
-                return self._json(200, {"ok": True, "id": eid})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("add", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/memory/delete":
-            eid = str(body.get("id") or "").strip()
-            if not eid:
-                return self._json(400, {"ok": False, "error": "missing id"})
             try:
-                import sqlite3 as _sq, time as _t
-                db = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
-                c = _sq.connect(db)
-                row = c.execute("SELECT text FROM entries WHERE id = ?", (eid,)).fetchone()
-                if not row:
-                    c.close()
-                    return self._json(404, {"ok": False, "error": "not found"})
-                c.execute("DELETE FROM entries WHERE id = ?", (eid,))
-                c.execute(
-                    "INSERT INTO audit (ts, action, track, scope, entry_id, text, outcome, source, session_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (int(_t.time() * 1000), "delete-panel", None, None, eid,
-                     row[0], "deleted via panel", "panel", None))
-                c.commit()
-                c.close()
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
+                return self._json(200, memory_mutation("delete", body))
+            except ValueError as error:
+                return self._json(getattr(error, "status", 400),
+                                  {"ok": False, "error": str(error), "code": getattr(error, "code", "invalid_request")})
+            except Exception:
+                return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
         if path == "/api/files/delete":
             key = str(body.get("dir") or "")
@@ -2701,7 +3140,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("LANYA_PANEL_PORT", "19389"))
+    port = int(os.environ.get("LANYA_PANEL_PORT") or project_conf.get("panelPort", 19389))
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])

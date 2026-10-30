@@ -58,28 +58,33 @@ function Get-SleepPlan([int]$BaseMinutes) {
 ----
     python mind.py                 # 跑一轮
     python mind.py --dry           # 只看她怎么想的，不执行
+    python mind.py --force         # 忽略 ETA，手动跑一轮（仍遵守单实例锁）
     python mind.py --hit "谁先说话的"   # 手动记一次打断（调试用）
 """
 import io
+import hashlib
+from contextlib import contextmanager
 import json
 import os
-import random
 import re
 import subprocess
 import sys
 import time
+
+from project_conf import data_dir, get, work_dir
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.path.dirname(HERE)
-DATA = os.path.join(WORK, "\u5c9a\u5a05")
+WORK = work_dir()
+DATA = data_dir()
+RUNTIME = os.path.join(WORK, "napcat")
 MIND = os.path.join(DATA, "mind.json")
-MIND_LOG = os.path.join(HERE, "mind.log")
-HITFILE = os.path.join(HERE, "mind-interrupts.json")
+MIND_LOG = os.path.join(RUNTIME, "mind.log")
+HITFILE = os.path.join(RUNTIME, "mind-interrupts.json")
+LOCKFILE = os.path.join(RUNTIME, "mind.lock")
 
 # 没有明确 ETA 时的兜底节奏。不是随机——是一个固定的、短的检查间隔。
 DEFAULT_CHECK_MIN = 6
@@ -111,6 +116,7 @@ def load(p, default):
 
 
 def save(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
     with io.open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
@@ -122,19 +128,59 @@ def blank_mind():
             "next_check_min": DEFAULT_CHECK_MIN, "mood": ""}
 
 
+@contextmanager
+def cycle_lock():
+    """An OS lock is released on process exit, including crashes and timeouts."""
+    os.makedirs(os.path.dirname(LOCKFILE), exist_ok=True)
+    fh = open(LOCKFILE, "a+b")
+    acquired = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(fh.fileno()).st_size == 0:
+                fh.write(b"\0")
+                fh.flush()
+            fh.seek(0)
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except OSError:
+                pass
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                pass
+        yield acquired
+    finally:
+        if acquired:
+            if os.name == "nt":
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
+def persona_path():
+    name = os.path.basename(DATA) + "-\u4eba\u8bbe\u6b63\u6587.md"
+    candidates = (os.path.join(RUNTIME, name),
+                  os.path.join(RUNTIME, "persona.md"))
+    return next((p for p in candidates if os.path.isfile(p)), candidates[0])
+
+
 # ---------------------------------------------------------------------------
 # 打断：谁在这段时间找过她
 # ---------------------------------------------------------------------------
-def pull_interrupts():
-    """groupwatch 会把「有人说话了」写进 HITFILE，这里取走并清空。"""
-    items = load(HITFILE, [])
-    if not isinstance(items, list):
-        items = []
-    try:
-        save(HITFILE, [])
-    except Exception:
-        pass
-    return items
+def acknowledge_interrupts(items):
+    """Only remove the snapshot we handled; retain newer groupwatch entries."""
+    if not items:
+        return
+    current = load(HITFILE, [])
+    if isinstance(current, list) and current[:len(items)] == items:
+        save(HITFILE, current[len(items):])
 
 
 def push_interrupt(who, text):
@@ -150,19 +196,18 @@ def push_interrupt(who, text):
 # 上下文
 # ---------------------------------------------------------------------------
 def persona_snippet(max_chars=700):
-    for name in ("\u5c9a\u5a05-\u4eba\u8bbe\u6b63\u6587.md",):
-        p = os.path.join(HERE, name)
-        if os.path.isfile(p):
-            try:
-                with io.open(p, encoding="utf-8", errors="replace") as fh:
-                    return fh.read()[:max_chars]
-            except Exception:
-                pass
+    p = persona_path()
+    if os.path.isfile(p):
+        try:
+            with io.open(p, encoding="utf-8", errors="replace") as fh:
+                return fh.read()[:max_chars]
+        except Exception:
+            pass
     return ""
 
 
 def examples(max_n=10):
-    p = os.path.join(HERE, "\u5c9a\u5a05-\u4eba\u8bbe\u6b63\u6587.md")
+    p = persona_path()
     if not os.path.isfile(p):
         return ""
     out = []
@@ -215,7 +260,7 @@ def capabilities(max_chars=7000):
     """Her full activity menu lives in lifeloop.prompt.txt. Reuse it instead of
     writing a second, thinner copy here - the first attempt at this file had no
     menu at all, and she answered "do nothing" because nothing was on offer."""
-    p = os.path.join(HERE, "lifeloop.prompt.txt")
+    p = os.path.join(RUNTIME, "lifeloop.prompt.txt")
     if not os.path.isfile(p):
         return ""
     try:
@@ -227,7 +272,7 @@ def capabilities(max_chars=7000):
     cfg = load(os.path.join(DATA, "lanya-config.json"), {})
     t = t.replace("{{NOW}}", time.strftime("%Y-%m-%d %H:%M"))
     t = t.replace("{{DIR}}", DATA)
-    t = t.replace("{{NUTCAT}}", HERE)
+    t = t.replace("{{NUTCAT}}", RUNTIME)
     t = t.replace("{{IDLE}}", "\u5f88\u4e45")
     t = t.replace("{{SINCESHARE}}", "\u4e0d\u8bb0\u5f97")
     t = t.replace("{{LASTSHARE}}", "\uff08\u6ca1\u8bb0\u5f55\uff09")
@@ -336,15 +381,19 @@ def find_dsh():
     return ""
 
 
-def ask(task, timeout=1500):
+def ask(task, timeout=None):
     dsh = find_dsh()
     if not dsh:
-        return ""
+        raise RuntimeError("dsh executable not found (set DSH_ROOT)")
+    if timeout is None:
+        timeout = max(1, int(get("daemon.headlessTimeoutSec", 360)))
     try:
         p = subprocess.run([dsh, "--profile", "headless", "-"],
                            input=task.encode("utf-8"),
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=timeout)
+        if p.returncode != 0:
+            raise RuntimeError("agent exited with code %s" % p.returncode)
         raw = p.stdout or b""
         if raw[:2] == b"\xff\xfe":
             return raw.decode("utf-16-le").lstrip("\ufeff").strip()
@@ -352,9 +401,8 @@ def ask(task, timeout=1500):
             return raw.decode("utf-8").strip()
         except Exception:
             return raw.decode("utf-16-le", "replace").lstrip("\ufeff").strip()
-    except Exception as e:
-        log("agent failed: " + str(e)[:120])
-        return ""
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("agent timed out after %s seconds" % timeout) from e
 
 
 def parse(answer):
@@ -389,14 +437,16 @@ def deliver(target, text):
     """发出去。复用 lifeloop 那套 OneBot 调用，不重写一遍。"""
     import urllib.request
 
-    nb = os.path.join(HERE, "framework", "config", "onebot11.json")
+    port = int(get("onebotPort", 8720))
+    nb = os.path.join(RUNTIME, "framework", "config", "onebot11.json")
     tok = ""
     try:
         with io.open(nb, encoding="utf-8-sig") as fh:
             d = json.load(fh)
         hs = ((d.get("network") or {}).get("httpServers") or [])
         if hs:
-            tok = hs[0].get("token") or ""
+            server = next((h for h in hs if str(h.get("port")) == str(port)), hs[0])
+            tok = server.get("token") or ""
     except Exception:
         pass
 
@@ -423,32 +473,62 @@ def deliver(target, text):
         return False
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:8720/" + action,
+            "http://127.0.0.1:%d/" % port + action,
             data=json.dumps(body).encode("utf-8"),
             headers={"content-type": "application/json",
                      "authorization": "Bearer " + tok},
             method="POST")
         with urllib.request.urlopen(req, timeout=25) as r:
             raw = r.read().decode("utf-8", "replace")
-        ok = '"retcode": 0' in raw or '"retcode":0' in raw
-        log("deliver(%s): %s" % (target, "ok" if ok else raw[:120]))
+        result = json.loads(raw)
+        ok = result.get("retcode") == 0
+        log("deliver(%s): %s" % (target, "ok" if ok else
+                                "OneBot retcode=%s" % result.get("retcode")))
         return ok
     except Exception as e:
         log("deliver failed: " + str(e)[:120])
         return False
 
 
-def one_cycle(dry=False):
-    mind = load(MIND, blank_mind())
-    if not isinstance(mind, dict):
-        mind = blank_mind()
+def one_cycle(dry=False, force=False, observe_only=False):
+    try:
+        if dry:
+            return _one_cycle(dry=True, force=force, observe_only=observe_only)
+        with cycle_lock() as acquired:
+            if not acquired:
+                log("another mind cycle is running - skipped")
+                return 0
+            return _one_cycle(force=force, observe_only=observe_only)
+    except Exception as e:
+        log("cycle failed (%s): %s" % (type(e).__name__, str(e)[:180]))
+        return 1
+
+
+def _one_cycle(dry=False, force=False, observe_only=False):
+    # A corrupt state must not silently replace an existing plan with a blank.
+    mind = blank_mind()
+    if os.path.isfile(MIND):
+        with io.open(MIND, encoding="utf-8-sig") as fh:
+            mind = json.load(fh)
+        if not isinstance(mind, dict):
+            raise ValueError("mind.json must contain an object")
     for k, v in blank_mind().items():
         mind.setdefault(k, v)
 
-    # A dry run must not consume the interrupts - it only prints the prompt.
-    # Pulling them out on a preview meant the next real round saw an empty list
-    # and quietly ignored everyone who had spoken.
-    hits = load(HITFILE, []) if dry else pull_interrupts()
+    from decision_events import unified_decisions_enabled
+    unified = unified_decisions_enabled()
+    if observe_only and not unified:
+        raise ValueError("Observation-only request requires unified decision mode")
+    if unified:
+        return _observe_cycle(mind, dry=dry, force=force)
+
+    next_check = float(mind.get("next_check_ts") or 0)
+    if not dry and not force and time.time() < next_check:
+        log("ETA not due - skipped")
+        return 0
+
+    # Keep the snapshot until the agent and delivery have both succeeded.
+    hits = load(HITFILE, [])
     if not isinstance(hits, list):
         hits = []
     prompt = build_prompt(mind, hits)
@@ -459,16 +539,296 @@ def one_cycle(dry=False):
         log("--- prompt ---")
         for ln in prompt.splitlines():
             log("  " + ln)
-        return
+        return 0
 
-    ans = ask(prompt)
-    if not ans:
-        log("empty answer - keeping the plan as is, checking again later")
+    try:
+        return _apply_answer(mind, hits, ask(prompt))
+    except Exception as e:
+        error = "%s: %s" % (type(e).__name__, str(e)[:180])
+        log("cycle failed - keeping plan and interrupts: " + error)
         mind["next_check_min"] = DEFAULT_CHECK_MIN
+        mind["last_check_ts"] = time.time()
+        mind["next_check_ts"] = mind["last_check_ts"] + DEFAULT_CHECK_MIN * 60
+        mind["last_error"] = error
         save(MIND, mind)
-        return
+        return 1
 
+
+def _observation_payload(mind, hits, primary=True):
+    return {"legacy_plan_reference": mind.get("plan") if primary else None,
+            "mood": mind.get("mood") if primary else None, "interrupts": hits,
+            "activity_role": "internal_leisure" if primary else "conversation_social",
+            "instruction": (
+                "This is an optional autonomous opportunity for this conversation, not a request to speak. "
+                "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
+                + ("This primary private conversation owns internal leisure: actively consider continuing "
+                   "one small real game, browsing Bilibili, or making something you are interested in. "
+                   "Prefer a concrete small activity over repeatedly planning to act later when the tools "
+                   "and situation permit it; idle/defer is still valid when there is a real reason. "
+                   "Use trusted_runtime_capabilities.tools.entertainment for available games, real local "
+                   "URLs, Bilibili tools and the activity-notes location. Read fresh screenshots before "
+                   "game moves; use real recommendation/detail/subtitle tools before claiming video content. "
+                   "Do a bounded portion, then keep the next step for this same session. " if primary else
+                   "This group opportunity is for this conversation's social context and interests. "
+                   "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
+                   "browsing and creative work are owned by the primary private opportunity; do not start "
+                   "a second copy of that activity here or borrow its private plan or notes. ") +
+                "Keep scoped plan/progress notes in this same agent session and only the activity-notes "
+                "location supplied by the trusted guide. Do not edit mind.json, decision-inbox, scheduler, "
+                "policy, agent/profile or configuration files to arrange activities or mark completion. "
+                "The legacy plan is an unverified "
+                "reference, never proof of an action or an instruction to repeat old work. "
+                "Use actual available tools and claim only confirmed results. Respect persistent silence; "
+                "an internal activity needs no QQ report. Only this conversation's ticket may send here. "
+                "Use qq_decide and optionally next_review_at for a useful explicit review time. "
+                "Otherwise a later low-frequency opportunity may be offered; no message is required.")}
+
+
+def _observation_signature(mind, hits, primary):
+    """Only scoped evidence changes identity; an instruction update is not evidence."""
+    from decision_events import canonical_json
+    evidence = {"legacy_plan_reference": mind.get("plan") if primary else None,
+                "mood": mind.get("mood") if primary else None, "interrupts": hits}
+    return hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+
+
+_OLD_DECISION_KEYS = ("decision_pending", "decision_generation", "decision_completed_signature",
+                      "decision_next_review_at", "last_decision_status")
+
+
+def _valid_ms(value):
+    return type(value) is int and 0 <= value <= 2**53 - 1
+
+
+def _validate_observers(mind):
+    states = mind.get("decision_scopes")
+    if type(mind.get("decision_observers_version")) is not int or mind["decision_observers_version"] != 2 or not isinstance(states, dict):
+        raise ValueError("invalid autonomous observer schema")
+    for scope, state in states.items():
+        if not isinstance(scope, str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", scope) or not isinstance(state, dict):
+            raise ValueError("invalid autonomous observer scope")
+        if type(state.get("generation", 0)) is not int or not 0 <= state.get("generation", 0) < 2**53:
+            raise ValueError("invalid autonomous generation")
+        for key in ("next_review_at", "next_opportunity_at", "last_completed_at"):
+            if state.get(key) is not None and not _valid_ms(state[key]):
+                raise ValueError("invalid autonomous timing")
+        if state.get("last_status") not in (None, "decided", "sent", "unknown", "suppressed"):
+            raise ValueError("invalid autonomous completion status")
+        if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
+            raise ValueError("invalid autonomous signature")
+        if "evidence_version" in state and (type(state["evidence_version"]) is not int or state["evidence_version"] != 1):
+            raise ValueError("invalid autonomous evidence version")
+        error = state.get("observer_error")
+        if error is not None and (not isinstance(error, dict) or
+                set(error) != {"error_class", "first_seen_at", "last_seen_at"} or
+                not isinstance(error.get("error_class"), str) or
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error["error_class"]) or
+                not _valid_ms(error.get("first_seen_at")) or not _valid_ms(error.get("last_seen_at")) or
+                error["first_seen_at"] > error["last_seen_at"]):
+            raise ValueError("invalid autonomous observer error")
+        pending = state.get("pending")
+        if state.get("last_status") is not None and pending is None and state.get("completed_signature") is None:
+            raise ValueError("completed autonomous state lacks evidence signature")
+        if pending is not None:
+            if (not isinstance(pending, dict) or pending.get("scope") != scope or
+                    not isinstance(pending.get("event_id"), str) or not pending["event_id"] or
+                    len(pending["event_id"]) > 256 or re.search(r"[\x00-\x1f]", pending["event_id"]) or
+                    not isinstance(pending.get("signature"), str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", pending["signature"]) or
+                    not isinstance(pending.get("interrupts"), list) or
+                    any(not isinstance(hit, dict) or ("scope" in hit and hit["scope"] != scope) for hit in pending["interrupts"])):
+                raise ValueError("invalid pending autonomous evidence")
+    return states
+
+
+def _observer_states(mind, scopes, now, interval):
+    if "decision_observers_version" not in mind:
+        if "decision_scopes" in mind:
+            raise ValueError("unversioned autonomous scope state")
+        old = {key: mind[key] for key in _OLD_DECISION_KEYS if key in mind}
+        states = {}
+        if old:
+            pending = old.get("decision_pending")
+            scope = pending.get("scope") if isinstance(pending, dict) else scopes[0]
+            state = {"generation": old.get("decision_generation", 0)}
+            if "decision_pending" in old:
+                state["pending"] = pending
+            if "decision_completed_signature" in old:
+                state["completed_signature"] = old["decision_completed_signature"]
+            state["last_status"] = old.get("last_decision_status")
+            state["next_review_at"] = old.get("decision_next_review_at")
+            _validate_observers({"decision_observers_version": 2, "decision_scopes": {scope: state}})
+            if "decision_completed_signature" in old or state["last_status"] is not None:
+                # The new context is a schema change, not fresh external evidence.
+                state["completed_signature"] = _observation_signature(mind, [], scope == scopes[0])
+            if not pending and old.get("decision_completed_signature") and state["generation"]:
+                # Old completed state dropped its event pointer; recover the
+                # exact immutable identity rather than inventing a new review.
+                from decision_events import event_key
+                prior_id = "mind:" + old["decision_completed_signature"] + ":" + str(state["generation"])
+                prior = os.path.join(DATA, "decision-inbox", "pending", event_key(scope, prior_id) + ".json")
+                if os.path.lexists(prior):
+                    state["pending"] = {"scope": scope, "event_id": prior_id,
+                                        "signature": old["decision_completed_signature"], "interrupts": []}
+            state["next_opportunity_at"] = (None if state["last_status"] == "unknown" else
+                                              (state["next_review_at"] if state["next_review_at"] is not None else now + interval))
+            states[scope] = state
+            mind["decision_legacy"] = old  # Original pending/unknown evidence remains recoverable.
+        for key in _OLD_DECISION_KEYS:
+            mind.pop(key, None)
+        mind["decision_observers_version"] = 2
+        mind["decision_scopes"] = states
+    states = _validate_observers(mind)
+    for scope in scopes:
+        states.setdefault(scope, {"generation": 0})
+        states[scope].setdefault("generation", 0)
+        if "evidence_version" not in states[scope]:
+            # Existing hashes included the old instruction. A software update
+            # must not manufacture new evidence or replay an unknown outcome.
+            if states[scope].get("last_status") is not None and not states[scope].get("pending"):
+                states[scope]["completed_signature"] = _observation_signature(mind, [], scope == scopes[0])
+            states[scope]["evidence_version"] = 1
+    return states
+
+
+def _read_observer_hits():
+    hits = []
+    if os.path.exists(HITFILE):
+        with io.open(HITFILE, encoding="utf-8-sig") as stream:
+            hits = json.load(stream)
+    if not isinstance(hits, list) or any(not isinstance(hit, dict) for hit in hits):
+        raise ValueError("mind interrupts must contain an array")
+    for hit in hits:
+        if "scope" in hit and (not isinstance(hit["scope"], str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", hit["scope"])):
+            raise ValueError("invalid interrupt conversation")
+    return hits
+
+
+def _scope_hits(hits, scope, primary):
+    return [hit for hit in hits if hit.get("scope") == scope or (primary and "scope" not in hit)]
+
+
+def _acknowledge_scope_hits(items, scope, primary):
+    if not items:
+        return
+    current = _read_observer_hits()
+    if _scope_hits(current, scope, primary)[:len(items)] != items:
+        return
+    remaining, count = [], 0
+    for hit in current:
+        matches = hit.get("scope") == scope or (primary and "scope" not in hit)
+        if matches and count < len(items):
+            count += 1
+        else:
+            remaining.append(hit)
+    save(HITFILE, remaining)
+
+
+def _observe_cycle(mind, dry=False, force=False):
+    """Offer per-conversation opportunities, never schedule QQ speech.
+
+    Explicit reviews have one owner (the queue for new opportunities). Unknown
+    outcomes are never retried by the clock or force; new evidence is distinct.
+    """
+    from decision_events import (project_scopes, submit_project_observation,
+                                 observation_review_chain)
+    scopes = project_scopes()
+    # Unified opportunities have their own trusted configuration. Legacy ETA
+    # state is not an everlasting override of the current activity policy.
+    value = get("mind.opportunityMin", DEFAULT_CHECK_MIN)
+    if type(value) not in (int, float) or not MIN_CHECK_MIN <= value <= MAX_CHECK_MIN:
+        raise ValueError("invalid autonomous opportunity interval")
+    interval = int(value * 60_000)
+    now = int(time.time() * 1000)
+    states = _observer_states(mind, scopes, now, interval)
+    hits = _read_observer_hits()
+    if dry:
+        log("would submit an observation to the main LLM; no side effects")
+        return 0
+    # Fail closed for the affected conversation. A missing immutable event must
+    # neither be replayed nor stop unrelated, correctly scoped opportunities.
+    chains, blocked = {}, set()
+    for scope in scopes:
+        state = states[scope]
+        try:
+            if state.get("pending"):
+                chains[scope] = observation_review_chain(scope, state["pending"]["event_id"])
+        except Exception as error:
+            code = type(error).__name__
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", code):
+                code = "ObservationError"
+            previous = state.get("observer_error")
+            if previous is None or previous["error_class"] != code:
+                state["observer_error"] = {"error_class": code, "first_seen_at": now, "last_seen_at": now}
+                log("autonomous observation evidence blocked (%s); no replay" % code)
+            else:
+                previous["last_seen_at"] = max(previous["last_seen_at"], now)
+            blocked.add(scope)
+        else:
+            state.pop("observer_error", None)
+    for scope in scopes:
+        if scope in blocked:
+            continue
+        state = states[scope]
+        primary = scope == scopes[0]
+        pending = state.get("pending")
+        if pending:
+            chain = chains[scope]
+            # Keep the bounded reader near the tail across ordinary cycles;
+            # a long-lived sequence of explicit reviews is not a corrupt chain.
+            pending["event_id"] = chain["event"]["event_id"]
+            completed = chain["completion"]
+            if completed is None:
+                state["next_review_at"] = None
+                log("main decision still pending; no new model or send")
+                continue
+            state["last_status"] = completed["status"]
+            state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
+            review = None if completed["status"] == "unknown" else completed.get("next_review_at")
+            state["next_review_at"] = review
+            if chain["waiting_review"] or (review is not None and review > now):
+                # New kinds delegate entirely to queue; legacy activity_due
+                # retains its producer clock until its next opportunity.
+                continue
+            state["completed_signature"] = _observation_signature(mind, [], primary)
+            state["next_opportunity_at"] = (None if completed["status"] == "unknown" else
+                                              (review if review is not None else state["last_completed_at"] + interval))
+            _acknowledge_scope_hits(pending["interrupts"], scope, primary)
+            state.pop("pending")
+            hits = _read_observer_hits()
+        scoped_hits = _scope_hits(hits, scope, primary)
+        payload = _observation_payload(mind, scoped_hits, primary)
+        signature = _observation_signature(mind, scoped_hits, primary)
+        changed = signature != state.get("completed_signature")
+        due = state.get("next_opportunity_at")
+        if state.get("last_status") == "unknown" and not changed:
+            continue
+        if not changed and not force and (due is None or due > now):
+            continue
+        if state["generation"] >= 2**53 - 1:
+            raise ValueError("autonomous generation limit reached")
+        generation = state["generation"] + 1
+        event_id = "mind-opportunity:" + signature + ":" + str(generation)
+        submit_project_observation(scope=scope, kind="activity.opportunity", payload=payload,
+                                   producer="mind", event_id=event_id)
+        state["generation"] = generation
+        state["pending"] = {"scope": scope, "event_id": event_id, "signature": signature,
+                            "interrupts": scoped_hits}
+        state["next_review_at"] = None
+        state["next_opportunity_at"] = None
+        # Durable per scope: a second scope failing cannot duplicate the first.
+        save(MIND, mind)
+    save(MIND, mind)
+    return 1 if blocked else 0
+
+
+def _apply_answer(mind, hits, ans):
+    if not ans:
+        raise RuntimeError("agent returned an empty answer")
     d = parse(ans)
+    if not d["plan"]:
+        raise ValueError("agent response has no PLAN")
     log("think: " + (d["think"] or "-")[:110])
     log("plan : " + (d["plan"] or "-")[:90])
 
@@ -493,19 +853,22 @@ def one_cycle(dry=False):
 
     if d["say"]:
         target, text = d["say"]
-        if dry:
-            log("would say -> %s: %s" % (target, text))
-        else:
-            if deliver(target, text):
-                mind["log"] = (mind.get("log") or [])[-19:] + [
-                    {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "did": text}]
+        if not deliver(target, text):
+            raise RuntimeError("OneBot delivery failed")
+        mind["log"] = (mind.get("log") or [])[-19:] + [
+            {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "did": text}]
 
     eta = d["eta"] or DEFAULT_CHECK_MIN
     eta = max(MIN_CHECK_MIN, min(MAX_CHECK_MIN, int(eta)))
     mind["next_check_min"] = eta
+    mind["last_check_ts"] = time.time()
+    mind["next_check_ts"] = mind["last_check_ts"] + eta * 60
+    mind.pop("last_error", None)
     mind["interrupts"] = []
     save(MIND, mind)
+    acknowledge_interrupts(hits)
     log("next check in %d min" % eta)
+    return 0
 
 
 if __name__ == "__main__":
@@ -514,4 +877,5 @@ if __name__ == "__main__":
         who = sys.argv[i + 1] if i + 1 < len(sys.argv) else "?"
         push_interrupt(who, "manual test")
         log("recorded a manual interrupt from " + who)
-    one_cycle(dry="--dry" in sys.argv)
+    sys.exit(one_cycle(dry="--dry" in sys.argv, force="--force" in sys.argv,
+                       observe_only="--observe-only" in sys.argv))

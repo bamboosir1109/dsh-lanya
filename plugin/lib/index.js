@@ -15,9 +15,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { createHash } from 'node:crypto'
+import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
+import { createReminderObserver } from './reminder-observer.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -27,11 +29,6 @@ export const inject = ['systemPrompt']
 export const PERSONA_SECTION = 'dafeiyu:persona'
 export const AFFINITY_SECTION = 'dafeiyu:affinity'
 
-// ESM 没有 __dirname，从 import.meta.url 推
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const DEFAULT_PERSONA = path.join(HERE, '..', 'napcat', 'persona.md')
-const DEFAULT_AFFINITY = '<WORKDIR>\\<dataDir>\\affinity.json'
-const NAPCAT_DIR = '<WORKDIR>\\napcat'
 
 // 常驻部件实测只有一百多 MB，3 GB 阈值足够松。
 // 一旦看到 3 GB 就说明有人在堆积了，不是正常波动。
@@ -40,13 +37,13 @@ const STRAY_AGE_MIN = 6
 
 const COMPONENTS = [
   { tag: 'groupwatch',  kind: 'daemon', match: 'groupwatch\\.ps1',      desc: '盯群，决定要不要插话' },
-  { tag: 'lifeloop',    kind: 'daemon', match: 'lifeloop\\.ps1',        desc: '自主活动（玩、上网、写东西）' },
+  { tag: 'mind',        kind: 'timer',  match: 'mind\\.py',             desc: '自主计划（按次运行）' },
   { tag: 'voicedaemon', kind: 'daemon', match: 'voicedaemon\\.ps1',     desc: '语音队列 → 合成 → 发送' },
   { tag: 'browserd',    kind: 'server', match: 'browserd\\.py',         desc: '她的浏览器' },
-  { tag: 'works',       kind: 'server', match: 'http\\.server 19388',   desc: '作品站 (19388)' },
+  { tag: 'works',       kind: 'server', match: 'lanya-panel-server\\.py', desc: '控制台服务' },
   { tag: 'tts',         kind: 'server', match: 'api_v2\\.py',           desc: '本地语音 (9880)' },
-  { tag: 'supervisor',  kind: 'timer',  match: 'dafeiyu-supervisor\\.ps1', desc: '总管（若已注册任务）' },
-  { tag: 'tick',        kind: 'timer',  match: 'dafeiyu-tick\\.ps1',      desc: '到期作业（挂在 reminders 上）' },
+  { tag: 'supervisor',  kind: 'timer',  match: '(?:lanya|dafeiyu)-supervisor\\.ps1', desc: '外部调度器' },
+  { tag: 'tick',        kind: 'timer',  match: '(?:lanya|dafeiyu)-tick\\.ps1', desc: '旧版到期作业' },
   { tag: 'napcat',      kind: 'bridge', match: 'napimain',              desc: 'NapCat 注入进程' },
   { tag: 'headless',    kind: 'agent',  match: '--profile headless',    desc: '无头 agent（堆积就是它）' }
 ]
@@ -55,14 +52,227 @@ const SCRIPTS = {
   groupwatch: 'groupwatch.ps1',
   lifeloop: 'lifeloop.ps1',
   voicedaemon: 'voicedaemon.ps1',
-  supervisor: 'dafeiyu-supervisor.ps1',
+  supervisor: 'lanya-supervisor.ps1',
   'napcat-heal': 'napcat-heal.ps1',
   'kill-strays': 'kill-strays.ps1',
   'settings-guard': 'settings-guard.py'
 }
 
+const RETIRED_UNIFIED = new Set(['lifeloop', 'voicedaemon', 'supervisor', 'tick'])
+const AUTONOMY_STATUS = new Set(['unknown', 'offline', 'waiting', 'scheduled', 'processing', 'uncertain', 'legacy'])
+const AUTONOMY_REASON = new Set(['metadata_unavailable', 'scheduler_metadata_invalid', 'scheduler_stale',
+  'scheduler_owner_unverified', 'consumer_owner_unverified', 'main_review_scheduled', 'decision_pending',
+  'previous_outcome_unknown', 'waiting_for_opportunity', 'observer_evidence_missing', 'legacy_mode'])
+const unknownAutonomy = () => ({ mode: 'unknown', managed_by: 'main_agent', status: 'unknown',
+  reason: 'metadata_unavailable', can_request_check: false })
+
+export function sanitizeAutonomy(value) {
+  if (!value || !['unified', 'legacy', 'unknown'].includes(value.mode) ||
+      !AUTONOMY_STATUS.has(value.status) || !AUTONOMY_REASON.has(value.reason) ||
+      typeof value.can_request_check !== 'boolean' || value.can_request_check &&
+      (value.mode !== 'unified' || !['waiting', 'scheduled', 'processing', 'uncertain'].includes(value.status) ||
+        value.scheduler_verified !== true || value.consumer_verified !== true)) return unknownAutonomy()
+  const out = { mode: value.mode, managed_by: value.mode === 'legacy' ? 'legacy_task' : 'main_agent',
+    status: value.status, reason: value.reason,
+    can_request_check: value.mode === 'unified' && value.can_request_check === true }
+  if (value.observer && typeof value.observer === 'object') {
+    const keys = ['schema_version', 'scope_count', 'pending_count', 'scheduled_review_count', 'unknown_count', 'error_count',
+      'last_completed_at', 'next_review_at', 'next_opportunity_at']
+    if (keys.every(key => value.observer[key] === null || Number.isSafeInteger(value.observer[key]) && value.observer[key] >= 0)) {
+      out.observer = Object.fromEntries(keys.map(key => [key, value.observer[key]]))
+    }
+  }
+  return out
+}
+
+function runtimeDecisionMode(runtime) {
+  const decisions = runtime.project.decisions ?? {}
+  if (!decisions || typeof decisions !== 'object' || Array.isArray(decisions)) throw new Error('Invalid decision configuration')
+  const mode = decisions.mode ?? 'unified'
+  if (!['unified', 'legacy'].includes(mode)) throw new Error('Invalid decision mode; independent activity refused')
+  return mode
+}
+
+// Both panel entrypoints use the same lock/cooldown and verified owner in the
+// Python API. An unavailable API never falls back to the retired Life loop.
+export async function panelAutonomy(runtime, { check = false, fetchImpl = globalThis.fetch } = {}) {
+  const port = runtime.project.panelPort ?? 19389
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid panel API port')
+  try {
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/autonomy' + (check ? '/check' : ''), {
+      method: check ? 'POST' : 'GET', cache: 'no-store', signal: AbortSignal.timeout(4000),
+      ...(check ? { headers: { 'content-type': 'application/json' }, body: '{}' } : {})
+    })
+    const value = await response.json()
+    if (!check) return response.ok ? sanitizeAutonomy(value.autonomy) : unknownAutonomy()
+    if (response.ok && value.ok === true && value.observation_only === true && value.decision_completed === false &&
+        ['requested', 'already_requested'].includes(value.status) && typeof value.producer_started === 'boolean') {
+      return { ok: true, status: value.status, observation_only: true, producer_started: value.producer_started,
+        decision_completed: false, note: value.status === 'requested'
+          ? '已请求主 agent 检查；观察提交不代表活动或发送已完成' : '已有检查请求，没有重复启动' }
+    }
+  } catch { }
+  if (!check) return unknownAutonomy()
+  return { ok: false, error: '主 agent 调度状态未确认，检查未提交' }
+}
+
+export function decorateAutonomyComponents(state, autonomy) {
+  return { ...state, autonomy, components: (state.components || []).map(row =>
+    ['lifeloop', 'mind'].includes(row.tag) && autonomy.mode !== 'legacy'
+      ? { ...row, kind: 'timer', managed_by: 'main_agent', control: 'request_check', status: autonomy.status, autonomy }
+      : autonomy.mode !== 'legacy' && RETIRED_UNIFIED.has(row.tag) ? { ...row, control: 'retired' } : row) }
+}
+
+export async function componentAction(runtime, body, deps = {}) {
+  const target = String(body.target || ''), op = String(body.op || 'run')
+  const mode = runtimeDecisionMode(runtime)
+  if (target === 'works') {
+    if (!['run', 'start', 'restart', 'ensure'].includes(op)) throw new Error('作品服务由后台看护，不停止或重复启动')
+    if (!deps.ensureWorks) throw new Error('作品服务看护不可用')
+    return deps.ensureWorks()
+  }
+  if (mode !== 'legacy' && ['lifeloop', 'mind'].includes(target)) {
+    if (!['run', 'start', 'restart', 'check'].includes(op)) throw new Error('统一模式只能请求检查，不停止主 agent')
+    return (deps.autonomy || panelAutonomy)(runtime, { check: true })
+  }
+  if (mode !== 'legacy' && RETIRED_UNIFIED.has(target)) throw new Error('统一模式已停用这个独立循环')
+  if (op === 'stop') return { ok: true, stopped: await (deps.stop || stopComponent)(target) }
+  if (!['run', 'start', 'restart'].includes(op)) throw new Error('Unsupported component action')
+  const script = SCRIPTS[target]
+  if (!script) throw new Error('这个部件不能由面板操作：' + target)
+  return { ok: true, ran: script,
+    pid: await (deps.launch || launchScript)(script, runtime.napcatDir, runtime.pythonExecutable || runtime.project.pythonExecutable || 'python') }
+}
+
+export function panelServiceConfig(runtime) {
+  const api = runtime.project.panelPort ?? 19389, works = runtime.project.panelStaticPort ?? 19388
+  if (![api, works].every(port => Number.isInteger(port) && port > 0 && port < 65536) || api === works) throw new Error('Invalid distinct panel service ports')
+  return { api, works, script: path.join(runtime.napcatDir, 'lanya-panel-server.py') }
+}
+
+export function panelProcessPattern(settings) {
+  const escaped = settings.script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return '^(?:"[^"]+"|[^\\s"]+)(?:\\s+(?<pythonflag>-B))?\\s+(?:"' + escaped + '"|' + escaped + ')(?:\\s+--port\\s+(?<port>[1-9][0-9]*))?\\s*$'
+}
+
+async function readPanelRuntime(settings) {
+  const quote = value => "'" + value.replaceAll("'", "''") + "'"
+  const pattern = panelProcessPattern(settings)
+  const ps = [
+    "$ErrorActionPreference='Stop'", '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    '$pattern=' + quote(pattern), '$out=@()',
+    "foreach($p in @(Get-CimInstance Win32_Process -ErrorAction Stop)){if($p.Name-notmatch'^pythonw?(\\.exe)?$'-or-not$p.ExecutablePath){continue};$m=[regex]::Match([string]$p.CommandLine,$pattern,'IgnoreCase');if(-not$m.Success-or($m.Groups['pythonflag'].Success-and$m.Groups['pythonflag'].Value-cne'-B')){continue};$port=" + settings.api + ';if($m.Groups["port"].Success){$port=[int]$m.Groups["port"].Value};if($port-notin@(' + settings.api + ',' + settings.works + ')){continue};$out+=,[pscustomobject]@{pid=[int]$p.ProcessId;port=$port;ws=[long]$p.WorkingSetSize}}',
+    '$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object{$_.LocalPort-in@(' + settings.api + ',' + settings.works + ')}|ForEach-Object{[pscustomobject]@{port=[int]$_.LocalPort;pid=[int]$_.OwningProcess}}|Sort-Object port,pid -Unique)',
+    '[pscustomobject]@{processes=@($out);listeners=@($listeners)}|ConvertTo-Json -Compress -Depth 4'
+  ].join(';')
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')],
+    { windowsHide: true, timeout: 8000, maxBuffer: 65536 })
+  const value = JSON.parse(stdout)
+  if (!Array.isArray(value.processes) || !Array.isArray(value.listeners)) throw new Error('Panel process metadata unavailable')
+  return value
+}
+
+export async function inspectPanelService(settings, role, snapshot, { fetchImpl = globalThis.fetch, sourceHash } = {}) {
+  const port = settings[role]
+  const rows = snapshot.processes.filter(row => row.port === port)
+  const listeners = snapshot.listeners.filter(row => row.port === port)
+  if (![...rows, ...listeners].every(row => Number.isInteger(row.pid) && row.pid > 0) ||
+      !rows.every(row => Number.isFinite(row.ws) && row.ws >= 0)) throw new Error('Invalid panel process metadata')
+  const out = { role, port, count: rows.length, mb: Math.round(rows.reduce((sum, row) => sum + row.ws, 0) / 104857.6) / 10,
+    listening: listeners.length > 0, healthy: false, status: listeners.length ? 'blocked' : rows.length ? 'starting' : 'offline' }
+  if (rows.length !== 1 || listeners.length !== 1 || rows[0].pid !== listeners[0].pid) return out
+  out.status = 'unhealthy'
+  try {
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/service-health', { cache: 'no-store', signal: AbortSignal.timeout(2000), redirect: 'error' })
+    if (!response.ok) return out
+    const raw = await response.text()
+    if (raw.length > 4096) return out
+    const health = JSON.parse(raw)
+    if (health.ok === true && health.service === 'lanya-panel' && health.version === 1 && health.pid === rows[0].pid &&
+        health.port === port && health.role === role && health.script_sha256 === sourceHash) {
+      out.healthy = true; out.status = 'healthy'
+    }
+  } catch { }
+  return out
+}
+
+export function createPanelServiceSupervisor(runtime, options = {}) {
+  const settings = panelServiceConfig(runtime), now = options.now || Date.now
+  const states = new Map(), acquire = options.acquire || (() => acquireReminderLock(path.join(runtime.dataDir, 'panel-service-supervisor')))
+  let release, snapshotPromise, closed = false
+  const snapshot = () => {
+    if (!snapshotPromise) snapshotPromise = Promise.resolve().then(() => (options.readRuntime || readPanelRuntime)(settings)).finally(() => { snapshotPromise = null })
+    return snapshotPromise
+  }
+  async function status(role) {
+    try {
+      const sourceHash = createHash('sha256').update(fs.readFileSync(settings.script)).digest('hex')
+      return await inspectPanelService(settings, role, await snapshot(), { fetchImpl: options.fetchImpl, sourceHash })
+    } catch { return { role, port: settings[role], count: null, mb: null, healthy: false, status: 'unknown', listening: null } }
+  }
+  async function ensure(role) {
+    if (!['api', 'works'].includes(role)) throw new Error('Unknown panel role')
+    if (closed) return { ok: false, service_check: true, status: 'closed', healthy: false, error: '后台看护已退出' }
+    let state = states.get(role)
+    if (!state) { state = { until: 0, child: null, pending: null }; states.set(role, state) }
+    if (state.pending) return state.pending
+    state.pending = (async () => {
+      let view = await status(role)
+      if (view.healthy) { state.until = 0; return { ok: true, service_check: true, status: 'healthy', healthy: true, note: '服务已在运行，没有重复启动' } }
+      if (closed || view.listening !== false || view.count !== 0) return { ok: false, service_check: true, status: view.status, healthy: false, error: '服务归属或健康未确认，未重复启动' }
+      if (state.child) return { ok: true, service_check: true, status: 'starting', healthy: false, note: '服务正在启动，尚未通过健康检查' }
+      if (now() < state.until) return { ok: false, service_check: true, status: 'backoff', healthy: false, error: '启动失败后冷却中，稍后由后台再检查' }
+      if (!release) release = acquire()
+      if (!release) return { ok: false, service_check: true, status: 'owned_elsewhere', healthy: false, error: '已有后台看护者，未重复启动' }
+      // A competing owner may have started the listener before we acquired the lock.
+      view = await status(role)
+      if (closed || !release) return { ok: false, service_check: true, status: 'closed', healthy: false, error: '后台看护已退出' }
+      if (view.healthy) return { ok: true, service_check: true, status: 'healthy', healthy: true, note: '服务已在运行，没有重复启动' }
+      if (view.listening !== false || view.count !== 0) return { ok: false, service_check: true, status: view.status, healthy: false, error: '服务状态已变化，未重复启动' }
+      state.until = now() + 30000
+      try {
+        const child = (options.spawnImpl || spawn)(options.pythonExecutable || 'python', [settings.script, '--port', String(settings[role])],
+          { detached: true, stdio: 'ignore', windowsHide: true })
+        state.child = child
+        const ended = () => { if (state.child === child) state.child = null; state.until = Math.max(state.until, now() + 30000) }
+        child.once('exit', ended); child.once('error', ended); child.unref()
+        return { ok: true, service_check: true, status: 'starting', healthy: false, note: '已请求后台启动，等待真实健康检查' }
+      } catch { return { ok: false, service_check: true, status: 'backoff', healthy: false, error: '服务启动失败，稍后由后台再检查' } }
+    })().catch(() => ({ ok: false, service_check: true, status: 'unknown', healthy: false, error: '服务看护暂不可用，未启动旧任务' }))
+      .finally(() => { state.pending = null })
+    return state.pending
+  }
+  return { status, ensure, close() { closed = true; if (release) { try { release() } catch { } release = null } } }
+}
+
+export function decoratePanelServices(state, services) {
+  const old = (state.components || []).filter(row => ['works', 'panel-api'].includes(row.tag))
+  const components = (state.components || []).filter(row => !['works', 'panel-api'].includes(row.tag))
+  for (const [role, tag, desc] of [['works', 'works', '作品站'], ['api', 'panel-api', '控制台 API']]) {
+    const view = services[role], prior = old.find(row => row.tag === tag)
+    components.push({ ...(prior || {}), tag, desc, kind: 'server', count: view.count ?? prior?.count ?? null,
+      mb: view.mb ?? prior?.mb ?? null, aging: 0, service: view, control: role === 'works' ? 'ensure_works' : undefined })
+  }
+  const delta = components.filter(row => ['works', 'panel-api'].includes(row.tag)).reduce((sum, row) => sum + (row.mb || 0), 0) - old.reduce((sum, row) => sum + (row.mb || 0), 0)
+  const memory = { ...state.memory }
+  for (const key of ['lanyaMb', 'dafeiyuMb']) if (Number.isFinite(memory[key])) memory[key] = Math.round((memory[key] + delta) * 10) / 10
+  return { ...state, components, memory, services }
+}
+
 function readText(file) {
   try { return fs.readFileSync(file, 'utf8').trim() } catch { return '' }
+}
+
+export function readReminderDocument(file, { state = false } = {}) {
+  let raw
+  try { raw = fs.readFileSync(file) } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+  const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw))
+  const object = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+  if (state ? !object : !object && !Array.isArray(parsed)) throw new Error('Invalid persisted reminder document')
+  return parsed
 }
 
 /** 把 affinity.json 压成几行给模型看。只提有明确态度的，neutral 不占篇幅。 */
@@ -155,12 +365,18 @@ async function collectState() {
   }
 }
 
-function psDetached(script) {
-  const full = path.join(NAPCAT_DIR, script)
+export async function launchScript(script, napcatDir, pythonExecutable = 'python') {
+  if (/^(?:lifeloop|voicedaemon|(?:lanya|dafeiyu)-(?:supervisor|tick))\.ps1$/i.test(script) &&
+      runtimeDecisionMode(resolveRuntime({ workDir: path.dirname(napcatDir) })) !== 'legacy') {
+    throw new Error('统一模式已停用这个独立循环')
+  }
+  const full = path.join(napcatDir, script)
   if (!fs.existsSync(full)) throw new Error('\u627e\u4e0d\u5230 ' + script)
-  const child = spawn('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full],
+  const isPython = script.endsWith('.py')
+  const child = spawn(isPython ? pythonExecutable : 'powershell.exe',
+    isPython ? [full] : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full],
     { detached: true, stdio: 'ignore', windowsHide: true })
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
   child.unref()
   return child.pid
 }
@@ -251,6 +467,10 @@ pre{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10
 <script>
 const $ = (id) => document.getElementById(id);
 function cls(n){ return n === 0 ? 'off' : (n > 1 ? 'warn' : 'on'); }
+function managedLabel(a){ if(a.reason === 'observer_evidence_missing') return '主 agent 托管，部分观察证据缺失'; return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
+  processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[a.status] || '主 agent 调度状态未确认'; }
+let actionPending = false;
+function serviceLabel(s){return ({healthy:'服务正常',offline:'服务离线，后台会检查恢复',starting:'服务启动中，健康未确认',unhealthy:'进程存在，HTTP 健康未通过',blocked:'端口归属冲突，未重复启动',unknown:'服务状态未确认'})[s.status] || '服务状态未确认';}
 
 async function refresh(){
   try{
@@ -268,14 +488,21 @@ async function refresh(){
     tb.innerHTML = '';
     for (const c of s.components){
       const tr = document.createElement('tr');
+      const managed = c.control === 'request_check';
+      const state = c.service ? serviceLabel(c.service) : managed ? managedLabel(c.autonomy || {}) : c.desc;
+      const color = c.service ? (c.service.healthy ? 'on' : 'warn') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'on' : 'warn') : cls(c.count);
+      const controls = c.control === 'ensure_works' ? '<button data-t="works" data-op="ensure">检查恢复</button>' : c.tag === 'panel-api' ? '后台看护' : managed ? '<button data-t="' + c.tag + '" data-op="check"' +
+        (actionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>' :
+        c.control === 'retired' ? '统一模式已停用独立循环' :
+        '<button data-t="' + c.tag + '" data-op="start">启动</button> ' +
+        '<button class="danger" data-t="' + c.tag + '" data-op="stop">停止</button>';
       const aged = c.aging > 0 ? ' <span class="dot bad"></span>' : '';
       tr.innerHTML =
-        '<td><span class="dot ' + cls(c.count) + '"></span>' + c.tag + aged + '</td>' +
-        '<td class="muted">' + c.desc + '</td>' +
-        '<td class="num">' + c.count + '</td>' +
-        '<td class="num">' + c.mb + '</td>' +
-        '<td><button data-t="' + c.tag + '" data-op="start">启动</button> ' +
-        '<button class="danger" data-t="' + c.tag + '" data-op="stop">停止</button></td>';
+        '<td><span class="dot ' + color + '"></span>' + c.tag + aged + '</td>' +
+        '<td class="muted">' + state + '</td>' +
+        '<td class="num">' + (c.count ?? '—') + '</td>' +
+        '<td class="num">' + (c.mb ?? '—') + '</td>' +
+        '<td>' + controls + '</td>';
       tb.appendChild(tr);
     }
     tb.querySelectorAll('button').forEach(b => { b.onclick = () => act(b.dataset.t, b.dataset.op); });
@@ -283,14 +510,18 @@ async function refresh(){
 }
 
 async function act(target, op){
+  if(actionPending) return;
+  actionPending = true;
   $('out').textContent = '执行 ' + (op || 'run') + ' ' + target + ' …';
   try{
     const r = await fetch('/dsh-lanya/api/action', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({ target, op: op || 'run' })
     });
-    $('out').textContent = JSON.stringify(await r.json(), null, 2);
+    const j = await r.json();
+    $('out').textContent = j.observation_only ? j.note : JSON.stringify(j, null, 2);
   }catch(e){ $('out').textContent = '失败：' + e.message; }
+  actionPending = false;
   refresh();
 }
 
@@ -329,11 +560,17 @@ function readBody(req) {
 }
 
 export function apply(ctx, config = {}) {
-  const personaFile = typeof config.personaFile === 'string' ? config.personaFile : DEFAULT_PERSONA
-  const affinityFile = typeof config.affinityFile === 'string' ? config.affinityFile : DEFAULT_AFFINITY
   if (config.enabled === false) {
     ctx.logger?.info?.('dsh-lanya \u5df2\u505c\u7528')
     return
+  }
+  const runtime = resolveRuntime(config)
+  const { personaFile, affinityFile, project } = runtime
+  const NAPCAT_DIR = runtime.napcatDir
+  const DAFEIYU_DIR = runtime.dataDir
+  const configFile = () => {
+    const current = path.join(DAFEIYU_DIR, 'lanya-config.json')
+    return fs.existsSync(current) ? current : path.join(DAFEIYU_DIR, 'dafeiyu-config.json')
   }
 
   ctx.effect(
@@ -376,14 +613,11 @@ export function apply(ctx, config = {}) {
   // 同样的投递口径（target=group 发群，否则当 QQ 号发私聊），额外支持 image。
   // 已触发过的记录写进 state 文件，避免重启后同一条重复发。
   // 提醒清单在她自己的目录里，不在 napcat 下。
-  const DAFEIYU_DIR = '<WORKDIR>/\u5927\u80a5\u9c7c'
   const REMINDERS_FILE = path.join(DAFEIYU_DIR, 'reminders.json')
-  const REMINDERS_STATE = path.join(DAFEIYU_DIR, 'reminders-plugin-state.json')
-  const ADMIN_QQ = '你的管理员QQ'
-  const FAN_GROUP = '你的群号'
+  const REMINDERS_STATE = path.join(DAFEIYU_DIR, 'reminders.state.json')
 
   function readJsonSafe(file, fallback) {
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
+    return readJson(file, fallback)
   }
 
   function napcatConf() {
@@ -392,23 +626,51 @@ export function apply(ctx, config = {}) {
 
   async function napcatSend(pathname, payload) {
     const conf = napcatConf()
-    const base = String(conf.napcatHttp || 'http://127.0.0.1:8720').replace(/\/+$/, '')
-    const token = String(conf.napcatToken || '')
+    const base = String(conf.napcatHttp || 'http://127.0.0.1:' + (project.onebotPort || 8720)).replace(/\/+$/, '')
+    const onebot = readJsonSafe(path.join(NAPCAT_DIR, 'framework', 'config', 'onebot11.json'), {})
+    const token = String(conf.napcatToken || onebot.network?.httpServers?.[0]?.token || '')
     const r = await fetch(base + pathname, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
     })
-    return r.json().catch(() => ({}))
+    if (!r.ok) throw new Error('OneBot HTTP ' + r.status)
+    const result = await r.json()
+    if (result.status !== 'ok' || Number(result.retcode) !== 0) throw new Error('OneBot rejected delivery')
+    return result
   }
 
-  async function fireReminder(r) {
+  function reminderScope(r) {
+    const identity = readJsonSafe(configFile(), {})
+    const admin = Array.isArray(identity.adminQQ) ? identity.adminQQ[0] : identity.adminQQ
+    const target = String(!r.target || r.target === 'admin' ? (admin || '') : r.target)
+    const value = target === 'group' ? String(identity.fanGroupQQ || identity.fanGroup || '') : target
+    if (!/^[1-9][0-9]*$/.test(value)) throw new Error('No configured reminder conversation')
+    return (target === 'group' ? 'group:' : 'private:') + value
+  }
+  // Match Python/PowerShell owner normalization, including an explicit shared
+  // empty key. The consumer independently checks the actual resolved chat ID.
+  const reminderPreset = String(project.decisions?.agentPreset || '').trim()
+  const observeReminder = createReminderObserver({
+    directory: path.join(DAFEIYU_DIR, 'decision-inbox'),
+    workspaceKey: process.platform === 'win32' ? path.resolve(runtime.workDir).toLowerCase() : path.resolve(runtime.workDir),
+    agentKey: process.platform === 'win32' ? reminderPreset.toLowerCase() : reminderPreset, resolveScope: reminderScope
+  })
+  async function fireReminder(r, context) {
+    const mode = project.decisions?.mode || 'unified'
+    if (mode === 'unified') return observeReminder(r, context)
+    if (mode !== 'legacy') throw new Error('Unknown decision mode; reminder retained')
     const text = String(r.text || '')
     const image = String(r.image || '')
-    const target = String(r.target || ADMIN_QQ)
+    const identity = readJsonSafe(configFile(), {})
+    const admin = Array.isArray(identity.adminQQ) ? identity.adminQQ[0] : identity.adminQQ
+    const target = String(!r.target || r.target === 'admin' ? (admin || '') : r.target)
     const mention = String(r.mention || '')
 
     if (target === 'group') {
+      const group = String(identity.fanGroupQQ || identity.fanGroup || '')
+      if (!/^\d+$/.test(group)) throw new Error('No configured reminder group')
       let msg
       if (image || mention) {
         msg = []
@@ -418,8 +680,9 @@ export function apply(ctx, config = {}) {
       } else {
         msg = text
       }
-      return napcatSend('/send_group_msg', { group_id: FAN_GROUP, message: msg })
+      return napcatSend('/send_group_msg', { group_id: group, message: msg })
     }
+    if (!/^\d+$/.test(target)) throw new Error('No configured reminder recipient')
     return napcatSend('/send_private_msg', { user_id: target, message: text })
   }
 
@@ -428,102 +691,41 @@ export function apply(ctx, config = {}) {
   async function checkReminders() {
     if (remindersBusy) return
     remindersBusy = true
+    let releaseLock
     try {
-      const raw = readJsonSafe(REMINDERS_FILE, null)
+      releaseLock = acquireReminderLock(DAFEIYU_DIR)
+      if (!releaseLock) return
+      const raw = readReminderDocument(REMINDERS_FILE)
       if (!raw) return
       const list = Array.isArray(raw) ? raw : [raw]
-      const state = readJsonSafe(REMINDERS_STATE, {}) || {}
-      const now = new Date()
-      const todayKey = now.toISOString().slice(0, 10)
-      const nowHm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0')
-
-      const keep = []
-      let changed = false
-
-      for (let i = 0; i < list.length; i++) {
-        const r = list[i]
-        if (!r || typeof r !== 'object') continue
-        let fired = false
-
-        if (r.at) {
-          const due = new Date(r.at)
-          const key = 'at:' + i + ':' + r.at
-          if (!Number.isNaN(due.getTime()) && now >= due && !state[key]) {
-            try { await fireReminder(r); state[key] = Date.now(); fired = true } catch { }
-          }
-          // 一次性提醒：发过了就不留。没到期的保留。
-          if (fired) { changed = true; continue }
-          if (!Number.isNaN(due.getTime()) && now >= due && state[key]) { changed = true; continue }
-        }
-
-        if (r.daily) {
-          const hm = String(r.daily)
-          const key = 'daily:' + i + ':' + hm + ':' + todayKey
-          if (hm === nowHm && !state[key]) {
-            try { await fireReminder(r); state[key] = Date.now() } catch { }
-          }
-          keep.push(r)
-          continue
-        }
-
-        // 既无 at 也无 daily 的条目原样保留
-        if (!r.at) keep.push(r)
+      const legacy = readReminderDocument(path.join(DAFEIYU_DIR, 'reminders-plugin-state.json'), { state: true }) || {}
+      const state = { ...legacy, ...(readReminderDocument(REMINDERS_STATE, { state: true }) || {}) }
+      const before = fs.readFileSync(REMINDERS_FILE, 'utf8')
+      const persistState = (current) => {
+        fs.writeFileSync(REMINDERS_STATE + '.tmp', JSON.stringify(current, null, 2), 'utf8')
+        fs.renameSync(REMINDERS_STATE + '.tmp', REMINDERS_STATE)
       }
-
-      if (changed) {
-        try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(keep, null, 2), 'utf8') } catch { }
-      }
-
-      // 清理过期的状态键，别让它无限涨
-      const cutoff = Date.now() - 7 * 24 * 3600 * 1000
-      let pruned = false
-      for (const k of Object.keys(state)) {
-        if (typeof state[k] === 'number' && state[k] < cutoff) { delete state[k]; pruned = true }
-      }
-      if (pruned || Object.keys(state).length > 0) {
-        try { fs.writeFileSync(REMINDERS_STATE, JSON.stringify(state), 'utf8') } catch { }
+      const result = await processReminders(list, state, new Date(), fireReminder, { persistState })
+      // Persist successful delivery first. If list replacement fails, the state
+      // still prevents the delivered item from being sent again.
+      persistState(result.state)
+      if (JSON.stringify(list) !== JSON.stringify(result.keep) && fs.readFileSync(REMINDERS_FILE, 'utf8') === before) {
+        fs.writeFileSync(REMINDERS_FILE + '.tmp', JSON.stringify(result.keep, null, 2), 'utf8')
+        fs.renameSync(REMINDERS_FILE + '.tmp', REMINDERS_FILE)
       }
     } catch {
       // 提醒出问题不能影响别的作业
     } finally {
+      releaseLock?.()
       remindersBusy = false
     }
   }
 
-  // ---- 面板服务器看护 -----------------------------------------------------
-  //
-  // 面板和它的 API 跑在一个独立的小 HTTP 服务上（19389），因为跨端口写请求会被
-  // DSH 的 web 服务器直接拒掉。那个服务是普通进程，会死；这里每 30 秒探一次，
-  // 死了就拉起来——不依赖任何计划任务，也就不会有窗口闪。
-  const PANEL_PORT = 19389
-  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'dafeiyu-panel-server.py')
-  let panelBusy = false
-
-  async function ensurePanelServer() {
-    if (panelBusy) return
-    if (!fs.existsSync(PANEL_SCRIPT)) return
-    panelBusy = true
-    try {
-      // 用 fetch + 超时探测，比手搓 http.get 干净。
-      let ok = false
-      try {
-        const ac = new AbortController()
-        const to = setTimeout(() => ac.abort(), 2000)
-        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/dafeiyu-state.json', { signal: ac.signal })
-        clearTimeout(to)
-        ok = res.ok
-      } catch { ok = false }
-      if (ok) return
-      const child = spawn('python', [PANEL_SCRIPT], {
-        detached: true, stdio: 'ignore', windowsHide: true
-      })
-      child.unref()
-    } catch {
-      // 看护失败不该影响别的作业
-    } finally {
-      setTimeout(() => { panelBusy = false }, 20000)
-    }
-  }
+  // One owner and one per-port in-flight operation serve background checks and
+  // both manual controls. A live/unhealthy or unknown listener is never killed.
+  const panelSupervisor = createPanelServiceSupervisor(runtime, { pythonExecutable: config.pythonExecutable || 'python' })
+  ctx.effect(() => () => panelSupervisor.close(), 'dsh-lanya: panel service owner')
+  const ensurePanelServers = () => Promise.all(['api', 'works'].map(role => panelSupervisor.ensure(role)))
 
   // ---- 身份（从本地配置读，人设正文里不写死隐私） ---------------------------
   //
@@ -531,7 +733,6 @@ export function apply(ctx, config = {}) {
   // 那些属于「这台机器上是谁在用」，放进 dafeiyu-config.json，只在本机存在。
   // 每次组装提示词时现读，改配置立刻生效。
   // DAFEIYU_DIR 在这个函数后面才定义，所以路径要惰性求值，别在模块层就拼。
-  const configFile = () => path.join(DAFEIYU_DIR, 'dafeiyu-config.json')
 
   function identityText() {
     const c = readJsonSafe(configFile(), null)
@@ -581,6 +782,7 @@ export function apply(ctx, config = {}) {
   // 用 setInterval 而不是 setTimeout 递归：间隔稳定，不会因为某次作业耗时长而漂移。
   const SCHEDULE = [
     { name: 'state',          everySec: 30,   script: 'dafeiyu-state.ps1' },
+    { name: 'mind',           everySec: 60,   script: 'mind.py' },
     { name: 'strays',         everySec: 300,  script: 'kill-strays.ps1' },
     { name: 'settings',       everySec: 300,  script: 'settings-guard.py' },
     { name: 'bridge',         everySec: 600,  script: 'napcat-heal.ps1' },
@@ -590,9 +792,22 @@ export function apply(ctx, config = {}) {
     { name: 'memory',         everySec: 21600, script: 'memory-maintenance.py' },
     { name: 'patchcheck',     everySec: 86400, script: 'check-patches.ps1' }
   ]
+  if (config.scheduleBili === true) {
+    SCHEDULE.push(
+      { name: 'bili', everySec: 10800, script: 'bili_onerun.py', args: ['--mention'] },
+      { name: 'bili-social', everySec: 5400, script: 'bili_social.py', args: ['--max=3'] }
+    )
+  }
 
   const MARKER = path.join(NAPCAT_DIR, 'scheduler-in-plugin.flag')
-  try { fs.writeFileSync(MARKER, String(Date.now())) } catch { }
+  const schedulerEnabled = config.schedulerEnabled !== false
+  const writeMarker = () => {
+    if (!schedulerEnabled) return
+    try {
+      fs.writeFileSync(MARKER, JSON.stringify({ version: 2, pid: process.pid, at: Date.now(),
+        jobs: ['reminders', ...SCHEDULE.map((job) => job.name)] }))
+    } catch { }
+  }
   // 这个标记文件的作用：让 dafeiyu-tick.ps1 知道自己不用再干活了，避免两套调度
   // 同时跑、把同一个作业做两遍。
 
@@ -604,9 +819,10 @@ export function apply(ctx, config = {}) {
     const full = path.join(NAPCAT_DIR, job.script)
     if (!fs.existsSync(full)) return
     running.add(job.name)
-    const exe = job.script.endsWith('.py') ? 'python' : 'powershell.exe'
-    const args = exe === 'python'
-      ? [full]
+    const isPython = job.script.endsWith('.py')
+    const exe = isPython ? (config.pythonExecutable || 'python') : 'powershell.exe'
+    const args = isPython
+      ? [full, ...(job.args || [])]
       : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', full]
     try {
       const child = spawn(exe, args, { windowsHide: true, stdio: 'ignore' })
@@ -620,6 +836,8 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => {
+    if (!schedulerEnabled) return
+    writeMarker()
     // 启动后先等一会儿，别和 DSH 自己的启动抢资源
     const boot = setTimeout(() => {
       const started = Date.now()
@@ -629,10 +847,11 @@ export function apply(ctx, config = {}) {
 
     // 提醒单独一条时间线：只要一分钟内查两次就不会漏掉整分钟
     const remindTimer = setInterval(() => { void checkReminders() }, 30000)
-    const panelTimer = setInterval(() => { void ensurePanelServer() }, 30000)
+    const panelTimer = setInterval(() => { void ensurePanelServers() }, 30000)
     void checkReminders()
 
     const timer = setInterval(() => {
+      writeMarker()
       const now = Date.now()
       let budget = 2   // 一个 tick 最多起两个子进程，别一次全涌出来
       for (const j of SCHEDULE) {
@@ -651,7 +870,9 @@ export function apply(ctx, config = {}) {
       clearInterval(timer)
       clearInterval(remindTimer)
       clearInterval(panelTimer)
-      try { fs.unlinkSync(MARKER) } catch { }
+      try {
+        if (readJson(MARKER, {}).pid === process.pid) fs.unlinkSync(MARKER)
+      } catch { }
     }
   }, 'dsh-lanya: built-in scheduler')
 
@@ -693,8 +914,21 @@ export function apply(ctx, config = {}) {
     route('/dsh-lanya/index.html', html)
 
     route('/dsh-lanya/api/state', async (req, res) => {
-      try { sendJson(res, 200, await collectState()) }
+      try {
+        const current = resolveRuntime(config)
+        const autonomy = runtimeDecisionMode(current) === 'legacy'
+          ? { mode: 'legacy', managed_by: 'legacy_task', status: 'legacy', reason: 'legacy_mode', can_request_check: false }
+          : await panelAutonomy(current)
+        const [api, works] = await Promise.all(['api', 'works'].map(role => panelSupervisor.status(role)))
+        sendJson(res, 200, decoratePanelServices(decorateAutonomyComponents(await collectState(), autonomy), { api, works }))
+      }
       catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }) }
+    })
+
+    route('/dsh-lanya/api/services', async (req, res) => {
+      if (req.method !== 'GET') { sendJson(res, 405, { ok: false }); return }
+      const [api, works] = await Promise.all(['api', 'works'].map(role => panelSupervisor.status(role)))
+      sendJson(res, 200, { ok: true, services: { api, works } })
     })
 
     route('/dsh-lanya/api/action', async (req, res) => {
@@ -702,10 +936,9 @@ export function apply(ctx, config = {}) {
       const target = String(body.target || '')
       const op = String(body.op || 'run')
       try {
-        if (op === 'stop') { sendJson(res, 200, { ok: true, stopped: await stopComponent(target) }); return }
-        const script = SCRIPTS[target]
-        if (!script) throw new Error('\u8fd9\u4e2a\u90e8\u4ef6\u4e0d\u80fd\u7531\u9762\u677f\u64cd\u4f5c\uff1a' + target)
-        sendJson(res, 200, { ok: true, ran: script, pid: psDetached(script) })
+        const result = await componentAction({ ...resolveRuntime(config), pythonExecutable: config.pythonExecutable }, { target, op },
+          { ensureWorks: () => panelSupervisor.ensure('works') })
+        sendJson(res, result.ok ? 200 : 409, result)
       } catch (e) {
         sendJson(res, 400, { ok: false, error: String((e && e.message) || e) })
       }
@@ -716,7 +949,7 @@ export function apply(ctx, config = {}) {
       const op = String(body.op || '')
       const spec = String(body.spec || '').trim()
       if (!spec) { sendJson(res, 400, { ok: false, log: '\u7f3a\u5c11\u5305\u540d\u6216\u5730\u5740' }); return }
-      const cli = '<DSH_ROOT>\\resources\\runtime\\cli\\bin\\dsh.cmd'
+      const cli = config.dshExecutable || process.env.DSH_CLI || 'dsh'
       try {
         const { stdout, stderr } = await execFileAsync(cli, ['plugin', '--profile', 'desktop', op, spec],
           { timeout: 15 * 60 * 1000, maxBuffer: 32 * 1024 * 1024, windowsHide: true })
@@ -737,7 +970,7 @@ export function apply(ctx, config = {}) {
       const name2 = String(body.name || '').trim()
       const want = body.enabled !== false
       if (!name2) { sendJson(res, 400, { ok: false, error: 'missing name' }); return }
-      const pkgFile = '%USERPROFILE%\\.dsh\\profiles\\desktop\\package.json'
+      const pkgFile = path.join(os.homedir(), '.dsh', 'profiles', 'desktop', 'package.json')
       try {
         const raw = fs.readFileSync(pkgFile, 'utf8')
         const doc = JSON.parse(raw)

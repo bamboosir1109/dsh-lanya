@@ -20,6 +20,16 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  # Do not even open/claim the old queue. The unified voice tool must migrate or
+  # consume pending records explicitly; a pause is not successful task delivery.
+  Write-Output 'paused: legacy voice queue preserved for unified owner; no delivery occurred'
+  exit 3
+}
 
 $root      = $PSScriptRoot
 $dafeiyuDir  = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
@@ -79,6 +89,7 @@ if (-not (Test-Path $queuePath)) {
 $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 function Invoke-NapCat([string]$action, $bodyObj) {
+  Assert-QqLegacyAction $action
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(60)

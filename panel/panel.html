@@ -366,6 +366,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <button class="preset" onclick="doAction('kill-strays')"><div class="t">清理卡住的进程</div><div class="d">清掉卡住的后台任务</div></button>
       <button class="preset" onclick="doAction('napcat-elevated')"><div class="t">确保 QQ 在线</div><div class="d">会弹 UAC，点「是」</div></button>
       <button class="preset" onclick="doAction('settings-guard')"><div class="t">检查参数</div><div class="d">和基准值比对</div></button>
+      <a class="preset url" href="./phone.html" target="_blank" rel="noopener"><div class="t">真实 Android 手机</div><div class="d">查看设备截屏并操作，离线时禁用</div></a>
     </div>
     <div class="out" id="ovOut"></div>
   </div>
@@ -631,12 +632,9 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memNew" placeholder="让她记住一件事（短句，别写作文）"
              style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')addMemory()">
-      <select id="memTrack" style="width:110px">
-        <option value="agent">我自己的</option>
-        <option value="user">关于爸爸</option>
-      </select>
-      <button class="pri" onclick="addMemory()">记住</button>
+      <button class="pri" id="memAdd" onclick="addMemory()" disabled>记住</button>
     </div>
+    <p class="note">添加前请在下方选择记忆范围；修改和移除按条目原范围及版本校验。</p>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memSearch" placeholder="搜记忆…（关键词/相似度）" style="flex:1;min-width:160px"
              onkeydown="if(event.key==='Enter') memSmartSearch()">
@@ -659,15 +657,21 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card" style="margin-top:14px">
     <h3>可塑性</h3>
     <p class="note">
-      记忆不只存在数据库里 —— 日记和刷过的视频也算。
-      相似的条目可以合并，太多会自动压缩。
+      先选记忆范围，再预览或执行。合并与压缩会保留原文和恢复批次。
+      下方统计与搜索是管理视图；维护只作用于所选范围。
     </p>
+    <label for="memOwner">维护范围（轨道 / 层级 / 工作区 / agent）</label>
+    <select id="memOwner" style="width:100%;margin:8px 0" onchange="memOwnerChange()">
+      <option value="">先选择记忆范围</option>
+    </select>
+    <div class="note" id="memOwnerInfo">尚未选择；共享空键也需要明确选择。</div>
     <div class="filelist" id="memCorpus"></div>
     <div class="btnrow" style="margin-top:10px">
       <button onclick="memCorpusLoad()">看看有多少</button>
-      <button onclick="memConsolidate(true)">预览合并</button>
-      <button class="pri" onclick="memConsolidate(false)">合并</button>
-      <button onclick="memCompress()">压缩</button>
+      <button id="memMergePreview" onclick="memConsolidate(true)" disabled>预览合并</button>
+      <button id="memMergeApply" class="pri" onclick="memConsolidate(false)" disabled>合并</button>
+      <button id="memCompressPreview" onclick="memCompress(true)" disabled>预览压缩</button>
+      <button id="memCompressApply" onclick="memCompress(false)" disabled>压缩</button>
       <button onclick="memTrimSeen()">收判重表</button>
     </div>
     <div class="out" id="memCorpusOut"></div>
@@ -855,7 +859,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="stats">
     <div class="stat"><div class="k">今天花的</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">上限 —</div></div>
-    <div class="stat"><div class="k">最近说过</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
+    <div class="stat"><div class="k">自主调度状态</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
   </div>
 
   <div class="card">
@@ -877,10 +881,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
 
   <div class="card">
-    <h3>她刚才在做什么</h3>
-    <p class="note">最近 12 条记录，倒序。每 15 分钟她会醒一次。</p>
+    <h3>自主活动检查</h3>
+    <p class="note">主 agent 根据观察决定是否行动。请求检查不代表已开始活动或发送消息。</p>
     <div class="filelist" id="liveLog"></div>
-    <div class="btnrow"><button onclick="loadLive()">刷新</button></div>
+    <div class="btnrow"><button id="liveCheck" onclick="doAction('lifeloop','actOut')" disabled>请求检查</button><button onclick="loadLive()">刷新</button></div>
   </div>
 </div>
 
@@ -1141,26 +1145,42 @@ function num(id){
 function fmtSize(n){ return n<1024 ? n+' B' : (n<1048576 ? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(1)+' MB'); }
 function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 
+let componentActionPending = false;
+function autonomyLabel(a){
+  if((a || {}).reason === 'observer_evidence_missing') return '主 agent 托管，部分观察证据缺失';
+  return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
+    processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',
+    offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[(a || {}).status] || '主 agent 调度状态未确认';
+}
+function panelServiceLabel(s){ return ({healthy:'服务正常',offline:'服务离线，后台会检查恢复',starting:'服务启动中，健康未确认',unhealthy:'进程存在，HTTP 健康未通过',blocked:'端口归属冲突，未重复启动',unknown:'服务状态未确认'})[(s || {}).status] || '服务状态未确认'; }
 async function doAction(target, outId){
+  if(componentActionPending) return;
+  componentActionPending = true;
   const oid = outId || 'ovOut';
   show(oid, '正在执行：' + target + ' …');
   try{
     const j = await api('/action', { method:'POST', headers:{'content-type':'application/json'},
                                      body: JSON.stringify({ target }) });
-    if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
+    if(j.ok && j.service_check) show(oid, j.note || '服务检查已请求，健康状态待确认。');
+    else if(j.ok && j.observation_only) show(oid, j.note || '检查请求已提交；活动是否执行由主 agent 决定。');
+    else if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
     else if(j.ok && j.task) show(oid, '已触发：' + j.task + '\n几秒后状态会刷新。');
     else if(j.ok) show(oid, '已启动：' + target + '（进程 ' + j.pid + '）');
     else show(oid, '失败：' + (j.error || j.log || '未知原因'));
   }catch(e){ show(oid, '发不出去：' + e.message); }
+  componentActionPending = false;
+  if(target === 'lifeloop' || target === 'mind') { loadActivities(); loadLive(); }
   setTimeout(refreshOverview, 3000);
 }
 
 const PART = {
   groupwatch:['群监听','盯着群，决定要不要插话'],
   lifeloop:['自主活动','自己玩、上网、写东西'],
+  mind:['自主活动','主 agent 根据观察决定是否行动'],
   voicedaemon:['语音守护','把要说的话合成语音发出去'],
   browserd:['浏览器','她上网用的浏览器'],
   works:['作品站','她的游戏和小工具挂在这里'],
+  'panel-api':['控制台 API','面板数据与操作接口'],
   tts:['语音引擎','本地合成的声音来源'],
   napcat:['QQ 注入','NapCat 注入进 QQ 的那一层'],
   headless:['后台任务','每次临时算一下就跑，堆积就是它']
@@ -1198,9 +1218,7 @@ async function loadBrand(){
 
 async function refreshOverview(){
   try{
-    const r = await fetch('./lanya-state.json?t=' + Date.now(), { cache:'no-store' });
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const s = await r.json();
+    const s = await api('/state', null, true);
     const m = s.memory;
     setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
     setHtml('sMem', m.lanyaMb + '<small>MB</small>');
@@ -1224,17 +1242,21 @@ async function refreshOverview(){
     tb.innerHTML = '';
     comps.forEach(c => {
       const meta = PART[c.tag] || [c.tag, ''];
-      const cls = c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
+      const managed = c.control === 'request_check';
+      const cls = c.service ? (c.service.healthy ? 'up' : 'multi') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
       const canStart = ['groupwatch','lifeloop','voicedaemon','browserd','works','tts'].indexOf(c.tag) >= 0;
-      const btn = canStart
+      const btn = c.control === 'ensure_works'
+        ? '<button class="sm" onclick="doAction(\'works\',\'partsOut\')">检查恢复</button>' : managed
+        ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')"' + (componentActionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>'
+        : c.control === 'retired' ? '<span class="dsc">统一模式已停用独立循环</span>' : canStart
         ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')">' + (c.count>0?'重启':'启动') + '</button>'
         : '<span class="dsc">—</span>';
       const aging = c.aging > 0 ? ' <span style="color:#ff9b9b;font-size:11px">卡住 ' + c.aging + '</span>' : '';
       const tr = document.createElement('tr');
       tr.innerHTML = '<td><span class="dot ' + cls + '"></span><span class="nm">' + meta[0] + '</span>' + aging + '</td>'
-        + '<td class="dsc">' + meta[1] + '</td>'
-        + '<td class="num">' + c.count + '</td>'
-        + '<td class="num">' + c.mb + ' MB</td>'
+        + '<td class="dsc">' + (c.service ? panelServiceLabel(c.service) : managed ? autonomyLabel(c.autonomy) : meta[1]) + '</td>'
+        + '<td class="num">' + (c.count ?? '—') + '</td>'
+        + '<td class="num">' + (c.mb ?? '—') + ' MB</td>'
         + '<td class="op">' + btn + '</td>';
       tb.appendChild(tr);
     });
@@ -1958,9 +1980,23 @@ async function loadLive(){
   try{
     const j = await api('/live', null, true);
     const l = j.live || {};
+    const check = $('liveCheck');
+    if(check) { check.hidden = !l.autonomy; check.disabled = componentActionPending || !(l.autonomy || {}).can_request_check; }
     if(l.money){
       setHtml('liveMoney', (l.money.spent ?? 0) + '<small>元</small>');
       setText('liveMoneySub', l.money.exhausted ? '今天花完了' : ('上限 ' + (l.money.limit ?? '—') + ' 元'));
+    }
+    if(l.autonomy){
+      const a = l.autonomy, o = a.observer || {};
+      setText('liveLast', autonomyLabel(a));
+      setText('liveLastAt', o.last_completed_at ? '上次观察处理于 ' + new Date(o.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
+      const rows = [autonomyLabel(a), '观察提交后，是否娱乐或会话由主 agent 决定。'];
+      if(o.error_count) rows.push(o.error_count + ' 个观察范围证据缺失，等待人工核对；其他范围仍可正常检查。');
+      else if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
+      if(o.next_opportunity_at) rows.push('下次普通机会：' + new Date(o.next_opportunity_at).toLocaleString('zh-CN'));
+      const box = $('liveLog');
+      if(box){ box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); }); }
+      return;
     }
     setText('liveLast', (l.last || '还没说过什么').slice(0, 40));
     setText('liveLastAt', l.lastAt ? String(l.lastAt).slice(0, 16).replace('T', ' ') : '');
@@ -2405,21 +2441,28 @@ function startEditMemory(row, e){
     + '<button class="fdel">×</button>';
   const ta = row.querySelector('textarea');
   row.querySelector('.sm').onclick = function(){
-    saveMemoryEdit(e.id, ta.value);
+    saveMemoryEdit(e, ta.value);
   };
   row.querySelector('.fdel').onclick = function(){
-    deleteMemory(e.id, old);
+    deleteMemory(e);
   };
   ta.focus();
 }
 
-async function saveMemoryEdit(id, text){
+function memoryEntrySelection(entry){
+  if(!entry || !['track','scope','workspace_key','agent_key'].every(k => typeof entry[k] === 'string')
+    || !Number.isInteger(entry.version) || entry.version < 1 || !entry.id){
+    throw new Error('条目范围或版本缺失，请刷新后重试');
+  }
+  return {track:entry.track, scope:entry.scope, workspace_key:entry.workspace_key, agent_key:entry.agent_key};
+}
+async function saveMemoryEdit(entry, text){
   const t = String(text || '').trim();
   if(!t){ show('memOut', '不能存空的。'); return; }
   try{
     const j = await api('/memory/edit', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: id, text: t })
+      body: JSON.stringify({ id: entry.id, text: t, selection: memoryEntrySelection(entry), expected_version: entry.version })
     });
     if(!j.ok) throw new Error(j.error || '失败');
     show('memOut', '改好了。');
@@ -2471,11 +2514,12 @@ async function addMemory(){
   const inp = $('memNew');
   const text = inp ? inp.value.trim() : '';
   if(!text){ show('memOut', '先写点什么。'); return; }
-  const track = $('memTrack') ? $('memTrack').value : 'agent';
+  const selection = memSelectedOwner();
+  if(!selection){ show('memOut', '请在下方明确选择记忆范围后再添加。'); return; }
   try{
     const j = await api('/memory/add', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ text: text, track: track })
+      body: JSON.stringify({ text: text, selection: selection })
     });
     if(!j.ok) throw new Error(j.error || '失败');
     if(inp) inp.value = '';
@@ -2484,14 +2528,14 @@ async function addMemory(){
   }catch(e){ show('memOut', '没记住：' + e.message); }
 }
 
-async function deleteMemory(id, text){
+async function deleteMemory(entry){
   try{
     const j = await api('/memory/delete', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: id })
+      body: JSON.stringify({ id: entry.id, selection: memoryEntrySelection(entry), expected_version: entry.version })
     });
     if(!j.ok) throw new Error(j.error || '失败');
-    show('memOut', '删掉了：' + String(text).slice(0, 30));
+    show('memOut', '已归档移除，可用变更记录恢复：' + String(j.change_id || ''));
     loadMemoryOverview();
   }catch(e){ show('memOut', '删不掉：' + e.message); }
 }
@@ -2499,6 +2543,54 @@ async function deleteMemory(id, text){
 // 服务端检索：BM25 + 中文 bigram，比子串过滤准得多。
 // 搜"看过什么"能命中"在 B 站看了…"，搜"白饭"能按相关度排序。
 // 可塑性：语料统计 / 合并 / 压缩
+let memOwners = [];
+function memSelectedOwner(){
+  const select = $('memOwner');
+  if(!select || select.value === '') return null;
+  const owner = memOwners[Number(select.value)];
+  if(!owner) return null;
+  return {track:owner.track, scope:owner.scope,
+    workspace_key:owner.workspace_key, agent_key:owner.agent_key};
+}
+function memOwnerChange(){
+  const owner = memSelectedOwner();
+  ['memAdd','memMergePreview','memMergeApply','memCompressPreview','memCompressApply'].forEach(function(id){
+    if($(id)) $(id).disabled = !owner;
+  });
+  const info = $('memOwnerInfo');
+  if(info) info.textContent = owner ? '只维护当前选择；原文保留在恢复批次中。'
+    : '尚未选择；共享空键也需要明确选择。';
+}
+async function memOwnersLoad(){
+  const select = $('memOwner');
+  if(!select) return;
+  const previous = memSelectedOwner();
+  try{
+    const j = await api('/memory/owners', null, true);
+    if(!j.ok) throw new Error(j.error || '读取范围失败');
+    memOwners = Array.isArray(j.owners) ? j.owners : [];
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = ''; placeholder.textContent = '先选择记忆范围';
+    select.appendChild(placeholder);
+    memOwners.forEach(function(owner, index){
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = [owner.track, owner.scope,
+        owner.workspace_key === '' ? '工作区共享空键' : owner.workspace_key,
+        owner.agent_key === '' ? 'agent共享空键' : owner.agent_key].join(' / ')
+        + '（' + owner.count + ' 条）';
+      select.appendChild(option);
+      if(previous && ['track','scope','workspace_key','agent_key'].every(function(key){
+        return previous[key] === owner[key];
+      })) select.value = String(index);
+    });
+    memOwnerChange();
+  }catch(e){
+    memOwners = []; select.value = ''; memOwnerChange();
+    if($('memOwnerInfo')) $('memOwnerInfo').textContent = '范围读取失败：' + e.message;
+  }
+}
 async function memCorpusLoad(){
   const box = $('memCorpus');
   const out = $('memCorpusOut');
@@ -2519,8 +2611,7 @@ async function memCorpusLoad(){
         box.appendChild(d);
       });
     if(j.mergeable){
-      if(out) out.textContent = '能合并 ' + j.mergeable + ' 组，合完约 '
-        + j.dbAfterMerge + ' 条。';
+      if(out) out.textContent = '全库管理统计：能合并 ' + j.mergeable + ' 组。';
     }else if(out){
       out.textContent = '没有可以合并的。';
     }
@@ -2547,35 +2638,42 @@ async function memTrimSeen(){
 
 async function memConsolidate(dry){
   const out = $('memCorpusOut');
+  const selection = memSelectedOwner();
+  if(!selection){ if(out) out.textContent = '先选择记忆范围。'; return; }
+  dry = dry !== false;
   if(out) out.textContent = dry ? '看会怎么合…' : '合并中…';
   try{
     const j = await api('/memory/consolidate', { method:'POST',
       headers:{'content-type':'application/json'},
-      body: JSON.stringify({ dry: dry }) });
+      body: JSON.stringify({ dry: dry, selection: selection }) });
     if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
     if(out){
       out.textContent = (dry ? '预览：' : '合并了：')
-        + (j.merges || 0) + ' 组，' + (j.before || 0) + ' → '
-        + ((j.before || 0) - (j.merges || 0)) + ' 条'
+        + (j.merges || 0) + ' 组，所选范围原有 ' + (j.before || 0) + ' 条'
+        + (j.batch_id ? ('\n恢复批次：' + j.batch_id) : '')
         + (j.sample && j.sample.length ? ('\n例：' + j.sample[0]) : '');
     }
-    if(!dry) memCorpusLoad();
+    if(!dry) loadMemoryOverview();
   }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
-async function memCompress(){
+async function memCompress(dry){
   const out = $('memCorpusOut');
-  if(out) out.textContent = '压缩中…';
+  const selection = memSelectedOwner();
+  if(!selection){ if(out) out.textContent = '先选择记忆范围。'; return; }
+  dry = dry !== false;
+  if(out) out.textContent = dry ? '预览压缩…' : '压缩中…';
   try{
     const j = await api('/memory/compress', { method:'POST',
-      headers:{'content-type':'application/json'}, body: '{}' });
+      headers:{'content-type':'application/json'}, body: JSON.stringify({dry:dry, selection:selection}) });
     if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
     if(out){
       out.textContent = j.note ? j.note
-        : ('合并 ' + (j.merged||0) + ' 组，砍掉 ' + (j.trimmed||0)
-           + ' 条，剩 ' + (j.left||0) + ' 条');
+        : ((dry ? '预览：' : '') + '合并 ' + (j.merged||0) + ' 组，归档 ' + (j.trimmed||0)
+           + ' 条，剩 ' + (j.left||0) + ' 条'
+           + (j.batch_id ? ('\n恢复批次：' + j.batch_id) : ''));
     }
-    memCorpusLoad();
+    if(!dry) loadMemoryOverview();
   }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
@@ -2667,6 +2765,7 @@ async function memGraph(){
 }
 
 async function loadMemoryOverview(){
+  await memOwnersLoad();
   try{
     const j = await api('/memory', null, true);
     if(!j.ok) return;
@@ -2685,7 +2784,7 @@ async function loadMemoryOverview(){
       }else if((c.proposals || 0) > 0){
         note.textContent = '还没有真正写进长期记忆的条目，但有 '
           + c.proposals + ' 条待审的会话摘要在排队。下面列出来了，'
-          + '内容可能带着隐私，建议直接驳回。';
+          + '核对来源和内容后再决定保留。';
       }else{
         note.textContent = '她目前没有沉淀下来的长期记忆——'
           + '聊天记录和日记在管用，但自动记忆这一层还空着。';
@@ -2704,7 +2803,7 @@ async function loadMemoryOverview(){
           const n = document.createElement('div');
           n.className = 'dsc';
           n.style.padding = '4px 12px 8px';
-          n.textContent = '另外有 ' + np + ' 条待审的会话摘要在排队（带隐私，建议驳回）';
+          n.textContent = '另外有 ' + np + ' 条待审会话摘要，需要核对来源和内容。';
           pl.appendChild(n);
         }
         ents.forEach(function(e){
@@ -2727,7 +2826,7 @@ async function loadMemoryOverview(){
           };
           d.querySelector('.fdel').onclick = function(ev){
             ev.stopPropagation();
-            deleteMemory(e.id, e.text);
+            deleteMemory(e);
           };
           pl.appendChild(d);
         });
