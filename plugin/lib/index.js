@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { createHash } from 'node:crypto'
 import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
 import { createReminderObserver } from './reminder-observer.js'
 
@@ -61,7 +62,7 @@ const RETIRED_UNIFIED = new Set(['lifeloop', 'voicedaemon', 'supervisor', 'tick'
 const AUTONOMY_STATUS = new Set(['unknown', 'offline', 'waiting', 'scheduled', 'processing', 'uncertain', 'legacy'])
 const AUTONOMY_REASON = new Set(['metadata_unavailable', 'scheduler_metadata_invalid', 'scheduler_stale',
   'scheduler_owner_unverified', 'consumer_owner_unverified', 'main_review_scheduled', 'decision_pending',
-  'previous_outcome_unknown', 'waiting_for_opportunity', 'legacy_mode'])
+  'previous_outcome_unknown', 'waiting_for_opportunity', 'observer_evidence_missing', 'legacy_mode'])
 const unknownAutonomy = () => ({ mode: 'unknown', managed_by: 'main_agent', status: 'unknown',
   reason: 'metadata_unavailable', can_request_check: false })
 
@@ -75,7 +76,7 @@ export function sanitizeAutonomy(value) {
     status: value.status, reason: value.reason,
     can_request_check: value.mode === 'unified' && value.can_request_check === true }
   if (value.observer && typeof value.observer === 'object') {
-    const keys = ['schema_version', 'scope_count', 'pending_count', 'scheduled_review_count', 'unknown_count',
+    const keys = ['schema_version', 'scope_count', 'pending_count', 'scheduled_review_count', 'unknown_count', 'error_count',
       'last_completed_at', 'next_review_at', 'next_opportunity_at']
     if (keys.every(key => value.observer[key] === null || Number.isSafeInteger(value.observer[key]) && value.observer[key] >= 0)) {
       out.observer = Object.fromEntries(keys.map(key => [key, value.observer[key]]))
@@ -125,6 +126,11 @@ export function decorateAutonomyComponents(state, autonomy) {
 export async function componentAction(runtime, body, deps = {}) {
   const target = String(body.target || ''), op = String(body.op || 'run')
   const mode = runtimeDecisionMode(runtime)
+  if (target === 'works') {
+    if (!['run', 'start', 'restart', 'ensure'].includes(op)) throw new Error('作品服务由后台看护，不停止或重复启动')
+    if (!deps.ensureWorks) throw new Error('作品服务看护不可用')
+    return deps.ensureWorks()
+  }
   if (mode !== 'legacy' && ['lifeloop', 'mind'].includes(target)) {
     if (!['run', 'start', 'restart', 'check'].includes(op)) throw new Error('统一模式只能请求检查，不停止主 agent')
     return (deps.autonomy || panelAutonomy)(runtime, { check: true })
@@ -136,6 +142,121 @@ export async function componentAction(runtime, body, deps = {}) {
   if (!script) throw new Error('这个部件不能由面板操作：' + target)
   return { ok: true, ran: script,
     pid: await (deps.launch || launchScript)(script, runtime.napcatDir, runtime.pythonExecutable || runtime.project.pythonExecutable || 'python') }
+}
+
+export function panelServiceConfig(runtime) {
+  const api = runtime.project.panelPort ?? 19389, works = runtime.project.panelStaticPort ?? 19388
+  if (![api, works].every(port => Number.isInteger(port) && port > 0 && port < 65536) || api === works) throw new Error('Invalid distinct panel service ports')
+  return { api, works, script: path.join(runtime.napcatDir, 'lanya-panel-server.py') }
+}
+
+export function panelProcessPattern(settings) {
+  const escaped = settings.script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return '^(?:"[^"]+"|[^\\s"]+)(?:\\s+(?<pythonflag>-B))?\\s+(?:"' + escaped + '"|' + escaped + ')(?:\\s+--port\\s+(?<port>[1-9][0-9]*))?\\s*$'
+}
+
+async function readPanelRuntime(settings) {
+  const quote = value => "'" + value.replaceAll("'", "''") + "'"
+  const pattern = panelProcessPattern(settings)
+  const ps = [
+    "$ErrorActionPreference='Stop'", '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    '$pattern=' + quote(pattern), '$out=@()',
+    "foreach($p in @(Get-CimInstance Win32_Process -ErrorAction Stop)){if($p.Name-notmatch'^pythonw?(\\.exe)?$'-or-not$p.ExecutablePath){continue};$m=[regex]::Match([string]$p.CommandLine,$pattern,'IgnoreCase');if(-not$m.Success-or($m.Groups['pythonflag'].Success-and$m.Groups['pythonflag'].Value-cne'-B')){continue};$port=" + settings.api + ';if($m.Groups["port"].Success){$port=[int]$m.Groups["port"].Value};if($port-notin@(' + settings.api + ',' + settings.works + ')){continue};$out+=,[pscustomobject]@{pid=[int]$p.ProcessId;port=$port;ws=[long]$p.WorkingSetSize}}',
+    '$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object{$_.LocalPort-in@(' + settings.api + ',' + settings.works + ')}|ForEach-Object{[pscustomobject]@{port=[int]$_.LocalPort;pid=[int]$_.OwningProcess}}|Sort-Object port,pid -Unique)',
+    '[pscustomobject]@{processes=@($out);listeners=@($listeners)}|ConvertTo-Json -Compress -Depth 4'
+  ].join(';')
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')],
+    { windowsHide: true, timeout: 8000, maxBuffer: 65536 })
+  const value = JSON.parse(stdout)
+  if (!Array.isArray(value.processes) || !Array.isArray(value.listeners)) throw new Error('Panel process metadata unavailable')
+  return value
+}
+
+export async function inspectPanelService(settings, role, snapshot, { fetchImpl = globalThis.fetch, sourceHash } = {}) {
+  const port = settings[role]
+  const rows = snapshot.processes.filter(row => row.port === port)
+  const listeners = snapshot.listeners.filter(row => row.port === port)
+  if (![...rows, ...listeners].every(row => Number.isInteger(row.pid) && row.pid > 0) ||
+      !rows.every(row => Number.isFinite(row.ws) && row.ws >= 0)) throw new Error('Invalid panel process metadata')
+  const out = { role, port, count: rows.length, mb: Math.round(rows.reduce((sum, row) => sum + row.ws, 0) / 104857.6) / 10,
+    listening: listeners.length > 0, healthy: false, status: listeners.length ? 'blocked' : rows.length ? 'starting' : 'offline' }
+  if (rows.length !== 1 || listeners.length !== 1 || rows[0].pid !== listeners[0].pid) return out
+  out.status = 'unhealthy'
+  try {
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/service-health', { cache: 'no-store', signal: AbortSignal.timeout(2000), redirect: 'error' })
+    if (!response.ok) return out
+    const raw = await response.text()
+    if (raw.length > 4096) return out
+    const health = JSON.parse(raw)
+    if (health.ok === true && health.service === 'lanya-panel' && health.version === 1 && health.pid === rows[0].pid &&
+        health.port === port && health.role === role && health.script_sha256 === sourceHash) {
+      out.healthy = true; out.status = 'healthy'
+    }
+  } catch { }
+  return out
+}
+
+export function createPanelServiceSupervisor(runtime, options = {}) {
+  const settings = panelServiceConfig(runtime), now = options.now || Date.now
+  const states = new Map(), acquire = options.acquire || (() => acquireReminderLock(path.join(runtime.dataDir, 'panel-service-supervisor')))
+  let release, snapshotPromise, closed = false
+  const snapshot = () => {
+    if (!snapshotPromise) snapshotPromise = Promise.resolve().then(() => (options.readRuntime || readPanelRuntime)(settings)).finally(() => { snapshotPromise = null })
+    return snapshotPromise
+  }
+  async function status(role) {
+    try {
+      const sourceHash = createHash('sha256').update(fs.readFileSync(settings.script)).digest('hex')
+      return await inspectPanelService(settings, role, await snapshot(), { fetchImpl: options.fetchImpl, sourceHash })
+    } catch { return { role, port: settings[role], count: null, mb: null, healthy: false, status: 'unknown', listening: null } }
+  }
+  async function ensure(role) {
+    if (!['api', 'works'].includes(role)) throw new Error('Unknown panel role')
+    if (closed) return { ok: false, service_check: true, status: 'closed', healthy: false, error: '后台看护已退出' }
+    let state = states.get(role)
+    if (!state) { state = { until: 0, child: null, pending: null }; states.set(role, state) }
+    if (state.pending) return state.pending
+    state.pending = (async () => {
+      let view = await status(role)
+      if (view.healthy) { state.until = 0; return { ok: true, service_check: true, status: 'healthy', healthy: true, note: '服务已在运行，没有重复启动' } }
+      if (closed || view.listening !== false || view.count !== 0) return { ok: false, service_check: true, status: view.status, healthy: false, error: '服务归属或健康未确认，未重复启动' }
+      if (state.child) return { ok: true, service_check: true, status: 'starting', healthy: false, note: '服务正在启动，尚未通过健康检查' }
+      if (now() < state.until) return { ok: false, service_check: true, status: 'backoff', healthy: false, error: '启动失败后冷却中，稍后由后台再检查' }
+      if (!release) release = acquire()
+      if (!release) return { ok: false, service_check: true, status: 'owned_elsewhere', healthy: false, error: '已有后台看护者，未重复启动' }
+      // A competing owner may have started the listener before we acquired the lock.
+      view = await status(role)
+      if (closed || !release) return { ok: false, service_check: true, status: 'closed', healthy: false, error: '后台看护已退出' }
+      if (view.healthy) return { ok: true, service_check: true, status: 'healthy', healthy: true, note: '服务已在运行，没有重复启动' }
+      if (view.listening !== false || view.count !== 0) return { ok: false, service_check: true, status: view.status, healthy: false, error: '服务状态已变化，未重复启动' }
+      state.until = now() + 30000
+      try {
+        const child = (options.spawnImpl || spawn)(options.pythonExecutable || 'python', [settings.script, '--port', String(settings[role])],
+          { detached: true, stdio: 'ignore', windowsHide: true })
+        state.child = child
+        const ended = () => { if (state.child === child) state.child = null; state.until = Math.max(state.until, now() + 30000) }
+        child.once('exit', ended); child.once('error', ended); child.unref()
+        return { ok: true, service_check: true, status: 'starting', healthy: false, note: '已请求后台启动，等待真实健康检查' }
+      } catch { return { ok: false, service_check: true, status: 'backoff', healthy: false, error: '服务启动失败，稍后由后台再检查' } }
+    })().catch(() => ({ ok: false, service_check: true, status: 'unknown', healthy: false, error: '服务看护暂不可用，未启动旧任务' }))
+      .finally(() => { state.pending = null })
+    return state.pending
+  }
+  return { status, ensure, close() { closed = true; if (release) { try { release() } catch { } release = null } } }
+}
+
+export function decoratePanelServices(state, services) {
+  const old = (state.components || []).filter(row => ['works', 'panel-api'].includes(row.tag))
+  const components = (state.components || []).filter(row => !['works', 'panel-api'].includes(row.tag))
+  for (const [role, tag, desc] of [['works', 'works', '作品站'], ['api', 'panel-api', '控制台 API']]) {
+    const view = services[role], prior = old.find(row => row.tag === tag)
+    components.push({ ...(prior || {}), tag, desc, kind: 'server', count: view.count ?? prior?.count ?? null,
+      mb: view.mb ?? prior?.mb ?? null, aging: 0, service: view, control: role === 'works' ? 'ensure_works' : undefined })
+  }
+  const delta = components.filter(row => ['works', 'panel-api'].includes(row.tag)).reduce((sum, row) => sum + (row.mb || 0), 0) - old.reduce((sum, row) => sum + (row.mb || 0), 0)
+  const memory = { ...state.memory }
+  for (const key of ['lanyaMb', 'dafeiyuMb']) if (Number.isFinite(memory[key])) memory[key] = Math.round((memory[key] + delta) * 10) / 10
+  return { ...state, components, memory, services }
 }
 
 function readText(file) {
@@ -346,9 +467,10 @@ pre{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10
 <script>
 const $ = (id) => document.getElementById(id);
 function cls(n){ return n === 0 ? 'off' : (n > 1 ? 'warn' : 'on'); }
-function managedLabel(a){ return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
+function managedLabel(a){ if(a.reason === 'observer_evidence_missing') return '主 agent 托管，部分观察证据缺失'; return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
   processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[a.status] || '主 agent 调度状态未确认'; }
 let actionPending = false;
+function serviceLabel(s){return ({healthy:'服务正常',offline:'服务离线，后台会检查恢复',starting:'服务启动中，健康未确认',unhealthy:'进程存在，HTTP 健康未通过',blocked:'端口归属冲突，未重复启动',unknown:'服务状态未确认'})[s.status] || '服务状态未确认';}
 
 async function refresh(){
   try{
@@ -367,9 +489,9 @@ async function refresh(){
     for (const c of s.components){
       const tr = document.createElement('tr');
       const managed = c.control === 'request_check';
-      const state = managed ? managedLabel(c.autonomy || {}) : c.desc;
-      const color = managed ? ((c.autonomy || {}).can_request_check ? 'on' : 'warn') : cls(c.count);
-      const controls = managed ? '<button data-t="' + c.tag + '" data-op="check"' +
+      const state = c.service ? serviceLabel(c.service) : managed ? managedLabel(c.autonomy || {}) : c.desc;
+      const color = c.service ? (c.service.healthy ? 'on' : 'warn') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'on' : 'warn') : cls(c.count);
+      const controls = c.control === 'ensure_works' ? '<button data-t="works" data-op="ensure">检查恢复</button>' : c.tag === 'panel-api' ? '后台看护' : managed ? '<button data-t="' + c.tag + '" data-op="check"' +
         (actionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>' :
         c.control === 'retired' ? '统一模式已停用独立循环' :
         '<button data-t="' + c.tag + '" data-op="start">启动</button> ' +
@@ -378,8 +500,8 @@ async function refresh(){
       tr.innerHTML =
         '<td><span class="dot ' + color + '"></span>' + c.tag + aged + '</td>' +
         '<td class="muted">' + state + '</td>' +
-        '<td class="num">' + c.count + '</td>' +
-        '<td class="num">' + c.mb + '</td>' +
+        '<td class="num">' + (c.count ?? '—') + '</td>' +
+        '<td class="num">' + (c.mb ?? '—') + '</td>' +
         '<td>' + controls + '</td>';
       tb.appendChild(tr);
     }
@@ -599,41 +721,11 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  // ---- 面板服务器看护 -----------------------------------------------------
-  //
-  // 面板和它的 API 跑在一个独立的小 HTTP 服务上（19389），因为跨端口写请求会被
-  // DSH 的 web 服务器直接拒掉。那个服务是普通进程，会死；这里每 30 秒探一次，
-  // 死了就拉起来——不依赖任何计划任务，也就不会有窗口闪。
-  const PANEL_PORT = Number(project.panelPort || 19389)
-  const PANEL_SCRIPT = path.join(NAPCAT_DIR, 'lanya-panel-server.py')
-  let panelBusy = false
-
-  async function ensurePanelServer() {
-    if (panelBusy) return
-    if (!fs.existsSync(PANEL_SCRIPT)) return
-    panelBusy = true
-    try {
-      // 用 fetch + 超时探测，比手搓 http.get 干净。
-      let ok = false
-      try {
-        const ac = new AbortController()
-        const to = setTimeout(() => ac.abort(), 2000)
-        const res = await fetch('http://127.0.0.1:' + PANEL_PORT + '/api/config', { signal: ac.signal })
-        clearTimeout(to)
-        ok = res.ok
-      } catch { ok = false }
-      if (ok) return
-      const child = spawn(config.pythonExecutable || 'python', [PANEL_SCRIPT, '--port', String(PANEL_PORT)], {
-        detached: true, stdio: 'ignore', windowsHide: true
-      })
-      child.on('error', (error) => ctx.logger?.warn?.('panel process could not start: ' + error.code))
-      child.unref()
-    } catch {
-      // 看护失败不该影响别的作业
-    } finally {
-      setTimeout(() => { panelBusy = false }, 20000)
-    }
-  }
+  // One owner and one per-port in-flight operation serve background checks and
+  // both manual controls. A live/unhealthy or unknown listener is never killed.
+  const panelSupervisor = createPanelServiceSupervisor(runtime, { pythonExecutable: config.pythonExecutable || 'python' })
+  ctx.effect(() => () => panelSupervisor.close(), 'dsh-lanya: panel service owner')
+  const ensurePanelServers = () => Promise.all(['api', 'works'].map(role => panelSupervisor.ensure(role)))
 
   // ---- 身份（从本地配置读，人设正文里不写死隐私） ---------------------------
   //
@@ -755,7 +847,7 @@ export function apply(ctx, config = {}) {
 
     // 提醒单独一条时间线：只要一分钟内查两次就不会漏掉整分钟
     const remindTimer = setInterval(() => { void checkReminders() }, 30000)
-    const panelTimer = setInterval(() => { void ensurePanelServer() }, 30000)
+    const panelTimer = setInterval(() => { void ensurePanelServers() }, 30000)
     void checkReminders()
 
     const timer = setInterval(() => {
@@ -827,9 +919,16 @@ export function apply(ctx, config = {}) {
         const autonomy = runtimeDecisionMode(current) === 'legacy'
           ? { mode: 'legacy', managed_by: 'legacy_task', status: 'legacy', reason: 'legacy_mode', can_request_check: false }
           : await panelAutonomy(current)
-        sendJson(res, 200, decorateAutonomyComponents(await collectState(), autonomy))
+        const [api, works] = await Promise.all(['api', 'works'].map(role => panelSupervisor.status(role)))
+        sendJson(res, 200, decoratePanelServices(decorateAutonomyComponents(await collectState(), autonomy), { api, works }))
       }
       catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }) }
+    })
+
+    route('/dsh-lanya/api/services', async (req, res) => {
+      if (req.method !== 'GET') { sendJson(res, 405, { ok: false }); return }
+      const [api, works] = await Promise.all(['api', 'works'].map(role => panelSupervisor.status(role)))
+      sendJson(res, 200, { ok: true, services: { api, works } })
     })
 
     route('/dsh-lanya/api/action', async (req, res) => {
@@ -837,7 +936,8 @@ export function apply(ctx, config = {}) {
       const target = String(body.target || '')
       const op = String(body.op || 'run')
       try {
-        const result = await componentAction({ ...resolveRuntime(config), pythonExecutable: config.pythonExecutable }, { target, op })
+        const result = await componentAction({ ...resolveRuntime(config), pythonExecutable: config.pythonExecutable }, { target, op },
+          { ensureWorks: () => panelSupervisor.ensure('works') })
         sendJson(res, result.ok ? 200 : 409, result)
       } catch (e) {
         sendJson(res, 400, { ok: false, error: String((e && e.message) || e) })

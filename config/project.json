@@ -20,6 +20,9 @@
   "budget": {
     "dailyLimit": 1.0
   },
+  "mind": {
+    "opportunityMin": 6
+  },
   "memory": {
     "seenKeep": 400,
     "archiveInCorpus": 300,

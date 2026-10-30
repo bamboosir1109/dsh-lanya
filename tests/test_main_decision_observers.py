@@ -98,6 +98,7 @@ class MainDecisionObserverTests(unittest.TestCase):
         self.ask.assert_not_called()
 
     def test_sent_without_review_uses_existing_interval_and_does_not_run_models(self):
+        self.conf._CACHE["mind"] = {"opportunityMin": 12}
         self.mind.save(self.mind.MIND, {"next_check_min": 12})
         self.mind.one_cycle()
         self.complete(status="sent")
@@ -138,8 +139,13 @@ class MainDecisionObserverTests(unittest.TestCase):
         admin = json.loads(events["private:101"].read_text())["payload"]
         group = json.loads(events["group:202"].read_text())["payload"]
         self.assertEqual(admin["legacy_plan_reference"]["goal"], "private legacy reference")
+        self.assertEqual(admin["activity_role"], "internal_leisure")
+        self.assertIn("trusted_runtime_capabilities.tools.entertainment", admin["instruction"])
+        self.assertIn("Do not edit mind.json", admin["instruction"])
         self.assertIsNone(group["legacy_plan_reference"])
         self.assertIsNone(group["mood"])
+        self.assertEqual(group["activity_role"], "conversation_social")
+        self.assertIn("do not start a second copy", group["instruction"])
         self.assertEqual([h["text"] for h in admin["interrupts"]], ["private interrupt"])
         self.assertEqual([h["text"] for h in group["interrupts"]], ["group interrupt"])
         self.complete(event=events["private:101"])
@@ -220,7 +226,7 @@ class MainDecisionObserverTests(unittest.TestCase):
         self.assertEqual(self.mind.one_cycle(), 0)
         self.assertNotIn("pending", self.mind.load(self.mind.MIND, {})["decision_scopes"]["private:101"])
 
-    def test_forged_review_owner_or_payload_is_refused_before_state_or_events_change(self):
+    def test_forged_review_owner_or_payload_keeps_pending_and_records_only_safe_error(self):
         self.mind.one_cycle()
         original = self.pending()[0]
         self.complete(event=original, next_review=1_060_000)
@@ -231,7 +237,12 @@ class MainDecisionObserverTests(unittest.TestCase):
             child.write_text(json.dumps(dict(value, **change)), encoding="utf-8")
             before = Path(self.mind.MIND).read_bytes()
             self.assertEqual(self.mind.one_cycle(), 1)
-            self.assertEqual(Path(self.mind.MIND).read_bytes(), before)
+            prior = json.loads(before)["decision_scopes"]["private:101"]
+            after = self.mind.load(self.mind.MIND, {})["decision_scopes"]["private:101"]
+            self.assertEqual(after["pending"], prior["pending"])
+            self.assertEqual(after["generation"], prior["generation"])
+            self.assertEqual(after["observer_error"]["error_class"], "ObservationError")
+            self.assertEqual(set(after["observer_error"]), {"error_class", "first_seen_at", "last_seen_at"})
             self.assertEqual(len(self.pending()), 2)
 
     def test_completed_legacy_event_recovers_pointer_and_unknown_stays_terminal(self):
@@ -255,8 +266,7 @@ class MainDecisionObserverTests(unittest.TestCase):
         for content in ({"decision_observers_version": True, "decision_scopes": {}},
                         {"decision_observers_version": 2, "decision_scopes": {"private:101": {"generation": True}}},
                         {"decision_pending": {"scope": "private:101", "event_id": "x", "signature": "bad", "interrupts": []}},
-                        {"decision_completed_signature": "bad", "last_decision_status": "unknown"},
-                        {"next_check_min": True}):
+                        {"decision_completed_signature": "bad", "last_decision_status": "unknown"}):
             self.mind.save(self.mind.MIND, content)
             before = Path(self.mind.MIND).read_bytes()
             self.assertEqual(self.mind.one_cycle(), 1)
@@ -267,6 +277,96 @@ class MainDecisionObserverTests(unittest.TestCase):
         Path(self.mind.HITFILE).write_text("{broken", encoding="utf-8")
         self.assertEqual(self.mind.one_cycle(), 1)
         self.assertFalse(self.pending())
+
+    def test_missing_group_evidence_does_not_freeze_due_private_activity_or_replay_group(self):
+        (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
+        self.mind.one_cycle()
+        events = {json.loads(p.read_text())["scope"]: p for p in self.pending()}
+        group_raw = events["group:202"].read_bytes()
+        before = self.mind.load(self.mind.MIND, {})["decision_scopes"]["group:202"]
+        events["group:202"].unlink()
+        self.complete(event=events["private:101"])
+        self.assertEqual(self.mind.one_cycle(force=True), 1)
+        self.clock.return_value += 360
+        self.assertEqual(self.mind.one_cycle(), 1)
+        state = self.mind.load(self.mind.MIND, {})["decision_scopes"]
+        self.assertEqual(state["group:202"]["pending"], before["pending"])
+        self.assertEqual(state["group:202"]["generation"], before["generation"])
+        self.assertEqual(state["group:202"]["observer_error"], {
+            "error_class": "FileNotFoundError", "first_seen_at": 1_000_000, "last_seen_at": 1_360_000})
+        self.assertEqual(state["private:101"]["generation"], 2)
+        self.assertEqual(len(self.pending()), 2)
+        self.assertFalse(events["group:202"].exists())
+        # Repair is explicit fixture restoration, never the producer inventing
+        # a replacement event. The original pending identity remains in use.
+        events["group:202"].write_bytes(group_raw)
+        self.assertEqual(self.mind.one_cycle(force=True), 0)
+        state = self.mind.load(self.mind.MIND, {})["decision_scopes"]["group:202"]
+        self.assertNotIn("observer_error", state)
+        self.assertEqual(state["pending"], before["pending"])
+        self.assertEqual(len(self.pending()), 3)
+        self.ask.assert_not_called(); self.send.assert_not_called()
+
+    def test_missing_private_evidence_does_not_freeze_group_social_opportunity(self):
+        (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
+        self.mind.one_cycle()
+        events = {json.loads(p.read_text())["scope"]: p for p in self.pending()}
+        events["private:101"].unlink()
+        self.complete(event=events["group:202"])
+        self.assertEqual(self.mind.one_cycle(), 1)
+        self.clock.return_value += 360
+        self.assertEqual(self.mind.one_cycle(force=True), 1)
+        state = self.mind.load(self.mind.MIND, {})["decision_scopes"]
+        self.assertEqual(state["private:101"]["generation"], 1)
+        self.assertEqual(state["group:202"]["generation"], 2)
+        self.assertEqual(len(self.pending()), 2)
+
+    def test_current_configuration_controls_interval_instead_of_legacy_eta(self):
+        self.conf._CACHE["mind"] = {"opportunityMin": 3}
+        self.mind.save(self.mind.MIND, {"next_check_min": 60})
+        self.mind.one_cycle()
+        self.complete()
+        self.mind.one_cycle()
+        self.clock.return_value += 179
+        self.mind.one_cycle()
+        self.assertEqual(len(self.pending()), 1)
+        self.clock.return_value += 1
+        self.mind.one_cycle()
+        self.assertEqual(len(self.pending()), 2)
+
+    def test_invalid_trusted_interval_refuses_without_events_or_state_replacement(self):
+        for value in (True, None, "3", 1, 61, float("nan"), float("inf")):
+            self.conf._CACHE["mind"] = {"opportunityMin": value}
+            self.mind.save(self.mind.MIND, {"next_check_min": 3})
+            before = Path(self.mind.MIND).read_bytes()
+            self.assertEqual(self.mind.one_cycle(force=True), 1)
+            self.assertEqual(Path(self.mind.MIND).read_bytes(), before)
+            self.assertFalse(self.pending())
+
+    def test_more_frequent_interval_never_overrides_explicit_future_review(self):
+        self.conf._CACHE["mind"] = {"opportunityMin": 3}
+        self.mind.one_cycle()
+        self.complete(next_review=86_400_000)
+        self.clock.return_value += 3600
+        self.mind.one_cycle(force=True)
+        self.assertEqual(len(self.pending()), 1)
+
+    def test_instruction_update_is_not_fresh_evidence_for_existing_unknown(self):
+        self.mind.save(self.mind.MIND, {"decision_observers_version": 2,
+            "decision_scopes": {"private:101": {"generation": 9, "last_status": "unknown",
+                "completed_signature": "f" * 64}}})
+        self.assertEqual(self.mind.one_cycle(force=True), 0)
+        self.assertFalse(self.pending())
+        state = self.mind.load(self.mind.MIND, {})["decision_scopes"]["private:101"]
+        self.assertEqual(state["evidence_version"], 1)
+        original = self.mind._observation_payload
+        with mock.patch.object(self.mind, "_observation_payload", side_effect=lambda *a, **k: dict(original(*a, **k), instruction="different new instruction")):
+            self.clock.return_value += 86400
+            self.assertEqual(self.mind.one_cycle(force=True), 0)
+            self.assertFalse(self.pending())
+            self.mind.save(self.mind.HITFILE, [{"scope": "private:101", "text": "new external evidence"}])
+            self.assertEqual(self.mind.one_cycle(), 0)
+            self.assertEqual(len(self.pending()), 1)
 
     def test_malformed_configured_group_refuses_before_any_scope_publication(self):
         for group in (False, 0, "not-a-conversation", ["202"]):

@@ -83,7 +83,7 @@ class PanelAutonomyTests(unittest.TestCase):
         self.assertEqual(state["autonomy"], activity["autonomy"])
         self.assertEqual(state["autonomy"]["status"], "waiting")
         self.assertTrue(activity["activities"][0]["ready"])
-        self.assertTrue(all(row["count"] == 0 and row["control"] == "request_check" for row in state["components"]))
+        self.assertTrue(all(row["count"] == 0 and row["control"] == "request_check" for row in state["components"] if row["tag"] in ("lifeloop", "mind")))
         safe = json.dumps(state) + json.dumps(live) + json.dumps(activity)
         for private in ("PRIVATE PLAN", "private:101", "fixture-only", '"pid"', '"nonce"'):
             self.assertNotIn(private, safe)
@@ -114,6 +114,17 @@ class PanelAutonomyTests(unittest.TestCase):
         row.pop("pending")
         self.write(self.data / "mind.json", self.mind)
         self.assertEqual(self.module.autonomy_snapshot()["status"], "uncertain")
+
+    def test_missing_observer_evidence_is_aggregated_ahead_of_stale_scheduled_review(self):
+        row = self.mind["decision_scopes"]["private:101"]
+        row.update(next_review_at=999000, observer_error={"error_class": "FileNotFoundError", "first_seen_at": 990000, "last_seen_at": 999000})
+        self.write(self.data / "mind.json", self.mind)
+        status = self.module.autonomy_snapshot()
+        self.assertEqual(status["status"], "uncertain")
+        self.assertEqual(status["reason"], "observer_evidence_missing")
+        self.assertEqual(status["observer"]["error_count"], 1)
+        self.assertNotIn("FileNotFoundError", json.dumps(status))
+        self.assertNotIn("private:101", json.dumps(status))
 
     def test_invalid_or_changed_mode_never_reuses_cached_legacy_authority(self):
         self.write(self.config, {"decisions": {"mode": "legacy"}})

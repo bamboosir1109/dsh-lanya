@@ -7,7 +7,7 @@ import { componentAction, panelAutonomy, sanitizeAutonomy, decorateAutonomyCompo
 
 const runtime = { napcatDir: '/synthetic/napcat', project: { decisions: { mode: 'unified' }, panelPort: 22345 } }
 const observer = { schema_version: 2, scope_count: 2, pending_count: 0, scheduled_review_count: 0,
-  unknown_count: 0, last_completed_at: 1000, next_review_at: null, next_opportunity_at: 2000 }
+  unknown_count: 0, error_count: 0, last_completed_at: 1000, next_review_at: null, next_opportunity_at: 2000 }
 const healthy = { mode: 'unified', status: 'waiting', reason: 'waiting_for_opportunity', can_request_check: true,
   scheduler_verified: true, consumer_verified: true, observer }
 const never = () => { throw new Error('Independent loop must never be touched') }
@@ -110,6 +110,21 @@ test('main overview renders zero process managed status and request-check contro
   assert.match(rendered[0], /请求检查/)
   assert.match(rendered[0], /class="num">0<\/td>/)
   assert.doesNotMatch(rendered[0], />启动<|>重启</)
+})
+
+test('observer evidence errors remain aggregate and render a warning before scheduled review', () => {
+  const status = sanitizeAutonomy({ ...healthy, status: 'uncertain', reason: 'observer_evidence_missing',
+    observer: { ...observer, error_count: 1, next_review_at: 1000, private_scope: 'private:101', error_class: 'FileNotFoundError' } })
+  assert.equal(status.observer.error_count, 1)
+  assert.doesNotMatch(JSON.stringify(status), /private:101|FileNotFoundError/)
+  const { context } = mainContext(async () => {})
+  const rendered = [], table = { innerHTML: '', appendChild(row) { rendered.push(row.innerHTML) } }
+  Object.assign(context, { s: { components: decorateAutonomyComponents({ components: [{ tag: 'lifeloop', count: 0, mb: 0 }] }, status).components },
+    PART: { lifeloop: ['自主活动', 'legacy'] }, setText() {}, $: () => table, document: { createElement: () => ({ innerHTML: '' }) } })
+  vm.runInContext(panel.slice(panel.indexOf('const comps = s.components || [];'), panel.indexOf("const pb = $('pluginsBody');")), context)
+  assert.match(rendered[0], /部分观察证据缺失/)
+  assert.match(rendered[0], /dot multi/)
+  assert.doesNotMatch(rendered[0], /dot up/)
 })
 
 test('embedded plugin panel displays managed zero and deduplicates click while request pending', async () => {

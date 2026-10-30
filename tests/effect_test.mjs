@@ -11,16 +11,19 @@ import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { requireBrowserFixture, installFixtureBrowserNetwork, fetchFixtureApi } from './browser-fixture-guard.mjs'
 
-const PANEL = 'http://127.0.0.1:19388/lanya-panel.html'
-const API = 'http://127.0.0.1:19388'
+const fixture = await requireBrowserFixture()
+
+const PANEL = fixture.origin + '/lanya-panel.html'
+const API = fixture.origin
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-const PORT = 9336
-const OUT = join(process.env.TEMP || '.', 'dafeiyu-effect')
+const PORT = fixture.debugPort
+const OUT = fixture.outDir
 mkdirSync(OUT, { recursive: true })
 
 const proc = spawn(EDGE, [
-  '--headless=new', `--remote-debugging-port=${PORT}`,
+  '--enable-automation', '--headless=new', `--remote-debugging-port=${PORT}`,
   `--user-data-dir=${join(OUT, '_profile')}`,
   '--no-first-run', '--no-default-browser-check', '--disable-gpu',
   '--window-size=1400,1000', 'about:blank',
@@ -29,7 +32,7 @@ const proc = spawn(EDGE, [
 async function target() {
   for (let i = 0; i < 40; i++) {
     try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/list`)
+      const r = await fetch(`http://127.0.0.1:${PORT}/json/list`, { redirect: 'error' })
       const l = await r.json()
       const p = l.find(t => t.type === 'page')
       if (p?.webSocketDebuggerUrl) return p.webSocketDebuggerUrl
@@ -41,6 +44,7 @@ async function target() {
 
 const ws = new WebSocket(await target())
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
+await installFixtureBrowserNetwork(ws, fixture)
 let id = 0
 const pend = new Map()
 ws.onmessage = (ev) => {
@@ -70,7 +74,7 @@ async function goto(url) {
   await sleep(2600)
 }
 async function getJson(p) {
-  const r = await fetch(API + p, { cache: 'no-store' })
+  const r = await fetchFixtureApi(fixture, API + p, { cache: 'no-store' })
   return r.json()
 }
 async function go(page) {
@@ -226,7 +230,7 @@ check('人设：改动能存住', txt1.includes('effect-probe'), txt1.length + '
 
 // 还原人设
 if (orig) {
-  await fetch(API + '/api/persona', {
+  await fetchFixtureApi(fixture, API + '/api/persona', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ text: orig }),

@@ -75,6 +75,50 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(result["tools"]["voice"]["synthesis_service"], "unverified_not_probed")
         self.assertNotIn("old-view", json.dumps(result))
 
+    def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
+        made = self.root / "FixtureRole" / "made"
+        game = made / "2048"
+        game.mkdir(parents=True)
+        (game / "board.png").write_bytes(b"old board is not a browser game")
+        (game / "ai2048.py").write_text("# offline solver is not a web entry", encoding="ascii")
+        self.assertEqual(self.context()["tools"]["entertainment"]["local_games"]["entries"], [])
+        (game / "index.html").write_text("private body must not enter trusted guide", encoding="utf-8")
+        hidden = made / "_old-profile"
+        hidden.mkdir()
+        (hidden / "index.html").write_text("profile data", encoding="utf-8")
+        self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "panelStaticPort": 19001}), encoding="utf-8")
+        before = self.snapshot()
+        guide = self.context()["tools"]["entertainment"]
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(guide["local_games"]["entries"], [{"name": "2048", "url": "http://127.0.0.1:19001/2048/"}])
+        self.assertIn("unverified", guide["local_games"]["catalog_status"])
+        self.assertNotIn("private body", json.dumps(guide))
+        self.assertIn("not proof of watching", guide["bilibili"]["verify"])
+        self.assertIn("no comment", guide["bilibili"]["social"])
+        self.assertIn("decision-inbox", guide["limits"])
+        self.assertTrue(guide["activity_notes"]["path"].startswith(str(self.root / "FixtureRole" / "notes")))
+        other = self.module.build_context(str(self.root), "fixture", "group:202", process_probe=lambda paths: {})
+        self.assertNotEqual(guide["activity_notes"]["path"], other["tools"]["entertainment"]["activity_notes"]["path"])
+
+    def test_game_catalog_cannot_advertise_linked_or_reparse_paths(self):
+        made = self.root / "FixtureRole" / "made"
+        game = made / "linked-game"
+        game.mkdir(parents=True)
+        (game / "index.html").write_text("fixture", encoding="ascii")
+        real_lstat = Path.lstat
+        def reparse_parent(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400) if path == game else info
+        with mock.patch.object(Path, "lstat", reparse_parent):
+            self.assertEqual(self.context()["tools"]["entertainment"]["local_games"]["entries"], [])
+
+    def test_invalid_works_port_is_not_advertised_as_a_game_service(self):
+        for port in (True, 0, 65536, "19388"):
+            with self.subTest(port=port):
+                self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "panelStaticPort": port}), encoding="utf-8")
+                with self.assertRaises(self.module.CapabilityError):
+                    self.context()
+
     def test_active_android_lock_only_proves_worker_not_live_device(self):
         self.install("androidd.py")
         from androidd import worker_lock

@@ -13,11 +13,14 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { requireBrowserFixture, installFixtureBrowserNetwork } from './browser-fixture-guard.mjs'
 
-const URL_BASE = process.argv[2] || 'http://127.0.0.1:19388/dafeiyu-panel.html'
-const OUT = process.argv[3] || '<WORKDIR>\\dafeiyu\\made\\_uitest'
+const fixture = await requireBrowserFixture()
+
+const URL_BASE = fixture.origin + '/lanya-panel.html'
+const OUT = fixture.outDir
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-const PORT = 9333
+const PORT = fixture.debugPort
 
 const PAGES = [
   ['overview', '概览'],
@@ -38,7 +41,7 @@ mkdirSync(OUT, { recursive: true })
 
 const userDataDir = join(OUT, '_profile')
 const proc = spawn(EDGE, [
-  '--headless=new',
+  '--enable-automation', '--headless=new',
   `--remote-debugging-port=${PORT}`,
   `--user-data-dir=${userDataDir}`,
   '--no-first-run',
@@ -66,6 +69,7 @@ class CDP {
   static async connect(url) {
     const ws = new WebSocket(url)
     await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
+    await installFixtureBrowserNetwork(ws, fixture)
     const c = new CDP(ws)
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data)

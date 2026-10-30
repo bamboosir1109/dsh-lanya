@@ -34,6 +34,9 @@ $script:ProjectConfDefaults = @{
     budget          = @{
         dailyLimit = 1.0
     }
+    mind            = @{
+        opportunityMin = 6
+    }
     decisions       = @{
         mode = 'unified'
         agentPreset = ''

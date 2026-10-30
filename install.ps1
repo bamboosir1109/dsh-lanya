@@ -85,6 +85,11 @@ foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $Repo 'panel') -File)) 
     $name = if ($file.Name -eq 'panel.html') { 'lanya-panel.html' } else { $file.Name }
     $map += @{ From = $file.FullName; To = (Join-Path $data ('made\' + $name)); Protected = $false }
 }
+# Ship a real offline browser game, separate from historical solver scripts.
+# The fixed source list cannot walk browser profiles or overwrite other works.
+foreach ($name in 'index.html', 'game.js', 'app.js') {
+    $map += @{ From = (Join-Path $Repo ('games\2048\' + $name)); To = (Join-Path $data ('made\2048\' + $name)); Protected = $false }
+}
 $map += @(
     @{ From = (Join-Path $Repo 'config\project.json'); To = $projectTarget; Protected = $true; Project = $true },
     @{ From = (Join-Path $Repo 'docs\persona.example.md'); To = $personaTarget; Protected = $true },

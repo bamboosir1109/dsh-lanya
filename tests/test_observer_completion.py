@@ -40,6 +40,10 @@ class ObserverCompletionTests(unittest.TestCase):
         marker = {"version": 1, "event_sha256": hashlib.sha256(event.read_bytes()).hexdigest(),
                   "status": "decided", "decision_id": "fixture-main"}
         before_mind, before_hits = Path(self.mind.MIND).read_bytes(), Path(self.mind.HITFILE).read_bytes()
+        before_event = event.read_bytes()
+        import decision_events
+        submit = self.patch(decision_events, "submit_project_observation", wraps=decision_events.submit_project_observation)
+        acknowledge = self.patch(self.mind, "_acknowledge_scope_hits", wraps=self.mind._acknowledge_scope_hits)
         changes = [{"status": "failed"}, {"status": None}, {"decision_id": ""}, {"decision_id": None},
                    {"decision_id": "  "}, {"next_review_at": True}, {"next_review_at": "tomorrow"},
                    {"next_review_at": -1}, {"next_review_at": 1.5}, {"next_review_at": 2**53},
@@ -50,9 +54,19 @@ class ObserverCompletionTests(unittest.TestCase):
             with self.subTest(change=change):
                 marker_path.write_text(json.dumps(dict(marker, **change)), encoding="utf-8")
                 self.assertEqual(self.mind.one_cycle(), 1)
-                self.assertEqual(Path(self.mind.MIND).read_bytes(), before_mind)
+                saved = self.mind.load(self.mind.MIND, {})
+                error = saved["decision_scopes"]["private:101"].pop("observer_error")
+                # Preserve every pre-existing field, including exact pending
+                # identity/signature, generation, timings and scoped evidence.
+                # The isolated failure may add only bounded safe diagnostics.
+                self.assertEqual(saved, json.loads(before_mind))
+                self.assertEqual(error, {"error_class": "ObservationError",
+                    "first_seen_at": int(self.clock.return_value * 1000),
+                    "last_seen_at": int(self.clock.return_value * 1000)})
                 self.assertEqual(Path(self.mind.HITFILE).read_bytes(), before_hits)
+                self.assertEqual(event.read_bytes(), before_event)
                 self.assertEqual(len(self.pending()), 1)
+                submit.assert_not_called(); acknowledge.assert_not_called()
         self.ask.assert_not_called(); self.send.assert_not_called()
 
     def test_missing_decision_or_status_is_not_a_terminal_hash_only_marker(self):

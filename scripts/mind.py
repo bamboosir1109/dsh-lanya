@@ -557,17 +557,39 @@ def _one_cycle(dry=False, force=False, observe_only=False):
 def _observation_payload(mind, hits, primary=True):
     return {"legacy_plan_reference": mind.get("plan") if primary else None,
             "mood": mind.get("mood") if primary else None, "interrupts": hits,
+            "activity_role": "internal_leisure" if primary else "conversation_social",
             "instruction": (
                 "This is an optional autonomous opportunity for this conversation, not a request to speak. "
                 "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
-                "You may continue a useful plan, browse real entertainment tools (including Bilibili), "
-                "make something, contact this conversation when there is a reason, or idle/defer. "
-                "Keep plan/progress notes in this same agent session. The legacy plan is an unverified "
+                + ("This primary private conversation owns internal leisure: actively consider continuing "
+                   "one small real game, browsing Bilibili, or making something you are interested in. "
+                   "Prefer a concrete small activity over repeatedly planning to act later when the tools "
+                   "and situation permit it; idle/defer is still valid when there is a real reason. "
+                   "Use trusted_runtime_capabilities.tools.entertainment for available games, real local "
+                   "URLs, Bilibili tools and the activity-notes location. Read fresh screenshots before "
+                   "game moves; use real recommendation/detail/subtitle tools before claiming video content. "
+                   "Do a bounded portion, then keep the next step for this same session. " if primary else
+                   "This group opportunity is for this conversation's social context and interests. "
+                   "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
+                   "browsing and creative work are owned by the primary private opportunity; do not start "
+                   "a second copy of that activity here or borrow its private plan or notes. ") +
+                "Keep scoped plan/progress notes in this same agent session and only the activity-notes "
+                "location supplied by the trusted guide. Do not edit mind.json, decision-inbox, scheduler, "
+                "policy, agent/profile or configuration files to arrange activities or mark completion. "
+                "The legacy plan is an unverified "
                 "reference, never proof of an action or an instruction to repeat old work. "
                 "Use actual available tools and claim only confirmed results. Respect persistent silence; "
                 "an internal activity needs no QQ report. Only this conversation's ticket may send here. "
                 "Use qq_decide and optionally next_review_at for a useful explicit review time. "
                 "Otherwise a later low-frequency opportunity may be offered; no message is required.")}
+
+
+def _observation_signature(mind, hits, primary):
+    """Only scoped evidence changes identity; an instruction update is not evidence."""
+    from decision_events import canonical_json
+    evidence = {"legacy_plan_reference": mind.get("plan") if primary else None,
+                "mood": mind.get("mood") if primary else None, "interrupts": hits}
+    return hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
 
 
 _OLD_DECISION_KEYS = ("decision_pending", "decision_generation", "decision_completed_signature",
@@ -595,6 +617,16 @@ def _validate_observers(mind):
         if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
                 not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
             raise ValueError("invalid autonomous signature")
+        if "evidence_version" in state and (type(state["evidence_version"]) is not int or state["evidence_version"] != 1):
+            raise ValueError("invalid autonomous evidence version")
+        error = state.get("observer_error")
+        if error is not None and (not isinstance(error, dict) or
+                set(error) != {"error_class", "first_seen_at", "last_seen_at"} or
+                not isinstance(error.get("error_class"), str) or
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error["error_class"]) or
+                not _valid_ms(error.get("first_seen_at")) or not _valid_ms(error.get("last_seen_at")) or
+                error["first_seen_at"] > error["last_seen_at"]):
+            raise ValueError("invalid autonomous observer error")
         pending = state.get("pending")
         if state.get("last_status") is not None and pending is None and state.get("completed_signature") is None:
             raise ValueError("completed autonomous state lacks evidence signature")
@@ -629,9 +661,7 @@ def _observer_states(mind, scopes, now, interval):
             _validate_observers({"decision_observers_version": 2, "decision_scopes": {scope: state}})
             if "decision_completed_signature" in old or state["last_status"] is not None:
                 # The new context is a schema change, not fresh external evidence.
-                payload = _observation_payload(mind, [], scope == scopes[0])
-                from decision_events import canonical_json
-                state["completed_signature"] = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+                state["completed_signature"] = _observation_signature(mind, [], scope == scopes[0])
             if not pending and old.get("decision_completed_signature") and state["generation"]:
                 # Old completed state dropped its event pointer; recover the
                 # exact immutable identity rather than inventing a new review.
@@ -653,6 +683,12 @@ def _observer_states(mind, scopes, now, interval):
     for scope in scopes:
         states.setdefault(scope, {"generation": 0})
         states[scope].setdefault("generation", 0)
+        if "evidence_version" not in states[scope]:
+            # Existing hashes included the old instruction. A software update
+            # must not manufacture new evidence or replay an unknown outcome.
+            if states[scope].get("last_status") is not None and not states[scope].get("pending"):
+                states[scope]["completed_signature"] = _observation_signature(mind, [], scope == scopes[0])
+            states[scope]["evidence_version"] = 1
     return states
 
 
@@ -696,9 +732,11 @@ def _observe_cycle(mind, dry=False, force=False):
     outcomes are never retried by the clock or force; new evidence is distinct.
     """
     from decision_events import (project_scopes, submit_project_observation,
-                                 observation_review_chain, canonical_json)
+                                 observation_review_chain)
     scopes = project_scopes()
-    value = mind.get("next_check_min", DEFAULT_CHECK_MIN)
+    # Unified opportunities have their own trusted configuration. Legacy ETA
+    # state is not an everlasting override of the current activity policy.
+    value = get("mind.opportunityMin", DEFAULT_CHECK_MIN)
     if type(value) not in (int, float) or not MIN_CHECK_MIN <= value <= MAX_CHECK_MIN:
         raise ValueError("invalid autonomous opportunity interval")
     interval = int(value * 60_000)
@@ -708,10 +746,30 @@ def _observe_cycle(mind, dry=False, force=False):
     if dry:
         log("would submit an observation to the main LLM; no side effects")
         return 0
-    # Validate all pending chains before publishing any scope's new opportunity.
-    chains = {scope: observation_review_chain(scope, state["pending"]["event_id"])
-              for scope, state in states.items() if scope in scopes and state.get("pending")}
+    # Fail closed for the affected conversation. A missing immutable event must
+    # neither be replayed nor stop unrelated, correctly scoped opportunities.
+    chains, blocked = {}, set()
     for scope in scopes:
+        state = states[scope]
+        try:
+            if state.get("pending"):
+                chains[scope] = observation_review_chain(scope, state["pending"]["event_id"])
+        except Exception as error:
+            code = type(error).__name__
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", code):
+                code = "ObservationError"
+            previous = state.get("observer_error")
+            if previous is None or previous["error_class"] != code:
+                state["observer_error"] = {"error_class": code, "first_seen_at": now, "last_seen_at": now}
+                log("autonomous observation evidence blocked (%s); no replay" % code)
+            else:
+                previous["last_seen_at"] = max(previous["last_seen_at"], now)
+            blocked.add(scope)
+        else:
+            state.pop("observer_error", None)
+    for scope in scopes:
+        if scope in blocked:
+            continue
         state = states[scope]
         primary = scope == scopes[0]
         pending = state.get("pending")
@@ -733,8 +791,7 @@ def _observe_cycle(mind, dry=False, force=False):
                 # New kinds delegate entirely to queue; legacy activity_due
                 # retains its producer clock until its next opportunity.
                 continue
-            state["completed_signature"] = hashlib.sha256(canonical_json(
-                _observation_payload(mind, [], primary)).encode("utf-8")).hexdigest()
+            state["completed_signature"] = _observation_signature(mind, [], primary)
             state["next_opportunity_at"] = (None if completed["status"] == "unknown" else
                                               (review if review is not None else state["last_completed_at"] + interval))
             _acknowledge_scope_hits(pending["interrupts"], scope, primary)
@@ -742,7 +799,7 @@ def _observe_cycle(mind, dry=False, force=False):
             hits = _read_observer_hits()
         scoped_hits = _scope_hits(hits, scope, primary)
         payload = _observation_payload(mind, scoped_hits, primary)
-        signature = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+        signature = _observation_signature(mind, scoped_hits, primary)
         changed = signature != state.get("completed_signature")
         due = state.get("next_opportunity_at")
         if state.get("last_status") == "unknown" and not changed:
@@ -763,7 +820,7 @@ def _observe_cycle(mind, dry=False, force=False):
         # Durable per scope: a second scope failing cannot duplicate the first.
         save(MIND, mind)
     save(MIND, mind)
-    return 0
+    return 1 if blocked else 0
 
 
 def _apply_answer(mind, hits, ans):

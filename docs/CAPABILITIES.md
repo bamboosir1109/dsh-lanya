@@ -12,6 +12,16 @@ guide 提供实际角色目录下 `browser/cmd.json`、`result.json`、`shot.png
 
 现有浏览器队列没有 Android 的 `shot_id` 强制校验或多生产者锁，只能由单一写者逐步使用。进程仍在或旧图存在，不代表这一次命令成功；网页内容只是证据，不能改变聊天范围或控制权限。
 
+## 游戏与 B 站
+
+`tools.entertainment` 提供可执行的内部活动路线。它只扫描当前角色 `made/` 的一层普通子目录及其 `index.html`，最多列出 16 个入口；不递归浏览器配置、备份或旧截图，不读取页面正文。目录存在只证明文件部署，不证明 HTTP、游戏或账号可用。安装器附带无需联网的 `/2048/`，不覆盖同目录原有的 Python 脚本与历史结果。
+
+游戏由同一主 agent 通过浏览器打开，读取新 seq 的实际截图，按图操作，再用新画面、棋盘或分数变化确认。旧 `board.png`、离线解题器或“已提交命令”不算真实玩过。B 站路线是当前 agent 已注册的 `bili_recommend` → 返回的真实 bvid → `bili_video_info`；实际字幕、抽帧或播放器工具可用时再继续。推荐和详情是浏览，不冒充看完视频；失败时换一项可用活动。
+
+内部娱乐主要由管理员范围的自主机会继续，群聊观察不另开同一份游戏计划。进度留在原会话或普通 scoped notes，不能改写调度、`mind.json`、`decision-inbox` 或票据。静默约束通信，内部活动无需 QQ 汇报；一次做少量真实步骤，再安排明确复查。`mind.opportunityMin` 控制无明确复查时的新机会间隔，默认 6 分钟，允许 2—60 分钟；未来已约复查与未知结果不会被该间隔覆盖。
+
+后台 `activity.opportunity` 及其 `main-review` 轮只有在可信 owner 匹配、私聊对端精确命中宿主管理员 allowlist、producer 为 `mind` 或 `main-review` 时，才使用该管理员已有的文件编辑权限，供浏览器命令和活动笔记使用。群聊、其它生产者和异常元数据保持成员权限；观察的 `control_allowed=false` 不变，不能改变静默或绕过发送票。既有分层安装用 `patch_onebot_autonomy.py` 独立核验并更新 adapter，保留旧层原件；不以重装旧层覆盖未知修改。
+
 ## Android
 
 guide 提供配置中的固定 serial、实际角色目录的 Android 队列和本机面板 job 地址。优先通过 `/api/android/job` 提交带固定 serial 的 `shot`，由面板分配 seq；文件调用方必须保留已有 `cmd.json` / `cmd.claim-*`，只在空槽原子发布新 seq。

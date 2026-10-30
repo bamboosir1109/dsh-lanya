@@ -27,7 +27,8 @@ $dataDirName    = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5
 $root     = $PSScriptRoot
 $dafeiyuDir = Join-Path (Split-Path -Parent $PSScriptRoot) $dataDirName
 $outDir   = Join-Path $dafeiyuDir 'made'
-$outFile  = Join-Path $outDir 'dafeiyu-state.json'
+$outFile  = Join-Path $outDir 'lanya-state.json'
+$legacyOutFile = Join-Path $outDir 'dafeiyu-state.json'
 
 $profDir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
 $nmDir   = Join-Path $profDir 'node_modules'
@@ -41,11 +42,34 @@ $components = @(
   @{ tag = 'lifeloop';    match = 'lifeloop\.ps1';      desc = 'free time loop' },
   @{ tag = 'voicedaemon'; match = 'voicedaemon\.ps1';   desc = 'voice queue' },
   @{ tag = 'browserd';    match = 'browserd\.py';       desc = 'browser' },
-  @{ tag = 'works';       match = ('http\.server ' + $worksPort); desc = ('works server ' + $worksPort) },
+  @{ tag = 'works';       match = '__WORKS__'; desc = ('works server ' + $worksPort) },
   @{ tag = 'tts';         match = 'api_v2\.py';         desc = ('local voice ' + $ttsPort) },
   @{ tag = 'napcat';      match = ('__PORT__:' + $napcatPort);      desc = 'napcat injection' },
   @{ tag = 'headless';    match = '--profile headless'; desc = 'headless agent' }
 )
+
+function Get-WorksServiceRow($Processes, $Listeners, $Health, [string]$ExpectedScript, [int]$Port, [string]$ExpectedHash) {
+  $escaped = [regex]::Escape($ExpectedScript)
+  $pattern = '^(?:"[^"]+"|[^\s"]+)(?:\s+(?<pythonflag>-B))?\s+(?:"' + $escaped + '"|' + $escaped + ')\s+--port\s+' + $Port + '\s*$'
+  $hits = @($Processes | Where-Object {
+    if($_.Name -notmatch '^pythonw?(\.exe)?$') { return $false }
+    $matched = [regex]::Match([string]$_.CommandLine, $pattern, 'IgnoreCase')
+    return ($matched.Success -and (-not $matched.Groups['pythonflag'].Success -or $matched.Groups['pythonflag'].Value -ceq '-B'))
+  })
+  $mb = 0.0; foreach($hit in $hits) { $mb += $hit.WorkingSetSize / 1MB }
+  $owners = @($Listeners | Where-Object { $_.LocalPort -eq $Port } | Select-Object -ExpandProperty OwningProcess -Unique)
+  $status = if($null -eq $Listeners){'unknown'}elseif($owners.Count){'blocked'}elseif($hits.Count){'starting'}else{'offline'}
+  $healthy = $false
+  if($hits.Count -eq 1 -and $owners.Count -eq 1 -and $owners[0] -eq $hits[0].ProcessId) {
+    $status = 'unhealthy'
+    if($Health -and $Health.ok -is [bool] -and $Health.ok -and $Health.version -is [int] -and $Health.version -eq 1 -and
+       $Health.service -ceq 'lanya-panel' -and $Health.role -ceq 'works' -and $Health.port -eq $Port -and
+       $Health.pid -is [int] -and $Health.port -is [int] -and $Health.pid -eq $hits[0].ProcessId -and
+       $ExpectedHash -cmatch '^[a-f0-9]{64}$' -and $Health.script_sha256 -ceq $ExpectedHash) { $healthy=$true; $status='healthy' }
+  }
+  return [pscustomobject]@{tag='works';desc=('works server '+$Port);count=$hits.Count;mb=[math]::Round($mb,1);aging=0;
+    service=[pscustomobject]@{role='works';port=$Port;count=$hits.Count;mb=[math]::Round($mb,1);healthy=$healthy;status=$status;listening=($owners.Count -gt 0)}}
+}
 
 $me = $PID
 $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -57,6 +81,22 @@ $total = 0.0
 $cutoff = (Get-Date).AddMinutes(-$strayAgeMin)
 
 foreach ($c in $components) {
+  if($c.tag -eq 'works') {
+    $worksScript = Join-Path $PSScriptRoot 'lanya-panel-server.py'
+    $listeners = $null; $health = $null; $expectedHash = ''
+    try { $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq $worksPort }) } catch { }
+    try { $expectedHash = (Get-FileHash -LiteralPath $worksScript -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { }
+    $row = Get-WorksServiceRow $procs $listeners $null $worksScript $worksPort $expectedHash
+    if($row.service.status -eq 'unhealthy') {
+      try {
+        $response = Invoke-WebRequest -Uri ('http://127.0.0.1:'+$worksPort+'/api/service-health') -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 0 -ErrorAction Stop
+        if($response.StatusCode -eq 200 -and $response.Content.Length -le 4096) { $health = $response.Content | ConvertFrom-Json -ErrorAction Stop }
+      } catch { }
+      $row = Get-WorksServiceRow $procs $listeners $health $worksScript $worksPort $expectedHash
+    }
+    $rows += $row; $total += $row.mb
+    continue
+  }
   # NapCat is injected into the QQ process, so there is no process name to match.
   # Looking for napimain always yielded 0 and made the panel look offline. Probe
   # the port instead - that reflects what is actually reachable.
@@ -157,6 +197,7 @@ $state = [pscustomobject]@{
   at     = (Get-Date).ToString('o')
   memory = [pscustomobject]@{
     dafeiyuMb = [math]::Round($total, 1)
+    lanyaMb = [math]::Round($total, 1)
     limitMb = $limitMb
     over    = ($total -gt $limitMb)
     freeGb  = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
@@ -184,6 +225,7 @@ try {
   New-Item -ItemType Directory -Path $outDir -Force | Out-Null
   $json = $state | ConvertTo-Json -Depth 6 -Compress
   [System.IO.File]::WriteAllText($outFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText($legacyOutFile, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 catch {
   # Never break whatever called this.

@@ -1147,10 +1147,12 @@ function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{month:'2-
 
 let componentActionPending = false;
 function autonomyLabel(a){
+  if((a || {}).reason === 'observer_evidence_missing') return '主 agent 托管，部分观察证据缺失';
   return ({waiting:'主 agent 托管，等待自主机会',scheduled:'主 agent 托管，已约复查',
     processing:'主 agent 托管，观察待处理',uncertain:'主 agent 托管，上次结果未知',
     offline:'主 agent 调度离线',unknown:'主 agent 调度状态未确认'})[(a || {}).status] || '主 agent 调度状态未确认';
 }
+function panelServiceLabel(s){ return ({healthy:'服务正常',offline:'服务离线，后台会检查恢复',starting:'服务启动中，健康未确认',unhealthy:'进程存在，HTTP 健康未通过',blocked:'端口归属冲突，未重复启动',unknown:'服务状态未确认'})[(s || {}).status] || '服务状态未确认'; }
 async function doAction(target, outId){
   if(componentActionPending) return;
   componentActionPending = true;
@@ -1159,7 +1161,8 @@ async function doAction(target, outId){
   try{
     const j = await api('/action', { method:'POST', headers:{'content-type':'application/json'},
                                      body: JSON.stringify({ target }) });
-    if(j.ok && j.observation_only) show(oid, j.note || '检查请求已提交；活动是否执行由主 agent 决定。');
+    if(j.ok && j.service_check) show(oid, j.note || '服务检查已请求，健康状态待确认。');
+    else if(j.ok && j.observation_only) show(oid, j.note || '检查请求已提交；活动是否执行由主 agent 决定。');
     else if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
     else if(j.ok && j.task) show(oid, '已触发：' + j.task + '\n几秒后状态会刷新。');
     else if(j.ok) show(oid, '已启动：' + target + '（进程 ' + j.pid + '）');
@@ -1177,6 +1180,7 @@ const PART = {
   voicedaemon:['语音守护','把要说的话合成语音发出去'],
   browserd:['浏览器','她上网用的浏览器'],
   works:['作品站','她的游戏和小工具挂在这里'],
+  'panel-api':['控制台 API','面板数据与操作接口'],
   tts:['语音引擎','本地合成的声音来源'],
   napcat:['QQ 注入','NapCat 注入进 QQ 的那一层'],
   headless:['后台任务','每次临时算一下就跑，堆积就是它']
@@ -1239,9 +1243,10 @@ async function refreshOverview(){
     comps.forEach(c => {
       const meta = PART[c.tag] || [c.tag, ''];
       const managed = c.control === 'request_check';
-      const cls = managed ? ((c.autonomy || {}).can_request_check ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
+      const cls = c.service ? (c.service.healthy ? 'up' : 'multi') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
       const canStart = ['groupwatch','lifeloop','voicedaemon','browserd','works','tts'].indexOf(c.tag) >= 0;
-      const btn = managed
+      const btn = c.control === 'ensure_works'
+        ? '<button class="sm" onclick="doAction(\'works\',\'partsOut\')">检查恢复</button>' : managed
         ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')"' + (componentActionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>'
         : c.control === 'retired' ? '<span class="dsc">统一模式已停用独立循环</span>' : canStart
         ? '<button class="sm" onclick="doAction(\'' + c.tag + '\',\'partsOut\')">' + (c.count>0?'重启':'启动') + '</button>'
@@ -1249,9 +1254,9 @@ async function refreshOverview(){
       const aging = c.aging > 0 ? ' <span style="color:#ff9b9b;font-size:11px">卡住 ' + c.aging + '</span>' : '';
       const tr = document.createElement('tr');
       tr.innerHTML = '<td><span class="dot ' + cls + '"></span><span class="nm">' + meta[0] + '</span>' + aging + '</td>'
-        + '<td class="dsc">' + (managed ? autonomyLabel(c.autonomy) : meta[1]) + '</td>'
-        + '<td class="num">' + c.count + '</td>'
-        + '<td class="num">' + c.mb + ' MB</td>'
+        + '<td class="dsc">' + (c.service ? panelServiceLabel(c.service) : managed ? autonomyLabel(c.autonomy) : meta[1]) + '</td>'
+        + '<td class="num">' + (c.count ?? '—') + '</td>'
+        + '<td class="num">' + (c.mb ?? '—') + ' MB</td>'
         + '<td class="op">' + btn + '</td>';
       tb.appendChild(tr);
     });
@@ -1986,7 +1991,8 @@ async function loadLive(){
       setText('liveLast', autonomyLabel(a));
       setText('liveLastAt', o.last_completed_at ? '上次观察处理于 ' + new Date(o.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
       const rows = [autonomyLabel(a), '观察提交后，是否娱乐或会话由主 agent 决定。'];
-      if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
+      if(o.error_count) rows.push(o.error_count + ' 个观察范围证据缺失，等待人工核对；其他范围仍可正常检查。');
+      else if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
       if(o.next_opportunity_at) rows.push('下次普通机会：' + new Date(o.next_opportunity_at).toLocaleString('zh-CN'));
       const box = $('liveLog');
       if(box){ box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); }); }

@@ -25,10 +25,14 @@ import time
 import stat
 import sqlite3
 import contextlib
+import hashlib
+import math
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+with open(__file__, "rb") as _program:
+    _PANEL_SCRIPT_SHA256 = hashlib.sha256(_program.read()).hexdigest()
 _HELPERS = os.path.join(os.path.dirname(HERE), "scripts")
 if os.path.basename(HERE).lower() == "server":
     sys.path.insert(0, _HELPERS)
@@ -138,6 +142,8 @@ SPECIAL = {
 
 
 def run_script(name):
+    if name == "works":
+        raise ValueError("Works service belongs to the panel service supervisor")
     if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
         raise ValueError("Unified mode retires this independent loop; request a main-agent check")
     sp = SPECIAL.get(name)
@@ -300,7 +306,7 @@ def _mind_metadata(value):
     }}
     if not isinstance(rows, dict) or len(rows) > 128:
         raise ValueError("Invalid observer metadata")
-    out = {"schema_version": version, "scope_count": len(rows), "pending_count": 0,
+    out = {"schema_version": version, "scope_count": len(rows), "pending_count": 0, "error_count": 0,
            "scheduled_review_count": 0, "unknown_count": 0, "last_completed_at": None,
            "next_review_at": None, "next_opportunity_at": None}
     for key, row in rows.items():
@@ -311,6 +317,14 @@ def _mind_metadata(value):
             if not isinstance(row["pending"], dict):
                 raise ValueError("Invalid pending metadata")
             out["pending_count"] += 1
+        error = row.get("observer_error")
+        if error is not None:
+            if (not isinstance(error, dict) or not isinstance(error.get("error_class"), str) or
+                    not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", error["error_class"]) or
+                    any(type(error.get(key)) is not int or not 0 <= error[key] <= 9007199254740991
+                        for key in ("first_seen_at", "last_seen_at"))):
+                raise ValueError("Invalid observer error metadata")
+            out["error_count"] += 1
         status = row.get("last_status")
         if status not in (None, "decided", "sent", "unknown", "suppressed"):
             raise ValueError("Invalid decision status")
@@ -351,7 +365,9 @@ def autonomy_snapshot(now=None, owner_probe=None):
             return dict(result, status="offline" if lease is False else "unknown", reason="consumer_owner_unverified")
         mind_file = os.path.join(DATA, "mind.json")
         summary = _mind_metadata(_read_metadata(mind_file) if os.path.isfile(mind_file) else {})
-        if summary["scheduled_review_count"]:
+        if summary["error_count"]:
+            status, reason = "uncertain", "observer_evidence_missing"
+        elif summary["scheduled_review_count"]:
             status, reason = "scheduled", "main_review_scheduled"
         elif summary["pending_count"]:
             status, reason = "processing", "decision_pending"
@@ -406,24 +422,106 @@ def request_autonomy_check():
 
 
 def autonomy_label(status):
+    if status.get("reason") == "observer_evidence_missing":
+        return "\u4e3b agent \u6258\u7ba1\uff0c\u90e8\u5206\u89c2\u5bdf\u8bc1\u636e\u7f3a\u5931"
     return {"waiting": "\u4e3b agent \u6258\u7ba1\uff0c\u7b49\u5f85\u81ea\u4e3b\u673a\u4f1a", "scheduled": "\u4e3b agent \u6258\u7ba1\uff0c\u5df2\u7ea6\u590d\u67e5",
             "processing": "\u4e3b agent \u6258\u7ba1\uff0c\u89c2\u5bdf\u5f85\u5904\u7406", "uncertain": "\u4e3b agent \u6258\u7ba1\uff0c\u4e0a\u6b21\u7ed3\u679c\u672a\u77e5",
             "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u65e7\u7248\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
 
 
 def panel_state_snapshot():
-    try:
-        value = _read_metadata(os.path.join(ROOT, "lanya-state.json"), 4 * 1024 * 1024)
-    except (OSError, ValueError, TypeError):
-        value = {"at": None, "memory": {}, "components": [], "plugins": []}
+    candidates = []
+    for name in ("lanya-state.json", "dafeiyu-state.json"):
+        try:
+            file = os.path.join(ROOT, name)
+            value = _read_metadata(file, 4 * 1024 * 1024)
+            candidates.append((os.stat(file).st_mtime_ns, value))
+        except (OSError, ValueError, TypeError):
+            pass
+    value = max(candidates, key=lambda row: row[0])[1] if candidates else {"at": None, "memory": {}, "components": [], "plugins": []}
+    memory = value.setdefault("memory", {})
+    if "lanyaMb" not in memory and "dafeiyuMb" in memory:
+        memory["lanyaMb"] = memory["dafeiyuMb"]
     status = autonomy_snapshot()
     value["autonomy"] = status
     value["components"] = decorate_autonomy_components(value.get("components") or [], status)
+    services = panel_services()
+    old = [row for row in value["components"] if row.get("tag") in ("works", "panel-api")]
+    value["components"] = [row for row in value["components"] if row.get("tag") not in ("works", "panel-api")]
+    for role, tag in (("works", "works"), ("api", "panel-api")):
+        service = services[role]
+        row = dict(next((row for row in old if row.get("tag") == tag), {}))
+        row.update(tag=tag, kind="server", service=service)
+        for field in ("count", "mb"):
+            if service[field] is not None:
+                row[field] = service[field]
+            else:
+                row.setdefault(field, None)
+        if role == "works":
+            row["control"] = "ensure_works"
+        value["components"].append(row)
+    delta = sum((row.get("mb") or 0) for row in value["components"] if row.get("tag") in ("works", "panel-api")) - sum((row.get("mb") or 0) for row in old)
+    for key in ("lanyaMb", "dafeiyuMb"):
+        if type(memory.get(key)) in (int, float):
+            memory[key] = round(memory[key] + delta, 1)
+    value["services"] = services
     return value
+
+
+def panel_services():
+    ports = {"works": project_conf.get("panelStaticPort", 19388), "api": project_conf.get("panelPort", 19389)}
+    unknown = lambda: {role: {"role": role, "port": port, "count": None, "mb": None,
+                              "healthy": False, "status": "unknown", "listening": None} for role, port in ports.items()}
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:19387/dsh-lanya/api/services", timeout=12) as response:
+            raw = response.read(16385)
+            if len(raw) > 16384:
+                return unknown()
+        value = json.loads(raw.decode("utf-8"))
+        if value.get("ok") is not True:
+            return unknown()
+        result = {}
+        for role, port in ports.items():
+            row = value["services"][role]
+            if (row.get("role") != role or type(row.get("port")) is not int or row["port"] != port or
+                    type(row.get("healthy")) is not bool or row.get("status") not in ("healthy", "offline", "starting", "unhealthy", "blocked", "unknown") or
+                    row.get("listening") is not None and type(row["listening"]) is not bool or
+                    row.get("count") is not None and (type(row["count"]) is not int or row["count"] < 0) or
+                    row.get("mb") is not None and (type(row["mb"]) not in (int, float) or not math.isfinite(row["mb"]) or row["mb"] < 0) or
+                    row["healthy"] and (row["status"] != "healthy" or row["count"] != 1 or row["listening"] is not True)):
+                return unknown()
+            result[role] = {key: row.get(key) for key in ("role", "port", "count", "mb", "healthy", "status", "listening")}
+        return result
+    except Exception:
+        return unknown()
+
+
+def request_works_service():
+    try:
+        import urllib.request
+        request = urllib.request.Request("http://127.0.0.1:19387/dsh-lanya/api/action",
+            data=b'{"target":"works","op":"ensure"}', headers={"content-type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=25) as response:
+            raw = response.read(4097)
+        if len(raw) > 4096:
+            raise ValueError()
+        value = json.loads(raw.decode("utf-8"))
+        if (value.get("ok") is True and value.get("service_check") is True and type(value.get("healthy")) is bool
+                and value.get("status") in ("healthy", "starting")):
+            return {"ok": True, "service_check": True, "healthy": value["healthy"], "status": value["status"],
+                    "note": "\u670d\u52a1\u5df2\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u91cd\u590d\u542f\u52a8" if value["healthy"] else "\u5df2\u8bf7\u6c42\u540e\u53f0\u6062\u590d\uff0c\u7b49\u5f85\u771f\u5b9e\u5065\u5eb7\u68c0\u67e5"}
+    except Exception:
+        pass
+    return {"ok": False, "service_check": True, "healthy": False, "error": "\u4f5c\u54c1\u670d\u52a1\u770b\u62a4\u672a\u786e\u8ba4\uff0c\u672a\u89e6\u53d1\u65e7\u4efb\u52a1"}
 
 
 def control_action(body):
     target, op = str(body.get("target") or ""), str(body.get("op") or "run")
+    if target == "works":
+        if op not in ("run", "start", "restart", "ensure"):
+            return {"ok": False, "error": "Works service is supervised; stop is not offered"}
+        return request_works_service()
     if target in ("lifeloop", "mind"):
         mode = decision_mode()
         if mode != "legacy":
@@ -572,6 +670,8 @@ def decode_task_output(raw, oem_encoding=None):
 
 
 def run_task(name):
+    if name == "works":
+        raise ValueError("Works service belongs to the panel service supervisor")
     if name in _RETIRED_UNIFIED and decision_mode() != "legacy":
         raise ValueError("Unified mode retires this scheduled task; request a main-agent check")
     task = TASKS.get(name)
@@ -1572,6 +1672,11 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/service-health":
+            port = self.server.server_port
+            role = "works" if port == project_conf.get("panelStaticPort", 19388) else "api" if port == project_conf.get("panelPort", 19389) else "unknown"
+            return self._json(200, {"ok": True, "service": "lanya-panel", "version": 1,
+                "pid": os.getpid(), "port": port, "role": role, "script_sha256": _PANEL_SCRIPT_SHA256})
         if path == "/api/autonomy":
             return self._json(200, {"ok": True, "autonomy": autonomy_snapshot()})
         if path == "/api/state":
@@ -1850,10 +1955,7 @@ class Handler(SimpleHTTPRequestHandler):
             # 把每项活动绑到的部件状态查出来，页面才知道"能不能真干"
             st3 = {}
             try:
-                snap = os.path.join(ROOT, "lanya-state.json")
-                with open(snap, "r", encoding="utf-8") as fhs3:
-                    st3 = dict((c.get("tag"), c) for c in
-                               (json.load(fhs3).get("components") or []))
+                st3 = dict((c.get("tag"), c) for c in (panel_state_snapshot().get("components") or []))
             except Exception:
                 st3 = {}
 
@@ -1876,6 +1978,10 @@ class Handler(SimpleHTTPRequestHandler):
                     a["ready"] = autonomy["can_request_check"]
                     a["why"] = autonomy_label(autonomy)
                     a["managed_by"] = "main_agent"
+                elif b == "works":
+                    service = (st3.get("works") or {}).get("service", {})
+                    a["ready"] = service.get("healthy") is True
+                    a["why"] = "\u4f5c\u54c1\u7ad9\u5065\u5eb7" if a["ready"] else "\u4f5c\u54c1\u7ad9\u5065\u5eb7\u672a\u786e\u8ba4"
                 elif b:
                     n = comp_count(b)
                     a["ready"] = n > 0

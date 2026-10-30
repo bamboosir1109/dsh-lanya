@@ -47,6 +47,9 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((runtime / relative).is_file(), relative)
         for name in ("lanya-panel.html", "theme-light.css", "phone.html"):
             self.assertTrue((data / "made" / name).is_file(), name)
+        for name in ("index.html", "game.js", "app.js"):
+            self.assertEqual((data / "made" / "2048" / name).read_bytes(),
+                             (REPO / "games" / "2048" / name).read_bytes())
         project = self.target / "config" / "project.json"
         settings = json.loads(project.read_text(encoding="utf-8-sig"))
         self.assertEqual(settings["dataDirName"], role)
