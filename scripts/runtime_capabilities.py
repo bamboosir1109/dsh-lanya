@@ -142,6 +142,12 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
     port = configuration.get("panelStaticPort", DEFAULTS["panelStaticPort"])
     if type(port) is not int or not 0 < port < 65536:
         raise CapabilityError("Configured works port is invalid")
+    # Match mind's dotted lookup fallback and exact numeric type/range check.
+    # Read this owner's configuration anew, never a message/payload preference.
+    mind = configuration.get("mind")
+    cadence = (mind.get("opportunityMin", DEFAULTS["mind"]["opportunityMin"])
+               if isinstance(mind, dict) else DEFAULTS["mind"]["opportunityMin"])
+    valid_cadence = type(cadence) in (int, float) and 2 <= cadence <= 60
     made = data / "made"
     entries = []
 
@@ -176,6 +182,17 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
         pass
     return {
         "execution": "same_main_agent_no_independent_model",
+        "cadence": {
+            "valid": valid_cadence,
+            "configured_opportunity_min": cadence if valid_cadence else None,
+            "configuration": ("This is the trusted configured opportunity preference, not proof that a scheduler is running or that a review is due."
+                              if valid_cadence else "The configured opportunity interval is invalid, so no trustworthy cadence is available. Do not assume a default schedule or edit configuration to repair it."),
+            "preference_scope": "primary_internal_leisure_only_groups_social",
+            "preference": "The user prefers more frequent real games and Bilibili browsing in the primary personal opportunity. After a short confirmed activity, usually consider another useful small segment around the configured opportunity interval, rather than routinely putting all leisure off for hours. This is a preference, not an activity quota or a requirement to call a tool or speak; the same main agent still chooses activity, idle or defer.",
+            "explicit_review": "An explicit next_review_at postpones ordinary autonomous opportunities for this entire conversation until that time, not just one game's or video's next step. A distant project milestone may stay in the scoped notes while you consider an earlier useful leisure review. Existing explicit reviews remain authoritative: this guide does not cancel, shorten, replay or wake one.",
+            "longer_interval": "A longer interval is valid for a concrete activity, rest need, unavailable tool or other real reason. Keep the actual reason, confirmed progress and next intent in this conversation's activity note; distinguish a planned rest or future task from verified activity. Saying you are busy is not evidence that an action occurred.",
+            "communication": "QQ silence limits communication, not local games, ordinary activity notes or read-only Bilibili browsing. Internal leisure needs no QQ report. This guide grants no sending authority or silence-control permission. Group opportunities remain social only and must not start a second copy of private entertainment."
+        },
         "activity_notes": {"path": str(data / "notes" / ("activity-" + hashlib.sha256(conversation_key.encode("utf-8")).hexdigest() + ".md")),
                            "read_write": "Ordinary progress notes for this exact conversation, not memory facts or scheduling state. Read your recent note to continue, then update only this note with confirmed steps, evidence and next intent. Only the primary opportunity owns personal leisure; group notes do not start a second game."},
         "local_games": {"catalog_status": "local_files_only_http_and_game_state_unverified", "entries": entries,

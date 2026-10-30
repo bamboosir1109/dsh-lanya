@@ -112,6 +112,49 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         with mock.patch.object(Path, "lstat", reparse_parent):
             self.assertEqual(self.context()["tools"]["entertainment"]["local_games"]["entries"], [])
 
+    def test_cadence_uses_current_trusted_configuration_and_preserves_read_only_scope(self):
+        for minutes in (2, 3, 3.5, 60):
+            with self.subTest(minutes=minutes):
+                self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "mind": {
+                    "opportunityMin": minutes}}), encoding="utf-8")
+                before = self.snapshot()
+                context = self.context()
+                self.assertEqual(self.snapshot(), before)
+                cadence = context["tools"]["entertainment"]["cadence"]
+                self.assertTrue(cadence["valid"])
+                self.assertEqual(cadence["configured_opportunity_min"], minutes)
+                self.assertIn("entire conversation", cadence["explicit_review"])
+                self.assertIn("Existing explicit reviews remain authoritative", cadence["explicit_review"])
+                self.assertIn("not an activity quota", cadence["preference"])
+                self.assertIn("not evidence", cadence["longer_interval"])
+                self.assertIn("no sending authority", cadence["communication"])
+                group = self.module.build_context(str(self.root), "fixture", "group:202",
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)
+                group_guide = group["tools"]["entertainment"]
+                self.assertEqual(group_guide["cadence"]["configured_opportunity_min"], minutes)
+                self.assertIn("Group opportunities remain social only", group_guide["cadence"]["communication"])
+                self.assertNotEqual(group_guide["activity_notes"]["path"], context["tools"]["entertainment"]["activity_notes"]["path"])
+
+    def test_missing_cadence_matches_mind_dotted_lookup_default(self):
+        for extra in ({}, {"mind": {}}, {"mind": None}, {"mind": "fixture legacy scalar"}):
+            with self.subTest(extra=extra):
+                self.config.write_text(json.dumps(dict(dataDirName="FixtureRole", **extra)), encoding="utf-8")
+                self.assertEqual(self.context()["tools"]["entertainment"]["cadence"]["configured_opportunity_min"], 6)
+
+    def test_invalid_cadence_cannot_advertise_a_different_schedule(self):
+        for value in (True, False, None, "3", [], {}, 0, 1.99, 60.01, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "mind": {
+                    "opportunityMin": value}}), encoding="utf-8")
+                before = self.snapshot()
+                context = self.context()
+                cadence = context["tools"]["entertainment"]["cadence"]
+                self.assertFalse(cadence["valid"])
+                self.assertIsNone(cadence["configured_opportunity_min"])
+                self.assertIn("no trustworthy cadence", cadence["configuration"])
+                self.assertEqual(context["tools"]["browser"]["deployment"], "not_installed")
+                self.assertEqual(self.snapshot(), before)
+
     def test_invalid_works_port_is_not_advertised_as_a_game_service(self):
         for port in (True, 0, 65536, "19388"):
             with self.subTest(port=port):

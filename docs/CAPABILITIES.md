@@ -20,6 +20,8 @@ guide 提供实际角色目录下 `browser/cmd.json`、`result.json`、`shot.png
 
 内部娱乐主要由管理员范围的自主机会继续，群聊观察不另开同一份游戏计划。进度留在原会话或普通 scoped notes，不能改写调度、`mind.json`、`decision-inbox` 或票据。静默约束通信，内部活动无需 QQ 汇报；一次做少量真实步骤，再安排明确复查。`mind.opportunityMin` 控制无明确复查时的新机会间隔，默认 6 分钟，允许 2—60 分钟；未来已约复查与未知结果不会被该间隔覆盖。
 
+可信说明的 `tools.entertainment.cadence` 每轮重新读取该配置，把真实数值交给同一主 agent：`valid=true` 时提供 `configured_opportunity_min`，有效小数也保留；显式坏类型、布尔值或越界值返回 `valid=false` 和空分钟数，不能冒充默认节奏已生效。它把短段活动后较早复查作为用户偏好，解释远期 `next_review_at` 会推迟本会话全部普通自主机会；较远任务时刻可以留在活动笔记，不必让其他娱乐一起停等。主 agent 仍可因具体活动、休息或工具条件选择更长间隔，并在本范围笔记保留真实理由。这个说明不取消已有复查，不强制活动、发言或工具调用，也不给群聊另开私人游戏。桥在每次构造上下文时读取 helper，更新该说明无需重启宿主；读取成功也不等于后续频率已经验收通过。
+
 后台 `activity.opportunity` 及其 `main-review` 轮只有在可信 owner 匹配、私聊对端精确命中宿主管理员 allowlist、producer 为 `mind` 或 `main-review` 时，才使用该管理员已有的文件编辑权限，供浏览器命令和活动笔记使用。群聊、其它生产者和异常元数据保持成员权限；观察的 `control_allowed=false` 不变，不能改变静默或绕过发送票。既有分层安装用 `patch_onebot_autonomy.py` 独立核验并更新 adapter，保留旧层原件；不以重装旧层覆盖未知修改。
 
 ## Android

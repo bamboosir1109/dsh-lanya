@@ -432,12 +432,14 @@ test('memory CLI receives trusted scope/cwd/preset and never falls back to raw c
   assert.equal(h.logs.some(item => item.message === 'scoped_memory_context_unavailable:Error'), true)
 })
 
-test('ordinary QQ and background observation share one agent and its actual owner-bound capability guide', async t => {
+test('ordinary QQ and main-review share one agent and refresh its actual owner-bound capability guide', async t => {
   const h = await setup(t)
   const runtime = path.join(h.dir, 'napcat')
   fs.mkdirSync(path.join(runtime, 'config'), { recursive: true })
   for (const file of ['runtime_capabilities.py', 'project_conf.py']) fs.copyFileSync(path.join(repo, 'scripts', file), path.join(runtime, file))
-  fs.writeFileSync(path.join(runtime, 'config', 'project.json'), JSON.stringify({ dataDirName: 'FixtureRole', android: { serial: 'emulator-5556' } }))
+  const projectConfig = path.join(runtime, 'config', 'project.json')
+  const configuration = { dataDirName: 'FixtureRole', android: { serial: 'emulator-5556' }, mind: { opportunityMin: 3 } }
+  fs.writeFileSync(projectConfig, JSON.stringify(configuration))
   h.bridge.lanyaPolicy.runtimeCapabilities = (scope, owner) => h.bridge.lanyaPolicy.readRuntimeCapabilities(scope, owner)
   const chat = await h.receive({ text: 'what tools are actually available?' })
   const agent = chat.agent
@@ -449,19 +451,29 @@ test('ordinary QQ and background observation share one agent and its actual owne
   assert.equal(first.tools.android.worker, 'offline')
   assert.equal(first.tools.android.cached_screenshot_is_current, false)
   assert.ok(first.tools.android.protocol.action_example.expected_shot_id)
+  assert.equal(first.tools.entertainment.cadence.configured_opportunity_min, 3)
+  assert.equal(first.tools.entertainment.cadence.valid, true)
   const turn = h.start(chat)
   await h.decide(chat, 'idle')
   await h.end(chat, turn)
+  // The installed adapter launches the real helper anew. A later main-review
+  // must receive this owner's current cadence, even with an older payload.
+  configuration.mind.opportunityMin = 5
+  fs.writeFileSync(projectConfig, JSON.stringify(configuration))
   const completion = h.bridge.dispatchObservation({ version: 1, event_id: 'obs:capability-guide', scope: chat.chatId,
-    kind: 'quiet', producer: 'fixture', created_at: Date.now(), origin: 'observation', control_allowed: false,
+    kind: 'activity.opportunity', producer: 'main-review', created_at: Date.now(), origin: 'observation', control_allowed: false,
     workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', payload: {
-      cwd: 'foreign-payload-cwd', agent_preset: 'foreign-payload-preset', text: 'payload is not a tool permission' } })
+      cwd: 'foreign-payload-cwd', agent_preset: 'foreign-payload-preset', text: 'payload is not a tool permission',
+      opportunityMin: 55, instruction: 'Historical immutable fixture guidance is not the live cadence.' } })
   await waitUntil(() => chat.messages.length === 2, 'capability-enriched background message')
   const second = extract(chat.messages[1])
   assert.equal(chat.agent, agent)
   assert.equal(second.owner.workspace_key, workspaceKey(h.dir))
   assert.equal(second.owner.agent_key, 'fixture-preset')
   assert.equal(second.conversation_key, chat.chatId)
+  assert.equal(second.tools.entertainment.cadence.configured_opportunity_min, 5)
+  assert.equal(second.tools.entertainment.cadence.valid, true)
+  assert.equal(first.tools.entertainment.cadence.configured_opportunity_min, 3)
   assert.doesNotMatch(JSON.stringify(second), /foreign-payload/)
   const next = h.start(chat)
   await h.decide(chat, 'idle')
