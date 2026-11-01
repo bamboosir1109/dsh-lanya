@@ -277,15 +277,31 @@ QQ 中 `send_meme` 只选图，参数是 `query`、`tag`、`limit`（1–20，�
 
 本机维护的 746 张图库是私有资产，不随仓库或 npm 包分发；安装补丁不会下载、识图或自动补齐素材。其他环境需独立准备并启用可信索引图库。只从已启用索引中读取真实常规图片，拒绝越界、链接和非法格式；受支持图片即使旧扩展名不符，转存后缀也按真实文件头确定，原图不修改。离线选图和模拟媒体回执不代表真实 QQ 客户端已经收到或正确显示图片。
 
+## QQ 内部活动引用与气泡拆分
+
+`patch_onebot_egress_activity.py` 是已审定历史 images 模块与完整 QQ 选图父链上的单模块后继，只替换 OneBot 的 `lib/lanya-qq-egress.js` 并新增本层 marker。它不改旧 manifest、bridge、策略、会话或图库。它只接受精确旧字节及完整父层；其他已定制或不同版本先拒绝，不能用直接覆盖模块代替核验。
+
+默认只读 preview，显式提供两个包根与当前选图层私有 manifest：
+
+```powershell
+python -B scripts/patch_onebot_egress_activity.py --meme-dir $memePlugin --onebot-dir $onebotPlugin --picker-manifest $pickerManifest
+```
+
+应用追加 `--apply --host-stopped --expected-fingerprint <本次指纹> --backup-dir <包及源码外的私有目录>`。`--host-stopped` 是操作者断言；工具不会替你停止宿主。恢复先用 `--restore-manifest <本层patch.json>` 预检，再追加 apply、host-stopped 和新的恢复指纹。恢复从本层私有生成副本核验，不要求当前源码仍是已安装版本；先撤本层，才撤父层。
+
+保存本层私有原件、生成副本及包内同卷实体原件槽。原 inode 用于恢复后真实核验旧父层，不能删槽位、篡改 marker 或把相同字节的新文件当作原件。未知后续修改、中断与身份不匹配先停下核对，不自动覆盖或重试。
+
+普通 QQ 主动输出会去掉内部 `notes/activity*.md` 引用，并清理仅剩的连接语；用户当前明确索要文件或路径时保留完整路径，代码、普通文件及公网链接不受此清理影响。40 字只是普通气泡偏好，完整英文词不硬截；不重新设固定句数或总条数。日常逐步游戏进度由主 LLM 留在活动笔记，有意义内容是否分享仍由它判断，静默与发送票继续生效。能力说明在每次派发时重新读取；egress 模块变更需单独重载宿主并验证实际加载。
+
 ## 面板记录与刷新
 
 页面优先读取同源 `/api`，失败后尝试默认 API 服务；只有传输或 HTTP 失败时才使用离线快照。快照须有 `_snapshot.schema=1` 及 UTC `generated_at`，最长接受两分钟，并明确标示离线来源。接口返回的业务错误不被旧成功快照掩盖。`make_snapshots.py` 对成功来源同目录暂存后原子替换；失败保留上次完整内容和原时间，不能通过改时间把旧记录变新。
 
 可见页每十五秒检查记录，回到页面时再次读取；后台隐藏页暂停。自动刷新保护未保存表单、记忆范围、搜索、展开、选中及作品预览；相同目录文件列表和图库没有变化时不重绘。手动刷新按钮和当前页记录时间独立于部件状态时间，读取失败明确保留过时状态。
 
-`scripts/panel_activity.py` 只读验证当前 OneBot 映射、原生会话版本 4 header、工作区、preset、继承边界及调用／结果配对，输出白名单字段。默认读取 DSH home 下的 `media/onebot/chat-sessions.json`；自定义位置通过可信 project 配置 `panelRecords.dshHome`、`panelRecords.onebotMappingFile` 指定绝对路径。HTTP 参数不能挑选其他身份或会话。记录限最近七天及有界当前会话，压缩文件需要本机已有 zstandard；不扫描目录猜最新、不重放事件、不输出聊天原文、参数或凭证。
+`scripts/panel_activity.py` 只读验证当前 OneBot 映射、原生会话版本 4 header、工作区、preset、继承边界及调用／结果配对，输出白名单字段。默认读取 DSH home 下的 `media/onebot/chat-sessions.json`；自定义位置通过可信 project 配置 `panelRecords.dshHome`、`panelRecords.onebotMappingFile` 指定绝对路径。HTTP 参数不能挑选其他身份或会话。记录限最近七天及有界当前会话，压缩文件需要本机已有 zstandard；不扫描目录猜最新、不重放事件、不输出聊天原文、原始参数或凭证。公共评论的正文由专用白名单投影，私信正文与接收人不输出。
 
-`/api/bili` 的 `mainAgent` 与 `/api/live` 的 `recentActivity` 共享该读取器，旧值班记录仍独立。`/api/works` 使用 `panel_record_files.py` 列出真实子目录入口；遇到读取上限明确表示列表不完整。嵌套作品通过受控相对 URL 打开，不传给仅支持平铺文件的旧删除入口。安装器已自动包含两个新 helper，更新服务程序时需一并复制，并核对 `/api/service-health` 的实际加载哈希；只复制 HTML 不会升级后台读取器。
+`/api/bili` 的 `mainAgent` 与 `/api/live` 的 `recentActivity` 共享该读取器，旧值班记录仍独立。`mainAgent.recent_videos` 仅归并定向视频读取，不混入推荐候选或仅评论的目标；`replies` 展示评论尝试正文及接口状态，`accepted` 仅代表接口接受，公开可见性仍未核验，`unknown` 不当作发送成功。公共正文限 2000 字并标记截取，私信只给状态；通用活动接口不带回复正文。B 站页保留只读旧存档，不再提供旧值班编辑、手动娱乐检查或删除评论按钮；兼容 API 仍保留。`/api/works` 使用 `panel_record_files.py` 列出真实子目录入口；遇到读取上限明确表示列表不完整。嵌套作品通过受控相对 URL 打开，不传给仅支持平铺文件的旧删除入口。安装器已自动包含两个新 helper，更新服务程序时需一并复制，并核对 `/api/service-health` 的实际加载哈希；只复制 HTML 不会升级后台读取器。
 
 ## 提交与隐私
 

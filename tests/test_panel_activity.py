@@ -101,6 +101,122 @@ class PanelActivityTests(unittest.TestCase):
         self.assertNotIn('receipt-fixture', json.dumps(main))
         self.assertNotIn(SECRET, json.dumps(main))
 
+    def test_public_comment_attempt_and_interface_receipt_are_not_public_visibility(self):
+        text = '这是公开评论正文。\n<script>只是正文，不是界面代码</script>'
+        self.call('bili_reply', {'success': True, 'rpid': 202, 'rpid_str': '202',
+                  'root': 99, 'parent': 99, 'message': SECRET},
+                  args={'bvid': BV, 'text': text, 'rpid': 99, 'force': True, 'title': SECRET})
+        result = self.snapshot(); reply = result['mainAgent']['replies'][0]
+        self.assertEqual(reply['type'], 'comment_reply')
+        self.assertEqual(reply['text'], text)
+        self.assertIs(reply['text_truncated'], False)
+        self.assertEqual(reply['target_comment_id'], '99')
+        self.assertEqual(reply['rpid'], '202')
+        self.assertEqual(reply['video']['bvid'], BV)
+        self.assertNotIn('title', reply['video'])
+        self.assertEqual(reply['status'], 'accepted')
+        self.assertIs(reply['receipt_present'], True)
+        self.assertEqual(reply['evidence'], 'platform_receipt')
+        self.assertEqual(reply['public_visibility'], 'unverified')
+        self.assertNotIn(SECRET, json.dumps(result))
+        self.assertNotIn('reply', result['recentActivity']['records'][0])
+        self.assertNotIn(text, json.dumps(result['recentActivity'], ensure_ascii=False))
+
+    def test_failed_unknown_and_pending_comments_keep_attempt_text_without_claiming_sent(self):
+        for value, extra in [({'success': False, 'error': SECRET}, {}),
+                             ({'success': True}, {}), ({'error': SECRET}, {'error': True})]:
+            self.call('bili_reply', value, args={'bvid': BV, 'text': '尝试正文'}, **extra)
+        self.call('bili_reply', args={'bvid': BV, 'text': '还没有回执'}, pending=True)
+        replies = self.snapshot()['mainAgent']['replies']
+        self.assertEqual([row['status'] for row in replies], ['pending', 'unknown', 'unknown', 'failed'])
+        self.assertEqual([row['evidence'] for row in replies],
+                         ['pending_call', 'tool_error', 'unconfirmed_result', 'platform_rejection'])
+        self.assertTrue(all(row['receipt_present'] is False for row in replies))
+        self.assertTrue(all(row['public_visibility'] == 'unverified' for row in replies))
+        self.assertEqual(replies[-1]['text'], '尝试正文')
+        self.assertNotIn(SECRET, json.dumps(replies))
+
+    def test_private_messages_never_project_text_recipient_or_message_receipt(self):
+        self.call('bili_send_message', {'ok': True, 'status': 'sent', 'receipt': 'PRIVATE_RECEIPT'},
+                  args={'receiver_uid': 9876543210, 'text': SECRET, 'bvid': BV, 'rpid': 1})
+        result = self.snapshot(); reply = result['mainAgent']['replies'][0]
+        self.assertEqual(reply['type'], 'private_message')
+        self.assertEqual(reply['status'], 'accepted')
+        self.assertEqual(reply['public_visibility'], 'not_applicable')
+        for field in ('text', 'text_truncated', 'video', 'target_comment_id', 'rpid'):
+            self.assertNotIn(field, reply)
+        for secret in (SECRET, '9876543210', 'PRIVATE_RECEIPT'):
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_reply_text_is_bounded_and_never_taken_from_tool_result_prose(self):
+        text = '中🙂' * 1200
+        self.call('bili_reply', {'success': True, 'rpid_str': '9007199254740993', 'text': SECRET},
+                  args={'bvid': BV, 'text': text})
+        self.call('bili_reply', {'success': True, 'rpid': 202, 'message': SECRET})
+        replies = self.snapshot()['mainAgent']['replies']
+        self.assertNotIn('text', replies[0])
+        self.assertEqual(replies[1]['text'], text[:2000])
+        self.assertIs(replies[1]['text_truncated'], True)
+        self.assertEqual(replies[1]['rpid'], '9007199254740993')
+        self.assertNotIn(SECRET, json.dumps(replies))
+
+    def test_reply_receipts_require_tool_specific_shapes_and_unambiguous_comment_id(self):
+        values = [({'success': True, 'rpid': 202, 'rpid_str': '203'}, 'bili_reply'),
+                  ({'ok': True, 'status': 'sent', 'receipt': 'receipt'}, 'bili_reply'),
+                  ({'success': True, 'rpid': 202}, 'bili_send_message'),
+                  ({'success': True, 'rpid': True}, 'bili_reply'),
+                  ({'success': True, 'rpid_str': 'not-a-comment-id'}, 'bili_reply')]
+        for value, tool in values: self.call(tool, value, args={'bvid': BV, 'text': '尝试'})
+        replies = self.snapshot()['mainAgent']['replies']
+        self.assertTrue(all(row['status'] == 'unknown' for row in replies))
+        self.assertTrue(all(row['receipt_present'] is False for row in replies))
+
+    def test_recent_video_aggregate_excludes_recommendations_and_action_only_targets(self):
+        other, action_only = 'BV0000000001', 'BV0000000002'
+        self.call('bili_recommend', {'ok': True, 'videos': [{'bvid': other, 'title': '仅候选'}]})
+        self.call('bili_reply', {'success': True, 'rpid': 202}, args={'bvid': action_only, 'text': '仅评论'})
+        self.call('bili_video_info', {'bvid': BV, 'title': '真实资料标题'}, args={'bvid': BV})
+        self.call('bili_subtitle', {'bvid': BV, 'segments': 1, 'text': SECRET}, args={'bvid': BV})
+        self.call('bili_reply', {'success': True, 'rpid': 203}, args={'bvid': BV, 'text': '公开评论'})
+        self.call('bili_frames', {'error': SECRET}, args={'bvid': BV})
+        self.call('bili_cover', args={'bvid': BV}, pending=True)
+        result = self.snapshot(); videos = result['mainAgent']['recent_videos']
+        self.assertEqual(len(videos), 1)
+        self.assertEqual(videos[0]['bvid'], BV)
+        self.assertEqual(videos[0]['title'], '真实资料标题')
+        self.assertEqual(videos[0]['record_count'], 5)
+        self.assertEqual(videos[0]['subtitle_count'], 1)
+        self.assertEqual(videos[0]['reply_count'], 1)
+        self.assertEqual(videos[0]['kinds'], ['action', 'cover', 'details', 'frames', 'subtitle'])
+        self.assertEqual(videos[0]['statuses'], ['failed', 'pending', 'succeeded'])
+        self.assertNotIn(SECRET, json.dumps(result))
+        self.assertNotIn('watched', json.dumps(videos))
+
+    def test_failed_or_pending_video_reads_stay_attempts_and_limit_does_not_create_success(self):
+        self.call('bili_video_info', {'error': SECRET}, args={'bvid': BV, 'title': SECRET})
+        self.call('bili_subtitle', args={'bvid': 'BV0000000001'}, pending=True)
+        main = self.snapshot(limit=1)['mainAgent']
+        self.assertEqual(main['recent_videos'][0]['statuses'], ['pending'])
+        self.assertEqual(main['counts']['details'], 0)
+        self.assertEqual(main['counts']['subtitle'], 0)
+        self.assertNotIn(SECRET, json.dumps(main))
+
+    def test_comment_rewrite_preserves_original_receipt_and_foreign_owner_hides_public_attempts(self):
+        self.call('bili_reply', {'success': True, 'rpid': 202}, args={'bvid': BV, 'text': '原始尝试正文'})
+        rewritten = json.loads(json.dumps(self.rows[-1]['data']))
+        rewritten['message']['content'] = [{'type': 'text', 'text': '压缩后的摘要'}]
+        self.event('tool/result', rewritten, sourceEventSeqs=[1],
+            surfaceOp={'op': 'replace', 'startSeq': 1, 'endSeq': 1})
+        main = self.snapshot()['mainAgent']
+        self.assertEqual(len(main['replies']), 1)
+        self.assertEqual(main['replies'][0]['status'], 'accepted')
+        self.assertEqual(main['replies'][0]['text'], '原始尝试正文')
+        self.header['agentPreset'] = 'Foreign'
+        main = self.snapshot()['mainAgent']
+        self.assertEqual(main['status'], 'unavailable')
+        self.assertEqual(main['replies'], [])
+        self.assertEqual(main['recent_videos'], [])
+
     def test_current_workspace_preset_and_exact_session_header_are_required(self):
         self.call('bili_recommend', {'ok': True, 'videos': []})
         original = dict(self.header)

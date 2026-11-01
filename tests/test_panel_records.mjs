@@ -363,3 +363,97 @@ test('first memory status render uses the real top-level selection initializatio
   await h.context.refreshCurrentPage(false)
   assert.equal(h.counts.get('loadFiles'), 1)
 })
+
+
+const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili', 'renderBiliArchive']
+const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
+const descendants = node => [node, ...node.children.flatMap(descendants)]
+const biliData = overrides => ({ status: 'ok', coverage: { owner_verified_scopes: 2 },
+  records: [], recent_videos: [], replies: [], ...overrides })
+
+test('Bili view separates targeted video reads from recommendation candidates and action-only targets', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  h.context.renderMainBili(biliData({
+    recent_videos: [
+      { bvid: 'BV1234567890', title: 'Actual subtitle target', at: 1793520000000, kinds: ['subtitle'], statuses: ['succeeded'] },
+      { bvid: 'BVABCDEFGHIJ', title: 'Comment-only target', at: 1793520000000, kinds: ['action'], statuses: ['succeeded'] }],
+    records: [
+      { tool: 'bili_recommend', kind: 'recommendation', status: 'succeeded', item_count: 1, videos: [{ bvid: 'BV0123456789', title: 'Candidate only' }] },
+      { tool: 'bili_subtitle', kind: 'subtitle', status: 'succeeded', at: 1793520000000, video: { bvid: 'BV1234567890' }, subtitle_chars: 120 }]
+  }))
+  assert.equal(h.node('bMainCount').textContent, 1)
+  assert.match(treeText(h.node('bMainVideos')), /Actual subtitle target/)
+  assert.doesNotMatch(treeText(h.node('bMainVideos')), /Candidate only|Comment-only/)
+  assert.match(treeText(h.node('bMainVideos')), /字幕 · 成功/)
+  assert.match(treeText(h.node('bMainRecords')), /Candidate only/)
+  assert.equal(h.calls.length, 0)
+})
+
+test('Bili replies show attempted body, uncertain status and accepted-receipt visibility limits', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  h.context.renderMainBili(biliData({ replies: [
+    { type: 'comment', status: 'accepted', text: '<img src=x onerror=alert(1)>', at: 1793520000000,
+      video: { bvid: 'BV1234567890', title: 'Safe title' } },
+    { type: 'comment_reply', status: 'unknown', text: 'Uncertain attempt' },
+    { type: 'comment', status: 'failed', text: 'Rejected attempt', text_truncated: true },
+    { type: 'private_message', status: 'accepted', text: 'SHOULD NOT RENDER', target_uid: '999' }]
+  }))
+  const body = treeText(h.node('bMainReplyRecords'))
+  assert.equal(h.node('bMainReplies').textContent, 4)
+  assert.match(body, /接口已接受/)
+  assert.match(body, /公开可见性尚未核验/)
+  assert.match(body, /未验证接收方可见/)
+  assert.match(body, /结果未知/)
+  assert.match(body, /不能认定已发出/)
+  assert.match(body, /失败.*Rejected attempt/)
+  assert.match(body, /前 2000 字/)
+  assert.doesNotMatch(body, /SHOULD NOT RENDER|999|已公开|发送成功/)
+  const text = descendants(h.node('bMainReplyRecords')).find(row => row.textContent === '<img src=x onerror=alert(1)>')
+  assert.ok(text)
+  assert.equal(text.innerHTML, '')
+  assert.equal(h.calls.length, 0)
+})
+
+test('Bili source failure and older projection snapshots never masquerade as an empty successful history', () => {
+  for (const data of [{ status: 'unavailable' }, { status: 'ok', records: [] }]) {
+    const h = harness({ functions: BILI_RENDERERS })
+    h.context.renderMainBili(data)
+    assert.equal(h.node('bMainCount').textContent, '—')
+    assert.equal(h.node('bMainReplies').textContent, '—')
+    assert.match(treeText(h.node('bMainReplyRecords')), /暂不可用|快照未含新版记录/)
+    assert.doesNotMatch(treeText(h.node('bMainReplyRecords')), /从未发|还没发过/)
+  }
+})
+
+test('Bili links are constructed only from validated video ids; titles remain text', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  const valid = h.context.biliVideoLink({ bvid: 'BV1234567890', title: '<script>bad</script>', url: 'javascript:bad()' })
+  assert.equal(valid.children[0].href, 'https://www.bilibili.com/video/BV1234567890')
+  assert.equal(valid.children[0].textContent, '<script>bad</script>')
+  assert.equal(valid.children[0].innerHTML, '')
+  const invalid = h.context.biliVideoLink({ bvid: 'javascript:bad()', title: 'Unsafe ID' })
+  assert.equal(invalid.children.length, 0)
+  assert.equal(invalid.textContent, 'Unsafe ID')
+})
+
+test('Bili legacy archive is read-only text and does not imply current delivery or public visibility', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  h.context.renderBiliArchive({ videos: [{ bv: 'BV1234567890', title: '<b>old</b>', date: '2026-01-01' }],
+    comments: [{ bv: 'BV1234567890', text: '<img src=x>', time: '2026-01-02' }] })
+  const body = treeText(h.node('bLegacyRecords'))
+  assert.match(body, /旧评论记录 · 结果未复核/)
+  assert.match(body, /<img src=x>/)
+  assert.equal(descendants(h.node('bLegacyRecords')).some(row => row.onclick || row.src), false)
+  assert.equal(h.calls.length, 0)
+})
+
+test('Bili page removes obsolete duty editors, launch and delete controls while preserving login and archives', () => {
+  const source = readFileSync(PANEL, 'utf8')
+  const view = source.split('<div class="page" id="page-bili">')[1].split('<div class="page" id="page-schedule">')[0]
+  assert.match(view, /id="bMainVideos"/)
+  assert.match(view, /id="bMainReplyRecords"/)
+  assert.match(view, /旧记录存档/)
+  assert.match(view, /startBiliLogin/)
+  assert.doesNotMatch(view, /id="(?:biliDuty|biliSeen|biliLog)"|doOneRun|deleteOnBili|deleteBiliRecord|bili\/onerun/)
+  assert.doesNotMatch(source, /function (?:runBiliNow|doOneRun|deleteOnBili|deleteBiliRecord|verifyComment|loadBiliDuty|saveBiliDuty)\(/)
+})

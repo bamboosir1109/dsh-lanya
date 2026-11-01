@@ -4,7 +4,7 @@
  */
 const prepared = new WeakMap()
 const parameterHints = new WeakMap()
-export const NORMAL_STYLE = Object.freeze({ roleplay: false, technical: false })
+export const NORMAL_STYLE = Object.freeze({ roleplay: false, technical: false, localFiles: false })
 const segmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' })
 const characters = (text) => [...segmenter.segment(text)].map((part) => part.segment)
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -37,7 +37,10 @@ export function styleFromInbound(inbound) {
   const technical = !/(?:不要|别|不用).{0,5}(?:代码|步骤|长文|详细)/.test(direct) &&
     /(?:给我|请|帮我|完整|详细|展示|列出|怎么|如何|修复|报错|分析)/.test(direct) &&
     /(?:代码|报错|异常|堆栈|步骤|命令|配置|错误|日志|详细说明)/.test(direct)
-  return Object.freeze({ roleplay: !negative && invite, technical })
+  const localFiles = !/(?:不要|别|不用).{0,8}(?:路径|文件|目录|笔记)/.test(direct) &&
+    /(?:给我|发我|告诉我|列出|展示|查看|看看|查一下|在哪|位置|路径是什么)/.test(direct) &&
+    /(?:路径|文件|目录|笔记|保存位置)/.test(direct)
+  return Object.freeze({ roleplay: !negative && invite, technical, localFiles })
 }
 
 // Preserve explicitly presented data. No arbitrary parentheses are removed.
@@ -151,6 +154,80 @@ function withoutInlineImages(text) {
   return output.join('') + text.slice(from)
 }
 
+function activityPath(value) {
+  let path = value.trim()
+  // An optional Markdown title is not part of the local destination.
+  path = path.replace(/\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\([^()]*\))\s*$/, '')
+  path = path.replace(/^<([^<>]+)>$/, '$1')
+  try { path = decodeURIComponent(path) } catch { return false }
+  if (/^https?:\/\//i.test(path) || (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path) &&
+      !/^(?:[A-Za-z]:[\\/]|file:\/\/)/i.test(path))) return false
+  path = path.replace(/^file:\/\//i, '').replace(/\\/g, '/')
+  return /(?:^|\/)notes\/activity[^/\r\n]*\.md(?::\d+)?(?:#[A-Za-z0-9_-]+)?$/i.test(path)
+}
+
+function localLinkEnd(text, start) {
+  let at = start + 1, depth = 1
+  for (; at < text.length; at++) {
+    const char = text[at]
+    if (/[\r\n]/.test(char)) return null
+    if (char === '\\') { at++; continue }
+    if (char === '[') depth++
+    if (char === ']' && --depth === 0) break
+  }
+  if (depth || text[++at] !== '(') return null
+  const destination = ++at
+  depth = 1
+  for (; at < text.length; at++) {
+    const char = text[at]
+    if (/[\r\n]/.test(char)) return null
+    // Windows separators are literal; only punctuation uses Markdown escaping.
+    if (char === '\\' && /[()[\]\\]/.test(text[at + 1] || '')) { at++; continue }
+    if (char === '(') depth++
+    if (char === ')' && --depth === 0) return { end: at + 1, path: text.slice(destination, at) }
+  }
+  return null
+}
+
+function dropActivityReferences(value, ranges) {
+  const result = []
+  let from = 0
+  for (const range of ranges) {
+    const prefix = value.slice(from, range.start)
+    // Only an already-removed internal reference may leave this connector.
+    // Keep substantive preceding clauses and all following opinions intact.
+    const cleaned = prefix.replace(/(^|[。！？!?\n])[ \t]*(?:记在|记录在|笔记在|活动笔记在|写在)[ \t]*$/u, '$1')
+    let end = range.end
+    if (cleaned !== prefix) {
+      const punctuation = value.slice(end).match(/^[ \t]*[。.!！?？，,]/u)
+      if (punctuation) end += punctuation[0].length
+    }
+    result.push(cleaned); from = end
+  }
+  return result.join('') + value.slice(from)
+}
+
+function withoutActivityReferences(text, style) {
+  if (style.localFiles === true) return text
+  return spans(text).map((part) => {
+    if (part.protected) return part.text
+    let value = part.text
+    const ranges = []
+    for (let at = 0; at < value.length; at++) {
+      if (value[at] !== '[' || (at && value[at - 1] === '\\')) continue
+      const link = localLinkEnd(value, at)
+      if (!link || !activityPath(link.path)) continue
+      ranges.push({ start: at, end: link.end }); at = link.end - 1
+    }
+    value = dropActivityReferences(value, ranges)
+    // Bare internal notes have the same treatment. Other files and URLs are
+    // untouched; directory components cannot span punctuation or another line.
+    const bare = /(?:(?:file:\/\/\/?|[A-Za-z]:[\\/]|(?<![\p{L}\p{N}_.-])\/)(?:[\p{L}\p{N}_. ()-]+[\\/])*|(?<![\p{L}\p{N}_./\\-])(?:\.\.?[\\/])?(?:[\p{L}\p{N}_.()-]+[\\/])*)notes[\\/]activity[\p{L}\p{N}_. ()-]*?\.md(?::\d+)?(?:#[A-Za-z0-9_-]+)?(?=$|[\s，。！？；、：;,:!?<>\]})"']|\.(?=\s|$))/giu
+    return dropActivityReferences(value, [...value.matchAll(bare)].filter((match) => activityPath(match[0]))
+      .map((match) => ({ start: match.index, end: match.index + match[0].length })))
+  }).join('')
+}
+
 function cleanProse(text, style) {
   let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
@@ -170,7 +247,7 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (typeof value !== 'string') throw new TypeError('QQ text must be a string')
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
-  const withoutImages = withoutInlineImages(value)
+  const withoutImages = withoutActivityReferences(withoutInlineImages(value), style)
   return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
 }
 
@@ -183,6 +260,14 @@ function ordinaryChunks(text) {
       if (remaining.length > 40) {
         for (let at = 39; at >= 19; at--) {
           if (/[。！？!?，,；;\s]/u.test(remaining[at])) { size = at + 1; break }
+        }
+        // Forty is a conversational preference, not a word-cutting limit.
+        const word = (char) => typeof char === 'string' && /^[\p{Script=Latin}\p{N}_'-]+$/u.test(char)
+        if (word(remaining[size - 1]) && word(remaining[size])) {
+          let before = size, after = size
+          while (before > 0 && word(remaining[before - 1])) before--
+          while (after < remaining.length && word(remaining[after])) after++
+          size = before > 0 ? before : after
         }
       }
       const chunk = remaining.slice(0, size).join('').trim()
@@ -200,7 +285,10 @@ export function textParts(value, style = NORMAL_STYLE, verbatim = false) {
   if (verbatim) return [{ text, verbatim: true }]
   return spans(text, style.technical).flatMap((part) => part.protected
     ? (part.text.trim() ? [{ text: part.text, verbatim: true, ...(part.forward ? { forward: true } : {}) }] : [])
-    : ordinaryChunks(part.text).map((text) => ({ text, verbatim: false })))
+    : part.text.split(/\r?\n/).flatMap((line) => style.localFiles === true &&
+        /(?:[A-Za-z]:[\\/]|file:\/\/|(?:^|\s)\/(?:[\p{L}\p{N}_. -]+\/)+|(?:^|[\s(])(?:\.\.?\/)?notes\/activity)/u.test(line)
+      ? (line.trim() ? [{ text: line.trim(), verbatim: true }] : [])
+      : ordinaryChunks(line).map((text) => ({ text, verbatim: false }))))
 }
 
 export function isPreparedReply(options) { return plain(options) && prepared.has(options) }

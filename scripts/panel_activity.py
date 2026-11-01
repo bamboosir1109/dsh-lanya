@@ -1,7 +1,9 @@
 """Bounded read-only projections of native tool events for the local panel.
 
 Only configured conversations' current mapping is read. Conversation text,
-reasoning, raw arguments, session IDs and delivery receipts never enter output.
+reasoning, raw arguments, session IDs and private recipients never enter output.
+Public comment attempts are projected explicitly; platform receipts do not
+establish public visibility. Private-message text is never projected.
 This is a local runtime record, not proof of playback or recipient visibility.
 """
 import hashlib
@@ -18,6 +20,7 @@ MAX_EXPANDED = 64 * 1024 * 1024
 MAX_LINE = 4 * 1024 * 1024
 MAX_ROWS = 200000
 MAX_RESULT = 2 * 1024 * 1024
+MAX_REPLY_TEXT = 2000
 SAFE_INTEGER = 9007199254740991
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
@@ -154,6 +157,60 @@ def _receipt(value):
             (isinstance(value, str) and bool(re.fullmatch('[A-Za-z0-9][A-Za-z0-9_-]{0,127}', value))))
 
 
+def _comment_id(value):
+    if type(value) is int and 0 < value <= SAFE_INTEGER:
+        return str(value)
+    if isinstance(value, str) and re.fullmatch('[1-9][0-9]{0,31}', value):
+        return value
+    return None
+
+
+def _reply_call(name, args):
+    if name not in ('bili_reply', 'bili_send_message'):
+        return None
+    reply = {'type': 'private_message' if name == 'bili_send_message' else 'comment',
+             'status': 'pending', 'receipt_present': False, 'evidence': 'pending_call',
+             'public_visibility': 'not_applicable' if name == 'bili_send_message' else 'unverified'}
+    # A private message remains metadata-only even when its native arguments
+    # contain a recipient, text, or fields resembling a public video.
+    if name == 'bili_send_message' or not isinstance(args, dict):
+        return reply
+    video = _video({'bvid': args.get('bvid')})
+    if video:
+        reply['video'] = video
+    target = _comment_id(args.get('rpid'))
+    if target:
+        reply.update(type='comment_reply', target_comment_id=target)
+    text = args.get('text')
+    if isinstance(text, str):
+        # This is the explicit public comment argument, not a model explanation,
+        # result message, quoted conversation, or private-message argument.
+        text.encode('utf-8')
+        reply.update(text=text[:MAX_REPLY_TEXT], text_truncated=len(text) > MAX_REPLY_TEXT)
+    return reply
+
+
+def _settle_reply(record, message, error):
+    reply = record.get('reply')
+    if reply is None:
+        return
+    reply.update(status={'succeeded': 'accepted', 'failed': 'failed',
+                         'pending': 'pending'}.get(record['status'], 'unknown'),
+                 receipt_present=record.get('has_receipt') is True)
+    reply['evidence'] = ('tool_error' if error else 'platform_receipt' if reply['receipt_present']
+                         else 'platform_rejection' if reply['status'] == 'failed'
+                         else 'unconfirmed_result')
+    if reply['type'] == 'private_message':
+        return
+    value = _result_object(message)
+    if reply['receipt_present'] and value is not None:
+        receipt = _comment_id(value.get('rpid_str')) or _comment_id(value.get('rpid'))
+        if receipt:
+            reply['rpid'] = receipt
+    if record.get('video'):
+        reply['video'] = dict(record['video'])
+
+
 def _bili_result(record, message, error):
     kind = record['kind']
     if error:
@@ -208,8 +265,11 @@ def _bili_result(record, message, error):
             if type(value.get('image_attached')) is bool:
                 record['image_attached'] = value['image_attached']
     elif kind == 'action':
-        sent = value.get('status') == 'sent' and value.get('ok') is True and _receipt(value.get('receipt'))
-        replied = value.get('success') is True and any(_receipt(value.get(key)) for key in ('rpid', 'rpid_str'))
+        sent = (record['tool'] == 'bili_send_message' and value.get('status') == 'sent'
+                and value.get('ok') is True and _receipt(value.get('receipt')))
+        receipts = [_comment_id(value.get(key)) for key in ('rpid', 'rpid_str')]
+        replied = (record['tool'] == 'bili_reply' and value.get('success') is True
+                   and any(receipts) and len(set(filter(None, receipts))) == 1)
         if sent or replied:
             record.update(status='succeeded', has_receipt=True)
         elif value.get('status') in ('failed', 'blocked'):
@@ -266,13 +326,17 @@ def _native(path, session, cwd, preset, role, cutoff, now):
             _require(_integer(data.get('turn')) and _integer(data.get('step')))
             record = {'id': hashlib.sha256((session + '\0' + call_id + '\0' + str(index)).encode()).hexdigest()[:32],
                       'at': stamp, 'tool': name, 'kind': BILI_TOOLS.get(name, 'tool'), 'status': 'pending', 'source': role}
-            if name in BILI_TOOLS and name != 'bili_send_message':
+            args = None
+            if name in BILI_TOOLS:
                 args = data.get('arguments')
                 if isinstance(args, str) and len(args) <= 65536:
                     try: args = _json(args)
                     except ActivityUnavailable: args = None
-                video = _video(args)
-                if video: record['video'] = video
+                if name != 'bili_send_message':
+                    video = _video({'bvid': args.get('bvid')}) if isinstance(args, dict) else None
+                    if video: record['video'] = video
+                reply = _reply_call(name, args)
+                if reply is not None: record['reply'] = reply
             calls[call_id] = {'seq': index, 'turn': data['turn'], 'step': data['step'], 'record': record, 'done': False}
             if cutoff <= stamp <= now + 30000:
                 records.append(record)
@@ -308,11 +372,38 @@ def _native(path, session, cwd, preset, role, cutoff, now):
             error = message.get('isError') is True or data.get('error') is not None
             if record['tool'] in BILI_TOOLS:
                 _bili_result(record, message, error)
+                _settle_reply(record, message, error)
             else:
                 record['status'] = 'failed' if error else 'returned'
     _require(markers == (1 if header['isSeeded'] else 0))
     _require(current == _preset(preset), 'owner_mismatch')
     return records
+
+
+def _recent_videos(records, limit):
+    """Directed read attempts only; recommendations and action-only IDs are not browsing."""
+    videos = {}
+    reads = {'details', 'subtitle', 'frames', 'cover'}
+    for record in records:
+        video = record.get('video')
+        if not video or record['kind'] not in reads | {'action'}:
+            continue
+        row = videos.setdefault(video['bvid'], dict(video, at=record['at'], kinds=set(),
+            statuses=set(), record_count=0, subtitle_count=0, reply_count=0))
+        if not row.get('title') and video.get('title'):
+            row['title'] = video['title']
+        row['at'] = max(row['at'], record['at'])
+        row['kinds'].add(record['kind']); row['statuses'].add(record['status'])
+        row['record_count'] += 1
+        row['subtitle_count'] += record['kind'] == 'subtitle' and record['status'] == 'succeeded'
+        row['reply_count'] += record['tool'] == 'bili_reply'
+    result = []
+    for row in videos.values():
+        if not row['kinds'] & reads:
+            continue
+        row['kinds'] = sorted(row['kinds']); row['statuses'] = sorted(row['statuses'])
+        result.append(row)
+    return sorted(result, key=lambda row: (row['at'], row['bvid']), reverse=True)[:limit]
 
 
 def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mapping_file=None,
@@ -375,6 +466,8 @@ def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mappi
     dedup = {record['id']: record for record in records}
     records = sorted(dedup.values(), key=lambda item: (item['at'], item['id']), reverse=True)
     bili = [record for record in records if record['tool'] in BILI_TOOLS]
+    replies = [dict(record['reply'], id=record['id'], at=record['at'], tool=record['tool'])
+               for record in bili if 'reply' in record]
     coverage['bili_records_total'] = len(bili)
     coverage['reasons'] = sorted(set(reasons))[:10]
     status = ('ok' if coverage['owner_verified_scopes'] and not reasons else
@@ -387,6 +480,9 @@ def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mappi
         elif record['status'] in counts: counts[record['status']] += 1
     base = {'status': status, 'generated_at': now}
     return {'mainAgent': dict(base, schema='panel-bili-native/v1', records=bili[:limit], counts=counts,
+                              replies=replies[:limit], recent_videos=_recent_videos(bili, limit),
                               coverage=dict(coverage, truncated=len(bili) > limit)),
-            'recentActivity': dict(base, schema='panel-native-tools/v1', records=records[:30],
+            'recentActivity': dict(base, schema='panel-native-tools/v1',
+                                  records=[{key: value for key, value in record.items() if key != 'reply'}
+                                           for record in records[:30]],
                                   coverage=dict(coverage, truncated=len(records) > 30))}

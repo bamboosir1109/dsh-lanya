@@ -90,6 +90,31 @@ test('native long ordinary reply preserves 105 chars as 40/40/25 with one ticket
   assert.equal(new Set(snapshot.deliveries.map((d) => d.key)).size, 3)
 })
 
+test('native unsolicited activity link is empty without sending and requested file remains intact', async (t) => {
+  const h = await setup(t)
+  await h.receive('聊聊天'); h.start(); await h.decide()
+  const reference = String.raw`[活动笔记](E:\Fixture workspace\character\notes\activity-primary.md)`
+  await h.send(reference)
+  assert.equal(h.calls.filter((c) => c.action === 'send_msg').length, 0)
+  const requested = await setup(t)
+  const binding = await requested.receive('请告诉我活动笔记文件路径')
+  assert.equal(binding.egressStyle.localFiles, true)
+  requested.start(); await requested.decide(); await requested.send(reference)
+  const sent = requested.calls.filter((c) => c.action === 'send_msg')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].params.message[0].data.text, reference)
+})
+
+test('native long English identifier remains one guarded part without truncation', async (t) => {
+  const h = await setup(t)
+  await h.receive('聊聊天'); h.start(); await h.decide()
+  const word = 'SupercalifragilisticexpialidociousLongIdentifier'
+  await h.send(word)
+  const sent = h.calls.filter((c) => c.action === 'send_msg')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].params.message[0].data.text, word)
+})
+
 test('native code and facts survive old Markdown/guard path intact', async (t) => {
   const h = await setup(t)
   await h.receive('请给我完整代码和步骤'); h.start(); await h.decide()

@@ -2,6 +2,14 @@
   "source": "https://registry.npmjs.org/dsh-onebot-qq/0.8.1",
   "tarball_sha256": "1d14df9dbad9c01eff8acc5b7104b8f52ad50bd58b5f4e070b7fa0b8dbbbc4e4",
   "license": "BSD-3-Clause",
+  "project_fixtures": {
+    "qq-egress-images-v1.js": {
+      "source_commit": "cb3f422d89c31103dbbb88917f8cf91adf1b800e",
+      "source_path": "plugin/lib/qq-egress.js",
+      "sha256": "ca1afbccfb44927b381e8f8f820802acc320f1c5079601d5e0a0df81267b32a2",
+      "purpose": "Immutable reviewed images-parent module for historical autonomy/continuity tests; not mutable canonical source."
+    }
+  },
   "files": {
     "lib/bridge.js": "7420ae1b947b826f756290c2cc5ed32a892dce590b9a426162d58bfc4034c873",
     "lib/outbound.js": "576ad56d13b89a15a01032695092f444d37c6d54aaf72fd51420cdefe2e22b9d",

@@ -26,6 +26,7 @@ import patch_onebot_autonomy as autonomy
 
 FIXTURE = ROOT / 'tests/fixtures/onebot_autonomy/adapter-c684991.js'
 LEGACY_QUEUE = ROOT / 'tests/fixtures/onebot_autonomy/legacy_queue/observation-queue.js'
+IMAGES_MODULE = ROOT / 'tests/fixtures/onebot_egress/qq-egress-images-v1.js'
 
 
 class AutonomyPatchTests(unittest.TestCase):
@@ -57,7 +58,8 @@ class AutonomyPatchTests(unittest.TestCase):
         (self.source / 'plugin/lib').mkdir(parents=True)
         (self.source / 'package.json').write_text('{"name":"dsh-lanya","type":"module"}\n', encoding='utf-8')
         for name in autonomy.DEPENDENCIES:
-            source = LEGACY_QUEUE if name == 'observation-queue.js' else ROOT / 'plugin/lib' / name
+            source = (LEGACY_QUEUE if name == 'observation-queue.js' else IMAGES_MODULE
+                      if name == 'qq-egress.js' else ROOT / 'plugin/lib' / name)
             shutil.copyfile(source, self.source / 'plugin/lib' / name)
         # The updater accepts explicitly reviewed source, not mutable git HEAD.
         self.updated_source = b'// Synthetic reviewed update; no app execution.\n' + FIXTURE.read_bytes()
@@ -76,7 +78,7 @@ class AutonomyPatchTests(unittest.TestCase):
             e = egress.patch(self.plugin, self.replay, apply=True, host_stopped=True,
                              expected_fingerprint=e['fingerprint'], backup_dir=self.root / 'egress')
             self.egress = Path(e['manifest'])
-            stack.enter_context(mock.patch.object(images, 'SOURCE', ROOT / 'plugin/lib/qq-egress.js'))
+            stack.enter_context(mock.patch.object(images, 'SOURCE', IMAGES_MODULE))
             p = images.patch(self.plugin, self.egress)
             p = images.patch(self.plugin, self.egress, apply=True, host_stopped=True,
                              expected_fingerprint=p['fingerprint'], backup_dir=self.root / 'images')

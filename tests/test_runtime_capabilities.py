@@ -136,6 +136,40 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         with mock.patch.object(Path, "lstat", reparse_parent):
             self.assertEqual(self.context()["tools"]["entertainment"]["local_games"]["entries"], [])
 
+    def test_proactive_sharing_keeps_internal_steps_local_without_banning_initiative(self):
+        before = self.snapshot()
+        for scope in ("private:101", "group:202"):
+            with self.subTest(scope=scope):
+                context = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)
+                sharing = context["tools"]["entertainment"]["proactive_sharing"]
+                self.assertEqual(sharing["authority"], "preference_only_no_send_or_silence_control_permission")
+                self.assertIn("unsolicited", sharing["routine_progress"])
+                self.assertIn("activity note and panel", sharing["routine_progress"])
+                self.assertIn("private activity-note paths/links", sharing["routine_progress"])
+                self.assertIn("personal view", sharing["meaningful_sharing"])
+                self.assertIn("not a ban on initiative", sharing["meaningful_sharing"])
+                self.assertIn("accurately and completely", sharing["requested_detail"])
+                self.assertIn("Do not suppress a useful plugin opinion", sharing["requested_detail"])
+                for boundary in ("silence", "scope", "revision", "budget", "deduplication"):
+                    self.assertIn(boundary, sharing["permission"])
+                self.assertIn("no fixed sentence count or total message count", sharing["length"])
+                self.assertFalse(context["tools"]["voice"]["delivered"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_video_evidence_distinguishes_subtitles_frames_playback_and_completion(self):
+        before = self.snapshot()
+        bili = self.context()["tools"]["entertainment"]["bilibili"]
+        claims = bili["claim_boundaries"]
+        self.assertIn("not playback", bili["verify"])
+        self.assertEqual(set(claims), {"recommendations_and_details", "subtitles", "frames", "playback", "completion"})
+        self.assertIn("rather than claiming you watched or finished", claims["subtitles"])
+        self.assertIn("do not prove continuous playback", claims["frames"])
+        self.assertIn("playback progressing through that segment", claims["playback"])
+        self.assertIn("a seek to the end", claims["completion"])
+        self.assertIn("reading every subtitle is insufficient", claims["completion"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_cadence_uses_current_trusted_configuration_and_preserves_read_only_scope(self):
         for minutes in (2, 3, 3.5, 60):
             with self.subTest(minutes=minutes):

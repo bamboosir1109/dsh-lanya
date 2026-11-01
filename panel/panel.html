@@ -92,6 +92,7 @@ main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
 .record-row:first-child{border-top:0}
 .record-row a{color:var(--acc);text-decoration:none}
 .record-row .dsc{display:block;margin-top:3px}
+.record-row .reply-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
 .page{display:none;max-width:1020px;margin:0 auto}
 .page.on{display:block;animation:rise .26s cubic-bezier(.22,1,.36,1)}
 @keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
@@ -744,103 +745,42 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-bili">
-  <div class="phead"><h1>刷 B 站</h1><p>主 agent 最近的推荐、视频资料和字幕记录，按真实工具回执更新。</p></div>
+  <div class="phead"><h1>B 站记录</h1><p>她最近读过哪些视频、写了什么回复。页面每十五秒更新。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">当前记录来源</div><div class="v" id="bMainState" style="font-size:17px">—</div><div class="s" id="bMainCoverage">正在读取当前绑定会话</div></div>
-    <div class="stat"><div class="k">近期工具记录</div><div class="v" id="bMainCount">—</div><div class="s">当前可核验范围，含失败和待完成</div></div>
-    <div class="stat"><div class="k">字幕读取成功</div><div class="v" id="bMainSubtitles">—</div><div class="s">不等于播放或看完视频</div></div>
-    <div class="stat"><div class="k">推荐读取成功</div><div class="v" id="bMainRecommendations">—</div><div class="s">返回候选，不表示逐个观看</div></div>
+    <div class="stat"><div class="k">记录来源</div><div class="v" id="bMainState" style="font-size:17px">—</div><div class="s" id="bMainCoverage">正在读取</div></div>
+    <div class="stat"><div class="k">近期视频记录</div><div class="v" id="bMainCount">—</div><div class="s">含读取尝试，不含推荐候选</div></div>
+    <div class="stat"><div class="k">评论与回复</div><div class="v" id="bMainReplies">—</div><div class="s">保留失败和结果未知</div></div>
   </div>
   <div class="card">
-    <h3>主 agent 最近活动</h3>
-    <p class="note" id="bMainNote">读取当前绑定会话的真实调用，保留调用失败和结果未知的区别。</p>
+    <h3>最近浏览</h3>
+    <p class="note" id="bMainNote">按视频归并字幕、资料和画面读取；这些记录不等于完整播放。</p>
+    <div class="record-list" id="bMainVideos"><div class="empty">正在读取…</div></div>
+  </div>
+  <div class="card">
+    <h3>评论与回复记录</h3>
+    <p class="note">显示实际尝试的正文与接口结果。接口接受不代表评论已公开；私信仅显示状态。</p>
+    <div class="record-list" id="bMainReplyRecords"><div class="empty">正在读取…</div></div>
+  </div>
+  <details class="card"><summary>推荐与调用明细</summary>
     <div class="record-list" id="bMainRecords"><div class="empty">正在读取…</div></div>
-  </div>
-
-  <details class="card"><summary>旧值班历史记录</summary>
-  <div class="stats">
-    <div class="stat"><div class="k">旧值班目录</div><div class="v" id="bState" style="font-size:17px">—</div><div class="s" id="bStateSub">—</div></div>
-    <div class="stat"><div class="k">旧值班说明</div><div class="v" id="bDuty">—<small>字</small></div><div class="s">不代表当前主 agent 的活动计划</div></div>
-    <div class="stat"><div class="k">旧表视频条目</div><div class="v" id="bWatched">—</div><div class="s">不是主 agent 浏览总数</div></div>
-  </div>
-
-  <div class="card">
-    <h3>旧值班视频记录</h3>
-    <p class="note">仅来自旧值班 seen.md；主 agent 的搜索、推荐和字幕调用不会自动写入此表。</p>
-    <div class="filelist" id="biliVideos" style="max-height:340px;overflow:auto"></div>
-    <div class="out" id="biliVideosOut"></div>
-  </div>
-
-  <div class="card">
-    <h3>旧值班评论记录</h3>
-    <p class="note">仅展示旧判重表中的评论条目；不代表当前账号的完整评论清单。</p>
-    <div class="filelist" id="biliComments"></div>
-  </div>
   </details>
-
-  <div class="card">
-    <h3>请求娱乐检查</h3>
-    <p class="note">
-      统一模式仅提交观察，由同一主 agent 决定浏览、其他活动或 idle。
-      下方选项是本次偏好，不保证观看、评论或提醒，也不保证更新旧值班表。
-    </p>
+  <details class="card"><summary>旧记录存档</summary>
+    <p class="note">独立保存的旧值班记录，时间与状态沿用原记录，不计入上方当前浏览。</p>
+    <div class="record-list" id="bLegacyRecords"></div>
+  </details>
+  <details class="card"><summary>账号登录</summary>
+    <p class="note">需要登录时展开操作，不会自动请求观看或发评论。</p>
     <div class="btnrow">
-      <button class="pri" onclick="doOneRun(true, true)">请求检查（允许评论和提醒）</button>
-      <button onclick="doOneRun(true, false)">请求检查（允许评论）</button>
-      <button onclick="doOneRun(false)">请求检查（不评论）</button>
-      <span class="dsc" id="oneRunState" style="align-self:center"></span>
-    </div>
-    <div class="out" id="oneRunOut"></div>
-  </div>
-
-  <div class="card">
-    <h3>登录</h3>
-    <p class="note">没登录刷不了——B 站不认匿名。点下面出二维码，用手机 B 站扫一下。</p>
-    <div class="btnrow">
-      <button class="pri" onclick="startBiliLogin()">扫码登录</button>
+      <button onclick="startBiliLogin()">扫码登录</button>
       <span class="dsc" id="biliLoginState" style="align-self:center"></span>
     </div>
     <div id="biliQrBox" style="display:none;margin-top:14px">
-      <img id="biliQrImg" src="" alt="二维码"
-           style="width:220px;height:220px;border-radius:12px;background:#fff;padding:8px">
+      <img id="biliQrImg" src="" alt="二维码" style="width:220px;height:220px;border-radius:12px;background:#fff;padding:8px">
       <div class="dsc" style="margin-top:8px">手机上打开 B 站 → 我的 → 扫一扫</div>
     </div>
     <div class="out" id="biliLoginOut"></div>
-  </div>
-
-  <div class="card">
-    <h3>旧值班说明</h3>
-    <p class="note">
-      这份文字供旧值班流程使用；保存不等于主 agent 已读取，
-      也不会改变自主复查周期或保证下一轮执行。<br>
-      保存会自动备份一份 <code>duty.md.bak</code>。
-    </p>
-    <textarea id="biliDuty" placeholder="点下面的「读取」"></textarea>
-    <div class="btnrow">
-      <button onclick="loadBiliDuty()">读取</button>
-      <button class="pri" onclick="saveBiliDuty()">保存</button>
-    </div>
-    <div class="out" id="biliOut"></div>
-  </div>
-
-  <div class="card">
-    <h3>旧值班日志</h3>
-    <pre class="out" id="biliLog" style="display:block;margin-top:0"></pre>
-  </div>
-
-  <div class="card">
-    <h3>旧值班判重表</h3>
-    <pre class="out" id="biliSeen" style="display:block;margin-top:0"></pre>
-  </div>
-
-  <div class="card">
-    <h3>这些记录的范围</h3>
-    <p class="note" style="margin:0">
-      统一模式的 <code>bili_run</code> 和搜索、字幕等工具由当前主 agent 直接执行。<br>
-      上方近期记录来自当前可信绑定会话；未映射会话与更早归档不计入，不能当作全账号历史。
-      读取推荐、字幕或截图均不代表完整播放；旧值班历史单独保留。
-    </p>
-  </div>
+  </details>
+  <div class="out" id="biliOut"></div>
 </div>
 <div class="page" id="page-schedule">
   <div class="phead"><h1>定时</h1><p>她自己的提醒，和系统里的计划任务，都在这里看。</p></div>
@@ -1745,178 +1685,6 @@ async function deleteReminder(idx){
   }catch(e){ show('schedOut', '删除失败：' + e.message); }
 }
 
-async function runBiliNow(){
-  show('biliRunOut', '正在提交检查请求…');
-  try{
-    const j = await api('/bili/run', { method:'POST',
-      headers:{'content-type':'application/json'}, body: '{}' });
-    if(!j.ok){ show('biliRunOut', '提交失败：' + (j.error || '')); return; }
-    show('biliRunOut', '请求已提交。统一模式仅提交观察，由主 agent 决定是否行动；'
-      + '不代表已观看、评论或更新旧值班表。');
-  }catch(e){ show('biliRunOut', '提交失败：' + e.message); }
-}
-
-function renderBiliVideos(vids, covers){
-  const box = $('biliVideos');
-  if(!box) return;
-  covers = covers || {};
-  box.innerHTML = '';
-  if(!vids || !vids.length){
-    box.innerHTML = '<div class="empty">旧值班表暂无视频记录；不代表主 agent 尚未浏览。</div>';
-    return;
-  }
-  vids.forEach(function(v){
-    const bv = v.bv || '';
-    const link = bv ? ('https://www.bilibili.com/video/' + bv) : '';
-    const cover = covers[bv] || '';
-    const d = document.createElement('div');
-    d.className = 'frow';
-    d.style.cursor = 'default';
-    d.style.alignItems = 'center';
-    d.innerHTML = (cover
-        ? '<img src="/api/bili/cover?bv=' + encodeURIComponent(bv) + '" style="width:96px;height:54px;object-fit:cover;'
-          + 'border-radius:6px;flex:none;margin-right:10px" loading="lazy">'
-        : '<div style="width:96px;height:54px;border-radius:6px;flex:none;'
-          + 'margin-right:10px;background:rgba(255,255,255,.06)"></div>')
-      + '<div class="fmain">'
-      + '<span class="fname">' + (link
-          ? '<a class="url" href="' + link + '" target="_blank" rel="noreferrer">'
-            + (v.title || bv) + '</a>'
-          : (v.title || bv)) + '</span>'
-      + '<span class="fprev">' + (v.date || '') + '　' + (v.up || '')
-      + '　' + bv + '　<b>' + (v.status || '') + '</b></span>'
-      + '</div>'
-      + '<button class="fdel" title="从本地记录里删掉">×</button>';
-    d.querySelector('.fdel').onclick = function(ev){
-      ev.stopPropagation();
-      deleteBiliRecord('video', bv, v.date || '');
-    };
-    box.appendChild(d);
-  });
-}
-
-async function deleteBiliRecord(kind, bv, date){
-  try{
-    const j = await api('/bili/seen/delete', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ kind: kind, bv: bv, date: date }) });
-    if(!j.ok) throw new Error(j.error || '失败');
-    show('biliVideosOut', '删掉了本地记录：' + bv);
-    loadBili();
-  }catch(e){ show('biliVideosOut', '删不掉：' + e.message); }
-}
-
-// 删 B 站评论。
-// 不用 confirm()/alert()（DSH 内嵌浏览器里点不到），也不做二次确认——
-// 一次点击就删。删错了还能再发一条，别为了这点事多一次点击。
-async function deleteOnBili(bv, rpid, row, btn){
-  const tag = row ? row.querySelector('[data-vs]') : null;
-  if(!rpid){
-    if(tag){ tag.textContent = '先点核对拿 rpid'; tag.style.color = 'var(--warn)'; }
-    return;
-  }
-  if(tag) tag.textContent = '删中…';
-  if(btn) btn.disabled = true;
-  try{
-    const j = await api('/bili/reply/delete', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ bv: bv, rpid: rpid }) });
-    if(!j.ok){
-      if(tag){ tag.textContent = '删不掉：' + (j.error || j.note || '').slice(0,20); tag.style.color = 'var(--bad)'; }
-      if(btn) btn.disabled = false;
-      return;
-    }
-    // 只把自己这一行从 DOM 里拿掉。整页 loadBili() 会重拉所有封面，
-    // 删一条要等好几秒，看着像卡死了。
-    if(row && row.parentNode) row.parentNode.removeChild(row);
-  }catch(e){
-    if(tag){ tag.textContent = '删不掉'; tag.style.color = 'var(--bad)'; }
-    if(btn) btn.disabled = false;
-  }
-}
-
-async function verifyComment(bv, text, row){
-  const tag = row ? row.querySelector('[data-vs]') : null;
-  if(tag) tag.textContent = '查中…';
-  try{
-    const j = await api('/bili/verify?bv=' + encodeURIComponent(bv)
-      + '&text=' + encodeURIComponent(text), null, true);
-    if(!j.ok || !j.result){
-      if(tag) tag.textContent = '查不到';
-      return;
-    }
-    const st = j.result.state;
-    if(tag){
-      tag.textContent = st === 'public' ? '✅ 已公开'
-        : st === 'pending' ? '⏳ 待审' : '❔ 未知';
-      tag.title = j.result.why || '';
-    }
-  }catch(e){ if(tag) tag.textContent = '查不到'; }
-}
-
-function renderBiliComments(cms){
-  const box = $('biliComments');
-  if(!box) return;
-  box.innerHTML = '';
-  if(!cms || !cms.length){
-    box.innerHTML = '<div class="empty">还没发过评论</div>';
-    return;
-  }
-  cms.forEach(function(c){
-    const bv = c.bv || '';
-    const link = bv ? ('https://www.bilibili.com/video/' + bv) : '';
-    const d = document.createElement('div');
-    d.className = 'frow';
-    d.style.cursor = 'default';
-    d.innerHTML = '<div class="fmain">'
-      + '<span class="fname">' + (c.text || '') + '</span>'
-      + '<span class="fprev">' + (c.time || '') + '　'
-      + (link ? '<a class="url" href="' + link + '" target="_blank" rel="noreferrer">'
-        + bv + '</a>' : bv) + '</span>'
-      + '</div>'
-      + '<span class="dsc" data-vs="' + bv + '" style="margin-right:8px"></span>'
-      + '<button class="sm" style="margin-right:6px">核对</button>'
-      + '<button class="sm" style="margin-right:6px">删B站</button>'
-      + '<button class="fdel" title="只删本地记录">×</button>';
-    const btns = d.querySelectorAll('.sm');
-    btns[0].onclick = function(ev){
-      ev.stopPropagation();
-      verifyComment(bv, c.text || '', d);
-    };
-    btns[1].onclick = function(ev){
-      ev.stopPropagation();
-      deleteOnBili(bv, c.rpid || '', d, btns[1]);
-    };
-    d.querySelector('.fdel').onclick = function(ev){
-      ev.stopPropagation();
-      deleteBiliRecord('comment', bv, c.time || '');
-    };
-    box.appendChild(d);
-  });
-}
-
-async function doOneRun(withComment, withMention){
-  const st = $('oneRunState');
-  if(st) st.textContent = '正在提交检查请求…';
-  show('oneRunOut', '正在等待请求结果，不代表已开始观看或评论。');
-  try{
-    const j = await api('/bili/onerun', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ comment: withComment, mention: withMention === true }) });
-    if(!j.ok){
-      if(st) st.textContent = '没成';
-      show('oneRunOut', '没成：' + (j.error || '未知原因'));
-      return;
-    }
-    if(st) st.textContent = '请求已处理';
-    show('oneRunOut', '请求已返回。统一模式仅提交观察，由主 agent 决定是否行动；不代表已观看或评论。当前列表只展示旧值班记录。');
-    loadBili();
-  }catch(e){
-    if(st) st.textContent = '没成';
-    show('oneRunOut', '没成：' + e.message);
-  }
-}
-
 async function startBiliLogin(){
   show('biliLoginOut', '正在生成二维码…');
   try{
@@ -2007,7 +1775,7 @@ async function loadQQGroups(){
 async function loadBiliCred(){
   try{
     const j = await api('/bili/login/credential', null, true);
-    setText('biliLoginState', j.loggedIn ? ('已登录' + (j.uid ? '（UID ' + j.uid + '）' : ''))
+    setText('biliLoginState', j.loggedIn ? '已登录'
       : '还没登录');
     return j.loggedIn;
   }catch(e){ return false; }
@@ -2273,42 +2041,104 @@ async function doUpdate(){
   }catch(e){ show('updOut', '更新失败：' + e.message); }
 }
 
+function biliRecordTime(at){
+  const date = new Date(typeof at === 'number' && at < 1e12 ? at * 1000 : at);
+  return Number.isNaN(date.getTime()) ? '时间未确认' : date.toLocaleString('zh-CN');
+}
+
+function biliVideoLink(video){
+  const item = document.createElement('div'), bv = String(video?.bvid || video?.bv || '');
+  const text = String(video?.title || bv || '视频未确认');
+  if(/^BV[A-Za-z0-9]{10}$/.test(bv)){
+    const link = document.createElement('a'); link.href = 'https://www.bilibili.com/video/' + bv;
+    link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = text; item.appendChild(link);
+  }else item.textContent = text;
+  return item;
+}
+
 function renderMainBili(history){
   const data = history || {}, records = Array.isArray(data.records) ? data.records : [];
   const available = data.status === 'ok' || data.status === 'partial';
-  setText('bMainState', ({ok:'主 agent 当前会话',partial:'部分记录可用',unavailable:'记录源暂不可用'})[data.status] || '记录源暂不可用');
-  setText('bMainCount', available ? records.length : '—');
-  setText('bMainSubtitles', available ? records.filter(row => row.kind === 'subtitle' && row.status === 'succeeded').length : '—');
-  setText('bMainRecommendations', available ? records.filter(row => row.kind === 'recommendation' && row.status === 'succeeded').length : '—');
+  const readKinds = ['details','subtitle','frames','cover'];
+  const videos = (Array.isArray(data.recent_videos) ? data.recent_videos : []).filter(video =>
+    Array.isArray(video.kinds) && video.kinds.some(kind => readKinds.includes(kind)));
+  const replies = Array.isArray(data.replies) ? data.replies : [];
+  const projectionReady = Array.isArray(data.recent_videos) && Array.isArray(data.replies);
+  setText('bMainState', ({ok:'当前会话记录',partial:'部分记录可用',unavailable:'记录源暂不可用'})[data.status] || '记录源暂不可用');
+  setText('bMainCount', available && projectionReady ? videos.length : '—');
+  setText('bMainReplies', available && projectionReady ? replies.length : '—');
   const coverage = data.coverage || {};
-  setText('bMainCoverage', available ? '已核验 ' + (coverage.owner_verified_scopes || 0) + ' 个绑定范围' : '无法确认当前范围的记录');
-  setText('bMainNote', data.status === 'partial' ? '只展示已核验部分；部分来源缺失或已达读取上限。当前会话记录不等于完整历史。'
-    : available ? '当前可信绑定会话内的近期记录；按实际结果区分推荐、字幕和操作，不据此推断看完视频。' : '当前无法读取可信活动记录。下方旧值班历史仍可查看，不能据此判断没有浏览。');
+  setText('bMainCoverage', available ? '已核验 ' + (coverage.owner_verified_scopes || 0) + ' 个绑定范围' : '无法确认当前记录');
+  setText('bMainNote', data.status === 'partial' ? '部分来源缺失或达到读取上限。下方只显示已核验记录，读取方式不代表完整播放。'
+    : available ? '按视频归并近期读取。字幕、资料和画面分别标记；推荐候选不计入。' : '记录源暂不可用，不能据此判断她没有浏览。');
+  const kinds = {recommendation:'获取推荐',details:'视频资料',subtitle:'字幕',frames:'视频帧',cover:'封面',action:'平台操作'};
+  const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};
+  const empty = (box, text) => { const node = document.createElement('div'); node.className = 'empty'; node.textContent = text; box.appendChild(node); };
+  const meta = (entry, text) => { const node = document.createElement('span'); node.className = 'dsc'; node.textContent = text; entry.appendChild(node); };
+  const unavailable = !available ? '记录源暂不可用，请稍后刷新。' : !projectionReady ? '当前快照未含新版记录，请恢复实时连接后刷新。' : '';
+  const videoBox = $('bMainVideos');
+  if(videoBox){
+    videoBox.innerHTML = '';
+    if(unavailable || !videos.length) empty(videoBox, unavailable || '当前范围暂无视频读取记录；推荐候选在下方明细。');
+    else videos.forEach(video => {
+      const entry = document.createElement('div'); entry.className = 'record-row'; entry.appendChild(biliVideoLink(video));
+      const reads = records.filter(row => row.video?.bvid === video.bvid && readKinds.includes(row.kind));
+      const methods = [...new Set(reads.map(row => (kinds[row.kind] || '读取') + ' · ' + (statuses[row.status] || '结果未知')))];
+      meta(entry, biliRecordTime(video.at));
+      meta(entry, methods.length ? methods.join('；') : (video.kinds || []).filter(kind => readKinds.includes(kind)).map(kind => kinds[kind]).join('、'));
+      videoBox.appendChild(entry);
+    });
+  }
+  const replyBox = $('bMainReplyRecords');
+  if(replyBox){
+    replyBox.innerHTML = '';
+    if(unavailable || !replies.length) empty(replyBox, unavailable || '当前范围暂无评论或私信调用记录，不代表全账号从未回复。');
+    else replies.forEach(reply => {
+      const entry = document.createElement('div'); entry.className = 'record-row';
+      const head = document.createElement('strong');
+      head.textContent = ({comment:'评论',comment_reply:'回复评论',private_message:'私信'})[reply.type] || '平台回复';
+      head.textContent += ' · ' + (({accepted:'接口已接受',failed:'失败',pending:'待完成',unknown:'结果未知'})[reply.status] || '结果未知');
+      entry.appendChild(head); meta(entry, biliRecordTime(reply.at));
+      if(reply.video) entry.appendChild(biliVideoLink(reply.video));
+      if(reply.type !== 'private_message' && typeof reply.text === 'string'){
+        const body = document.createElement('p'); body.className = 'reply-text'; body.textContent = reply.text; entry.appendChild(body);
+        if(reply.text_truncated) meta(entry, '正文较长，当前显示前 2000 字。');
+      }
+      if(reply.status === 'accepted') meta(entry, reply.type === 'private_message' ? '接口接受回执，未验证接收方可见。' : '有接口回执，公开可见性尚未核验。');
+      else if(reply.status === 'unknown') meta(entry, '未获得确定结果，不能认定已发出。');
+      replyBox.appendChild(entry);
+    });
+  }
   const box = $('bMainRecords'); if(!box) return;
   box.innerHTML = '';
-  if(!records.length){ const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = available ? '当前可核验范围暂无 B 站工具记录。' : '记录源暂不可用，请稍后刷新。'; box.appendChild(empty); return; }
-  const kinds = {recommendation:'获取推荐',details:'读取视频资料',subtitle:'读取字幕',frames:'读取视频帧',cover:'读取封面',action:'平台操作'};
-  const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};
-  const videoLink = video => {
-    const item = document.createElement('div'), bv = String(video?.bvid || '');
-    const text = String(video?.title || bv || '视频');
-    if(/^BV[A-Za-z0-9]{10}$/.test(bv)){ const link = document.createElement('a'); link.href = 'https://www.bilibili.com/video/' + bv; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = text; item.appendChild(link); }
-    else item.textContent = text;
-    return item;
-  };
+  if(!records.length){ empty(box, available ? '当前范围暂无 B 站工具记录。' : '记录源暂不可用，请稍后刷新。'); return; }
   records.forEach(row => {
     const entry = document.createElement('div'); entry.className = 'record-row';
     const head = document.createElement('strong'); head.textContent = (kinds[row.kind] || '工具调用') + ' · ' + (statuses[row.status] || '结果未知'); entry.appendChild(head);
-    const details = document.createElement('span'); details.className = 'dsc';
-    const time = new Date(typeof row.at === 'number' && row.at < 1e12 ? row.at * 1000 : row.at);
-    details.textContent = (Number.isNaN(time.getTime()) ? '时间未确认' : time.toLocaleString('zh-CN')) + ' · ' + String(row.tool || '');
-    if(Number.isInteger(row.item_count)) details.textContent += ' · 返回 ' + row.item_count + ' 项';
-    if(Number.isInteger(row.subtitle_chars)) details.textContent += ' · 字幕 ' + row.subtitle_chars + ' 字';
-    entry.appendChild(details);
-    if(row.video) entry.appendChild(videoLink(row.video));
-    (Array.isArray(row.videos) ? row.videos.slice(0, 8) : []).forEach(video => entry.appendChild(videoLink(video)));
+    let text = biliRecordTime(row.at) + ' · ' + String(row.tool || '');
+    if(Number.isInteger(row.item_count)) text += ' · 返回 ' + row.item_count + ' 项候选';
+    if(Number.isInteger(row.subtitle_chars)) text += ' · 字幕 ' + row.subtitle_chars + ' 字';
+    meta(entry, text);
+    if(row.video) entry.appendChild(biliVideoLink(row.video));
+    (Array.isArray(row.videos) ? row.videos.slice(0, 8) : []).forEach(video => entry.appendChild(biliVideoLink(video)));
     box.appendChild(entry);
   });
+}
+
+function renderBiliArchive(bili){
+  const box = $('bLegacyRecords'); if(!box) return;
+  box.innerHTML = '';
+  const append = (row, comment) => {
+    const entry = document.createElement('div'); entry.className = 'record-row';
+    entry.appendChild(biliVideoLink(row));
+    const text = document.createElement('span'); text.className = 'dsc';
+    text.textContent = [row.time || row.date || '旧记录时间未确认', comment ? '旧评论记录 · 结果未复核' : '旧视频记录 · ' + (row.status || '状态未确认')].join(' · '); entry.appendChild(text);
+    if(comment && typeof row.text === 'string'){ const body = document.createElement('p'); body.className = 'reply-text'; body.textContent = row.text; entry.appendChild(body); }
+    box.appendChild(entry);
+  };
+  (Array.isArray(bili.videos) ? bili.videos : []).forEach(row => append(row, false));
+  (Array.isArray(bili.comments) ? bili.comments : []).forEach(row => append(row, true));
+  if(!box.children.length){ const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '暂无旧值班记录。'; box.appendChild(empty); }
 }
 
 async function loadBili(){
@@ -2318,41 +2148,8 @@ async function loadBili(){
     if(!j.ok) throw new Error(j.error || '读取失败');
     const b = j.bili || {};
     renderMainBili(b.mainAgent);
-    setText('bState', b.installed ? '目录存在' : '未找到旧目录');
-    $('bState').style.color = b.installed ? 'var(--ok)' : 'var(--bad)';
-    setText('bStateSub', b.home || '');
-    setHtml('bDuty', (b.dutyChars || 0) + '<small>字</small>');
-    setText('bWatched', b.watched || 0);
-    renderBiliVideos(b.videos || [], b.covers || {});
-    renderBiliComments(b.comments || []);
-    setText('biliLog', b.log || '暂无旧值班日志');
-    setText('biliSeen', b.seen || '暂无旧值班判重记录；不代表主 agent 未浏览');
+    renderBiliArchive(b);
   }catch(e){ setText('bMainState', '刷新失败，保留上次记录'); show('biliOut', '读取失败：' + e.message); }
-}
-
-async function loadBiliDuty(){
-  show('biliOut', '读取中…');
-  try{
-    const j = await api('/bili/duty');
-    if(!j.ok) throw new Error(j.error || '读取失败');
-    $('biliDuty').value = j.text || '';
-    hide('biliOut');
-  }catch(e){ show('biliOut', '读取失败：' + e.message); }
-}
-
-async function saveBiliDuty(){
-  const text = $('biliDuty').value;
-  if(!text.trim()){ show('biliOut', '内容是空的，没保存。'); return; }
-  show('biliOut', '保存中…');
-  try{
-    const j = await api('/bili/duty', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ text })
-    });
-    show('biliOut', j.ok
-      ? ('已保存，' + (j.chars || text.length) + ' 字。仅更新旧值班说明，不代表主 agent 已读取。\n（旧的备份成 duty.md.bak 了）')
-      : ('保存失败：' + (j.error || '未知原因')));
-  }catch(e){ show('biliOut', '保存失败：' + e.message); }
 }
 
 async function loadMemeConfig(){
