@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""把所有面板要的数据导成静态 JSON，放在页面旁边。
+"""Publish timestamped fallback snapshots; the live API is authoritative.
 
-为什么：页面在 DSH 的内嵌视图里打开时，往 19389 发的 fetch 会被挡掉，
-表现就是"页面能开但一片空白"。同源读静态文件没有这个问题。
-
-由调度器每 30 秒跑一次。写的都是只读快照，不会动任何源数据。
+Only successful reads are published, using a same-directory atomic replace.
+A failed read preserves the previous successful snapshot and its old time.
+No source business data is changed.
 """
 import io
 import json
 import os
 import sys
+import datetime
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts")
@@ -36,14 +37,31 @@ except SystemExit:
 
 
 def dump(name, obj):
+    if not isinstance(obj, dict) or obj.get("ok") is not True:
+        raise ValueError("SnapshotSourceNotSuccessful")
+    if not name or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in name):
+        raise ValueError("InvalidSnapshotName")
     path = os.path.join(OUT, "lanya-" + name + ".json")
+    value = dict(obj)
+    value["_snapshot"] = {"schema": 1, "generated_at": datetime.datetime.now(
+        datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
+    body = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    temporary = None
     try:
-        with io.open(path, "w", encoding="utf-8", newline="") as fh:
-            json.dump(obj, fh, ensure_ascii=False)
+        fd, temporary = tempfile.mkstemp(prefix=".lanya-snapshot-", suffix=".tmp", dir=OUT)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+        temporary = None
         return True
     except Exception as e:
-        print("  fail %s: %s" % (name, e))
+        print("snapshot_failed %s %s" % (name, type(e).__name__))
         return False
+    finally:
+        if temporary is not None and os.path.lexists(temporary):
+            os.unlink(temporary)
 
 
 def main():
@@ -57,34 +75,34 @@ def main():
                           "groups": groups}):
             ok += 1
     except Exception as e:
-        print("  memes:", e)
+        print("snapshot_failed memes %s" % type(e).__name__)
 
     try:
         with io.open(lps.BUDGET, "r", encoding="utf-8") as fh:
             if dump("budget", {"ok": True, "budget": json.load(fh)}):
                 ok += 1
     except Exception as e:
-        print("  budget:", e)
+        print("snapshot_failed budget %s" % type(e).__name__)
 
     try:
         with io.open(lps.CONFIG, "r", encoding="utf-8") as fh:
             if dump("config", {"ok": True, "config": json.load(fh)}):
                 ok += 1
     except Exception as e:
-        print("  config:", e)
+        print("snapshot_failed config %s" % type(e).__name__)
 
     try:
         with io.open(lps.TUNABLES, "r", encoding="utf-8") as fh:
             if dump("tunables", {"ok": True, "tunables": json.load(fh)}):
                 ok += 1
     except Exception as e:
-        print("  tunables:", e)
+        print("snapshot_failed tunables %s" % type(e).__name__)
 
     try:
         if dump("tools", {"ok": True, "tools": lps.tools_snapshot()}):
             ok += 1
     except Exception as e:
-        print("  tools:", e)
+        print("snapshot_failed tools %s" % type(e).__name__)
 
     try:
         if dump("schedule", {"ok": True,
@@ -92,19 +110,22 @@ def main():
                              "tasks": lps.scheduled_tasks()}):
             ok += 1
     except Exception as e:
-        print("  schedule:", e)
+        print("snapshot_failed schedule %s" % type(e).__name__)
 
     try:
-        if dump("memory", {"ok": True, "memory": lps.memory_overview()}):
+        memory = lps.memory_overview()
+        if not isinstance(memory, dict) or memory.get("availability", {}).get("status") == "error":
+            raise ValueError("MemorySnapshotSourceUnavailable")
+        if dump("memory", {"ok": True, "memory": memory}):
             ok += 1
     except Exception as e:
-        print("  memory:", e)
+        print("snapshot_failed memory %s" % type(e).__name__)
 
     try:
         if dump("bili", {"ok": True, "bili": lps.bili_snapshot()}):
             ok += 1
     except Exception as e:
-        print("  bili:", e)
+        print("snapshot_failed bili %s" % type(e).__name__)
 
     try:
         with io.open(lps.MEMECFG,
@@ -112,7 +133,7 @@ def main():
             if dump("memes-config", {"ok": True, "config": json.load(fh)}):
                 ok += 1
     except Exception as e:
-        print("  memes-config:", e)
+        print("snapshot_failed memes-config %s" % type(e).__name__)
 
     # 文件列表（带预览的只做前 60 条，别每次读几千个文件）
     for key in ("diary", "notes", "people"):
@@ -121,7 +142,7 @@ def main():
             if dump("files-" + key, {"ok": True, "dir": key, "files": files}):
                 ok += 1
         except Exception as e:
-            print("  files-%s: %s" % (key, e))
+            print("snapshot_failed files-%s %s" % (key, type(e).__name__))
 
     # 作品列表不带预览（只要名字和大小）
     try:
@@ -130,15 +151,24 @@ def main():
             pass
             ok += 1
     except Exception as e:
-        print("  files-made:", e)
+        print("snapshot_failed files-made %s" % type(e).__name__)
+
+    # New works entries include nested applications. The old flat file
+    # endpoint/snapshot stays compatible with existing callers.
+    try:
+        from panel_record_files import works_snapshot
+        if dump("works", works_snapshot(lps.FILE_DIRS["made"], excluded=lps.is_panel_artifact)):
+            ok += 1
+    except Exception as e:
+        print("snapshot_failed works %s" % type(e).__name__)
 
     # 归档目录也要快照，否则作品页的「归档」标签会去读一个不存在的
     # dafeiyu-files-archive.json，表现就是 404。
     try:
         af = lps.list_dir_files("archive", with_preview=False, limit=0)
         dump("files-archive", {"ok": True, "dir": "archive", "files": af})
-    except Exception:
-        pass
+    except Exception as e:
+        print("snapshot_failed files-archive %s" % type(e).__name__)
 
     print("  snapshots written: %d" % ok)
 

@@ -84,6 +84,14 @@ nav{display:flex;flex-direction:column;gap:3px;flex:1}
 
 /* ---------- 主区 ---------- */
 main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
+.syncbar{max-width:1020px;margin:0 auto 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--dim);font-size:12px}
+.syncbar[data-state="error"],.syncbar[data-state="snapshot"]{color:var(--warn)}
+.syncbar button{flex:none}
+.record-list{max-height:480px;overflow:auto}
+.record-row{padding:12px 0;border-top:1px solid var(--line)}
+.record-row:first-child{border-top:0}
+.record-row a{color:var(--acc);text-decoration:none}
+.record-row .dsc{display:block;margin-top:3px}
 .page{display:none;max-width:1020px;margin:0 auto}
 .page.on{display:block;animation:rise .26s cubic-bezier(.22,1,.36,1)}
 @keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
@@ -340,9 +348,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </aside>
 
 <main>
+<div class="syncbar" id="recordSync" role="status" aria-live="polite"><span id="recordSyncText">正在读取记录…</span><button id="recordRefresh" onclick="refreshCurrentPage(true)">刷新当前页</button></div>
 
 <div class="page on" id="page-overview">
-  <div class="phead"><h1>概览</h1><p>她现在的状态。数字每 10 秒刷新一次。</p></div>
+  <div class="phead"><h1>概览</h1><p>她现在的状态。可见页面的记录每 15 秒检查更新。</p></div>
   <div class="banner" id="banner">
     <div class="bi">⚠️</div>
     <div><div class="bt" id="bannerTitle">还有重复的计划任务</div><div class="bd" id="bannerText">—</div></div>
@@ -470,10 +479,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-money">
-  <div class="phead"><h1>零花钱</h1><p>她自己出去玩花的钱，和聊天花的上限分开算。</p></div>
+  <div class="phead"><h1>零花钱</h1><p>现有账本按会话分类统计。统一主 agent 的自主活动也可能计入私聊，不能按这里的零值判断没有活动。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">自己玩 · 已花</div><div class="v" id="mSpent">—<small>元</small></div><div class="s" id="mSpentSub">上限 —</div></div>
-    <div class="stat"><div class="k">自己玩 · 剩余</div><div class="v" id="mLeft">—<small>元</small></div><div class="s" id="mLeftSub">—</div></div>
+    <div class="stat"><div class="k">旧自主分类 · 已花</div><div class="v" id="mSpent">—<small>元</small></div><div class="s" id="mSpentSub">上限 —</div></div>
+    <div class="stat"><div class="k">旧自主分类 · 剩余</div><div class="v" id="mLeft">—<small>元</small></div><div class="s" id="mLeftSub">—</div></div>
     <div class="stat"><div class="k">私聊 · 已花</div><div class="v" id="mDm">—<small>元</small></div><div class="s" id="mDmSub">上限 —</div></div>
     <div class="stat"><div class="k">群聊 · 已花</div><div class="v" id="mGroup">—<small>元</small></div><div class="s" id="mGroupSub">上限 —</div></div>
   </div>
@@ -486,7 +495,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
   <div class="card">
     <h3>加钱 / 记一笔</h3>
-    <p class="note">正数是给她加今天的额度，负数是手动记一笔花费。花超了这里加钱能立刻解封。</p>
+    <p class="note">正数增加旧自主账本的额度，负数手动记一笔花费；私聊和群聊上限仍按各自设置核对。</p>
     <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
       <input type="number" id="topupAmt" step="0.1" placeholder="0.5 或 -0.2" style="width:160px">
       <button class="pri" onclick="topup()">确认</button>
@@ -498,9 +507,9 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
   <div class="card">
     <h3>额度设置</h3>
-    <p class="note">「自己玩」是她上网、看东西、写东西花的钱——花完当天就不能再花，她会来找你要。「聊天」不算钱，那是社交。</p>
+    <p class="note">这些是现有分类账本的上限。费用按实际会话归类，不能按它们区分全部娱乐与社交行为；是否请求补充额度仍由主 agent 判断。</p>
     <div class="grid2">
-      <div class="field"><label>每天自己玩的额度（元）</label><input type="number" step="0.1" id="bLimit"></div>
+      <div class="field"><label>旧自主分类额度（元）</label><input type="number" step="0.1" id="bLimit"></div>
       <div class="field"><label>每天私聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bDmLimit"></div>
       <div class="field"><label>每天群聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bGroupLimit"></div>
       <div class="field"><label>花完了要不要主动要钱</label>
@@ -735,8 +744,20 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-bili">
-  <div class="phead"><h1>刷 B 站</h1><p>这里展示旧值班目录和记录，不涵盖主 agent 直接浏览的完整活动。</p></div>
+  <div class="phead"><h1>刷 B 站</h1><p>主 agent 最近的推荐、视频资料和字幕记录，按真实工具回执更新。</p></div>
+  <div class="stats">
+    <div class="stat"><div class="k">当前记录来源</div><div class="v" id="bMainState" style="font-size:17px">—</div><div class="s" id="bMainCoverage">正在读取当前绑定会话</div></div>
+    <div class="stat"><div class="k">近期工具记录</div><div class="v" id="bMainCount">—</div><div class="s">当前可核验范围，含失败和待完成</div></div>
+    <div class="stat"><div class="k">字幕读取成功</div><div class="v" id="bMainSubtitles">—</div><div class="s">不等于播放或看完视频</div></div>
+    <div class="stat"><div class="k">推荐读取成功</div><div class="v" id="bMainRecommendations">—</div><div class="s">返回候选，不表示逐个观看</div></div>
+  </div>
+  <div class="card">
+    <h3>主 agent 最近活动</h3>
+    <p class="note" id="bMainNote">读取当前绑定会话的真实调用，保留调用失败和结果未知的区别。</p>
+    <div class="record-list" id="bMainRecords"><div class="empty">正在读取…</div></div>
+  </div>
 
+  <details class="card"><summary>旧值班历史记录</summary>
   <div class="stats">
     <div class="stat"><div class="k">旧值班目录</div><div class="v" id="bState" style="font-size:17px">—</div><div class="s" id="bStateSub">—</div></div>
     <div class="stat"><div class="k">旧值班说明</div><div class="v" id="bDuty">—<small>字</small></div><div class="s">不代表当前主 agent 的活动计划</div></div>
@@ -755,6 +776,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <p class="note">仅展示旧判重表中的评论条目；不代表当前账号的完整评论清单。</p>
     <div class="filelist" id="biliComments"></div>
   </div>
+  </details>
 
   <div class="card">
     <h3>请求娱乐检查</h3>
@@ -815,8 +837,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <h3>这些记录的范围</h3>
     <p class="note" style="margin:0">
       统一模式的 <code>bili_run</code> 和搜索、字幕等工具由当前主 agent 直接执行。<br>
-      这里尚未接入这些工具的完整活动记录；旧表为空不能据此判断她没有浏览。
-      本页目录是否存在，也不表示当前主 agent 正在刷 B 站。
+      上方近期记录来自当前可信绑定会话；未映射会话与更早归档不计入，不能当作全账号历史。
+      读取推荐、字幕或截图均不代表完整播放；旧值班历史单独保留。
     </p>
   </div>
 </div>
@@ -854,19 +876,19 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 <div class="page" id="page-activity">
   <div class="phead">
     <h1>她在干嘛</h1>
-    <p>她能自己干哪些事，以及现在在做什么。开着的事会花她自己的零花钱。</p>
+    <p>查看自主调度与近期真实工具活动，活动结果和 QQ 发言分别记录。</p>
   </div>
 
   <div class="stats">
-    <div class="stat"><div class="k">今天花的</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">上限 —</div></div>
+    <div class="stat"><div class="k">旧自主预算账本</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">不代表统一主 agent 的全部活动费用</div></div>
     <div class="stat"><div class="k">自主调度状态</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
   </div>
 
   <div class="card">
-    <h3>她可以自己干的事</h3>
-    <p class="note">关掉就真的不会去干。标「花零花钱」的会算进每天 1 块里。</p>
+    <h3>旧活动清单</h3>
+    <p class="note">这些开关供旧独立活动流程使用；统一模式由主 agent 按当前 prompt 和记忆决定，保存清单不会改变其执行权限。</p>
     <div id="actList"></div>
-    <div class="btnrow"><button class="pri" onclick="saveActivities()">保存开关</button></div>
+    <div class="btnrow"><button class="pri" onclick="saveActivities()">保存旧清单</button></div>
 
     <div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap;align-items:center">
       <input type="text" id="actNewName" placeholder="新活动的名字" style="flex:1;min-width:150px">
@@ -1059,20 +1081,93 @@ function setTheme(name){
 const $ = (id) => document.getElementById(id);
 const API  = 'http://127.0.0.1:19389';
 const APIX = '/api';
+let currentPage = 'overview';
+const recordStates = new Map(), recordRequests = new Map(), refreshingPages = new Set(), dirtyPages = new Set(), pageEdits = new Map();
+
+function recordPage(path){
+  const bare = path.split('?')[0];
+  if(bare === '/state') return currentPage === 'system' ? 'system' : 'overview';
+  if(bare === '/files') return /[?&]dir=(made|archive)(&|$)/.test(path) ? 'works' : 'memory';
+  return ({'/bili':'bili','/live':'activity','/activities':'activity','/memes':'memes',
+    '/budget':'money','/schedule':'schedule','/memory':'memory','/works':'works',
+    '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'napcat'})[bare];
+}
+function noteRecord(path, state, at){
+  if(path.split('?')[0] === '/files'){
+    const match = path.match(/[?&]dir=([^&]+)/);
+    const dir = match ? decodeURIComponent(match[1]) : '';
+    if(dir && (['made','archive'].includes(dir) ? dir !== currentWorkDir : dir !== currentDir)) return;
+  }
+  const page = recordPage(path);
+  if(!page) return;
+  const key = page + ':' + path.split('?')[0];
+  const old = recordStates.get(key);
+  recordStates.set(key, { page, state, at:at || old?.at || null });
+  if(page === currentPage) renderRecordSync();
+}
+function renderRecordSync(){
+  const box = $('recordSync'), label = $('recordSyncText');
+  if(!box || !label) return;
+  const rows = [...recordStates.values()].filter(row => row.page === currentPage);
+  const failure = rows.find(row => row.state === 'error');
+  const snapshot = rows.find(row => row.state === 'snapshot');
+  const at = Math.min(...rows.map(row => row.at).filter(Boolean));
+  let text = rows.length ? '记录更新于 ' + (Number.isFinite(at) ? new Date(at).toLocaleTimeString('zh-CN') : '—') : '正在读取记录…';
+  box.dataset.state = failure ? 'error' : snapshot ? 'snapshot' : 'live';
+  if(failure) text = '刷新失败，当前内容可能过时；稍后会自动重试。';
+  else if(snapshot) text = '接口暂不可用，显示离线快照 · ' + new Date(snapshot.at).toLocaleTimeString('zh-CN');
+  if(dirtyPages.has(currentPage)) text += ' · 编辑中，保留未保存内容';
+  if(currentPage === 'works' && (Object.keys(workSel).length || $('worksViewer')?.classList.contains('on'))) text += ' · 选择或预览中，列表刷新已暂停';
+  if(currentPage === 'memory' && (searchOn || Object.keys(selected).length || document.querySelector('#fileList .open'))) text += ' · 保留当前搜索、选择或展开内容';
+  label.textContent = text;
+  const button = $('recordRefresh');
+  if(button) button.disabled = refreshingPages.has(currentPage);
+}
+document.addEventListener('input', event => {
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+});
+document.addEventListener('change', event => {
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+});
+
+async function refreshCurrentPage(manual){
+  const page = currentPage;
+  if(document.hidden || refreshingPages.has(page)) return;
+  refreshingPages.add(page); renderRecordSync();
+  try{
+    const editing = dirtyPages.has(page) || (page === 'memory' && !!document.querySelector('#memPropList textarea'));
+    const loaders = {
+      overview:refreshOverview, system:refreshOverview, bili:loadBili,
+      activity:async () => { await loadLive(); if(!editing) await loadActivities(); },
+      money:() => loadBudget(true), tools:loadTools,
+      memes:() => editing ? null : loadMemes(true),
+      memory:async () => { if(!editing) { await loadMemoryOverview(true); if(!searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open')) await loadFiles(currentDir, true); } },
+      works:() => editing || Object.keys(workSel).length || $('worksViewer')?.classList.contains('on') ? null : loadWorks(true),
+      schedule:() => editing ? null : loadSchedule(),
+      talk:() => manual && !editing ? loadTunables() : null,
+      napcat:() => manual && !editing ? loadNapcat() : null,
+      persona:() => manual && !editing ? loadPersona() : null,
+      identity:() => manual && !editing ? loadConfig() : null
+    };
+    if(loaders[page]) await loaders[page]();
+  }finally{ refreshingPages.delete(page); if(currentPage === page) renderRecordSync(); }
+}
 
 function goto(page){
   document.querySelectorAll('.page').forEach(el => el.classList.toggle('on', el.id === 'page-' + page));
   document.querySelectorAll('.navitem').forEach(el => el.classList.toggle('on', el.dataset.page === page));
   location.hash = '#/' + page;
+  currentPage = page;
+  renderRecordSync();
   loadBrand();
   const loaders = { talk:loadTunables, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
                     napcat:loadNapcat,
                     activity:() => { loadActivities(); loadLive(); },
                     memory:() => loadFiles(currentDir), works:loadWorks,
                     persona:loadPersona, identity:loadConfig };
-  if(loaders[page]) loaders[page]();
-  if(page === 'memory') loadMemoryOverview();
-  if(page === 'memes') loadMemeConfig();
+  if(loaders[page] && (!dirtyPages.has(page) || page === 'bili' || page === 'activity')) loaders[page]();
+  if(page === 'memory' && !dirtyPages.has(page)) loadMemoryOverview();
+  if(page === 'memes' && !dirtyPages.has(page)) loadMemeConfig();
   if(page === 'bili') loadBiliCred();
   document.querySelector('main').scrollTop = 0;
 }
@@ -1112,7 +1207,8 @@ function staticFor(path){
     '/tools': './lanya-tools.json',
     '/schedule': './lanya-schedule.json',
     '/memory': './lanya-memory.json',
-    '/bili': './lanya-bili.json'
+    '/bili': './lanya-bili.json',
+    '/works': './lanya-works.json'
   };
   if(map[bare]) return map[bare];
   if(bare === '/files'){
@@ -1121,21 +1217,56 @@ function staticFor(path){
   }
   return null;
 }
-// live=true 时跳过静态快照，直接问服务端。
-// 记忆页写完要立刻看到结果，而快照 30 秒才刷一次，不跳过就会显示旧数据。
+// Live data wins; a recent, timestamped snapshot is an explicit offline fallback.
+// Mutations use one request only, with no automatic retry or snapshot fallback.
 async function api(path, opts, live){
   const isGet = !opts || !opts.method || opts.method === 'GET';
-  if(isGet && !live){
-    const st = staticFor(path);
-    if(st){
-      try{
-        const r = await fetch(st + '?t=' + Date.now(), { cache:'no-store' });
-        if(r.ok) return await r.json();
-      }catch(e){ /* 快照还没生成，退回接口 */ }
-    }
+  if(!isGet){
+    const page = currentPage;
+    const revision = pageEdits.get(page) || 0;
+    const response = await fetch(API + APIX + path, opts);
+    if(!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    if(data.ok && (pageEdits.get(page) || 0) === revision) { dirtyPages.delete(page); renderRecordSync(); }
+    return data;
   }
-  const r = await fetch(API + APIX + path, opts);
-  return r.json(); }
+  const key = (live ? 'live:' : 'read:') + path;
+  if(!recordRequests.has(key)) recordRequests.set(key, (async () => {
+    const urls = [];
+    if(location.protocol === 'http:' || location.protocol === 'https:') urls.push(APIX + path);
+    if(location.origin !== API) urls.push(API + APIX + path);
+    const read = async url => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try{
+        const response = await fetch(url, { ...opts, method:'GET', cache:'no-store', signal:controller.signal });
+        if(!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        if(!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('记录格式无效');
+        return data;
+      }finally{ clearTimeout(timer); }
+    };
+    for(const url of urls){
+      try{ return { data:await read(url), source:'live', at:Date.now() }; }
+      catch(e){ /* The alternate local service may still be available. */ }
+    }
+    const snapshot = !live && staticFor(path);
+    if(snapshot){
+      try{
+        const data = await read(snapshot + '?t=' + Date.now());
+        const meta = data._snapshot || {}, at = Date.parse(meta.generated_at), age = Date.now() - at;
+        if(meta.schema === 1 && Number.isFinite(at) && age >= -5000 && age <= 120000 && data.ok === true)
+          return { data, source:'snapshot', at };
+      }catch(e){ }
+    }
+    throw new Error('当前记录接口不可用，且没有两分钟内的有效快照');
+  })().finally(() => recordRequests.delete(key)));
+  try{
+    const result = await recordRequests.get(key);
+    noteRecord(path, result.data.ok === false ? 'error' : result.source, result.at);
+    return result.data;
+  }catch(error){ noteRecord(path, 'error'); throw error; }
+}
 function num(id){
   const v = $(id).value.trim();
   if(!v) return null;
@@ -1220,7 +1351,7 @@ async function refreshOverview(){
   try{
     const s = await api('/state', null, true);
     const m = s.memory;
-    setText('footStamp', '更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
+    setText('footStamp', '部件更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
     setHtml('sMem', m.lanyaMb + '<small>MB</small>');
     $('sMem').style.color = m.over ? 'var(--bad)' : 'var(--fg)';
     setText('sMemSub', '上限 ' + m.limitMb + ' MB');
@@ -1443,16 +1574,18 @@ async function saveTunables(restart){
   }catch(e){ show('tunOut', '保存失败：' + e.message); }
 }
 
-async function loadBudget(){
+async function loadBudget(background){
   hide('moneyOut');
   try{
     const j = await api('/budget');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const b = j.budget || {};
-    $('bLimit').value = b.limit ?? '';
-    $('bDmLimit').value = b.dmLimit ?? '';
-    $('bGroupLimit').value = b.groupLimit ?? '';
-    $('bAsk').checked = b.askWhenExhausted !== false;
+    if(!background){
+      $('bLimit').value = b.limit ?? '';
+      $('bDmLimit').value = b.dmLimit ?? '';
+      $('bGroupLimit').value = b.groupLimit ?? '';
+      $('bAsk').checked = b.askWhenExhausted !== false;
+    }
     setHtml('mSpent', (b.spent ?? 0) + '<small>元</small>');
     setText('mSpentSub', '上限 ' + (b.limit ?? '—') + ' 元');
     const left = (b.limit ?? 0) - (b.spent ?? 0);
@@ -1505,7 +1638,7 @@ async function resetBudget(){
   }catch(e){ show('moneyOut', '失败：' + e.message); }
 }
 
-let memeData = [], memeCur = 0;
+let memeData = [], memeCur = 0, memeFingerprint = '';
 
 function loadSystem(){ refreshOverview(); }
 
@@ -1977,6 +2110,7 @@ async function saveActivities(){
 async function loadLive(){
   try{
     const j = await api('/live', null, true);
+    if(!j.ok) throw new Error(j.error || '读取失败');
     const l = j.live || {};
     const check = $('liveCheck');
     if(check) { check.hidden = !l.autonomy; check.disabled = componentActionPending || !(l.autonomy || {}).can_request_check; }
@@ -1993,7 +2127,13 @@ async function loadLive(){
       else if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
       if(o.next_opportunity_at) rows.push('下次普通机会：' + new Date(o.next_opportunity_at).toLocaleString('zh-CN'));
       const box = $('liveLog');
-      if(box){ box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); }); }
+      if(box){
+        box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); });
+        const history = l.recentActivity || {}, events = Array.isArray(history.records) ? history.records : [];
+        const title = document.createElement('div'); title.className = 'frow'; title.textContent = '最近实际工具活动' + (history.status === 'partial' ? '（部分来源）' : ''); box.appendChild(title);
+        if(!events.length){ const item = document.createElement('div'); item.className = 'dsc'; item.textContent = history.status === 'ok' ? '当前可核验范围暂无工具活动。' : '近期活动来源暂不可用，不能据此判断没有活动。'; box.appendChild(item); }
+        events.slice(0, 30).forEach(event => { const item = document.createElement('div'); item.className = 'frow'; const stamp = new Date(typeof event.at === 'number' && event.at < 1e12 ? event.at * 1000 : event.at); item.textContent = (Number.isNaN(stamp.getTime()) ? '时间未确认' : stamp.toLocaleString('zh-CN')) + ' · ' + String(event.tool || '工具调用') + ' · ' + (({succeeded:'成功',failed:'失败',returned:'已返回',pending:'待完成',unknown:'结果未知'})[event.status] || '结果未知'); box.appendChild(item); });
+      }
       return;
     }
     setText('liveLast', (l.last || '还没说过什么').slice(0, 40));
@@ -2012,7 +2152,11 @@ async function loadLive(){
         box.appendChild(d);
       });
     }
-  }catch(e){}
+  }catch(e){
+    setText('liveLast', '刷新失败，状态未确认');
+    const button = $('liveCheck'); if(button) button.disabled = true;
+    setText('liveLastAt', '无法读取最新调度状态，请稍后刷新。');
+  }
 }
 
 async function loadNapcatProfile(){
@@ -2129,14 +2273,51 @@ async function doUpdate(){
   }catch(e){ show('updOut', '更新失败：' + e.message); }
 }
 
+function renderMainBili(history){
+  const data = history || {}, records = Array.isArray(data.records) ? data.records : [];
+  const available = data.status === 'ok' || data.status === 'partial';
+  setText('bMainState', ({ok:'主 agent 当前会话',partial:'部分记录可用',unavailable:'记录源暂不可用'})[data.status] || '记录源暂不可用');
+  setText('bMainCount', available ? records.length : '—');
+  setText('bMainSubtitles', available ? records.filter(row => row.kind === 'subtitle' && row.status === 'succeeded').length : '—');
+  setText('bMainRecommendations', available ? records.filter(row => row.kind === 'recommendation' && row.status === 'succeeded').length : '—');
+  const coverage = data.coverage || {};
+  setText('bMainCoverage', available ? '已核验 ' + (coverage.owner_verified_scopes || 0) + ' 个绑定范围' : '无法确认当前范围的记录');
+  setText('bMainNote', data.status === 'partial' ? '只展示已核验部分；部分来源缺失或已达读取上限。当前会话记录不等于完整历史。'
+    : available ? '当前可信绑定会话内的近期记录；按实际结果区分推荐、字幕和操作，不据此推断看完视频。' : '当前无法读取可信活动记录。下方旧值班历史仍可查看，不能据此判断没有浏览。');
+  const box = $('bMainRecords'); if(!box) return;
+  box.innerHTML = '';
+  if(!records.length){ const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = available ? '当前可核验范围暂无 B 站工具记录。' : '记录源暂不可用，请稍后刷新。'; box.appendChild(empty); return; }
+  const kinds = {recommendation:'获取推荐',details:'读取视频资料',subtitle:'读取字幕',frames:'读取视频帧',cover:'读取封面',action:'平台操作'};
+  const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};
+  const videoLink = video => {
+    const item = document.createElement('div'), bv = String(video?.bvid || '');
+    const text = String(video?.title || bv || '视频');
+    if(/^BV[A-Za-z0-9]{10}$/.test(bv)){ const link = document.createElement('a'); link.href = 'https://www.bilibili.com/video/' + bv; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = text; item.appendChild(link); }
+    else item.textContent = text;
+    return item;
+  };
+  records.forEach(row => {
+    const entry = document.createElement('div'); entry.className = 'record-row';
+    const head = document.createElement('strong'); head.textContent = (kinds[row.kind] || '工具调用') + ' · ' + (statuses[row.status] || '结果未知'); entry.appendChild(head);
+    const details = document.createElement('span'); details.className = 'dsc';
+    const time = new Date(typeof row.at === 'number' && row.at < 1e12 ? row.at * 1000 : row.at);
+    details.textContent = (Number.isNaN(time.getTime()) ? '时间未确认' : time.toLocaleString('zh-CN')) + ' · ' + String(row.tool || '');
+    if(Number.isInteger(row.item_count)) details.textContent += ' · 返回 ' + row.item_count + ' 项';
+    if(Number.isInteger(row.subtitle_chars)) details.textContent += ' · 字幕 ' + row.subtitle_chars + ' 字';
+    entry.appendChild(details);
+    if(row.video) entry.appendChild(videoLink(row.video));
+    (Array.isArray(row.videos) ? row.videos.slice(0, 8) : []).forEach(video => entry.appendChild(videoLink(video)));
+    box.appendChild(entry);
+  });
+}
+
 async function loadBili(){
-  loadNapcat();
-  loadBiliCred();
   hide('biliOut');
   try{
     const j = await api('/bili');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const b = j.bili || {};
+    renderMainBili(b.mainAgent);
     setText('bState', b.installed ? '目录存在' : '未找到旧目录');
     $('bState').style.color = b.installed ? 'var(--ok)' : 'var(--bad)';
     setText('bStateSub', b.home || '');
@@ -2146,7 +2327,7 @@ async function loadBili(){
     renderBiliComments(b.comments || []);
     setText('biliLog', b.log || '暂无旧值班日志');
     setText('biliSeen', b.seen || '暂无旧值班判重记录；不代表主 agent 未浏览');
-  }catch(e){ show('biliOut', '读取失败：' + e.message); }
+  }catch(e){ setText('bMainState', '刷新失败，保留上次记录'); show('biliOut', '读取失败：' + e.message); }
 }
 
 async function loadBiliDuty(){
@@ -2207,22 +2388,25 @@ async function saveMemeConfig(){
   }catch(e){ show('mcfgOut', '保存失败：' + e.message); }
 }
 
-async function loadMemes(){
+async function loadMemes(background){
   hide('memeOut');
   try{
     const j = await api('/memes');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const groups = j.groups || [];
+    const fingerprint = JSON.stringify(groups);
+    if(background && fingerprint === memeFingerprint) return;
+    memeFingerprint = fingerprint;
     // 最前面放一个「全部」——把每个来源的图都摊在一起，
     // 免得 514 张那种大分类要自己点进去才发现。
-    const allFiles = [];
+    const allFiles = [], allSeen = new Set();
     groups.forEach(function(g){
-      g.files.forEach(function(f){ allFiles.push({ g: g, f: f }); });
+      g.files.forEach(function(f){ const key = (g.refs?.[f] || g.source) + ':' + f; if(!allSeen.has(key)) { allSeen.add(key); allFiles.push({ g: g, f: f }); } });
     });
     memeData = [{ source: '__all__', name: '全部', tag: '__all__',
                   count: allFiles.length, files: [], all: allFiles }].concat(groups);
-    setText('memeTotal', j.total || 0);
-    setText('navMemes',j.total || 0);
+    setText('memeTotal', allFiles.length);
+    setText('navMemes', allFiles.length);
     if(!memeData.length){ $('memeEmpty').style.display = 'block'; return; }
     if(memeCur < 0 || memeCur >= memeData.length) memeCur = 0;
     const tabs = $('memeTabs');
@@ -2243,7 +2427,7 @@ async function loadMemes(){
       d.onclick = function(){ memeCur = i; renderMemes(); };
       tabs.appendChild(d);
     });
-    setText('memeHint', '共 ' + memeData.length + ' 组，一次最多显示 ' + MEME_PAGE + ' 张，往下滚自动加载');
+    setText('memeHint', allFiles.length + ' 个图片文件；同一图片可属于多个分类。一次最多显示 ' + MEME_PAGE + ' 张，往下滚自动加载');
     renderMemes();
   }catch(e){ show('memeOut', '读取失败：' + e.message); }
 }
@@ -2252,13 +2436,14 @@ const MEME_PAGE = 120;
 let memeShown = 0;
 
 function renderMemes(){
+  $('memeMore')?.remove();
   document.querySelectorAll('#memeTabs .tab').forEach(function(el, i){
     el.classList.toggle('on', i === memeCur);
   });
   const g = memeData[memeCur];
   const grid = $('memeGrid');
   grid.innerHTML = '';
-  if(!g){ $('memeEmpty').style.display = 'block'; return; }
+  if(!g || !g.count){ $('memeEmpty').style.display = 'block'; return; }
   $('memeEmpty').style.display = 'none';
   memeShown = 0;
   appendMemes();
@@ -2762,8 +2947,8 @@ async function memGraph(){
   }catch(e){ bx.textContent = '画不了：' + e.message; }
 }
 
-async function loadMemoryOverview(){
-  await memOwnersLoad();
+async function loadMemoryOverview(background){
+  if(!background) await memOwnersLoad();
   try{
     const j = await api('/memory', null, true);
     if(!j.ok) return;
@@ -2773,6 +2958,10 @@ async function loadMemoryOverview(){
     setText('memPeople', c.people || 0);
     setText('memDiary', c.diary || 0);
     setText('memNotes', c.notes || 0);
+    if(m.availability?.status === 'error'){
+      setText('memLongNote', '长期记忆暂时读取失败，保留上次内容；这不表示记忆为空。');
+      noteRecord('/memory', 'error'); return;
+    }
 
     // 用中文说清楚长期记忆到底是什么状态，不再甩英文技术日志
     const note = $('memLongNote');
@@ -2838,19 +3027,24 @@ async function loadMemoryOverview(){
   }catch(e){ }
 }
 
-async function loadFiles(dir){
+let fileLoadGeneration = 0;
+let selected = {};
+async function loadFiles(dir, background){
+  const generation = ++fileLoadGeneration;
   hide('fileOut');
-  setHtml('fileList', '');
-  fileCache = []; fileShown = 0; selected = {};
-  updateBulk();
   try{
     const j = await api('/files?dir=' + encodeURIComponent(dir)
       + '&preview=1&limit=' + FILE_PAGE);
     if(!j.ok) throw new Error(j.error || '读取失败');
+    if(generation !== fileLoadGeneration || dir !== currentDir) return;
+    if(background && JSON.stringify(fileCache) === JSON.stringify(j.files || [])) return;
+    setHtml('fileList', '');
     fileCache = j.files || [];
+    fileShown = 0; selected = {};
+    updateBulk();
     $('fileEmpty').style.display = fileCache.length ? 'none' : 'block';
     renderFileRows(dir);
-  }catch(e){ show('fileOut', '读取失败：' + e.message); }
+  }catch(e){ if(generation === fileLoadGeneration && dir === currentDir) show('fileOut', '读取失败：' + e.message); }
 }
 
 const GROUPS = [
@@ -3032,21 +3226,28 @@ let currentWorkDir = 'made';
 let workData = [];
 let workSel = {};
 let workExt = 'all';
+let workLoadGeneration = 0;
+let worksTruncated = false;
 
-async function loadWorks(){
-  hide('worksOut'); hide('worksViewer');
-  $('worksBody').innerHTML = '';
-  workSel = {};
-  updateWorkBulk();
+async function loadWorks(background){
+  const generation = ++workLoadGeneration;
+  hide('worksOut');
   // 「归档」标签读归档目录，其它读 made/
   currentWorkDir = (workExt === '.archive') ? 'archive' : 'made';
+  const directory = currentWorkDir;
   try{
-    const j = await api('/files?dir=' + currentWorkDir);
+    const j = await api(directory === 'made' ? '/works' : '/files?dir=archive');
     if(!j.ok) throw new Error(j.error || '读取失败');
+    if(generation !== workLoadGeneration || directory !== currentWorkDir) return;
+    const next = (j.files || []).slice().sort((a, b) => b.size - a.size);
+    if(background && JSON.stringify(next) === JSON.stringify(workData) && (j.truncated === true) === worksTruncated) return;
+    if(!background) { $('worksViewer').classList.remove('on'); hide('worksViewer'); }
+    workSel = {}; updateWorkBulk();
     // 大的排前面：大文件通常是真做过的成品，小的多半是练手
-    workData = (j.files || []).slice().sort((a, b) => b.size - a.size);
+    workData = next;
+    worksTruncated = j.truncated === true;
     renderWorks();
-  }catch(e){ show('worksOut', '读取失败：' + e.message); }
+  }catch(e){ if(generation === workLoadGeneration) show('worksOut', '读取失败：' + e.message); }
 }
 
 function renderWorks(){
@@ -3063,23 +3264,27 @@ function renderWorks(){
         : workData.filter(f => f.name.toLowerCase().endsWith(workExt)));
 
   const totalMb = (list.reduce((s, f) => s + f.size, 0) / 1048576).toFixed(1);
-  setText('workCount', list.length + ' 个，共 ' + totalMb + ' MB');
+  setText('workCount', (worksTruncated ? '已列出 ' : '') + list.length + ' 个，共 ' + totalMb + ' MB' + (worksTruncated ? ' · 达到读取上限，列表不完整' : ''));
   $('worksEmpty').style.display = list.length ? 'none' : 'block';
 
   list.forEach(function(f){
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><input type="checkbox" class="fchk" data-f="' + f.name + '"></td>'
-      + '<td><span class="nm">' + f.name + '</span></td>'
-      + '<td class="num">' + fmtSize(f.size) + '</td>'
-      + '<td class="num">' + fmtTime(f.mtime) + '</td>'
-      + '<td class="op"><button class="sm">预览</button></td>';
+    tr.innerHTML = '<td><input type="checkbox" class="fchk"></td><td><span class="nm"></span></td><td class="num"></td><td class="num"></td><td class="op"><button class="sm">预览</button></td>';
+    tr.querySelector('.nm').textContent = f.name;
+    const numbers = tr.querySelectorAll('.num'); numbers[0].textContent = fmtSize(f.size); numbers[1].textContent = fmtTime(f.mtime);
+    const nested = f.name.includes('/');
+    tr.querySelector('.fchk').disabled = nested;
+    tr.querySelector('.fchk').dataset.f = f.name;
     tr.querySelector('.fchk').checked = !!workSel[f.name];
     tr.querySelector('.fchk').onchange = function(ev){
       if(ev.target.checked) workSel[f.name] = true;
       else delete workSel[f.name];
       updateWorkBulk();
     };
-    tr.querySelector('button').onclick = function(){ previewWork(f.name); };
+    if(f.url && (nested || /\.html?$/i.test(f.name))){
+      const button = tr.querySelector('button');
+      const link = document.createElement('a'); link.textContent = f.entry_type === 'directory_entry' ? '打开作品' : '打开文件'; link.href = f.url; link.target = '_blank'; link.rel = 'noopener'; button.replaceWith(link);
+    }else tr.querySelector('button').onclick = function(){ previewWork(f.name); };
     tb.appendChild(tr);
   });
 }
@@ -3099,8 +3304,9 @@ function toggleAllWork(){
     : (workExt === '.dep'
         ? workData.filter(f => isDep(f.name))
         : workData.filter(f => f.name.toLowerCase().endsWith(workExt)));
-  const allOn = list.every(f => workSel[f.name]);
-  list.forEach(function(f){
+  const manageable = list.filter(f => !f.name.includes('/'));
+  const allOn = manageable.every(f => workSel[f.name]);
+  manageable.forEach(function(f){
     if(allOn) delete workSel[f.name];
     else workSel[f.name] = true;
   });
@@ -3134,15 +3340,16 @@ async function bulkDeleteWork(){
 
 
 // 图片直接在页面里看。之前只有 HTML 会预览，点图片没反应。
-function showImage(url, name){
+function workViewer(name){
   const v = $('worksViewer');
-  if(!v) return;
-  v.classList.add('on');
-  v.innerHTML = '<div style="padding:10px 0">'
-    + '<div class="dsc" style="margin-bottom:10px">' + name + '</div>'
-    + '<img src="' + url + '" style="max-width:100%;border-radius:10px;display:block" '
-    + '>'
-    + '</div>';
+  v.innerHTML = ''; v.classList.add('on'); v.style.display = 'block';
+  const close = document.createElement('button'); close.textContent = '关闭预览'; close.onclick = () => { v.classList.remove('on'); v.style.display = 'none'; };
+  const title = document.createElement('div'); title.className = 'dsc'; title.textContent = name;
+  v.appendChild(close); v.appendChild(title); return v;
+}
+function showImage(url, name){
+  const v = workViewer(name), image = document.createElement('img');
+  image.src = url; image.style.maxWidth = '100%'; image.style.borderRadius = '10px'; v.appendChild(image);
 }
 
 async function previewWork(name){
@@ -3157,13 +3364,8 @@ async function previewWork(name){
     const j = await api('/files/read?dir=' + encodeURIComponent(currentWorkDir)
       + '&name=' + encodeURIComponent(name));
     if(!j.ok) throw new Error(j.error || '读取失败');
-    const v = $('worksViewer');
-    v.classList.add('on');
-    const body = String(j.text || '').replace(/</g, '&lt;');
-    v.innerHTML = '<div style="padding:10px 0">'
-      + '<div class="dsc" style="margin-bottom:10px">' + name + '</div>'
-      + '<pre style="white-space:pre-wrap;font-size:12.5px;line-height:1.7">'
-      + body.slice(0, 20000) + '</pre></div>';
+    const v = workViewer(name), body = document.createElement('pre');
+    body.style.whiteSpace = 'pre-wrap'; body.textContent = String(j.text || '').slice(0, 20000); v.appendChild(body);
   }catch(e){ show('worksOut', '读取失败：' + e.message); }
 }
 
@@ -3255,7 +3457,12 @@ document.addEventListener('click', function(ev){
   if(p === 'parts' || p === 'plugins') p = 'system';
   if(document.getElementById('page-' + p)) goto(p);
   await refreshOverview();
-  setInterval(refreshOverview, 10000);
+  setInterval(() => {
+    if(document.hidden) return;
+    refreshOverview();
+    if(currentPage !== 'overview' && currentPage !== 'system') refreshCurrentPage(false);
+  }, 15000);
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) { refreshOverview(); if(currentPage !== 'overview' && currentPage !== 'system') refreshCurrentPage(false); } });
 })();
 </script>
 </body>

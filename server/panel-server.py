@@ -755,7 +755,7 @@ def list_memes(tag=None):
 # started with lanya- too, and the works page went blank. Match the artifacts
 # the server actually writes, in either naming generation.
 _PANEL_PREFIXES = ("lanya-panel", "dafeiyu-panel", "theme-")
-_PANEL_STEMS = {"state", "persona", "memory", "memes", "memes-config", "tools",
+_PANEL_STEMS = {"state", "persona", "memory", "memes", "memes-config", "tools", "works",
                 "schedule", "budget", "config", "bili", "tunables"}
 
 
@@ -804,10 +804,8 @@ def list_dir_files(key, with_preview=False, limit=0):
     if not root or not os.path.isdir(root):
         return []
     items = []
-    names = sorted(os.listdir(root), reverse=True)
-    if limit and limit > 0:
-        names = names[:limit]
-    for f in names:
+    rows = []
+    for f in os.listdir(root):
         p = os.path.join(root, f)
         if not os.path.isfile(p):
             continue
@@ -820,6 +818,11 @@ def list_dir_files(key, with_preview=False, limit=0):
         # 不再按前缀——改名之后前缀把所有东西都吞掉了。
         if is_panel_artifact(f):
             continue
+        rows.append((f, p, st))
+    rows.sort(key=lambda row: (-row[2].st_mtime_ns, row[0].casefold(), row[0]))
+    if limit and limit > 0:
+        rows = rows[:limit]
+    for f, p, st in rows:
         row = {"name": f, "size": st.st_size, "mtime": int(st.st_mtime)}
         if with_preview:
             try:
@@ -846,6 +849,45 @@ BILI_HOME = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty")
 BILI_DUTY = os.path.join(BILI_HOME, "duty.md")
 BILI_LOG  = os.path.join(BILI_HOME, "duty.log")
 BILI_SEEN = os.path.join(BILI_HOME, "seen.md")
+COVER_CACHE_FILE = os.path.join(BILI_HOME, "cover-cache.json")
+
+
+def panel_main_activity():
+    """Trusted local projection only; request parameters cannot select owners."""
+    try:
+        from panel_activity import activity_snapshot
+        config = project_conf.load(reload=True)
+        decisions = config.get("decisions", {})
+        if not isinstance(decisions, dict) or decisions.get("mode", "unified") not in ("unified", "legacy"):
+            raise ValueError("Invalid decision configuration")
+        preset = decisions.get("agentPreset", "")
+        records = config.get("panelRecords", {})
+        if not isinstance(records, dict) or not isinstance(preset, str):
+            raise ValueError("Invalid record configuration")
+        home = records.get("dshHome", os.path.join(os.path.expanduser("~"), ".dsh"))
+        mapping = records.get("onebotMappingFile")
+        if not isinstance(home, str) or not os.path.isabs(home) or (mapping is not None and
+                (not isinstance(mapping, str) or not os.path.isabs(mapping))):
+            raise ValueError("Invalid record paths")
+        return activity_snapshot(workspace=REPO, agent_preset=preset, identity_file=CONFIG,
+                                 dsh_home=home, mapping_file=mapping,
+                                 group_fallback=config.get("fanGroup", ""))
+    except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
+        base = {"status": "unavailable", "generated_at": int(time.time() * 1000),
+                "records": [], "coverage": {"reasons": ["invalid_configuration"],
+                                             "current_mapped_sessions_only": True}}
+        return {"mainAgent": dict(base, schema="panel-bili-native/v1", counts={}),
+                "recentActivity": dict(base, schema="panel-native-tools/v1")}
+
+
+def _bili_cached_covers(bvids):
+    """Panel refresh must not fetch platform data or write a cache."""
+    try:
+        cache = _read_metadata(COVER_CACHE_FILE, 2 * 1024 * 1024)
+    except (OSError, ValueError, TypeError):
+        cache = {}
+    return {bvid: cache[bvid] for bvid in bvids if isinstance(cache.get(bvid), str)
+            and re.fullmatch(r"https://[^\s<>]+", cache[bvid])}
 
 
 def tail_file(path, lines=40, limit=20000):
@@ -1101,17 +1143,21 @@ def bili_snapshot():
     if os.path.isfile(BILI_DUTY):
         try:
             with open(BILI_DUTY, "r", encoding="utf-8", errors="replace") as fh:
-                duty = fh.read()
+                duty = fh.read(1024 * 1024)
         except Exception:
             duty = ""
     # 不能只读尾巴：评论表在文件开头，视频表在末尾。
     # 之前 tail_file(60) 把评论全截掉了，页面上「她发过的评论」一直是空的。
     try:
         with open(BILI_SEEN, "r", encoding="utf-8", errors="replace") as _fhs:
-            seen = _fhs.read()
+            seen = _fhs.read(4 * 1024 * 1024)
     except Exception:
         seen = ""
-    log = tail_file(BILI_LOG, 30)
+    try:
+        from panel_activity import read_bytes
+        log = "\n".join(read_bytes(BILI_LOG, 2 * 1024 * 1024).decode("utf-8", "replace").splitlines()[-30:])
+    except (OSError, ValueError, TypeError):
+        log = ""
     # 判重表里「看过的视频」那段有内容 = 刷过
     watched = 0
     try:
@@ -1134,7 +1180,8 @@ def bili_snapshot():
         "seen": seen,
         "comments": comments,
         "videos": videos,
-        "covers": bili_cover_urls([v.get("bv", "") for v in videos]),
+        "covers": _bili_cached_covers([v.get("bv", "") for v in videos]),
+        "mainAgent": panel_main_activity()["mainAgent"],
     }
 
 
@@ -1149,18 +1196,18 @@ def bili_snapshot():
 MEMENTO_DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 
 
-def memento_rows(sql, args=(), limit=200):
+def memento_rows(sql, args=(), limit=200, strict=False):
     try:
-        import sqlite3
-        uri = "file:%s?mode=ro" % MEMENTO_DB.replace("\\", "/")
-        con = sqlite3.connect(uri, uri=True, timeout=5)
-        cur = con.cursor()
-        cur.execute(sql, args)
-        cols = [d[0] for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()][:limit]
-        con.close()
-        return rows
+        from pathlib import Path
+        uri = Path(MEMENTO_DB).absolute().as_uri() + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=5)) as con:
+            con.execute("PRAGMA query_only=ON")
+            cur = con.execute(sql, args)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchmany(limit)]
     except Exception:
+        if strict:
+            raise ValueError("MemoryReadUnavailable") from None
         return []
 
 
@@ -1197,39 +1244,41 @@ def memory_maintenance(operation, body):
 def memory_overview():
     # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，341 条把真正
     # 有价值的记忆操作淹没了。只在实在没有其它记录时才退回显示它们。
-    audit = memento_rows(
-        "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
-        "WHERE action <> 'snapshot' ORDER BY seq DESC LIMIT 60")
     snapshot_count = 0
-    if not audit:
-        rows = memento_rows("SELECT COUNT(*) AS n FROM audit WHERE action = 'snapshot'")
-        snapshot_count = rows[0]["n"] if rows else 0
-        audit = memento_rows(
-            "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
-            "ORDER BY seq DESC LIMIT 5")
-    props = memento_rows(
-        "SELECT id, kind, track, scope, text, status, created_at FROM proposals "
-        "ORDER BY created_at DESC LIMIT 30")
     # 真正的记忆条目——之前页面只查 audit（流水），entries 一条都没查过，
     # 所以永远显示"还没有写进长期记忆"。
     try:
+        audit = memento_rows(
+            "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
+            "WHERE action <> 'snapshot' ORDER BY seq DESC LIMIT 60", strict=True)
+        if not audit:
+            rows = memento_rows("SELECT COUNT(*) AS n FROM audit WHERE action = 'snapshot'", strict=True)
+            snapshot_count = rows[0]["n"]
+            audit = memento_rows(
+                "SELECT seq, ts, action, track, scope, text, outcome FROM audit "
+                "ORDER BY seq DESC LIMIT 5", strict=True)
+        props = memento_rows(
+            "SELECT id, kind, track, scope, text, status, created_at FROM proposals "
+            "ORDER BY created_at DESC LIMIT 30", strict=True)
         entries = memento_rows(
             "SELECT id, track, scope, workspace_key, agent_key, text, source, tags, version, "
             "created_at, updated_at, recall_count "
-            "FROM entries ORDER BY created_at DESC LIMIT 200")
-    except Exception:
-        entries = []
-    active = memento_rows("SELECT COUNT(*) AS n FROM entries")
+            "FROM entries ORDER BY created_at DESC LIMIT 200", strict=True)
+        totals = {key: memento_rows("SELECT COUNT(*) AS n FROM " + table, strict=True)[0]["n"]
+                  for key, table in (("active", "entries"), ("audit", "audit"), ("proposals", "proposals"))}
+        availability = {"status": "available", "counts_complete": True}
+    except (ValueError, IndexError, KeyError, TypeError):
+        audit, props, entries = [], [], []
+        totals = {key: None for key in ("active", "audit", "proposals")}
+        availability = {"status": "error", "counts_complete": False, "error": "MemoryReadUnavailable"}
     counts = {
-        "audit": len(memento_rows("SELECT seq FROM audit")),
-        "active": (active[0]["n"] if active else 0),
-        "proposals": len(memento_rows("SELECT id FROM proposals")),
+        **totals,
         "people": len(list_dir_files("people")),
         "diary": len(list_dir_files("diary")),
         "notes": len(list_dir_files("notes")),
     }
     return {"view": "management", "counts": counts, "audit": audit, "proposals": props,
-            "entries": entries, "snapshotOnly": snapshot_count > 0}
+            "entries": entries, "snapshotOnly": snapshot_count > 0, "availability": availability}
 
 
 # -*- coding: utf-8 -*-
@@ -2011,6 +2060,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # Old Life logs are not evidence of current main-agent activity.
                 out["autonomy"] = autonomy
                 out["statusLabel"] = autonomy_label(autonomy)
+                out["recentActivity"] = panel_main_activity()["recentActivity"]
                 try:
                     budget = _read_metadata(BUDGET)
                     out["money"] = {key: budget.get(key, False if key == "exhausted" else 0)
@@ -2130,6 +2180,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
+
+        if path == "/api/works":
+            try:
+                from panel_record_files import works_snapshot
+                return self._json(200, works_snapshot(FILE_DIRS["made"], excluded=is_panel_artifact))
+            except (OSError, ValueError, TypeError, ImportError):
+                return self._json(503, {"ok": False, "error": "WorksReadUnavailable", "files": []})
 
         if path == "/api/files":
             q = parse_qs(urlparse(self.path).query)
