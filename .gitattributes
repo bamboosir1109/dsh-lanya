@@ -8,3 +8,7 @@
 
 # Preserve the upstream BSD notice byte for byte, including its final blank line.
 tests/fixtures/onebot_egress/LICENSE whitespace=-blank-at-eof
+
+# Native snapshots are hash-bound to published bytes, including CRLF and notices.
+tests/fixtures/meme_qq_picker/** -text whitespace=-blank-at-eol,-blank-at-eof
+tests/fixtures/qq_expression_media/LICENSE -text whitespace=-blank-at-eof

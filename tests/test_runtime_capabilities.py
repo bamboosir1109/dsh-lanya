@@ -78,6 +78,27 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(result["tools"]["voice"]["synthesis_service"], "unverified_not_probed")
         self.assertNotIn("old-view", json.dumps(result))
 
+    def test_qq_expression_guides_complete_content_and_real_image_route_without_authority(self):
+        before = self.snapshot()
+        for scope in ("private:101", "group:202"):
+            with self.subTest(scope=scope):
+                result = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)
+                guide = result["tools"]["qq_expression"]
+                self.assertIn("no fixed sentence count or total message count", guide["reply_length"])
+                self.assertIn("preserving the full content", guide["reply_length"])
+                self.assertIn("unverified", guide["registration"])
+                self.assertIn("Selection is not delivery", guide["meme_selection"])
+                self.assertIn("empty/missing image", guide["meme_selection"])
+                self.assertIn("requires_visual_review", guide["meme_selection"])
+                self.assertIn("qq_decide(reply)", guide["meme_delivery"])
+                self.assertIn("qq_send_image({sources:", guide["meme_delivery"])
+                self.assertIn("tool_action", guide["meme_delivery"])
+                self.assertIn("does not grant QQ", guide["meme_delivery"])
+                for boundary in ("silence", "scope", "revision", "budget", "deduplication", "unknown"):
+                    self.assertIn(boundary, guide["limits"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
         made = self.root / "FixtureRole" / "made"
         game = made / "2048"

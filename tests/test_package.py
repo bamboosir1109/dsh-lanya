@@ -68,6 +68,15 @@ class PackageTests(unittest.TestCase):
             "tests/fixtures/onebot_egress/native-host.mjs",
             "tests/fixtures/onebot_egress/provenance.json",
             "tests/fixtures/onebot_egress/LICENSE",
+            "plugin/lib/meme-qq-picker.mjs", "scripts/patch_meme_qq_picker.py",
+            "tests/fixtures/meme_qq_picker/index.js", "tests/fixtures/meme_qq_picker/memes.js",
+            "tests/fixtures/meme_qq_picker/bridge.js", "tests/fixtures/meme_qq_picker/provenance.json",
+            "tests/fixtures/meme_qq_picker/LICENSE", "tests/fixtures/meme_qq_picker/onebot/LICENSE",
+            "tests/fixtures/meme_qq_picker/sdk/cordis/index.js", "tests/fixtures/meme_qq_picker/sdk/cordis/LICENSE",
+            "tests/fixtures/meme_qq_picker/sdk/cosmokit/index.js", "tests/fixtures/meme_qq_picker/sdk/cosmokit/LICENSE",
+            "tests/fixtures/meme_qq_picker/sdk/provenance.json",
+            "tests/fixtures/qq_expression_media/fence.js", "tests/fixtures/qq_expression_media/provenance.json",
+            "tests/fixtures/qq_expression_media/LICENSE",
         }
         self.assertFalse(required - paths, "Missing packaged runtime files: " + repr(required - paths))
         self.assertNotIn("docs/cordis.patch.yml", paths)
