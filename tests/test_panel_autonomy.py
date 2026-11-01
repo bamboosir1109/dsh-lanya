@@ -102,7 +102,7 @@ class PanelAutonomyTests(unittest.TestCase):
         self.assertEqual(status["observer"]["unknown_count"], 0)
         self.assertEqual(status["reason"], "waiting_for_opportunity")
         self.assertNotIn("decision_id", json.dumps(status))
-        self.mind["decision_scopes"]["group:202"] = {"generation": 1, "last_status": "no_decision", "last_completed_at": 999500}
+        self.mind["decision_scopes"]["group:202"] = {"generation": 1, "last_status": "no_decision", "last_completed_at": 999_500}
         self.write(self.data / "mind.json", self.mind)
         self.assertEqual(self.module.autonomy_snapshot()["observer"]["no_decision_count"], 2)
 

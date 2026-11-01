@@ -210,6 +210,12 @@ def _write_lock(config):
 
 def _copy_security(source, target):
     if os.name == "nt":
+        expected = _security(source)
+        if expected == _security(target):
+            # Avoid an unnecessary owner/group/DACL write when every raw byte
+            # already matches, including descriptor control flags.
+            _need(_security(source) == expected and _security(target) == expected)
+            return
         import ctypes
         from ctypes import wintypes
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
