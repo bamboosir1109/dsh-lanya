@@ -70,10 +70,13 @@ export function getQqCapability(exec) {
 
 function imageExtension(bytes, name) {
   const extension = extname(name).toLowerCase()
-  if (extension === '.png' && bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return '.png'
-  if (['.jpg', '.jpeg'].includes(extension) && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return '.jpg'
-  if (extension === '.gif' && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return '.gif'
-  if (extension === '.webp' && bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+  // Legacy indexed images sometimes have the wrong suffix. The source still
+  // needs an image suffix; the staged file uses its actual supported format.
+  if (!['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(extension)) fail()
+  if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return '.png'
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return '.jpg'
+  if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return '.gif'
+  if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
       bytes.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp'
   fail()
 }

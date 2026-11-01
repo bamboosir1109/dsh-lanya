@@ -69,6 +69,7 @@ class PackageTests(unittest.TestCase):
             "tests/fixtures/onebot_egress/provenance.json",
             "tests/fixtures/onebot_egress/LICENSE",
             "plugin/lib/meme-qq-picker.mjs", "scripts/patch_meme_qq_picker.py",
+            "tests/test_meme_qq_format.mjs",
             "tests/fixtures/meme_qq_picker/index.js", "tests/fixtures/meme_qq_picker/memes.js",
             "tests/fixtures/meme_qq_picker/bridge.js", "tests/fixtures/meme_qq_picker/provenance.json",
             "tests/fixtures/meme_qq_picker/LICENSE", "tests/fixtures/meme_qq_picker/onebot/LICENSE",
