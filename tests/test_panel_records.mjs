@@ -381,6 +381,23 @@ test('first memory status render uses the real top-level selection initializatio
 
 const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili', 'renderBiliArchive']
 const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
+
+test('activity displays a local no-decision outcome without inventing an LLM verdict or hiding uncertain scheduling', async () => {
+  for (const count of [0, 1, '1', -1]) {
+    const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', 'loadLive'], extra: {
+      componentActionPending: false, loadActivityBudget: async () => {},
+      api: async () => ({ ok: true, live: { autonomy: { mode: 'unified', status: 'uncertain', can_request_check: true,
+        observer: { no_decision_count: count, next_opportunity_at: 1793535000000 } }, recentActivity: { status: 'ok', records: [] } } })
+    } })
+    await h.context.loadLive()
+    const text = treeText(h.node('activitySchedule'))
+    assert.match(text, /上次结果未知/)
+    assert.match(text, /下次普通机会/)
+    if (count === 1) assert.match(text, /1 个观察范围的上次活动未提交决策，已收尾并等待新机会/)
+    else assert.doesNotMatch(text, /未提交决策/)
+    assert.doesNotMatch(text, /模型决定安静|已经发送/)
+  }
+})
 const descendants = node => [node, ...node.children.flatMap(descendants)]
 const BUDGET_RENDERERS = ['appendPolicyRow', 'budgetAmount', 'renderBudgetSummary', 'renderBudget']
 const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']

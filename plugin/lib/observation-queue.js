@@ -27,6 +27,22 @@ function stable(value) {
 }
 
 function validateCompletion(marker, event, sha256, raw) {
+  if (plain(marker) && marker.version === 3) {
+    const fields = ['version', 'event_raw', 'event_id', 'scope', 'event_sha256', 'completed_at', 'status',
+      'reason', 'local_outcome_id', 'observation_revision', 'native_turn_completed']
+    if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
+        marker.reason !== 'model_completed_without_decision' || marker.native_turn_completed !== true ||
+        event.kind !== 'activity.opportunity' || !['mind', 'main-review'].includes(event.producer) ||
+        marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
+        !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||
+        !Number.isSafeInteger(marker.completed_at) || marker.completed_at < event.created_at ||
+        marker.local_outcome_id !== hash(['no-decision', event.scope, event.event_id, marker.observation_revision].join('\0')) ||
+        typeof marker.event_raw !== 'string' || !Buffer.from(marker.event_raw, 'utf8').equals(raw) ||
+        Buffer.from(marker.event_raw, 'utf8').toString('utf8') !== marker.event_raw) {
+      throw new ObservationQueueError('Invalid local no-decision completion')
+    }
+    return marker
+  }
   if (!plain(marker) || ![1, 2].includes(marker.version) || marker.event_sha256 !== sha256 ||
       !terminalStatus(marker.status) || !decisionIdentity(marker.decision_id) ||
       ('scope' in marker && marker.scope !== event.scope) ||
@@ -99,7 +115,7 @@ export function readObservationEvidence(directory, key) {
     if (error.code !== 'ENOENT') throw error
     marker = readRegular(markerPath).value
     hasMarker = true
-    if (!plain(marker) || marker.version !== 2 || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires a v2 completion')
+    if (!plain(marker) || ![2, 3].includes(marker.version) || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires an exact terminal original')
     const raw = Buffer.from(marker.event_raw, 'utf8')
     if (raw.length > MAX_OBSERVATION_BYTES || raw.toString('utf8') !== marker.event_raw) throw new ObservationQueueError('Invalid UTF8 completion original')
     read = { raw, value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)), sha256: hash(raw) }
@@ -191,7 +207,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   }
 
   function scheduleReview(event, completed) {
-    if (completed.status === 'unknown' || producerOwnedReview.has(event.kind) ||
+    if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
         !('next_review_at' in completed) || completed.next_review_at > now()) return null
     const parentKey = observationKey(event.scope, event.event_id)
     const review = validateObservation({ ...event,
@@ -274,15 +290,23 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           current = { sha256: hash(raw) }
         }
         if (current.sha256 !== sha256) throw new ObservationQueueError('Observation changed before completion')
-        const marker = { version: 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
-          event_sha256: sha256, completed_at: now(), status: outcome.status,
-          decision_id: outcome.decision_id }
+        const local = outcome.status === 'no_decision'
+        const marker = { version: local ? 3 : 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
+          event_sha256: sha256, completed_at: local ? outcome.completed_at : now(), status: outcome.status,
+          ...(local ? { reason: outcome.reason, local_outcome_id: outcome.local_outcome_id,
+            observation_revision: outcome.observation_revision, native_turn_completed: outcome.native_turn_completed }
+            : { decision_id: outcome.decision_id }) }
         // null/undefined in a dispatch receipt means the LLM did not schedule a
         // review. A persisted marker with an explicit null timestamp is invalid.
-        if (outcome.next_review_at !== undefined && outcome.next_review_at !== null) {
+        if (!local && outcome.next_review_at !== undefined && outcome.next_review_at !== null) {
           marker.next_review_at = outcome.next_review_at
         }
-        try { validateCompletion(marker, event, sha256, raw) } catch (error) {
+        try {
+          if (local && ('decision_id' in outcome || 'next_review_at' in outcome || 'verdict' in outcome || 'ticket' in outcome)) {
+            throw new ObservationQueueError('A local no-decision outcome cannot carry a model verdict or review')
+          }
+          validateCompletion(marker, event, sha256, raw)
+        } catch (error) {
           parkInvalidTerminal(name)
           log('error', 'observation_invalid_terminal_parked:' + name + ':' + error.name)
           continue

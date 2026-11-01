@@ -16,6 +16,12 @@ const VERDICTS = new Set(['reply', 'silence', 'resume', 'defer', 'idle', 'tool_a
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const identifier = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value)
+const noDecisionId = (scope, eventId, revision) => createHash('sha256').update(['no-decision', scope, eventId, revision].join('\0')).digest('hex')
+const localOutcomeValid = (value, scope, eventId, revision) => plain(value) &&
+  Object.keys(value).sort().join(',') === 'completed_at,local_outcome_id,native_turn_completed,observation_revision,reason,status' &&
+  value.status === 'no_decision' && value.reason === 'model_completed_without_decision' && value.native_turn_completed === true &&
+  Number.isSafeInteger(revision) && revision >= 1 && value.observation_revision === revision &&
+  Number.isSafeInteger(value.completed_at) && value.completed_at >= 0 && value.local_outcome_id === noDecisionId(scope, eventId, revision)
 
 export class PolicyStateError extends Error {
   constructor(message) { super(message); this.name = 'PolicyStateError' }
@@ -54,7 +60,8 @@ function validateState(state) {
     if (value.observations !== undefined && (!Array.isArray(value.observations) || value.observations.some((entry) =>
       !plain(entry) || !identifier(entry.eventId) || !Number.isSafeInteger(entry.revision) ||
       (entry.decision !== undefined && (!plain(entry.decision) || !VERDICTS.has(entry.decision.verdict) ||
-        !identifier(entry.decision.decisionId) || !['open', 'silent'].includes(entry.decision.mode)))))) {
+        !identifier(entry.decision.decisionId) || !['open', 'silent'].includes(entry.decision.mode))) ||
+      (entry.localOutcome !== undefined && (entry.decision !== undefined || !localOutcomeValid(entry.localOutcome, key, entry.eventId, entry.revision)))))) {
       throw new PolicyStateError('Corrupt pinned observation state')
     }
     if (value.current !== null) {
@@ -371,6 +378,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         current.observations ||= []
         const seen = current.observations.find((entry) => entry.eventId === eventId)
         if (seen?.decision) return { accepted: false, reason: 'already_decided', scope, decision: clone(seen.decision) }
+        if (seen?.localOutcome) return { accepted: false, reason: 'already_completed_without_decision', scope, local_outcome: clone(seen.localOutcome) }
         if (seen && redrive !== true) return { accepted: false, reason: 'duplicate', scope, revision: seen.revision }
         if (seen && current.deliveries.some((entry) => entry.revision === seen.revision)) {
           return { accepted: false, reason: 'uncertain_delivery', scope }
@@ -388,17 +396,45 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
-    /** Only the trusted pump calls this AFTER a durable matching done marker.
-     * Pending/decided observations are pinned independently of the QQ LRU.
+    /** Persist the local lifecycle outcome before the queue publishes done.
+     * This does not grant a verdict, ticket, or persistent silence change.
      */
-    async ackObservation({ scope, eventId, decisionId } = {}) {
+    async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted } = {}) {
       canonicalScope(scope)
+      if (!identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || nativeTurnCompleted !== true) {
+        throw new PolicyStateError('Exact native-completed observation identity required')
+      }
+      return transaction((state) => {
+        const current = scopeState(state, scope)
+        const entry = current?.observations?.find(item => item.eventId === eventId)
+        if (!entry || entry.revision !== expectedRevision || entry.decision ||
+            current.deliveries.some(item => item.revision === expectedRevision) ||
+            (current.revision === expectedRevision && (current.current?.decided || current.current?.ticket))) {
+          throw new PolicyStateError('Observation is not an exact undecided no-delivery turn')
+        }
+        if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision', reason: 'model_completed_without_decision',
+          native_turn_completed: true, observation_revision: expectedRevision, completed_at: now(),
+          local_outcome_id: noDecisionId(scope, eventId, expectedRevision) }
+        return clone(entry.localOutcome)
+      })
+    },
+
+    /** Only the trusted pump calls this AFTER a durable matching done marker.
+     * Pending observations remain pinned independently of the QQ LRU.
+     */
+    async ackObservation({ scope, eventId, decisionId, localOutcomeId, expectedRevision } = {}) {
+      canonicalScope(scope)
+      const local = localOutcomeId !== undefined
+      if (local && (decisionId !== undefined || typeof localOutcomeId !== 'string' || !/^[0-9a-f]{64}$/.test(localOutcomeId) ||
+          !Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) throw new PolicyStateError('Exact local outcome acknowledgement required')
       return transaction((state) => {
         const current = scopeState(state, scope)
         const index = current?.observations?.findIndex((entry) => entry.eventId === eventId) ?? -1
         if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
         const entry = current.observations[index]
-        if (!entry.decision || entry.decision.decisionId !== decisionId) return { acknowledged: false, reason: 'decision_mismatch' }
+        if (local ? !entry.localOutcome || entry.localOutcome.local_outcome_id !== localOutcomeId || entry.revision !== expectedRevision ||
+            entry.decision || current.deliveries.some(item => item.revision === expectedRevision)
+          : !entry.decision || entry.decision.decisionId !== decisionId) return { acknowledged: false, reason: 'decision_mismatch' }
         current.observations.splice(index, 1)
         return { acknowledged: true }
       })

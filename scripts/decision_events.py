@@ -99,12 +99,11 @@ def _semantic(event):
 
 
 def _validated_completion(result, event, raw):
-    """Only a complete, evidence-bound terminal decision may acknowledge work."""
-    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] not in (1, 2) or
-            result.get("event_sha256") != hashlib.sha256(raw).hexdigest() or
-            result.get("status") not in ("decided", "sent", "unknown", "suppressed")):
+    """Validate a decision, or a distinct native-completed/no-decision outcome."""
+    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] not in (1, 2, 3) or
+            result.get("event_sha256") != hashlib.sha256(raw).hexdigest()):
         raise ObservationError("Invalid observation completion evidence")
-    if result["version"] == 2:
+    if result["version"] in (2, 3):
         original = result.get("event_raw")
         try:
             exact = isinstance(original, str) and original.encode("utf-8") == raw
@@ -112,9 +111,26 @@ def _validated_completion(result, event, raw):
             exact = False
         if not exact or any(result.get(key) != event[key] for key in ("scope", "event_id")):
             raise ObservationError("Completion original does not match immutable evidence")
-    decision = result.get("decision_id")
-    if not isinstance(decision, str) or not decision.strip() or len(decision) > 256 or re.search(r"[\x00-\x1f]", decision):
-        raise ObservationError("Invalid observation completion decision")
+    if result["version"] == 3:
+        # This local outcome is never an LLM verdict, send ticket, or review.
+        fields = {"version", "event_raw", "event_id", "scope", "event_sha256", "completed_at", "status",
+                  "reason", "local_outcome_id", "observation_revision", "native_turn_completed"}
+        revision = result.get("observation_revision")
+        if (set(result) != fields or result.get("status") != "no_decision" or
+                result.get("reason") != "model_completed_without_decision" or
+                result.get("native_turn_completed") is not True or
+                type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
+                event["kind"] != "activity.opportunity" or event["producer"] not in ("mind", "main-review")):
+            raise ObservationError("Invalid native no-decision completion")
+        identity = "no-decision\0" + event["scope"] + "\0" + event["event_id"] + "\0" + str(revision)
+        if result.get("local_outcome_id") != hashlib.sha256(identity.encode("utf-8")).hexdigest():
+            raise ObservationError("Invalid native no-decision identity")
+    else:
+        if result.get("status") not in ("decided", "sent", "unknown", "suppressed"):
+            raise ObservationError("Invalid observation completion status")
+        decision = result.get("decision_id")
+        if not isinstance(decision, str) or not decision.strip() or len(decision) > 256 or re.search(r"[\x00-\x1f]", decision):
+            raise ObservationError("Invalid observation completion decision")
     for key in ("scope", "event_id"):
         if key in result and result[key] != event[key]:
             raise ObservationError("Observation completion identity mismatch")
@@ -125,11 +141,13 @@ def _validated_completion(result, event, raw):
                 raise ObservationError("Invalid observation completion time")
             if key == "next_review_at" and value <= event["created_at"]:
                 raise ObservationError("Invalid observation review time")
+    if result["version"] == 3 and result["completed_at"] < event["created_at"]:
+        raise ObservationError("Native completion precedes its observation")
     return result
 
 
 def _read_evidence(base, key):
-    """Only ENOENT permits terminal-v2 recovery; never hide a bad pending file."""
+    """Only ENOENT permits self-contained terminal recovery; never hide bad pending."""
     target = _plain_directory(base / "pending") / (key + ".json")
     marker = _plain_directory(base / "done") / (key + ".json")
     missing = object()
@@ -139,8 +157,8 @@ def _read_evidence(base, key):
     except FileNotFoundError:
         completion = _read_regular(marker)
         if (not isinstance(completion, dict) or type(completion.get("version")) is not int or
-                completion["version"] != 2 or not isinstance(completion.get("event_raw"), str)):
-            raise ObservationError("Missing original requires a v2 completion")
+                completion["version"] not in (2, 3) or not isinstance(completion.get("event_raw"), str)):
+            raise ObservationError("Missing original requires a self-contained completion")
         try:
             raw = completion["event_raw"].encode("utf-8")
         except UnicodeError as error:
@@ -299,7 +317,7 @@ def observation_review_chain(scope, event_id, directory=None, limit=128):
         if event["scope"] != scope or event["event_id"] != event_id:
             raise ObservationError("Invalid review observation identity")
         result = {"event": event, "completion": completion, "waiting_review": False}
-        if completion is None or completion["status"] == "unknown" or "next_review_at" not in completion:
+        if completion is None or completion["status"] in ("unknown", "no_decision") or "next_review_at" not in completion:
             return result
         due = completion["next_review_at"]
         successor_id = "main-review:" + key + ":" + str(due)

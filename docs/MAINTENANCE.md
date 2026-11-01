@@ -1,5 +1,11 @@
 # 维护与发布
 
+## 本地无决策收尾升级
+
+最新自主链同时依赖 `decision-policy.js`、`observation-queue.js`、`onebot-policy-adapter.js` 与 Python `decision_events.py`、`mind.py`。OneBot 安装副本中的三个对应模块也必须同步；仅替换 adapter 会缺少本地收尾方法。面板服务和 HTML 同步更新，才能识别 `no_decision` 并显示等待下次机会。
+
+全新安装使用当前源码生成模块。已有多层补丁的环境须先核验全部父层、实际 before、ACL 与文件身份，保留旧 manifest，为本次精确目标建立独立增量与恢复原件，再协调重载宿主。下述旧连续性增量工具只负责其标记声明的目标，不能拿它覆盖安装最新三个模块。保留所有 pending、done、policy、发送记录和预算数据库；无需清空记忆或重放观察来启用新终态。
+
 ## 自主连续性增量层
 
 `scripts/patch_autonomy_continuity.py` 更新已完成 autonomy V1 安装的外部 OneBot 适配器和观察队列。默认 preview 只读；应用需先确认对应宿主停止，提供新的私有备份目录和本次 preview fingerprint。它核验历史父层、保存两个程序的精确原件及生成副本，使用独立 `lanya-continuity.patch.json` 标记，不覆盖旧层记录或策略状态。未知修改与部分应用必须用该层自己的私有 manifest 诊断、恢复，不能重跑旧安装器覆盖。

@@ -318,6 +318,7 @@ def _mind_metadata(value):
     if not isinstance(rows, dict) or len(rows) > 128:
         raise ValueError("Invalid observer metadata")
     out = {"schema_version": version, "scope_count": len(rows), "pending_count": 0, "error_count": 0,
+           "no_decision_count": 0,
            "scheduled_review_count": 0, "unknown_count": 0, "last_completed_at": None,
            "next_review_at": None, "next_opportunity_at": None}
     for key, row in rows.items():
@@ -337,9 +338,10 @@ def _mind_metadata(value):
                 raise ValueError("Invalid observer error metadata")
             out["error_count"] += 1
         status = row.get("last_status")
-        if status not in (None, "decided", "sent", "unknown", "suppressed"):
+        if status not in (None, "decided", "sent", "unknown", "suppressed", "no_decision"):
             raise ValueError("Invalid decision status")
         out["unknown_count"] += int(status == "unknown")
+        out["no_decision_count"] += int(status == "no_decision")
         for field in ("last_completed_at", "next_review_at", "next_opportunity_at"):
             when = row.get(field)
             if when is not None:

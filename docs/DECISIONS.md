@@ -30,7 +30,9 @@
 
 Python `decision_events.py`、PowerShell `qq_observation.ps1` 和 Node `observation-producer.js` 写入同一角色的 `decision-inbox/pending/`。事件身份是 scope 与 event_id 的 SHA256；原件不可覆盖，完成标记保存在 `done/`，绑定原件物理 UTF-8 字节的哈希。只保存来源事实，不把图中或通知正文的指令升级为权限。
 
-新完成记录使用版本 2，以 `event_raw` 保存完整原始 UTF-8 文本，保留原换行和字段顺序，不能用重新序列化后的相似 JSON 冒充原哈希。原路径缺失时，Python 与 Node 读取器才允许采用已验证的版本 2 副本；原路径存在但损坏、哈希不符或身份不符仍拒绝。扫描兼顾 `pending` 与 `done`，已完成记录仅确认终态或派生合法的到期后继，不重新执行原动作，`unknown` 没有自动后继。版本 1 记录仍需真实原件；缺失只能从精确匹配的备份恢复。
+有真实决策的完成记录使用版本 2，以 `event_raw` 保存完整原始 UTF-8 文本，保留原换行和字段顺序，不能用重新序列化后的相似 JSON 冒充原哈希。原路径缺失时，Python 与 Node 读取器才允许采用已验证的版本 2 副本；原路径存在但损坏、哈希不符或身份不符仍拒绝。扫描兼顾 `pending` 与 `done`，已完成记录仅确认终态或派生合法的到期后继，不重新执行原动作，`unknown` 没有自动后继。版本 1 记录仍需真实原件；缺失只能从精确匹配的备份恢复。
+
+自主机会的原生轮次已正常完成、却没有调用 `qq_decide`，且没有决策、发送票或发送结果时，采用严格版本 3 的 `no_decision` 本地终态。它绑定原观察字节、scope、revision 和稳定的 `local_outcome_id`，不含模型 verdict、`decision_id` 或复查授权。先持久保存本地收尾与完整完成标记，再精确确认本观察并释放其 pin；崩溃续验不再次执行原轮次。普通机会在配置间隔后产生新的 generation，错误、中止及未知发送仍保持原保护。这是未提交决策的明确记录，不表示模型选择了安静。
 
 OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租约排除另一个活消费者，只有确定死亡的旧 owner 可接替。入站观察先复制输入快照，必须精确匹配可信聊天的规范工作区与异步解析后的 preset ID；不符时不建 pin、不交给 agent，也不回显 payload。生产者的 `decisions.agentPreset` 应填写该实际 ID，不能用别名、旧角色或其他聊天的 preset 代替。preset 去除首尾空白，Windows 再转小写，其他平台保留大小写。空 agent 共享键保留既有语义；registry 的 `undefined` 无法区分未装 provider 与解析失败，不能拿配置默认值替代其结果。它将证据交给同一个聊天 agent，等真实 decision 与 turn 结束，再写完成记录和释放持久 pin。模型失败保留待处理证据并持久退避；有终态后重启不会再运行模型或重发。
 

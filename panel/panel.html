@@ -1855,6 +1855,7 @@ async function loadLive(){
       if(observer.next_review_at) appendPolicyRow(schedule, '已约复查：' + new Date(observer.next_review_at).toLocaleString('zh-CN'));
       if(observer.next_opportunity_at) appendPolicyRow(schedule, '下次普通机会：' + new Date(observer.next_opportunity_at).toLocaleString('zh-CN'));
       if(observer.error_count) appendPolicyRow(schedule, observer.error_count + ' 个观察范围证据缺失，等待核对。');
+      if(Number.isSafeInteger(observer.no_decision_count) && observer.no_decision_count > 0) appendPolicyRow(schedule, observer.no_decision_count + ' 个观察范围的上次活动未提交决策，已收尾并等待新机会。');
       appendPolicyRow(schedule, '请求检查只提交观察，是否行动或发消息由主 agent 决定。');
     }
     const history = live.recentActivity || {}, events = Array.isArray(history.records) ? history.records : [], box = $('liveLog');

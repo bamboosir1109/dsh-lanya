@@ -92,6 +92,20 @@ class PanelAutonomyTests(unittest.TestCase):
         self.assertEqual(before, hashlib.sha256(self.lease.read_bytes()).hexdigest())
         self.assertEqual(list(self.lease.parent.iterdir()), [self.lease])
 
+    def test_no_decision_is_an_explicit_local_outcome_without_unknown_or_idle_claim(self):
+        row = self.mind["decision_scopes"]["private:101"]
+        row["last_status"] = "no_decision"
+        self.write(self.data / "mind.json", self.mind)
+        status = self.module.autonomy_snapshot()
+        self.assertEqual(status["status"], "waiting")
+        self.assertEqual(status["observer"]["no_decision_count"], 1)
+        self.assertEqual(status["observer"]["unknown_count"], 0)
+        self.assertEqual(status["reason"], "waiting_for_opportunity")
+        self.assertNotIn("decision_id", json.dumps(status))
+        self.mind["decision_scopes"]["group:202"] = {"generation": 1, "last_status": "no_decision", "last_completed_at": 999500}
+        self.write(self.data / "mind.json", self.mind)
+        self.assertEqual(self.module.autonomy_snapshot()["observer"]["no_decision_count"], 2)
+
     def test_stale_owner_mismatch_and_unverifiable_owner_refuse_checks(self):
         self.write(self.napcat / "scheduler-in-plugin.flag", {"version": 2, "pid": 42, "at": 700000, "jobs": ["mind"]})
         self.assertEqual(self.module.autonomy_snapshot()["status"], "offline")

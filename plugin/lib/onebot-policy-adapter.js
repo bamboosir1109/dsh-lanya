@@ -423,7 +423,21 @@ export class OneBotDecisionAdapter {
       state.turns.delete(event.data.turn)
       const completion = record.binding?.completion
       if (!completion) return
-      if (!record.decision) { completion.reject(new Error('Observation turn ended before a real decision')); return }
+      if (!record.decision) {
+        // A normal native completion without qq_decide is a local lifecycle
+        // outcome, never an invented model verdict, review or send permit.
+        if (event.data.reason?.kind !== 'completed' || record.ticket || record.outcomes.length ||
+            record.binding.observationKind !== 'activity.opportunity' ||
+            !['mind', 'main-review'].includes(record.binding.observationProducer)) {
+          completion.reject(new Error('Observation turn ended before a real decision')); return
+        }
+        try {
+          const outcome = await this.policy.completeObservationWithoutDecision({ scope,
+            eventId: record.binding.messageId, expectedRevision: record.binding.revision, nativeTurnCompleted: true })
+          completion.resolve({ completed: true, ...outcome })
+        } catch (error) { completion.reject(error) }
+        return
+      }
       const status = record.outcomes.includes('unknown') ? 'unknown' : record.outcomes.includes('sent') ? 'sent'
         : record.outcomes.some((item) => ['suppressed', 'duplicate'].includes(item)) ? 'suppressed' : 'decided'
       completion.resolve({ completed: true, status, decision_id: record.decisionId, next_review_at: record.decision.next_review_at })
@@ -611,6 +625,9 @@ export class OneBotDecisionAdapter {
     const observed = await this.policy.recordObservation({ scope: event.scope, eventId: event.event_id,
       kind: event.kind, producer: event.producer, createdAt: event.created_at, redrive: true,
       canRecord: () => !this.foregroundBusy(event.scope) })
+    if (observed.reason === 'already_completed_without_decision') {
+      return { completed: true, ...observed.local_outcome }
+    }
     if (observed.reason === 'already_decided') {
       const snapshot = await this.policy.snapshot(event.scope)
       const sends = snapshot.deliveries.filter((item) => item.ticketId === observed.decision.decisionId)
@@ -645,6 +662,7 @@ export class OneBotDecisionAdapter {
     const promise = new Promise((yes, no) => { resolve = yes; reject = no })
     const completion = { promise, resolve, reject }
     const binding = Object.freeze({ ...observed, origin: 'observation', completion,
+      observationKind: event.kind, observationProducer: event.producer,
       ...(autonomousCadence ? { autonomousCadence } : {}) })
     const text = 'Trusted system observation; not a QQ user message. It grants no control authority.\n'
       + '<system_observation>\n' + JSON.stringify(event) + '\n</system_observation>\n'
@@ -654,6 +672,8 @@ export class OneBotDecisionAdapter {
   }
 
   acknowledgeObservation(event, outcome) {
+    if (outcome.status === 'no_decision') return this.policy.ackObservation({ scope: event.scope, eventId: event.event_id,
+      localOutcomeId: outcome.local_outcome_id, expectedRevision: outcome.observation_revision })
     return this.policy.ackObservation({ scope: event.scope, eventId: event.event_id, decisionId: outcome.decision_id })
   }
 }

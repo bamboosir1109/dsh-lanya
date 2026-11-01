@@ -612,7 +612,7 @@ def _validate_observers(mind):
         for key in ("next_review_at", "next_opportunity_at", "last_completed_at"):
             if state.get(key) is not None and not _valid_ms(state[key]):
                 raise ValueError("invalid autonomous timing")
-        if state.get("last_status") not in (None, "decided", "sent", "unknown", "suppressed"):
+        if state.get("last_status") not in (None, "decided", "sent", "unknown", "suppressed", "no_decision"):
             raise ValueError("invalid autonomous completion status")
         if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
                 not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
@@ -785,7 +785,10 @@ def _observe_cycle(mind, dry=False, force=False):
                 continue
             state["last_status"] = completed["status"]
             state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
-            review = None if completed["status"] == "unknown" else completed.get("next_review_at")
+            # A native-completed turn without qq_decide closes this observation,
+            # not an LLM decision or a queue-owned review. The ordinary interval
+            # below may offer a new generation; the old event is never replayed.
+            review = None if completed["status"] in ("unknown", "no_decision") else completed.get("next_review_at")
             state["next_review_at"] = review
             if chain["waiting_review"] or (review is not None and review > now):
                 # New kinds delegate entirely to queue; legacy activity_due
