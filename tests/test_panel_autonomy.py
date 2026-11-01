@@ -82,7 +82,9 @@ class PanelAutonomyTests(unittest.TestCase):
         self.assertEqual(state["autonomy"], live["autonomy"])
         self.assertEqual(state["autonomy"], activity["autonomy"])
         self.assertEqual(state["autonomy"]["status"], "waiting")
-        self.assertTrue(activity["activities"][0]["ready"])
+        self.assertEqual(activity["activities"], [])
+        self.assertTrue(activity["retired_controls"])
+        self.assertEqual(activity["settings"]["runtime"], state["autonomy"])
         self.assertTrue(all(row["count"] == 0 and row["control"] == "request_check" for row in state["components"] if row["tag"] in ("lifeloop", "mind")))
         safe = json.dumps(state) + json.dumps(live) + json.dumps(activity)
         for private in ("PRIVATE PLAN", "private:101", "fixture-only", '"pid"', '"nonce"'):

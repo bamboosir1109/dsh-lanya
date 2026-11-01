@@ -47,6 +47,7 @@ class PackageTests(unittest.TestCase):
             "plugin/lib/observation-queue.js", "plugin/lib/observation-producer.js",
             "scripts/androidd.py", "scripts/android_panel.py", "scripts/memory_context.py",
             "scripts/panel_activity.py", "scripts/panel_record_files.py",
+            "scripts/panel_autonomy.py", "scripts/budget_runtime.py",
             "tests/test_panel_activity.py", "tests/test_panel_record_views.py",
             "tests/test_panel_record_files.py", "tests/test_panel_snapshots.py", "tests/test_panel_records.mjs",
             "tests/fixtures/onebot_policy/lib/bridge.js", "tests/fixtures/onebot_policy/package.json",

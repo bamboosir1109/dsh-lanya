@@ -440,6 +440,55 @@ def autonomy_label(status):
             "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u65e7\u7248\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
 
 
+def autonomy_settings_snapshot():
+    from panel_autonomy import get_settings
+    result = get_settings()
+    result["runtime"] = autonomy_snapshot()
+    return result
+
+
+def unified_budget_snapshot():
+    try:
+        import budget_runtime
+        value = budget_runtime.get_snapshot()
+        enforcement = dict(value.get("enforcement") or {})
+        bound = False
+        if enforcement.get("runtime_gate_bound") is True:
+            try:
+                from panel_autonomy import _record
+                evidence = budget_runtime.gate_evidence()
+                stamp = _read_metadata(os.path.join(NAPCAT, "scheduler-in-plugin.flag"), 65536)
+                pid, at = evidence.get("pid"), evidence.get("at")
+                scheduler_at = stamp.get("at")
+                valid = (type(pid) is int and 0 < pid <= 0xffffffff and type(at) is int and
+                         at == enforcement.get("gate_last_seen") and stamp.get("version") == 2 and
+                         stamp.get("pid") == pid and type(scheduler_at) is int and
+                         isinstance(stamp.get("jobs"), list) and "mind" in stamp["jobs"] and
+                         0 <= time.time() * 1000 - at <= 90000 and
+                         -5000 <= time.time() * 1000 - scheduler_at <= 120000)
+                adapter = os.path.join(PROFILE, "node_modules", "dsh-onebot-qq", "lib", "lanya-policy-adapter.js")
+                config = _read_metadata(os.path.join(os.path.dirname(adapter), "lanya-policy.config.json"))
+                helper = os.path.abspath(budget_runtime.__file__)
+                configured_helper = config.get("budgetRuntimeScript")
+                valid = (valid and isinstance(configured_helper, str) and os.path.isabs(configured_helper) and
+                         os.path.normcase(os.path.abspath(configured_helper)) == os.path.normcase(helper) and
+                         _record(helper)[0]["sha256"] == evidence.get("helper_source_sha256") and
+                         _record(adapter)[0]["sha256"] == evidence.get("adapter_source_sha256"))
+                bound = (valid and _scheduler_owner_verified(pid, min(at, scheduler_at)) is True and
+                         _consumer_matches(pid) is True and _read_metadata(os.path.join(NAPCAT, "scheduler-in-plugin.flag"), 65536) == stamp)
+            except Exception:
+                bound = False
+        enforcement.pop("gate_pid", None)
+        enforcement.update(runtime_gate_bound=bool(bound), runtime_owner_verified=bool(bound))
+        value = dict(value, enforcement=enforcement)
+        return value
+    except Exception:
+        # A missing/unreadable ledger is unavailable, never a fresh zero balance.
+        return {"schema": "unified-budget/v1", "availability": "error", "status": "unavailable",
+                "revision": None, "effective": None, "usage": None,
+                "enforcement": {"before_turn": False, "before_action": False, "provider_hard_cap": False}}
+
+
 def panel_state_snapshot():
     candidates = []
     for name in ("lanya-state.json", "dafeiyu-state.json"):
@@ -1729,6 +1778,39 @@ class Handler(SimpleHTTPRequestHandler):
             raise PanelAndroidError("bad_job", "Invalid Android JSON body", 400) from None
         return self._json(202, AndroidPanel().submit(body))
 
+    def _settings_body(self):
+        # These new controls accept local panel origins only, independent of
+        # the older generic routes' permissive CORS compatibility behavior.
+        from panel_autonomy import SettingsError
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlparse(origin)
+            ports = {int(project_conf.get("panelPort", 19389)), int(project_conf.get("panelStaticPort", 19388))}
+            if hasattr(self, "server"):
+                ports.add(self.server.server_port)
+            if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or
+                    parsed.port not in ports or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+                raise SettingsError("origin", "Settings require a local panel origin", 403)
+        def unique(pairs):
+            out = {}
+            for key, value in pairs:
+                if key in out:
+                    raise ValueError()
+                out[key] = value
+            return out
+        try:
+            size = int(self.headers.get("content-length", "0"))
+            if not 0 < size <= 16 * 1024:
+                raise ValueError()
+            def constant(_):
+                raise ValueError()
+            body = json.loads(self.rfile.read(size).decode("utf-8"), object_pairs_hook=unique, parse_constant=constant)
+            if type(body) is not dict:
+                raise ValueError()
+            return body
+        except (ValueError, UnicodeError):
+            raise SettingsError("invalid_json", "Expected a bounded JSON object", 400) from None
+
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
@@ -1739,6 +1821,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "pid": os.getpid(), "port": port, "role": role, "script_sha256": _PANEL_SCRIPT_SHA256})
         if path == "/api/autonomy":
             return self._json(200, {"ok": True, "autonomy": autonomy_snapshot()})
+        if path == "/api/autonomy/settings":
+            settings = autonomy_settings_snapshot()
+            return self._json(200, {"ok": settings["availability"] == "available", "settings": settings})
         if path == "/api/state":
             return self._json(200, panel_state_snapshot())
         if path in ("/api/android/status", "/api/android/shot"):
@@ -2006,51 +2091,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": True, "napcat": {"found": False, "error": str(_e)}})
 
         if path == "/api/activities":
-            try:
-                with open(ACTIVITIES, "r", encoding="utf-8") as fha:
-                    data = json.load(fha)
-            except Exception:
-                data = {"activities": []}
-
-            # 把每项活动绑到的部件状态查出来，页面才知道"能不能真干"
-            st3 = {}
-            try:
-                st3 = dict((c.get("tag"), c) for c in (panel_state_snapshot().get("components") or []))
-            except Exception:
-                st3 = {}
-
-            autonomy = autonomy_snapshot()
-            data["autonomy"] = autonomy
-            def comp_count(tag):
-                c = st3.get(tag)
-                return int(c.get("count") or 0) if c else 0
-
-            for a in (data.get("activities") or []):
-                b = a.get("bound")
-                a["ready"] = None          # None = 不依赖部件
-                a["why"] = ""
-                if b == "bili-duty":
-                    cc2 = _bili_cred()
-                    okcred = bool(cc2.get("sessdata")) and bool(cc2.get("bili_jct"))
-                    a["ready"] = okcred
-                    a["why"] = "B 站已登录" if okcred else "还没登录 B 站（去刷 B 站页扫码）"
-                elif b in ("lifeloop", "mind") and autonomy["mode"] != "legacy":
-                    a["ready"] = autonomy["can_request_check"]
-                    a["why"] = autonomy_label(autonomy)
-                    a["managed_by"] = "main_agent"
-                elif b == "works":
-                    service = (st3.get("works") or {}).get("service", {})
-                    a["ready"] = service.get("healthy") is True
-                    a["why"] = "\u4f5c\u54c1\u7ad9\u5065\u5eb7" if a["ready"] else "\u4f5c\u54c1\u7ad9\u5065\u5eb7\u672a\u786e\u8ba4"
-                elif b:
-                    n = comp_count(b)
-                    a["ready"] = n > 0
-                    a["why"] = (a.get("noteOn") if n > 0 else a.get("noteOff")) or (
-                        ("%s 在跑" % b) if n > 0 else ("%s 没起" % b))
-
-            data["suggestions"] = activity_suggestions(
-                list(st3.values()), data.get("activities") or [])
-            return self._json(200, {"ok": True, "data": data})
+            settings = autonomy_settings_snapshot()
+            return self._json(200, {"ok": settings["availability"] == "available", "data": {
+                "managed_by": "main_agent", "retired_controls": True, "activities": [],
+                "replacement": "/api/autonomy/settings", "autonomy": settings["runtime"],
+                "settings": settings, "recentActivity": panel_main_activity()["recentActivity"]}})
 
         if path == "/api/live":
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
@@ -2061,12 +2106,8 @@ class Handler(SimpleHTTPRequestHandler):
                 out["autonomy"] = autonomy
                 out["statusLabel"] = autonomy_label(autonomy)
                 out["recentActivity"] = panel_main_activity()["recentActivity"]
-                try:
-                    budget = _read_metadata(BUDGET)
-                    out["money"] = {key: budget.get(key, False if key == "exhausted" else 0)
-                                    for key in ("spent", "limit", "exhausted")}
-                except (OSError, ValueError, TypeError):
-                    pass
+                out["budget"] = unified_budget_snapshot()
+                out["settings"] = autonomy_settings_snapshot()
                 return self._json(200, {"ok": True, "live": out})
             try:
                 lf = tail_file(os.path.join(LANYA_DIR_, "lifeloop.log"), 12)
@@ -2081,14 +2122,8 @@ class Handler(SimpleHTTPRequestHandler):
                 out["lastAt"] = st2.get("lastAt", "")
             except Exception:
                 pass
-            try:
-                with open(os.path.join(LANYA_DIR_, "budget.json"), "r",
-                          encoding="utf-8") as fhb:
-                    b = json.load(fhb)
-                out["money"] = {"spent": b.get("spent", 0), "limit": b.get("limit", 0),
-                                "exhausted": b.get("exhausted", False)}
-            except Exception:
-                pass
+            out["budget"] = unified_budget_snapshot()
+            out["settings"] = autonomy_settings_snapshot()
             return self._json(200, {"ok": True, "live": out})
 
         if path == "/api/bili":
@@ -2131,11 +2166,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": True, "tools": tools_snapshot()})
 
         if path == "/api/budget":
-            try:
-                with open(BUDGET, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "budget": json.load(fh)})
-            except Exception as e:
-                return self._json(200, {"ok": False, "budget": {}, "error": str(e)})
+            budget = unified_budget_snapshot()
+            return self._json(200, {"ok": budget.get("availability") in ("available", "not_started"), "budget": budget})
 
         if path == "/api/memes/config":
             try:
@@ -2250,11 +2282,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/tunables":
-            try:
-                with open(TUNABLES, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "tunables": json.load(fh)})
-            except Exception as e:
-                return self._json(200, {"ok": False, "tunables": {}, "error": str(e)})
+            settings = autonomy_settings_snapshot()
+            return self._json(200, {"ok": True, "retired": True, "read_only": True,
+                "replacement": "/api/autonomy/settings", "group_observation": settings["group_observation"]})
         if path == "/api/config":
             try:
                 with open(CONFIG, "r", encoding="utf-8") as fh:
@@ -2372,6 +2402,36 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "Check request takes no owner or event parameters"})
             result = request_autonomy_check()
             return self._json(200 if result["ok"] else 409, result)
+        if path in ("/api/activities", "/api/activities/add", "/api/activities/delete", "/api/tunables", "/api/budget/topup"):
+            return self._json(410, {"ok": False, "code": "legacy_control_retired",
+                "error": "This legacy control does not configure the main agent",
+                "replacement": "/api/budget" if path.endswith("topup") else "/api/autonomy/settings"})
+        if path in ("/api/autonomy/settings", "/api/budget"):
+            try:
+                from panel_autonomy import SettingsError, save_settings
+                body = self._settings_body()
+                if path == "/api/autonomy/settings":
+                    settings = save_settings(body)
+                    settings["runtime"] = autonomy_snapshot()
+                    return self._json(200, {"ok": True, "settings": settings})
+                if set(body) == {"budget"}:
+                    return self._json(410, {"ok": False, "code": "legacy_budget_retired",
+                        "error": "Use current budget settings and a fresh revision"})
+                if set(body) != {"revision", "settings"} or type(body.get("settings")) is not dict:
+                    raise SettingsError("invalid_budget", "Expected settings and a fresh revision", 400)
+                from budget_runtime import save_config
+                save_config(body["settings"], body["revision"])
+                budget = unified_budget_snapshot()
+                return self._json(200, {"ok": True, "budget": budget})
+            except Exception as error:
+                status = getattr(error, "http_status", getattr(error, "status", 503))
+                if type(status) is not int or status not in (400, 403, 409, 503):
+                    status = 503
+                code = getattr(error, "code", "settings_unavailable")
+                if not isinstance(code, str) or not re.fullmatch(r"[a-z_]{1,64}", code):
+                    code = "settings_unavailable"
+                message = "Settings changed; refresh before saving" if status == 409 else "Settings update refused"
+                return self._json(status, {"ok": False, "code": code, "error": message})
         body = self._read()
 
         if path == "/api/memory/consolidate":
@@ -2400,61 +2460,6 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
-
-        if path == "/api/budget":
-            # 真写。之前这里有两条只读的分支，点保存只会把当前值读回来。
-            try:
-                with open(BUDGET, "r", encoding="utf-8") as fh:
-                    b = json.load(fh)
-                want = body.get("budget") or {}
-                if not isinstance(want, dict):
-                    return self._json(400, {"ok": False, "error": "budget must be an object"})
-
-                def numv(k, lo, hi, default):
-                    v = want.get(k)
-                    if v is None:
-                        return default
-                    try:
-                        v = float(v)
-                    except (TypeError, ValueError):
-                        return default
-                    return max(lo, min(hi, v))
-
-                old_limit = float(b.get("limit") or 1.0)
-                old_spent = float(b.get("spent") or 0.0)
-                spent = float(b.get("spent") or 0.0)
-
-                new_limit = numv("limit", 0.0, 100000.0, old_limit)
-                b["limit"] = round(new_limit, 4)
-                # 改了上限就按新上限重算余量，不然页面上数字对不上
-                b["remaining"] = round(max(0.0, b["limit"] - spent), 4)
-                b["exhausted"] = bool(spent >= b["limit"] and b["limit"] > 0)
-
-                if want.get("dmLimit") is not None:
-                    b["dmLimit"] = numv("dmLimit", 0.0, 100000.0, b.get("dmLimit", 0))
-                if want.get("groupLimit") is not None:
-                    b["groupLimit"] = numv("groupLimit", 0.0, 100000.0,
-                                           b.get("groupLimit", 0))
-                if "askWhenExhausted" in want:
-                    b["askWhenExhausted"] = bool(want["askWhenExhausted"])
-
-                import uuid as _u7
-                bp = os.path.join(LANYA_DIR_, "budget.json")
-                tmp = bp + "." + _u7.uuid4().hex[:8] + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(b, fh, ensure_ascii=False, indent=1)
-                for _k in range(6):
-                    try:
-                        os.replace(tmp, bp)
-                        break
-                    except OSError:
-                        if _k == 5:
-                            raise
-                        import time as _t7
-                        _t7.sleep(0.05)
-                return self._json(200, {"ok": True, "budget": b})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/bili/reply/delete":
             # 直接发请求，不起子进程 —— 光 python 启动就要一两秒。
@@ -2978,110 +2983,6 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 return self._json(500, {"ok": False, "error": "memory maintenance failed"})
 
-        if path == "/api/activities/add":
-            try:
-                with open(ACTIVITIES, "r", encoding="utf-8") as fha4:
-                    data = json.load(fha4)
-                acts = data.setdefault("activities", [])
-                name = str(body.get("name") or "").strip()
-                if not name:
-                    return self._json(400, {"ok": False, "error": "need a name"})
-                # 用名字生成一个稳定 id，重复就加序号
-                base = "".join(c for c in name.lower() if c.isalnum()) or "act"
-                aid = base
-                n = 1
-                while any(a.get("id") == aid for a in acts):
-                    aid = base + str(n)
-                    n += 1
-                acts.append({
-                    "id": aid,
-                    "name": name[:24],
-                    "desc": str(body.get("desc") or "")[:120],
-                    "enabled": bool(body.get("enabled", True)),
-                    "cost": bool(body.get("cost", True)),
-                })
-                tmp = ACTIVITIES + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fha5:
-                    json.dump(data, fha5, ensure_ascii=False, indent=1)
-                os.replace(tmp, ACTIVITIES)
-                return self._json(200, {"ok": True, "id": aid})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-
-        if path == "/api/activities/delete":
-            try:
-                with open(ACTIVITIES, "r", encoding="utf-8") as fha6:
-                    data = json.load(fha6)
-                aid = str(body.get("id") or "")
-                before = len(data.get("activities") or [])
-                data["activities"] = [a for a in (data.get("activities") or [])
-                                      if a.get("id") != aid]
-                if len(data["activities"]) == before:
-                    return self._json(404, {"ok": False, "error": "not found"})
-                tmp = ACTIVITIES + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fha7:
-                    json.dump(data, fha7, ensure_ascii=False, indent=1)
-                os.replace(tmp, ACTIVITIES)
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-
-        if path == "/api/activities":
-            try:
-                with open(ACTIVITIES, "r", encoding="utf-8") as fha2:
-                    data = json.load(fha2)
-                acts = data.get("activities") or []
-                want = body.get("enabled") or {}
-                for a in acts:
-                    aid = a.get("id")
-                    if aid in want:
-                        a["enabled"] = bool(want[aid])
-                tmp = ACTIVITIES + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fha3:
-                    json.dump(data, fha3, ensure_ascii=False, indent=1)
-                os.replace(tmp, ACTIVITIES)
-                return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-
-        if path == "/api/budget/topup":
-            try:
-                amt = float(body.get("amount") or 0)
-                if amt == 0:
-                    return self._json(400, {"ok": False, "error": "amount is 0"})
-                bp = os.path.join(LANYA_DIR_, "budget.json")
-                with open(bp, "r", encoding="utf-8") as fhb2:
-                    b = json.load(fhb2)
-                # amount > 0 加额度；< 0 直接记一笔花费
-                if amt > 0:
-                    b["limit"] = round(float(b.get("limit") or 0) + amt, 4)
-                    b["exhausted"] = False
-                else:
-                    b["spent"] = round(float(b.get("spent") or 0) + abs(amt), 4)
-                lim = float(b.get("limit") or 0)
-                sp = float(b.get("spent") or 0)
-                b["remaining"] = round(max(0.0, lim - sp), 4)
-                b["exhausted"] = bool(lim > 0 and sp >= lim)
-                import uuid as _u4
-                tmp = bp + "." + _u4.uuid4().hex[:8] + ".tmp"
-                _retry = 6
-                with open(tmp, "w", encoding="utf-8") as fhb3:
-                    json.dump(b, fhb3, ensure_ascii=False)
-                # Windows 上目标被另一个进程读着时 os.replace 会抛 WinError 5/32。
-                # 连点两下「+1」正好会撞上，重试几次就过去了。
-                for _k in range(_retry):
-                    try:
-                        os.replace(tmp, bp)
-                        break
-                    except OSError:
-                        if _k == _retry - 1:
-                            raise
-                        import time as _t5
-                        _t5.sleep(0.05)
-                return self._json(200, {"ok": True, "budget": b})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-
         if path == "/api/memory/add":
             try:
                 return self._json(200, memory_mutation("add", body))
@@ -3111,31 +3012,6 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 os.remove(full)
                 return self._json(200, {"ok": True})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-
-        if path == "/api/tunables":
-            tun = body.get("tunables")
-
-        if path == "/api/tunables":
-            tun = body.get("tunables")
-            if not isinstance(tun, dict):
-                return self._json(400, {"ok": False, "error": "tunables must be an object"})
-            # 保留文件里的中文分组说明，只覆盖数值项
-            try:
-                with open(TUNABLES, "r", encoding="utf-8") as fh:
-                    current = json.load(fh)
-            except Exception:
-                current = {}
-            if isinstance(current, dict):
-                current.update(tun)
-                tun = current
-            try:
-                tmp = TUNABLES + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(tun, fh, ensure_ascii=False, indent=2)
-                os.replace(tmp, TUNABLES)
-                return self._json(200, {"ok": True, "restart": ["groupwatch"]})
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
 

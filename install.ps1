@@ -94,8 +94,7 @@ $map += @(
     @{ From = (Join-Path $Repo 'config\project.json'); To = $projectTarget; Protected = $true; Project = $true },
     @{ From = (Join-Path $Repo 'docs\persona.example.md'); To = $personaTarget; Protected = $true },
     @{ From = (Join-Path $Repo 'docs\config.example.json'); To = (Join-Path $data 'lanya-config.json'); Protected = $true; Legacy = (Join-Path $data 'dafeiyu-config.json') },
-    @{ From = (Join-Path $Repo 'docs\tunables.example.json'); To = (Join-Path $data 'lanya-tunables.json'); Protected = $true; Legacy = (Join-Path $data 'dafeiyu-tunables.json') },
-    @{ From = (Join-Path $Repo 'docs\activities.example.json'); To = (Join-Path $data 'activities.json'); Protected = $true }
+    @{ From = (Join-Path $Repo 'docs\tunables.example.json'); To = (Join-Path $data 'lanya-tunables.json'); Protected = $true; Legacy = (Join-Path $data 'dafeiyu-tunables.json') }
 )
 
 Write-Host ('repo   : ' + $Repo)

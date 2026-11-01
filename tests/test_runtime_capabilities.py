@@ -86,6 +86,8 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                     process_probe=lambda paths: {}, now=lambda: 1234.0)
                 guide = result["tools"]["qq_expression"]
                 self.assertIn("no fixed sentence count or total message count", guide["reply_length"])
+                self.assertIn("Default to concise, direct, natural chat", guide["reply_length"])
+                self.assertIn("Expand when useful detail", guide["reply_length"])
                 self.assertIn("preserving the full content", guide["reply_length"])
                 self.assertIn("unverified", guide["registration"])
                 self.assertIn("Selection is not delivery", guide["meme_selection"])
@@ -98,6 +100,16 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 for boundary in ("silence", "scope", "revision", "budget", "deduplication", "unknown"):
                     self.assertIn(boundary, guide["limits"])
         self.assertEqual(self.snapshot(), before)
+
+    def test_prompt_defaults_to_concise_but_keeps_complete_detail_and_no_total_cap(self):
+        prompt = (SCRIPTS.parent / "prompts" / "lifeloop.prompt.txt").read_text(encoding="utf-8")
+        style = next(line for line in prompt.splitlines() if line.startswith("聊天默认"))
+        self.assertIn("简短直接", style)
+        self.assertIn("长短按当前内容决定", style)
+        self.assertIn("不设固定句数或总条数", style)
+        self.assertIn("直接说完整", style)
+        self.assertIn("不用等追问", style)
+        self.assertNotRegex(style, r"(?:最多|限于|固定)[一二两三123]+(?:句|行|条)")
 
     def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
         made = self.root / "FixtureRole" / "made"
@@ -154,6 +166,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 for boundary in ("silence", "scope", "revision", "budget", "deduplication"):
                     self.assertIn(boundary, sharing["permission"])
                 self.assertIn("no fixed sentence count or total message count", sharing["length"])
+                self.assertIn("Default to concise, direct, natural sharing", sharing["length"])
                 self.assertFalse(context["tools"]["voice"]["delivered"])
         self.assertEqual(self.snapshot(), before)
 

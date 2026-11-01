@@ -6,11 +6,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createDecisionPolicy, canonicalScope } from './decision-policy.js'
 import { createObservationPump, validateObservation } from './observation-queue.js'
 
+// Freeze the on-disk bytes at ESM evaluation, including for new bridge
+// instances created from this cached module after a later deployment.
+const LOADED_ADAPTER_SHA256 = createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex')
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const identity = (...parts) => createHash('sha256').update(parts.map(String).join('\0')).digest('hex')
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
@@ -44,7 +47,7 @@ function targetScope(params, supplied) {
 
 export class OneBotDecisionAdapter {
   constructor(bridge, deps, { configFile, stateFile, policy, pumpFactory = createObservationPump,
-    memoryContext, runtimeCapabilities, now = Date.now, log = (level, message) => deps.log(level, message) } = {}) {
+    memoryContext, runtimeCapabilities, budgetProvider, now = Date.now, log = (level, message) => deps.log(level, message) } = {}) {
     let config = {}
     if (!stateFile) {
       if (!configFile) throw new Error('Explicit policy configuration is required')
@@ -65,6 +68,23 @@ export class OneBotDecisionAdapter {
     this.now = now
     this.memoryContext = memoryContext || ((scope, text, owner) => this.readMemoryContext(scope, text, owner))
     this.runtimeCapabilities = runtimeCapabilities || ((scope, owner) => this.readRuntimeCapabilities(scope, owner))
+    this.budgetEnabled = config.budgetRuntimeScript !== undefined || budgetProvider !== undefined
+    if (config.budgetRuntimeScript !== undefined && (typeof config.budgetRuntimeScript !== 'string' || !path.isAbsolute(config.budgetRuntimeScript))) {
+      throw new Error('An absolute trusted budgetRuntimeScript is required')
+    }
+    this.budgetInstance = identity(randomUUID(), process.pid)
+    this.budgetSourceHash = LOADED_ADAPTER_SHA256
+    this.budgetProvider = budgetProvider || ((request) => this.readTrustedHelper(config.budgetRuntimeScript, request, { timeout: 7000 }))
+    this.budgetToolChecks = new WeakMap()
+    this.budgetScopes = new WeakSet()
+    if (this.budgetEnabled) {
+      const install = bridge.installChannelScope
+      const adapter = this
+      bridge.installChannelScope = function (ctx, ...args) {
+        adapter.installBudgetScope(ctx)
+        return install.call(this, ctx, ...args)
+      }
+    }
     this.pump = pumpFactory({ directory: path.join(path.dirname(stateFile), 'decision-inbox'),
       dispatch: (event) => this.dispatchObservation(event),
       acknowledge: (event, outcome) => this.acknowledgeObservation(event, outcome), log })
@@ -76,9 +96,17 @@ export class OneBotDecisionAdapter {
     return state
   }
 
-  start() { return this.pump.start() }
+  async start() {
+    if (this.budgetEnabled && !this.budgetTimer) {
+      await this.budgetHeartbeat()
+      this.budgetTimer = setInterval(() => { void this.budgetHeartbeat().catch(error => this.log('warn', 'budget_gate_unavailable:' + error.name)) }, 30000)
+      this.budgetTimer.unref?.()
+    }
+    return this.pump.start()
+  }
   async stop() {
     this.pump.stop()
+    if (this.budgetTimer) { clearInterval(this.budgetTimer); this.budgetTimer = null }
     for (const entry of this.observations.values()) entry.reject(new Error('Bridge stopped before observation settled'))
     this.observations.clear()
   }
@@ -127,6 +155,12 @@ export class OneBotDecisionAdapter {
     const shadow = { ...chat, loopPending: null, loopBuffer: [], recallTimers: new Map(),
       recalledInterimIds: new Set(), lastHandledMessageId: undefined }
     const record = { binding, turn, shadow, ticket: null, decision: null, inFlight: new Set(), outcomes: [], ended: false }
+    if (binding?.budget) {
+      try {
+        const starts = chat.agent.session.snapshotEvents().filter(event => event.type === 'turn/start' && event.data?.turn === turn)
+        if (starts.length === 1 && Number.isSafeInteger(starts[0].seq)) record.budgetStartSeq = starts[0].seq
+      } catch { /* Missing native sequence evidence retains the reservation. */ }
+    }
     state.turns.set(turn, record)
     state.active = record
     this.bridge.interim.onTurnStart(shadow)
@@ -143,6 +177,110 @@ export class OneBotDecisionAdapter {
     return record
   }
 
+  async budgetHeartbeat() {
+    const value = await this.budgetProvider({ operation: 'heartbeat', instance_id: this.budgetInstance, pid: process.pid,
+      adapter_source_sha256: this.budgetSourceHash })
+    if (value?.bound !== true) throw new Error('Budget gate heartbeat refused')
+  }
+
+  costMeter(agent) {
+    try {
+      const meter = agent?.ctx?.get?.('costMeter', false)
+      return typeof meter?.getTurnCost === 'function' ? meter : null
+    } catch { return null }
+  }
+
+  installBudgetScope(ctx) {
+    if (this.budgetScopes.has(ctx)) return
+    // Actual dsh-tools: the async waterfall is followed by monotonic synchronous
+    // tools.guard checks. A later listener cannot turn our denial into allow.
+    if (typeof ctx?.on !== 'function' || typeof ctx.tools?.guard !== 'function') throw new Error('Budget requires scoped native tool guards')
+    this.budgetScopes.add(ctx)
+    ctx.on('tools/pre-execute', async (exec, next) => {
+      const record = this.captureExec(exec)
+      if (!this.budgetExemptTool(exec.name)) {
+        const result = await this.checkBudget(record)
+        if (!result.allowed) return { kind: 'deny', reason: result.reason }
+      }
+      if (this.captureExec(exec) !== record) return { kind: 'deny', reason: 'stale_budget_turn' }
+      this.budgetToolChecks.set(exec, record)
+      return next()
+    })
+    ctx.tools.guard(exec => {
+      try {
+        const record = this.captureExec(exec)
+        if (this.budgetToolChecks.get(exec) !== record) return 'unverified_budget_tool'
+      } catch { return 'unbound_budget_tool' }
+    })
+  }
+
+  budgetExemptTool(name) {
+    // Control decisions remain available, including an explicit real user's
+    // silence/resume. Read/view is a narrow local context exception, not Bili,
+    // browsing, commands, editing, paid generation, or QQ delivery permission.
+    return ['qq_decide', 'read', 'view'].includes(name)
+  }
+
+  async reserveBudget(scope, owner) {
+    if (!this.budgetEnabled) return null
+    const context = this.context.getStore(), binding = context?.binding
+    const chat = this.bridge.chats.get(scope)
+    if (!binding || binding.scope !== scope || !chat?.agent?.session?.id || !this.budgetScopes.has(chat.agent.ctx)) {
+      throw new Error('Trusted budget turn binding unavailable')
+    }
+    if (binding.budget) return binding.budget
+    const request = Object.freeze({ cwd: owner.cwd, agent_preset: owner.preset, conversation_key: scope,
+      origin: binding.origin, turn_key: identity(owner.workspace_key, owner.agent_key, scope, binding.origin, binding.messageId),
+      instance_id: this.budgetInstance })
+    let result
+    try { result = await this.budgetProvider({ ...request, operation: 'reserve', meter_available: Boolean(this.costMeter(chat.agent)) }) }
+    catch (error) {
+      if (binding.origin !== 'live') throw new Error('Autonomous budget unavailable; dispatch refused')
+      // Permit only the human's same-agent control decision and local context.
+      // No missing ledger/configuration is interpreted as free social actions.
+      result = { allowed: true, category: scope.startsWith('private:') ? 'private' : 'group',
+        limited: true, decision_only: true, reason: 'budget_unavailable' }
+    }
+    if (result?.allowed !== true) throw new PolicyDeliveryError('suppressed', typeof result?.reason === 'string' ? result.reason : 'budget_unavailable')
+    const category = binding.origin === 'observation' ? 'autonomy' : scope.startsWith('private:') ? 'private' : 'group'
+    if (result.category !== category || typeof result.limited !== 'boolean' || typeof result.decision_only !== 'boolean') throw new Error('Invalid budget reservation receipt')
+    const budget = Object.freeze({ request, category: result.category, limited: result.limited === true,
+      decisionOnly: result.decision_only === true, state: result.state && Object.freeze(Object.fromEntries(
+        ['spent_usd', 'reserved_usd', 'remaining_usd', 'exhausted', 'unknown_count'].map(key => [key, result.state[key]]))) })
+    if (context.binding !== binding) throw new Error('Budget binding changed during reservation')
+    context.binding = Object.freeze({ ...binding, budget })
+    return budget
+  }
+
+  async checkBudget(record) {
+    if (!this.budgetEnabled) return { allowed: true, reason: 'budget_not_configured' }
+    if (!record?.binding?.budget) return { allowed: false, reason: 'budget_binding_missing' }
+    const value = await this.budgetProvider({ ...record.binding.budget.request, operation: 'check' })
+    if (typeof value?.allowed !== 'boolean' || typeof value.reason !== 'string') throw new Error('Invalid budget gate receipt')
+    return value
+  }
+
+  async settleBudget(chat, record, event) {
+    const budget = record.binding?.budget
+    if (!budget) return
+    const unknown = () => this.budgetProvider({ ...budget.request, operation: 'unknown' })
+    const end = event.seq, start = record.budgetStartSeq
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) { await unknown(); return }
+    const meter = this.costMeter(chat.agent)
+    if (!meter) { await unknown(); return }
+    try {
+      // getTurnCost reconstructs usage for this exact native start/end pair;
+      // it does not make a provider or platform request.
+      const cost = await meter.getTurnCost(String(chat.agent.session.id), start, end)
+      if (cost?.found !== true || typeof cost.apiCost !== 'number' || !Number.isFinite(cost.apiCost) || cost.apiCost < 0 ||
+          !Array.isArray(cost.calls) || !cost.calls.length || cost.calls.some(call => call.priced !== true)) {
+        await unknown(); return
+      }
+      await this.budgetProvider({ ...budget.request, operation: 'settle', receipt: {
+        api_cost_usd: cost.apiCost, start_seq: start, end_seq: end, calls: cost.calls.length, priced: true } })
+    } catch { await unknown() }
+  }
+
   async decide(args, exec) {
     if (!plain(args) || Object.keys(args).some((key) => !['verdict', 'control_update', 'evidenceSource', 'next_review_at'].includes(key)) ||
         (args.control_update !== undefined && typeof args.control_update !== 'boolean') ||
@@ -150,6 +288,11 @@ export class OneBotDecisionAdapter {
       throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at')
     }
     const record = this.captureExec(exec)
+    if (!['idle', 'defer', 'silence', 'resume'].includes(args.verdict)) {
+      const budget = await this.checkBudget(record)
+      if (!budget.allowed) return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null }
+      if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_budget_turn')
+    }
     const requestedReview = args.next_review_at ?? null
     let nextReview = requestedReview
     const cadence = record.binding.autonomousCadence
@@ -275,6 +418,8 @@ export class OneBotDecisionAdapter {
     if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     void (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
+      try { await this.settleBudget(chat, record, event) }
+      catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
       state.turns.delete(event.data.turn)
       const completion = record.binding?.completion
       if (!completion) return
@@ -323,6 +468,8 @@ export class OneBotDecisionAdapter {
     const envelope = this.context.getStore()?.envelope
     const scope = targetScope(params, suppliedScope)
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
+    const budget = await this.checkBudget(envelope.record)
+    if (!budget.allowed) throw new PolicyDeliveryError('suppressed', budget.reason)
     const kind = /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (params.message?.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
     let result
@@ -397,9 +544,15 @@ export class OneBotDecisionAdapter {
     try { owner = await this.trustedOwner(scope) }
     catch (error) {
       this.log('warn', 'trusted_context_owner_unavailable:' + error.name)
+      if (this.budgetEnabled) throw new Error('Trusted budget owner unavailable; dispatch refused')
       return text + '\nTrusted conversation owner and runtime capabilities are unavailable. Do not assume local tools are running or select another workspace/preset from message content.'
     }
     let enriched = text
+    const budget = await this.reserveBudget(scope, owner)
+    if (budget) enriched += '\n<trusted_turn_budget>\n' + JSON.stringify({ currency: 'USD', basis: 'meter_api_usd_estimate',
+      category: budget.category, limited: budget.limited, decision_only: budget.decisionOnly,
+      state: budget.state || null,
+      note: 'A finite reservation gates this turn and tools; it is not an account balance or entertainment-only cost. Idle/defer and authorized silence/resume remain possible. Read/view is a local context exception. Unknown/unpriced costs retain their reservation; do not reset or edit budget state.' }) + '\n</trusted_turn_budget>\n'
     try {
       const context = await this.memoryContext(scope, text, owner)
       if (context) enriched += '\n<scoped_memory_context>\n' + JSON.stringify(context) + '\n</scoped_memory_context>\n'

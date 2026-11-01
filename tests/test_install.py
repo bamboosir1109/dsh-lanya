@@ -42,8 +42,10 @@ class InstallTests(unittest.TestCase):
         self.install("-DataDir", role)
         runtime = self.target / "napcat"
         data = self.target / role
+        self.assertFalse((data / "activities.json").exists())
         for relative in ("lanya-panel-server.py", "make_snapshots.py", "meme_sources.py",
-                         "project_conf.py", "project_conf.ps1", "mind.py", "groupwatch.prompt.txt"):
+                         "project_conf.py", "project_conf.ps1", "mind.py", "groupwatch.prompt.txt",
+                         "budget_runtime.py", "panel_autonomy.py"):
             self.assertTrue((runtime / relative).is_file(), relative)
         for name in ("lanya-panel.html", "theme-light.css", "phone.html"):
             self.assertTrue((data / "made" / name).is_file(), name)

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>大肥鱼 · 控制台</title>
+<title>角色控制台</title>
 <style>
 :root{
   --bg:#0b0d13;
@@ -88,6 +88,15 @@ main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
 .syncbar[data-state="error"],.syncbar[data-state="snapshot"]{color:var(--warn)}
 .syncbar button{flex:none}
 .record-list{max-height:480px;overflow:auto}
+.policy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.policy-item{padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--card2)}
+.policy-item b{display:block;margin-bottom:5px}
+.policy-item p{margin:0;color:var(--fg2);font-size:13px}
+.budget-meter{height:12px;border-radius:99px;background:var(--line);overflow:hidden;margin:12px 0}
+.budget-meter i{display:block;height:100%;width:0;background:var(--acc);transition:width .25s}
+.budget-meter[data-state="blocked"] i{background:var(--bad)}
+.budget-meter[data-state="unknown"] i{background:var(--warn)}
+.setting-state{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;background:var(--card2);color:var(--fg2)}
 .record-row{padding:12px 0;border-top:1px solid var(--line)}
 .record-row:first-child{border-top:0}
 .record-row a{color:var(--acc);text-decoration:none}
@@ -326,8 +335,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <nav id="nav">
     <a class="navitem on" data-page="overview"><span class="ni">◈</span>概览</a>
     <a class="navitem" data-page="system"><span class="ni">⚙</span>部件与插件<span class="cnt" id="navParts">—</span></a>
-    <a class="navitem" data-page="talk"><span class="ni">💬</span>群发言</a>
-    <a class="navitem" data-page="money"><span class="ni">💰</span>零花钱</a>
+    <a class="navitem" data-page="talk"><span class="ni">💬</span>会话策略</a>
+    <a class="navitem" data-page="money"><span class="ni">💰</span>自主预算</a>
     <a class="navitem" data-page="memes"><span class="ni">😀</span>表情包<span class="cnt" id="navMemes">—</span></a>
     <a class="navitem" data-page="schedule"><span class="ni">⏰</span>定时<span class="cnt" id="navSched">—</span></a>
     <a class="navitem" data-page="activity"><span class="ni">🌤</span>她在干嘛</a>
@@ -361,7 +370,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="stat"><div class="k">总内存占用</div><div class="v" id="sMem">—<small>MB</small></div><div class="s" id="sMemSub">上限 3000 MB</div></div>
     <div class="stat"><div class="k">在跑部件</div><div class="v" id="sAlive">—</div><div class="s" id="sAliveSub">共 8 个</div></div>
     <div class="stat"><div class="k">系统可用</div><div class="v" id="sFree">—<small>GB</small></div><div class="s" id="sFreeSub">—</div></div>
-    <div class="stat"><div class="k">今日零花钱</div><div class="v" id="sMoney">—<small>元</small></div><div class="s" id="sMoneySub">—</div></div>
+    <div class="stat"><div class="k">自主预算状态</div><div class="v" id="sMoney" style="font-size:20px">—</div><div class="s" id="sMoneySub">读取当前执行规则</div></div>
   </div>
   <div class="card">
     <h3>内存</h3>
@@ -383,7 +392,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-system">
-  <div class="phead"><h1>部件与插件</h1><p>大肥鱼的“手脚”在跑没有，装了什么插件，都在这一页。</p></div>
+  <div class="phead"><h1>部件与插件</h1><p>当前服务的运行状态和已装插件，都在这一页。</p></div>
 
   <div class="card">
     <h3>运行中的部件</h3>
@@ -420,7 +429,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="card">
     <h3>推荐插件</h3>
-    <p class="note">这些和大肥鱼配合得比较好。点一下会把安装地址填进下面的输入框。</p>
+    <p class="note">可供当前角色使用的插件。点一下会把安装地址填进下面的输入框。</p>
     <div class="presets" id="recGrid"></div>
     <div class="out" id="recOut"></div>
   </div>
@@ -448,84 +457,45 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-talk">
-  <div class="phead"><h1>群发言</h1><p>她多久说一次、一天最多几条。<b>改完点「保存并重启监听」。</b></p></div>
+  <div class="phead"><h1>会话策略</h1><p>主 agent 结合当前对话、prompt 和记忆决定回应、保持安静或继续活动。</p></div>
   <div class="card">
-    <h3>频率</h3>
-    <div class="grid2">
-      <div class="field"><label>多久没人说话算冷场（分钟）</label><input type="number" id="tQuietMinutes"></div>
-      <div class="field"><label>别人在聊时，两条之间最少隔几分钟</label><input type="number" id="tMinGap"></div>
-      <div class="field"><label>自己起话头的间隔（最短 ~ 最长，分钟）</label>
-        <div class="two-in"><input type="number" id="tGapMin"><span>~</span><input type="number" id="tGapMax"></div>
-      </div>
-      <div class="field"><label>只在几点到几点说话</label>
-        <div class="two-in"><input type="number" id="tWinStart"><span>点到</span><input type="number" id="tWinEnd"><span>点</span></div>
-      </div>
+    <h3>当前规则 <span class="setting-state" id="talkPolicyState">正在核对</span></h3>
+    <div class="policy-grid">
+      <div class="policy-item"><b>短而自然</b><p>默认简短直接，按内容说完。没有固定两行或总句数；步骤、解释需要时再展开。</p></div>
+      <div class="policy-item"><b>是否开口由主 agent 判断</b><p>收到消息、冷场或自主机会都只是观察。可以回复，也可以保持安静。</p></div>
+      <div class="policy-item"><b>静默持续有效</b><p>明确要求暂停后，等待当前会话的恢复指令；活动、表情和语音都不能绕过静默。</p></div>
+      <div class="policy-item"><b>表情与主动分享</b><p>合适时发真实图片。有值得分享的发现再开口，不逐步播报分数、操作或笔记路径。</p></div>
     </div>
   </div>
   <div class="card">
-    <h3>上限</h3>
-    <div class="grid2">
-      <div class="field"><label>一天总上限（条）</label><input type="number" id="tDay"></div>
-      <div class="field"><label>一小时内任何发言上限（条）</label><input type="number" id="tHourAny"></div>
-      <div class="field"><label>一天最多主动起几次话头</label><input type="number" id="tStarts"></div>
-      <div class="field"><label>轮询间隔（秒）</label><input type="number" id="tPoll"></div>
-    </div>
-    <div class="btnrow">
-      <button onclick="loadTunables()">重新读取</button>
-      <button class="pri" onclick="saveTunables(true)">保存并重启监听</button>
-      <button onclick="saveTunables(false)">只保存</button>
-    </div>
+    <h3>群观察</h3>
+    <p class="note">以下参数产生观察机会，不规定每轮必须发言，也不限制正常回复为两行。</p>
+    <div id="talkObservation" class="filelist"></div>
+    <div class="btnrow"><button onclick="loadConversationPolicy()">刷新运行状态</button><button onclick="goto('activity')">自主活动设置</button></div>
     <div class="out" id="tunOut"></div>
   </div>
 </div>
 
 <div class="page" id="page-money">
-  <div class="phead"><h1>零花钱</h1><p>现有账本按会话分类统计。统一主 agent 的自主活动也可能计入私聊，不能按这里的零值判断没有活动。</p></div>
+  <div class="phead"><h1>自主预算</h1><p>按真实决策轮次记录 API 美元估值。自主、私聊、群聊分账；不再按会话名字猜费用。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">旧自主分类 · 已花</div><div class="v" id="mSpent">—<small>元</small></div><div class="s" id="mSpentSub">上限 —</div></div>
-    <div class="stat"><div class="k">旧自主分类 · 剩余</div><div class="v" id="mLeft">—<small>元</small></div><div class="s" id="mLeftSub">—</div></div>
-    <div class="stat"><div class="k">私聊 · 已花</div><div class="v" id="mDm">—<small>元</small></div><div class="s" id="mDmSub">上限 —</div></div>
-    <div class="stat"><div class="k">群聊 · 已花</div><div class="v" id="mGroup">—<small>元</small></div><div class="s" id="mGroupSub">上限 —</div></div>
+    <div class="stat"><div class="k">当前预算门控</div><div class="v" id="mState" style="font-size:20px">—</div><div class="s" id="mStateSub">正在读取新版账本</div></div>
+    <div class="stat"><div class="k">计费日期</div><div class="v" id="mDate" style="font-size:20px">—</div><div class="s" id="mCoverage">新账本开始记录后计费</div></div>
   </div>
+  <div class="card"><h3>今日用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mAccounting">正在核对计费覆盖范围。</p></div>
   <div class="card">
-    <h3>状态</h3>
-    <div style="display:flex;gap:14px;align-items:center;font-size:14px">
-      <b id="mState" style="font-size:18px">—</b>
-      <span class="dsc" id="mStateSub">—</span>
-    </div>
-  </div>
-  <div class="card">
-    <h3>加钱 / 记一笔</h3>
-    <p class="note">正数增加旧自主账本的额度，负数手动记一笔花费；私聊和群聊上限仍按各自设置核对。</p>
-    <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
-      <input type="number" id="topupAmt" step="0.1" placeholder="0.5 或 -0.2" style="width:160px">
-      <button class="pri" onclick="topup()">确认</button>
-      <button onclick="topupQuick(0.5)">+0.5</button>
-      <button onclick="topupQuick(1)">+1</button>
-      <button onclick="topupQuick(5)">+5</button>
-    </div>
-    <div class="out" id="topupOut"></div>
-  </div>
-  <div class="card">
-    <h3>额度设置</h3>
-    <p class="note">这些是现有分类账本的上限。费用按实际会话归类，不能按它们区分全部娱乐与社交行为；是否请求补充额度仍由主 agent 判断。</p>
+    <h3>当前执行额度</h3>
+    <p class="note">单位 USD。0 表示不限。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
     <div class="grid2">
-      <div class="field"><label>旧自主分类额度（元）</label><input type="number" step="0.1" id="bLimit"></div>
-      <div class="field"><label>每天私聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bDmLimit"></div>
-      <div class="field"><label>每天群聊花销上限（元，留空＝不限）</label><input type="number" step="0.1" id="bGroupLimit"></div>
-      <div class="field"><label>花完了要不要主动要钱</label>
-        <div class="two-in" style="padding-top:2px">
-          <label class="sw"><input type="checkbox" id="bAsk"><i></i></label>
-          <span>花完主动找管理员开口</span>
-        </div>
-      </div>
+      <div class="field"><label for="bAutonomy">每天自主活动额度（USD）</label><input type="number" min="0" step="0.01" id="bAutonomy" disabled></div>
+      <div class="field"><label for="bPrivate">每天私聊额度（USD）</label><input type="number" min="0" step="0.01" id="bPrivate" disabled></div>
+      <div class="field"><label for="bGroup">每天群聊额度（USD）</label><input type="number" min="0" step="0.01" id="bGroup" disabled></div>
+      <div class="field"><label for="bReserve">每轮预留（USD）</label><input type="number" min="0.000001" step="0.01" id="bReserve" disabled></div>
     </div>
-    <div class="btnrow">
-      <button class="pri" onclick="saveBudget()">保存额度</button>
-      <button onclick="resetBudget()">把今天的花销清零</button>
-    </div>
+    <div class="btnrow"><button class="pri" id="budgetSave" onclick="saveBudget()" disabled>保存额度</button><button onclick="loadBudget()">重新读取</button></div>
     <div class="out" id="moneyOut"></div>
   </div>
+  <div class="card"><h3>如何生效</h3><div class="filelist" id="budgetEnforcement"></div></div>
 </div>
 
 <div class="page" id="page-memes">
@@ -814,40 +784,28 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-activity">
-  <div class="phead">
-    <h1>她在干嘛</h1>
-    <p>查看自主调度与近期真实工具活动，活动结果和 QQ 发言分别记录。</p>
-  </div>
-
+  <div class="phead"><h1>自主活动</h1><p>同一个主 agent 决定刷 B站、玩游戏、写东西或休息。这里显示正在使用的配置和真实记录。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">旧自主预算账本</div><div class="v" id="liveMoney">—<small>元</small></div><div class="s" id="liveMoneySub">不代表统一主 agent 的全部活动费用</div></div>
-    <div class="stat"><div class="k">自主调度状态</div><div class="v" id="liveLast" style="font-size:14px">—</div><div class="s" id="liveLastAt">—</div></div>
+    <div class="stat"><div class="k">自主调度</div><div class="v" id="liveLast" style="font-size:17px">—</div><div class="s" id="liveLastAt">正在读取</div></div>
+    <div class="stat"><div class="k">自主机会间隔</div><div class="v" id="activityCadence">—</div><div class="s" id="activityNext">正在核对下次复查</div></div>
+    <div class="stat"><div class="k">执行预算</div><div class="v" id="liveMoney" style="font-size:17px">—</div><div class="s" id="liveMoneySub">正在读取当前规则</div></div>
   </div>
-
   <div class="card">
-    <h3>旧活动清单</h3>
-    <p class="note">这些开关供旧独立活动流程使用；统一模式由主 agent 按当前 prompt 和记忆决定，保存清单不会改变其执行权限。</p>
-    <div id="actList"></div>
-    <div class="btnrow"><button class="pri" onclick="saveActivities()">保存旧清单</button></div>
-
-    <div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap;align-items:center">
-      <input type="text" id="actNewName" placeholder="新活动的名字" style="flex:1;min-width:150px">
-      <input type="text" id="actNewDesc" placeholder="她想拿它干嘛（一句话）" style="flex:2;min-width:200px">
-      <label class="sw" title="算不算零花钱" style="display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="actNewCost" checked><i></i>
-      </label>
-      <span class="dsc">花零花钱</span>
-      <button onclick="addActivity()">添加</button>
+    <h3>当前生效的设置 <span class="setting-state" id="activitySettingState">正在读取</span></h3>
+    <p class="note">保存后供新的自主机会读取。到期只请求主 agent 判断，正在进行的活动和已约复查不会被重放。</p>
+    <div class="grid2">
+      <div class="field"><label for="activityInterval">自主机会间隔（分钟，2–60）</label><input type="number" id="activityInterval" min="2" max="60" step="1" disabled></div>
+      <div class="field"><label>执行方式</label><p id="activityExecution" class="note">正在确认主 agent 托管状态</p></div>
     </div>
+    <div class="btnrow"><button class="pri" id="activitySave" onclick="saveAutonomySettings()" disabled>保存设置</button><button onclick="loadAutonomySettings()">重新读取</button><button onclick="goto('money')">查看自主预算</button></div>
     <div class="out" id="actOut"></div>
   </div>
-
   <div class="card">
-    <h3>自主活动检查</h3>
-    <p class="note">主 agent 根据观察决定是否行动。请求检查不代表已开始活动或发送消息。</p>
-    <div class="filelist" id="liveLog"></div>
-    <div class="btnrow"><button id="liveCheck" onclick="doAction('lifeloop','actOut')" disabled>请求检查</button><button onclick="loadLive()">刷新</button></div>
+    <h3>检查与下一步</h3>
+    <div class="filelist" id="activitySchedule"></div>
+    <div class="btnrow"><button id="liveCheck" onclick="doAction('lifeloop','actOut')" disabled>请求主 agent 检查</button><button onclick="loadLive()">刷新记录</button><button onclick="goto('bili')">B站浏览与回复</button></div>
   </div>
+  <div class="card"><h3>近期实际工具活动</h3><p class="note">按本工作区可核验的调用记录展示。工具成功、播放完成和 QQ 送达分别核对。</p><div class="filelist record-list" id="liveLog"></div></div>
 </div>
 
 <div class="page" id="page-napcat">
@@ -1028,8 +986,8 @@ function recordPage(path){
   const bare = path.split('?')[0];
   if(bare === '/state') return currentPage === 'system' ? 'system' : 'overview';
   if(bare === '/files') return /[?&]dir=(made|archive)(&|$)/.test(path) ? 'works' : 'memory';
-  return ({'/bili':'bili','/live':'activity','/activities':'activity','/memes':'memes',
-    '/budget':'money','/schedule':'schedule','/memory':'memory','/works':'works',
+  return ({'/bili':'bili','/live':'activity','/autonomy/settings':currentPage === 'talk' ? 'talk' : 'activity','/memes':'memes',
+    '/budget':['activity','overview','system'].includes(currentPage) ? currentPage : 'money','/schedule':'schedule','/memory':'memory','/works':'works',
     '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'napcat'})[bare];
 }
 function noteRecord(path, state, at){
@@ -1078,13 +1036,13 @@ async function refreshCurrentPage(manual){
     const editing = dirtyPages.has(page) || (page === 'memory' && !!document.querySelector('#memPropList textarea'));
     const loaders = {
       overview:refreshOverview, system:refreshOverview, bili:loadBili,
-      activity:async () => { await loadLive(); if(!editing) await loadActivities(); },
+      activity:async () => { await loadLive(); await loadAutonomySettings(editing); },
       money:() => loadBudget(true), tools:loadTools,
       memes:() => editing ? null : loadMemes(true),
       memory:async () => { if(!editing) { await loadMemoryOverview(true); if(!searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open')) await loadFiles(currentDir, true); } },
       works:() => editing || Object.keys(workSel).length || $('worksViewer')?.classList.contains('on') ? null : loadWorks(true),
       schedule:() => editing ? null : loadSchedule(),
-      talk:() => manual && !editing ? loadTunables() : null,
+      talk:loadConversationPolicy,
       napcat:() => manual && !editing ? loadNapcat() : null,
       persona:() => manual && !editing ? loadPersona() : null,
       identity:() => manual && !editing ? loadConfig() : null
@@ -1100,9 +1058,9 @@ function goto(page){
   currentPage = page;
   renderRecordSync();
   loadBrand();
-  const loaders = { talk:loadTunables, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
+  const loaders = { talk:loadConversationPolicy, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
                     napcat:loadNapcat,
-                    activity:() => { loadActivities(); loadLive(); },
+                    activity:() => { loadAutonomySettings(dirtyPages.has('activity')); loadLive(); },
                     memory:() => loadFiles(currentDir), works:loadWorks,
                     persona:loadPersona, identity:loadConfig };
   if(loaders[page] && (!dirtyPages.has(page) || page === 'bili' || page === 'activity')) loaders[page]();
@@ -1164,14 +1122,20 @@ async function api(path, opts, live){
   if(!isGet){
     const page = currentPage;
     const revision = pageEdits.get(page) || 0;
+    for(const key of ['live:' + path, 'read:' + path]){
+      const pending = recordRequests.get(key);
+      if(pending) pending.invalidated = true;
+      recordRequests.delete(key);
+    }
     const response = await fetch(API + APIX + path, opts);
-    if(!response.ok) throw new Error('HTTP ' + response.status);
     const data = await response.json();
+    if(!response.ok) throw new Error(typeof data.error === 'string' ? data.error.slice(0,200) : 'HTTP ' + response.status);
     if(data.ok && (pageEdits.get(page) || 0) === revision) { dirtyPages.delete(page); renderRecordSync(); }
     return data;
   }
   const key = (live ? 'live:' : 'read:') + path;
-  if(!recordRequests.has(key)) recordRequests.set(key, (async () => {
+  if(!recordRequests.has(key)){
+    const pending = (async () => {
     const urls = [];
     if(location.protocol === 'http:' || location.protocol === 'https:') urls.push(APIX + path);
     if(location.origin !== API) urls.push(API + APIX + path);
@@ -1200,12 +1164,17 @@ async function api(path, opts, live){
       }catch(e){ }
     }
     throw new Error('当前记录接口不可用，且没有两分钟内的有效快照');
-  })().finally(() => recordRequests.delete(key)));
+    })();
+    recordRequests.set(key, pending);
+    const release = () => { if(recordRequests.get(key) === pending) recordRequests.delete(key); };
+    pending.then(release, release);
+  }
+  const pending = recordRequests.get(key);
   try{
-    const result = await recordRequests.get(key);
-    noteRecord(path, result.data.ok === false ? 'error' : result.source, result.at);
+    const result = await pending;
+    if(!pending.invalidated) noteRecord(path, result.data.ok === false ? 'error' : result.source, result.at);
     return result.data;
-  }catch(error){ noteRecord(path, 'error'); throw error; }
+  }catch(error){ if(!pending.invalidated) noteRecord(path, 'error'); throw error; }
 }
 function num(id){
   const v = $(id).value.trim();
@@ -1240,7 +1209,7 @@ async function doAction(target, outId){
     else show(oid, '失败：' + (j.error || j.log || '未知原因'));
   }catch(e){ show(oid, '发不出去：' + e.message); }
   componentActionPending = false;
-  if(target === 'lifeloop' || target === 'mind') { loadActivities(); loadLive(); }
+  if(target === 'lifeloop' || target === 'mind') { loadAutonomySettings(true); loadLive(); }
   setTimeout(refreshOverview, 3000);
 }
 
@@ -1391,14 +1360,7 @@ async function refreshOverview(){
       setHtml('bannerText', '这些活插件已经在做了，旧任务还在会重复跑一遍（每个一闪就退，不占内存）。<br>'
         + '想清掉：双击 <code>&lt;你的仓库&gt;\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
     }else{ $('banner').classList.remove('show'); }
-      try{
-      const bud = await api('/budget');
-      if(bud && bud.ok && bud.budget){
-        const b = bud.budget;
-        setHtml('sMoney', (b.spent ?? 0) + '<small>元</small>');
-        setText('sMoneySub', '上限 ' + (b.limit ?? '-') + ' 元');
-      }
-    }catch(eB){ }
+      await loadActivityBudget();
     }catch(e){ setText('footStamp', '读取失败：' + e.message); }
 }
 
@@ -1470,112 +1432,188 @@ async function installPlugin(){
   }catch(e){ show('plugOut2', '失败：' + e.message); }
 }
 
-async function loadTunables(){
-  hide('tunOut');
-  try{
-    const j = await api('/tunables');
-    if(!j.ok) throw new Error(j.error || '读取失败');
-    const c = j.tunables || {};
-    $('tQuietMinutes').value = c.QuietMinutes ?? '';
-    $('tMinGap').value = c.MinGapMinutes ?? '';
-    $('tGapMin').value = c.QuietGapMinMinutes ?? '';
-    $('tGapMax').value = c.QuietGapMaxMinutes ?? '';
-    $('tDay').value = c.MaxPer24Hours ?? '';
-    $('tHourAny').value = c.MaxPerHourAny ?? '';
-    $('tStarts').value = c.MaxQuietStartsPerDay ?? '';
-    $('tWinStart').value = c.WindowStart ?? '';
-    $('tWinEnd').value = c.WindowEnd ?? '';
-    $('tPoll').value = c.PollSeconds ?? '';
-  }catch(e){ show('tunOut', '读取失败：' + e.message); }
+let autonomySettingsRevision = null;
+let autonomySettingsEpoch = 0, autonomySettingsSaving = false;
+
+function appendPolicyRow(box, text){
+  const row = document.createElement('div'); row.className = 'frow'; row.textContent = text; box.appendChild(row);
 }
 
-async function saveTunables(restart){
-  const tun = {
-    QuietMinutes: num('tQuietMinutes'), MinGapMinutes: num('tMinGap'),
-    QuietGapMinMinutes: num('tGapMin'), QuietGapMaxMinutes: num('tGapMax'),
-    MaxPer24Hours: num('tDay'), MaxPerHourAny: num('tHourAny'),
-    MaxQuietStartsPerDay: num('tStarts'), WindowStart: num('tWinStart'),
-    WindowEnd: num('tWinEnd'), PollSeconds: num('tPoll')
-  };
-  for(const k of Object.keys(tun)){ if(tun[k] === null) delete tun[k]; }
-  if(!Object.keys(tun).length){ show('tunOut', '全都是空的，没保存。'); return; }
-  show('tunOut', '保存中…');
+function renderAutonomySettings(value, background, revision){
+  if(!value || value.mode !== 'unified' || !value.effective || !Number.isFinite(value.effective.opportunity_minutes)) throw new Error('新版自主设置暂不可用');
+  const writable = value.availability === 'available' && Array.isArray(value.writable_fields) && value.writable_fields.includes('opportunity_minutes');
+  const editing = dirtyPages.has('activity') || (pageEdits.get('activity') || 0) !== revision;
+  if(!background && !editing){
+    autonomySettingsRevision = value.revision;
+    $('activityInterval').value = value.effective.opportunity_minutes;
+  }
+  $('activityInterval').disabled = !writable;
+  $('activitySave').disabled = !writable || !autonomySettingsRevision;
+  setText('activityCadence', value.effective.opportunity_minutes + ' 分钟');
+  setText('activitySettingState', writable ? '统一主 agent · 当前配置' : '只读 · 配置不可写');
+  setText('activityExecution', '同一主 agent，结合 prompt、近期记忆和观察作出选择。');
+  setText('talkPolicyState', '统一主 agent');
+  const observation = value.group_observation || {}, box = $('talkObservation');
+  if(box){
+    box.innerHTML = '';
+    const settings = observation.settings || {};
+    if(observation.availability === 'available'){
+      appendPolicyRow(box, '群观察轮询配置：' + settings.poll_seconds + ' 秒');
+      appendPolicyRow(box, '冷场观察配置：' + settings.quiet_minutes + ' 分钟');
+      appendPolicyRow(box, '这些是观察器启动时读取的配置；当前进程值尚未逐项核验。');
+    }else appendPolicyRow(box, '群观察配置暂不可用，不能据此判断停止监听。');
+    appendPolicyRow(box, '正常回复仍由主 agent 判断；主动起话头不按定时器强制发送。');
+  }
+}
+
+async function loadAutonomySettings(background){
+  if(autonomySettingsSaving) return;
+  const epoch = autonomySettingsEpoch;
+  const revision = pageEdits.get('activity') || 0;
   try{
-    const j = await api('/tunables', { method:'POST', headers:{'content-type':'application/json'},
-                                       body: JSON.stringify({ tunables: tun }) });
-    if(!j.ok) throw new Error(j.error || '未知原因');
-    if(restart){
-      await api('/action', { method:'POST', headers:{'content-type':'application/json'},
-                             body: JSON.stringify({ target:'groupwatch' }) });
-      show('tunOut', '已保存，监听已重启。\n\n下一条消息就按新规则判断。');
-    }else{
-      show('tunOut', '已保存。\n\n没重启监听——它下次启动才用新值。');
-    }
-  }catch(e){ show('tunOut', '保存失败：' + e.message); }
+    const result = await api('/autonomy/settings', null, true);
+    if(epoch !== autonomySettingsEpoch) return;
+    if(!result.ok) throw new Error(result.error || '读取失败');
+    renderAutonomySettings(result.settings, !!background, revision);
+  }catch(error){
+    if(epoch !== autonomySettingsEpoch) return;
+    setText('activitySettingState', '设置读取失败'); setText('talkPolicyState', '当前状态未确认');
+    $('activitySave').disabled = true; $('activityInterval').disabled = true;
+    show(currentPage === 'talk' ? 'tunOut' : 'actOut', '读取失败：' + error.message);
+  }
+}
+
+async function loadConversationPolicy(){
+  hide('tunOut');
+  await loadAutonomySettings(true);
+}
+
+async function saveAutonomySettings(){
+  const minutes = Number($('activityInterval').value);
+  if(!$('activityInterval').value.trim() || !Number.isFinite(minutes) || minutes < 2 || minutes > 60){ show('actOut','请输入 2–60 分钟。'); return; }
+  if(!autonomySettingsRevision){ show('actOut','先读取当前设置。'); return; }
+  if(autonomySettingsSaving) return;
+  autonomySettingsSaving = true; autonomySettingsEpoch++;
+  const revision = pageEdits.get('activity') || 0;
+  $('activitySave').disabled = true; show('actOut','保存中…');
+  try{
+    const result = await api('/autonomy/settings', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({revision:autonomySettingsRevision, settings:{opportunity_minutes:minutes}})});
+    if(!result.ok) throw new Error(result.error || '保存失败');
+    if((pageEdits.get('activity') || 0) === revision){
+      dirtyPages.delete('activity'); renderAutonomySettings(result.settings, false, revision);
+      show('actOut','已保存。新的自主机会会读取这项配置；已有复查保持原计划。');
+    }else show('actOut','先前设置已保存；当前还有未保存的修改。');
+  }catch(error){ show('actOut','保存失败：' + error.message + '。请重新读取后再保存。'); }
+  finally{ autonomySettingsSaving = false; $('activitySave').disabled = !autonomySettingsRevision; }
+}
+
+let budgetSettingsRevision = null;
+let budgetSettingsEpoch = 0, budgetSettingsSaving = false;
+
+function budgetAmount(value){
+  return typeof value === 'number' && Number.isFinite(value) ? '$' + value.toFixed(4) : '待核算';
+}
+
+function renderBudgetSummary(budget){
+  const bucket = budget.usage?.buckets?.autonomy, available = budget.availability === 'available' && bucket;
+  const bound = budget.enforcement?.runtime_gate_bound === true;
+  const label = !bound ? '预算门控未确认' : budget.availability === 'not_started' ? '等待首轮计费' : !available ? '费用待确认' : bucket.exhausted ? '自主额度已用完' : bucket.can_start_new_turn === false ? '新轮次预留不足' : bucket.unknown_count ? '部分费用待确认' : '自主额度可用';
+  setText('sMoney', label); setText('liveMoney', label);
+  const detail = available ? '记录内已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : budget.availability === 'not_started' ? '新账本尚未起算，历史费用不回填' : '账本暂不可用，不能按零费用判断';
+  setText('sMoneySub', detail); setText('liveMoneySub', detail);
+}
+
+function renderBudget(budget, background, revision){
+  if(!budget || budget.schema !== 'unified-budget/v1') throw new Error('当前接口未提供新版预算');
+  renderBudgetSummary(budget);
+  const available = ['available','not_started'].includes(budget.availability), tracking = budget.availability === 'available';
+  const effective = budget.effective || {}, limits = effective.limits || {}, usage = budget.usage || {};
+  const editing = dirtyPages.has('money') || (pageEdits.get('money') || 0) !== revision;
+  if(!background && !editing){
+    budgetSettingsRevision = budget.revision;
+    [['bAutonomy','autonomy'],['bPrivate','private'],['bGroup','group']].forEach(([id,key]) => { $(id).value = limits[key] ?? ''; });
+    $('bReserve').value = effective.reserve_usd ?? '';
+  }
+  ['bAutonomy','bPrivate','bGroup','bReserve'].forEach(id => { $(id).disabled = !available; });
+  $('budgetSave').disabled = !available || !budgetSettingsRevision;
+  setText('mAvailability', !available ? '账本不可用' : tracking ? '新版真实轮次账本' : '新账本尚未起算');
+  const bound = budget.enforcement?.runtime_gate_bound === true;
+  setText('mState', !available ? '预算状态未确认' : bound ? '决策与动作前核对' : '运行门控未确认');
+  setText('mStateSub', !available ? '当前不能核算可用额度' : bound ? '预留与未知费用保留，不自动清零' : '配置存在不代表运行进程已经加载');
+  setText('mDate', usage.date || '—');
+  const coverage = usage.coverage_start || budget.coverage_start;
+  setText('mCoverage', coverage ? '开始记录于 ' + new Date(coverage).toLocaleString('zh-CN') : '旧账本不回填为真实轮次费用');
+  setText('mAccounting', '这里只统计开始记录后的真实模型轮次 API 估值，按可信触发来源归类。历史费用不回填为零；缺少计价回执的轮次保留待确认。');
+  const box = $('budgetBuckets'); box.innerHTML = '';
+  for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
+    const bucket = usage.buckets?.[key] || {}, limit = limits[key];
+    const card = document.createElement('div'); card.className = 'policy-item';
+    const head = document.createElement('b'); head.textContent = name; card.appendChild(head);
+    const amount = document.createElement('p'); amount.textContent = tracking ? '记录内已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : '尚无新版计费记录'; card.appendChild(amount);
+    const meter = document.createElement('div'); meter.className = 'budget-meter'; meter.setAttribute('role','progressbar'); meter.setAttribute('aria-label',name + '预算使用');
+    const used = Number(bucket.spent_usd) + Number(bucket.reserved_usd), measurable = tracking && Number.isFinite(used) && typeof limit === 'number' && limit > 0;
+    const percent = measurable ? Math.max(0, Math.min(100, used / limit * 100)) : 0;
+    meter.dataset.state = !tracking || bucket.unknown_count ? 'unknown' : bucket.exhausted ? 'blocked' : 'available';
+    if(measurable){ meter.setAttribute('aria-valuenow', String(Math.round(percent))); meter.setAttribute('aria-valuemin','0'); meter.setAttribute('aria-valuemax','100'); }
+    meter.setAttribute('aria-valuetext', !tracking ? '尚未起算' : limit === 0 ? '不限额' : '已使用和预留 ' + percent.toFixed(1) + '%');
+    const fill = document.createElement('i'); fill.style.width = percent + '%'; meter.appendChild(fill); card.appendChild(meter);
+    const detail = document.createElement('p'); detail.textContent = !available ? '费用未确认' : limit === 0 ? '每日不限额' : '每日 ' + budgetAmount(limit) + ' · ' + (tracking ? '记录内剩余 ' + budgetAmount(bucket.remaining_usd) : '等待起算'); card.appendChild(detail);
+    if(bucket.unknown_count){ const unknown = document.createElement('p'); unknown.textContent = bucket.unknown_count + ' 轮费用待确认'; card.appendChild(unknown); }
+    if(bucket.exhausted){ const blocked = document.createElement('p'); blocked.textContent = '额度已用完，限制新动作和发送'; card.appendChild(blocked); }
+    else if(bucket.can_start_new_turn === false){ const blocked = document.createElement('p'); blocked.textContent = '余额不足以预留下一轮，保留必要的控制判断'; card.appendChild(blocked); }
+    box.appendChild(card);
+  }
+  const enforcement = $('budgetEnforcement'); enforcement.innerHTML = '';
+  const gates = budget.enforcement || {};
+  appendPolicyRow(enforcement, '决策前预算检查：' + (bound && gates.before_turn === true ? '已接入' : '未确认'));
+  appendPolicyRow(enforcement, '动作执行前检查：' + (bound && gates.before_action === true ? '已接入' : '未确认'));
+  appendPolicyRow(enforcement, '有限额会话仍可判断静默或恢复，这类控制判断可能继续产生模型费用。');
+  appendPolicyRow(enforcement, '正在进行的模型调用可能超出预留；未知费用保留预留，不自动重试或伪造退款。');
 }
 
 async function loadBudget(background){
-  hide('moneyOut');
+  if(budgetSettingsSaving) return;
+  const epoch = budgetSettingsEpoch;
+  const revision = pageEdits.get('money') || 0;
   try{
-    const j = await api('/budget');
-    if(!j.ok) throw new Error(j.error || '读取失败');
-    const b = j.budget || {};
-    if(!background){
-      $('bLimit').value = b.limit ?? '';
-      $('bDmLimit').value = b.dmLimit ?? '';
-      $('bGroupLimit').value = b.groupLimit ?? '';
-      $('bAsk').checked = b.askWhenExhausted !== false;
-    }
-    setHtml('mSpent', (b.spent ?? 0) + '<small>元</small>');
-    setText('mSpentSub', '上限 ' + (b.limit ?? '—') + ' 元');
-    const left = (b.limit ?? 0) - (b.spent ?? 0);
-    setHtml('mLeft', (left>0 ? left.toFixed(3) : 0) + '<small>元</small>');
-    $('mLeft').style.color = left>0 ? 'var(--fg)' : 'var(--bad)';
-    setText('mLeftSub', b.date || '—');
-    setText('mState', b.exhausted ? '花完了' : '还有');
-    $('mState').style.color = b.exhausted ? 'var(--bad)' : 'var(--ok)';
-    setText('mStateSub', b.exhausted ? '她会来找你要' : '可以继续玩');
+    const result = await api('/budget', null, true);
+    if(epoch !== budgetSettingsEpoch) return;
+    if(!result.ok) throw new Error(result.error || '读取失败');
+    renderBudget(result.budget, !!background, revision);
+  }catch(error){
+    if(epoch !== budgetSettingsEpoch) return;
+    setText('mAvailability','刷新失败，保留上次记录'); setText('mState','预算状态未确认');
+    ['bAutonomy','bPrivate','bGroup','bReserve','budgetSave'].forEach(id => { $(id).disabled = true; });
+    show('moneyOut','读取失败：' + error.message);
+  }
+}
 
-    // 三笔账分开显示：自己玩、私聊、群聊各走各的上限
-    const fmt = (v) => (v ?? 0).toFixed ? (v ?? 0).toFixed(3) : (v ?? 0);
-    setHtml('mDm', fmt(b.dmSpent) + '<small>元</small>');
-    $('mDm').style.color = b.dmMuted ? 'var(--bad)' : 'var(--fg)';
-    setText('mDmSub', b.dmMuted
-      ? ('⚠ 已达上限，私聊已静音')
-      : ((b.dmLimit > 0) ? ('上限 ' + b.dmLimit + ' 元') : '不限'));
-    setHtml('mGroup', fmt(b.groupSpent) + '<small>元</small>');
-    $('mGroup').style.color = b.groupMuted ? 'var(--bad)' : 'var(--fg)';
-    setText('mGroupSub', b.groupMuted
-      ? ('⚠ 已达上限，群聊已静音')
-      : ((b.groupLimit > 0) ? ('上限 ' + b.groupLimit + ' 元') : '不限'));
-    setHtml('sMoney', (b.spent ?? 0) + '<small>元</small>');
-    setText('sMoneySub', '上限 ' + (b.limit ?? '—') + ' 元');
-  }catch(e){ show('moneyOut', '读取失败：' + e.message); }
+async function loadActivityBudget(){
+  if(budgetSettingsSaving) return;
+  const epoch = budgetSettingsEpoch;
+  try{
+    const result = await api('/budget', null, true);
+    if(epoch !== budgetSettingsEpoch) return;
+    if(!result.ok || result.budget?.schema !== 'unified-budget/v1') throw new Error('预算暂不可用');
+    renderBudgetSummary(result.budget);
+  }catch(error){ if(epoch === budgetSettingsEpoch){ setText('liveMoney','预算状态未确认'); setText('liveMoneySub','读取失败，不能按零费用判断'); } }
 }
 
 async function saveBudget(){
-  const b = { limit: num('bLimit'), dmLimit: num('bDmLimit'),
-              groupLimit: num('bGroupLimit'), askWhenExhausted: $('bAsk').checked };
-  if(b.limit === null) b.limit = 0;
-  show('moneyOut', '保存中…');
+  if(!budgetSettingsRevision){ show('moneyOut','先读取当前额度。'); return; }
+  if(budgetSettingsSaving) return;
+  const values = ['bAutonomy','bPrivate','bGroup','bReserve'].map(id => $(id).value.trim() ? Number($(id).value) : NaN);
+  if(values.some(value => !Number.isFinite(value) || value < 0) || values[3] <= 0){ show('moneyOut','额度应为非负数，每轮预留必须大于 0。'); return; }
+  budgetSettingsSaving = true; budgetSettingsEpoch++;
+  const revision = pageEdits.get('money') || 0;
+  $('budgetSave').disabled = true; show('moneyOut','保存中…');
   try{
-    const j = await api('/budget', { method:'POST', headers:{'content-type':'application/json'},
-                                     body: JSON.stringify({ budget: b }) });
-    if(!j.ok) throw new Error(j.error || '未知原因');
-    show('moneyOut', '已保存。\n\n每天自己玩的额度：' + b.limit + ' 元');
-    loadBudget();
-  }catch(e){ show('moneyOut', '保存失败：' + e.message); }
-}
-
-async function resetBudget(){
-  show('moneyOut', '清零中…');
-  try{
-    const j = await api('/budget', { method:'POST', headers:{'content-type':'application/json'},
-                                     body: JSON.stringify({ budget:{ spent:0, exhausted:false, notifiedFor:'' } }) });
-    if(!j.ok) throw new Error(j.error || '未知原因');
-    show('moneyOut', '今天的花销已清零，她可以继续花了。');
-    loadBudget();
-  }catch(e){ show('moneyOut', '失败：' + e.message); }
+    const result = await api('/budget', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({revision:budgetSettingsRevision,settings:{limits:{autonomy:values[0],private:values[1],group:values[2]},reserve_usd:values[3]}})});
+    if(!result.ok) throw new Error(result.error || '保存失败');
+    if((pageEdits.get('money') || 0) === revision){ dirtyPages.delete('money'); renderBudget(result.budget,false,revision); show('moneyOut','已保存。后续决策和动作将读取新版额度。'); }
+    else show('moneyOut','先前额度已保存；当前还有未保存的修改。');
+  }catch(error){ show('moneyOut','保存失败：' + error.message + '。请重新读取后再保存。'); }
+  finally{ budgetSettingsSaving = false; $('budgetSave').disabled = !budgetSettingsRevision; }
 }
 
 let memeData = [], memeCur = 0, memeFingerprint = '';
@@ -1781,149 +1819,39 @@ async function loadBiliCred(){
   }catch(e){ return false; }
 }
 
-let actData = null;
-
-async function loadActivities(){
-  const box = $('actList');
-  if(!box) return;
-  try{
-    const j = await api('/activities', null, true);
-    actData = j.data || { activities: [] };
-    const acts = actData.activities || [];
-    box.innerHTML = '';
-    if(!acts.length){ box.innerHTML = '<div class="empty">还没配置</div>'; return; }
-    acts.forEach(function(a){
-      const d = document.createElement('div');
-      d.className = 'frow';
-      d.style.cursor = 'default';
-      d.innerHTML = '<label class="sw"><input type="checkbox" data-id="' + a.id + '"'
-        + (a.enabled ? ' checked' : '') + '><i></i></label>'
-        const dot = a.ready === true ? '🟢' : a.ready === false ? '⚪' : '·';
-        const why = a.why ? ('<span class="dsc">　' + dot + ' ' + a.why + '</span>') : '';
-        d.innerHTML = '<label class="sw"><input type="checkbox" data-id="' + a.id + '"'
-          + (a.enabled ? ' checked' : '') + '><i></i></label>'
-          + '<div class="fmain" style="margin-left:10px">'
-          + '<span class="fname">' + a.name
-          + (a.cost ? ' <span class="dsc">花零花钱</span>' : '') + '</span>'
-          + '<span class="fprev">' + (a.desc || '') + why + '</span>'
-          + '</div>'
-          + '<button class="fdel" title="删掉这个活动">×</button>';
-      d.querySelector('.fdel').onclick = function(){ deleteActivity(a.id, a.name); };
-      box.appendChild(d);
-    });
-  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
-}
-
-async function addActivity(){
-  const nm = ($('actNewName') || {}).value || '';
-  const ds = ($('actNewDesc') || {}).value || '';
-  const cost = $('actNewCost') ? $('actNewCost').checked : true;
-  if(!nm.trim()){ show('actOut', '先给活动起个名字。'); return; }
-  try{
-    const j = await api('/activities/add', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ name: nm.trim(), desc: ds.trim(), cost: cost }) });
-    if(!j.ok) throw new Error(j.error || '失败');
-    show('actOut', '加了：' + nm.trim());
-    if($('actNewName')) $('actNewName').value = '';
-    if($('actNewDesc')) $('actNewDesc').value = '';
-    loadActivities();
-  }catch(e){ show('actOut', '没加上：' + e.message); }
-}
-
-async function deleteActivity(id, name){
-  try{
-    const j = await api('/activities/delete', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: id }) });
-    if(!j.ok) throw new Error(j.error || '失败');
-    show('actOut', '删了：' + name);
-    loadActivities();
-  }catch(e){ show('actOut', '没删掉：' + e.message); }
-}
-
-function topupQuick(v){
-  const el = $('topupAmt'); if(el) el.value = String(v);
-  topup();
-}
-
-async function topup(){
-  const v = parseFloat(($('topupAmt') || {}).value || '');
-  if(!v || Number.isNaN(v)){ show('topupOut', '填个数字，比如 0.5。'); return; }
-  try{
-    const j = await api('/budget/topup', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ amount: v }) });
-    if(!j.ok) throw new Error(j.error || '失败');
-    show('topupOut', (v > 0 ? '加了 ' + v + ' 元额度' : '记了一笔 ' + Math.abs(v) + ' 元花费')
-      + '\n现在：花 ' + j.budget.spent + ' / 上限 ' + j.budget.limit + ' 元');
-    if($('topupAmt')) $('topupAmt').value = '';
-    loadLive(); loadBudget();
-  }catch(e){ show('topupOut', '没成：' + e.message); }
-}
-
-async function saveActivities(){
-  const want = {};
-  document.querySelectorAll('#actList input[type=checkbox]').forEach(function(cb){
-    want[cb.dataset.id] = cb.checked;
-  });
-  try{
-    const j = await api('/activities', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ enabled: want }) });
-    show('actOut', j.ok ? '保存好了。' : ('没存上：' + (j.error || '')));
-  }catch(e){ show('actOut', '没存上：' + e.message); }
-}
-
 async function loadLive(){
   try{
-    const j = await api('/live', null, true);
-    if(!j.ok) throw new Error(j.error || '读取失败');
-    const l = j.live || {};
+    const result = await api('/live', null, true);
+    if(!result.ok) throw new Error(result.error || '读取失败');
+    const live = result.live || {}, autonomy = live.autonomy || {}, observer = autonomy.observer || {};
     const check = $('liveCheck');
-    if(check) { check.hidden = !l.autonomy; check.disabled = componentActionPending || !(l.autonomy || {}).can_request_check; }
-    if(l.money){
-      setHtml('liveMoney', (l.money.spent ?? 0) + '<small>元</small>');
-      setText('liveMoneySub', l.money.exhausted ? '今天花完了' : ('上限 ' + (l.money.limit ?? '—') + ' 元'));
+    if(check) check.disabled = componentActionPending || autonomy.mode !== 'unified' || autonomy.can_request_check !== true;
+    setText('liveLast', autonomyLabel(autonomy));
+    setText('liveLastAt', observer.last_completed_at ? '上次观察处理于 ' + new Date(observer.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
+    const next = observer.next_review_at || observer.next_opportunity_at;
+    setText('activityNext', next ? '下次检查 ' + new Date(next).toLocaleString('zh-CN') : '等待新的自主机会');
+    const schedule = $('activitySchedule');
+    if(schedule){
+      schedule.innerHTML = ''; appendPolicyRow(schedule, autonomyLabel(autonomy));
+      if(observer.next_review_at) appendPolicyRow(schedule, '已约复查：' + new Date(observer.next_review_at).toLocaleString('zh-CN'));
+      if(observer.next_opportunity_at) appendPolicyRow(schedule, '下次普通机会：' + new Date(observer.next_opportunity_at).toLocaleString('zh-CN'));
+      if(observer.error_count) appendPolicyRow(schedule, observer.error_count + ' 个观察范围证据缺失，等待核对。');
+      appendPolicyRow(schedule, '请求检查只提交观察，是否行动或发消息由主 agent 决定。');
     }
-    if(l.autonomy){
-      const a = l.autonomy, o = a.observer || {};
-      setText('liveLast', autonomyLabel(a));
-      setText('liveLastAt', o.last_completed_at ? '上次观察处理于 ' + new Date(o.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
-      const rows = [autonomyLabel(a), '观察提交后，是否娱乐或会话由主 agent 决定。'];
-      if(o.error_count) rows.push(o.error_count + ' 个观察范围证据缺失，等待人工核对；其他范围仍可正常检查。');
-      else if(o.next_review_at) rows.push('已约复查：' + new Date(o.next_review_at).toLocaleString('zh-CN'));
-      if(o.next_opportunity_at) rows.push('下次普通机会：' + new Date(o.next_opportunity_at).toLocaleString('zh-CN'));
-      const box = $('liveLog');
-      if(box){
-        box.innerHTML = ''; rows.forEach(text => { const d = document.createElement('div'); d.className = 'frow'; d.textContent = text; box.appendChild(d); });
-        const history = l.recentActivity || {}, events = Array.isArray(history.records) ? history.records : [];
-        const title = document.createElement('div'); title.className = 'frow'; title.textContent = '最近实际工具活动' + (history.status === 'partial' ? '（部分来源）' : ''); box.appendChild(title);
-        if(!events.length){ const item = document.createElement('div'); item.className = 'dsc'; item.textContent = history.status === 'ok' ? '当前可核验范围暂无工具活动。' : '近期活动来源暂不可用，不能据此判断没有活动。'; box.appendChild(item); }
-        events.slice(0, 30).forEach(event => { const item = document.createElement('div'); item.className = 'frow'; const stamp = new Date(typeof event.at === 'number' && event.at < 1e12 ? event.at * 1000 : event.at); item.textContent = (Number.isNaN(stamp.getTime()) ? '时间未确认' : stamp.toLocaleString('zh-CN')) + ' · ' + String(event.tool || '工具调用') + ' · ' + (({succeeded:'成功',failed:'失败',returned:'已返回',pending:'待完成',unknown:'结果未知'})[event.status] || '结果未知'); box.appendChild(item); });
-      }
-      return;
-    }
-    setText('liveLast', (l.last || '还没说过什么').slice(0, 40));
-    setText('liveLastAt', l.lastAt ? String(l.lastAt).slice(0, 16).replace('T', ' ') : '');
-    const box = $('liveLog');
+    const history = live.recentActivity || {}, events = Array.isArray(history.records) ? history.records : [], box = $('liveLog');
     if(box){
-      const rows = (l.log || []).slice().reverse();
       box.innerHTML = '';
-      if(!rows.length){ box.innerHTML = '<div class="empty">还没有记录</div>'; return; }
-      rows.forEach(function(t){
-        const d = document.createElement('div');
-        d.className = 'frow';
-        d.style.cursor = 'default';
-        d.innerHTML = '<div class="fmain"><span class="fprev">'
-          + String(t).replace(/</g, '&lt;') + '</span></div>';
-        box.appendChild(d);
+      if(!events.length) appendPolicyRow(box, history.status === 'ok' ? '当前可核验范围暂无工具活动。' : '近期活动来源暂不可用，不能据此判断没有活动。');
+      if(history.status === 'partial') appendPolicyRow(box, '当前记录只覆盖部分可核验来源。');
+      events.slice(0,30).forEach(event => {
+        const stamp = new Date(typeof event.at === 'number' && event.at < 1e12 ? event.at * 1000 : event.at);
+        appendPolicyRow(box, (Number.isNaN(stamp.getTime()) ? '时间未确认' : stamp.toLocaleString('zh-CN')) + ' · ' + String(event.tool || '工具调用') + ' · ' + (({succeeded:'成功',failed:'失败',returned:'已返回',pending:'待完成',unknown:'结果未知'})[event.status] || '结果未知'));
       });
     }
-  }catch(e){
-    setText('liveLast', '刷新失败，状态未确认');
-    const button = $('liveCheck'); if(button) button.disabled = true;
-    setText('liveLastAt', '无法读取最新调度状态，请稍后刷新。');
+    await loadActivityBudget();
+  }catch(error){
+    setText('liveLast','刷新失败，状态未确认'); setText('liveLastAt','无法读取最新调度状态，请稍后刷新。');
+    if($('liveCheck')) $('liveCheck').disabled = true;
   }
 }
 

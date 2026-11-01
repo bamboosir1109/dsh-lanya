@@ -41,7 +41,7 @@ groupwatch / mind / greet / reminders / B站 → 持久观察队列 → 同一�
 
 内置调度每 15 秒更新 v2 JSON 标记，记录宿主 PID 和负责的 jobs。外部 supervisor 只避让标记在 120 秒内更新、PID 仍存活且明确列出的作业；单独残留一个老 flag 不再让所有后台工作永久停止。这不是跨机器的分布式锁，仍应明确选择一方负责调度。
 
-`ensure-tasks.ps1 -Scheduler External` 默认补外部 supervisor，由它调度预算；若已经存在本工作区启用的独立 Budget 任务，supervisor 避让预算作业。`-Scheduler Plugin` 不新增 supervisor 或独立 Mind 任务，另外补每 5 分钟执行的独立 Budget 任务；JS 内置调度不再包含预算作业。
+`ensure-tasks.ps1 -Scheduler External` 默认补外部 supervisor；若已经存在本工作区启用的独立 Budget 任务，supervisor 避让该兼容作业。`-Scheduler Plugin` 不新增 supervisor 或独立 Mind 任务，保留独立 Budget 任务的兼容安排。旧预算脚本不是统一主 agent 的费用门控；新版在可信 turn 入口与动作入口核对，见[统一预算与设置](DECISIONS.md#统一预算与设置)。
 
 任务注册只补缺失项，不改删已有定义。旧独立 Mind 或另一调度器任务如果还存在，需单独核对，不能把新模式当成自动迁移器。`start-all.ps1` 同样接受 `-Scheduler External|Plugin`，但不会修改 DSH 插件配置或关闭已启动的另一方。
 
@@ -67,8 +67,8 @@ unified 模式由插件把到期提醒提交给主 agent，PS 直接发送入口
   <dataDirName>/
     lanya-config.json           身份与消息目标
     lanya-tunables.json         群聊节奏
-    activities.json             活动配置
-    budget.json                 额度状态
+    autonomy-budget.json        新版 USD 限额与每轮预留配置
+    autonomy-budget.sqlite      可信轮次费用与预留账本
     people/、diary/、notes/      人物档案、日记、随笔
     chats/、memes/               聊天导出、表情素材
     made/
@@ -90,7 +90,7 @@ unified 模式由插件把到期提醒提交给主 agent，PS 直接发送入口
 | 6099 | NapCat WebUI | 外部管理页面 |
 | 9880 | 本地 TTS | 另行安装的 GPT-SoVITS |
 
-面板当前前端 API 地址使用默认 19389，部分辅助脚本也保留默认端口或旧路径。调整项目端口后，要核对对应调用方，不能只改一处 JSON 就假设所有页面都已跟随。面板服务仅应在可信本机环境使用，当前不是面向公网的多用户服务。
+面板只读请求优先使用同源 API，默认 19389 是备用；写操作仍使用默认 API 端口。部分辅助脚本也保留默认端口或旧路径。调整项目端口后，要核对对应调用方，不能只改一处 JSON 就假设所有页面都已跟随。面板服务仅应在可信本机环境使用，当前不是面向公网的多用户服务。
 
 ## 配置读取规则
 
@@ -104,9 +104,9 @@ JS 插件可在自身配置中设置 `workDir` / `workspacePath`，并读取环�
 
 ## 配置与状态的区别
 
-`config/project.json` 管端口、目录、超时与默认限额；`lanya-config.json` 管身份和消息目标；`lanya-tunables.json` 管群节奏。`budget.json`、计划、锁、调度标记、日志等是运行状态，各有对应写入者。
+`config/project.json` 管端口、目录、超时和 `mind.opportunityMin`；`lanya-config.json` 管身份和消息目标。旧 `lanya-tunables.json` 仅供群观察器启动配置兼容，页面不会将它宣称为当前进程已加载值。`autonomy-budget.json` 保存新版限额，SQLite 保存实际轮次费用与未决预留；计划、锁、调度标记和日志各有对应写入者。
 
-零花钱默认针对自主活动，聊天费用不直接受这份额度限制。面板设置过的额度应由预算脚本保留，不用每次运行都重置成公开默认值。判断预算是否生效，要核对当前日期和实际入账，不只看 `enabled`。
+新版费用以模型实际轮次的 API 美元估值为依据，按可信触发来源区分自主、私聊和群聊，不从会话名字猜分类。轮次开始前预留，动作执行前再检查；结果不明保留预留，不自动退款或重试。新账本只覆盖启用后的真实记录，不把旧统计补成零费用，也不是服务商账户硬限额。旧 `budget.json` / `activities.json` 可以作为历史文件保留，不决定统一主 agent 的额度或活动权限。
 
 ## 维护入口
 

@@ -78,9 +78,9 @@ def main():
         print("snapshot_failed memes %s" % type(e).__name__)
 
     try:
-        with io.open(lps.BUDGET, "r", encoding="utf-8") as fh:
-            if dump("budget", {"ok": True, "budget": json.load(fh)}):
-                ok += 1
+        budget = lps.unified_budget_snapshot()
+        if dump("budget", {"ok": budget.get("availability") in ("available", "not_started"), "budget": budget}):
+            ok += 1
     except Exception as e:
         print("snapshot_failed budget %s" % type(e).__name__)
 

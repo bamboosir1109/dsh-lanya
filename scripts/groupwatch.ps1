@@ -130,7 +130,7 @@ $mentionCapPerHour = 4
 # lose it, short enough that a day-old mention does not resurrect.
 $pendingMaxMin = 30
 $budgetPath = Join-Path (Join-Path $workDir $dataDirName) 'budget.json'
-if (Test-Path $budgetPath) {
+if (-not (Test-QqUnifiedMode) -and (Test-Path $budgetPath)) {
   try {
     $bud = Get-Content $budgetPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($bud.groupMuted -eq $true) {

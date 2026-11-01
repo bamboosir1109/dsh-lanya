@@ -43,7 +43,7 @@ Set-Location -LiteralPath $repo
 | `panel/theme-light.css`、`panel/phone.html` | `<角色目录>/made/` 下同名文件 |
 | `config/project.json` | 新安装的 `config/project.json` |
 | `docs/persona.example.md` | 新安装的 `napcat/persona.md` |
-| 身份、群节奏和活动示例 | `<角色目录>/lanya-config.json`、`lanya-tunables.json`、`activities.json` |
+| 身份与旧群节奏兼容示例 | `<角色目录>/lanya-config.json`、`lanya-tunables.json` |
 
 安装器同时创建 `made/`、`notes/`、`diary/`、`people/`、`memes/`、`chats/`。已有的 `napcat/config/project.json` 优先保留，不再生成另一份遮蔽它的配置。新建项目配置会写入此次选择的 `dataDirName`。
 
@@ -59,9 +59,10 @@ Set-Location -LiteralPath $repo
 | `<角色目录>/lanya-config.json` | `adminQQ` 数组、`fanGroupQQ`、`botQQ`；可选称呼与身份介绍 |
 | `<角色目录>/lanya-tunables.json` | 发言窗口、最小间隔与上限；`GroupId` 留空时从身份配置读取 |
 | `napcat/persona.md` | 角色设定与说话规则，避免把身份凭证写进正文 |
-| `<角色目录>/activities.json` | 哪些活动允许执行、哪些依赖还没准备好 |
 
-群节奏默认值只是初始模板，不会在升级时覆盖已有调参。设置文件的读取优先级与环境变量见[系统架构](ARCHITECTURE.md)。
+旧群节奏文件是兼容配置，不代表统一自主策略的当前可编辑设置或已经加载的频率。统一自主设置和费用预算从面板对应的新接口读取；群观察的启动配置与运行验证分开显示。设置文件的读取优先级与环境变量见[系统架构](ARCHITECTURE.md)。
+
+新安装不创建旧 `activities.json` 清单，它不能授权统一主 agent 执行活动。升级保留已有文件供显式 legacy 兼容，不删除使用者的数据，也不将其中的 `enabled` 当作新版活动开关。
 
 老安装如果仍使用 `dafeiyu-config.json` 或 `dafeiyu-tunables.json`，安装器会保护它们，并跳过新的空模板。升级前先备份，再将它们明确迁移为对应 `lanya-*` 文件；部分后台脚本只识别新名称。已有角色目录或 `napcat/` 中的 `<角色目录名>-人设正文.md` 会保留，不生成一份优先级更高的空 `persona.md`。
 
@@ -132,6 +133,6 @@ git pull --ff-only
 .\install.ps1 -Target $workspace -Force
 ```
 
-默认重复安装跳过已有文件；`-Force` 只覆盖程序、提示词和前端资源。已有项目配置、身份、人设、群节奏和活动配置始终保留。新增配置键需要人工合并，新版默认值不会强行替换本机选择。
+默认重复安装跳过已有文件；`-Force` 只覆盖程序、提示词和前端资源。已有项目配置、身份、人设、旧群节奏及活动文件始终保留。新增配置键需要人工合并，新版默认值不会强行替换本机选择。
 
 文件复制完成后，重启受影响的面板、后台进程和 DSH 插件宿主。常驻 Python/Node 进程仍可能执行内存中的旧代码；安装器不会自动结束它们。回退时恢复经过验证的源码版本、重新部署对应程序文件，再按需要恢复备份数据；不要把仓库中的模板当成自己的配置备份。

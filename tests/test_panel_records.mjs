@@ -65,6 +65,9 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
     AbortController, API: 'http://127.0.0.1:19389', APIX: '/api',
     currentPage: 'bili', recordStates: new Map(), recordRequests: new Map(),
     refreshingPages: new Set(), dirtyPages: new Set(), pageEdits: new Map(),
+    autonomySettingsRevision: null, budgetSettingsRevision: null,
+    autonomySettingsEpoch: 0, autonomySettingsSaving: false,
+    budgetSettingsEpoch: 0, budgetSettingsSaving: false,
     searchOn: false, selected: {}, workSel: {}, currentDir: 'diary', currentWorkDir: 'made',
     console: { log() {}, warn() {}, error() {} },
     $: node, setText(id, value) { node(id).textContent = value },
@@ -148,6 +151,17 @@ test('live application error is returned and marked without hiding it behind ano
   assert.equal(h.node('recordSync').dataset.state, 'error')
 })
 
+test('budget read failures mark the actual visible activity overview and system pages', async () => {
+  for (const currentPage of ['activity', 'overview', 'system']) {
+    const h = harness({ functions: API_FUNCTIONS, extra: { currentPage },
+      fetch: async () => response({ ok: false, error: 'synthetic budget unavailable' }) })
+    assert.equal((await h.context.api('/budget', null, true)).ok, false)
+    assert.equal(h.node('recordSync').dataset.state, 'error', currentPage)
+    assert.equal([...h.context.recordStates.values()][0].page, currentPage)
+    assert.equal(h.calls.length, 1)
+  }
+})
+
 test('live-only read does not fall back to an offline snapshot', async () => {
   const h = harness({ functions: API_FUNCTIONS, fetch: async () => response({}, 503) })
   await assert.rejects(h.context.api('/memory', null, true))
@@ -195,8 +209,8 @@ test('edits made while a save is waiting remain dirty after its old response', a
   assert.equal(h.context.dirtyPages.has('persona'), true)
 })
 
-const LOADERS = ['refreshOverview', 'loadBili', 'loadLive', 'loadActivities', 'loadBudget', 'loadTools',
-  'loadMemes', 'loadMemoryOverview', 'loadFiles', 'loadWorks', 'loadSchedule', 'loadTunables',
+const LOADERS = ['refreshOverview', 'loadBili', 'loadLive', 'loadAutonomySettings', 'loadActivityBudget', 'loadBudget', 'loadTools',
+  'loadMemes', 'loadMemoryOverview', 'loadFiles', 'loadWorks', 'loadSchedule', 'loadConversationPolicy',
   'loadNapcat', 'loadPersona', 'loadConfig', 'loadBrand', 'loadSystem', 'loadMemeConfig', 'loadBiliCred']
 function refreshHarness(extra = {}) {
   const counts = new Map(), args = new Map()
@@ -274,12 +288,12 @@ test('late old-directory success cannot mark the failed current directory as liv
 })
 
 test('background budget refresh updates read-only totals without resetting an edited limit', async () => {
-  const h = harness({ extra: { api: async () => ({ ok: true, budget: { limit: 3, spent: 0, date: 'fixture' } }) },
-    functions: ['loadBudget'] })
-  h.node('bLimit').value = 'unsaved fixture limit'
+  const h = harness({ extra: { api: async () => ({ ok: true, budget: budgetData() }) },
+    functions: BUDGET_RENDERERS.concat('loadBudget') })
+  h.node('bAutonomy').value = 'unsaved fixture limit'
   await h.context.loadBudget(true)
-  assert.equal(h.node('bLimit').value, 'unsaved fixture limit')
-  assert.match(h.node('mSpent').innerHTML, /^0<small>/)
+  assert.equal(h.node('bAutonomy').value, 'unsaved fixture limit')
+  assert.match(treeText(h.node('budgetBuckets')), /已计 \$0\.0000 · 预留 \$0\.0500/)
 })
 
 test('background memory read leaves the explicitly selected owner control alone', async () => {
@@ -368,8 +382,259 @@ test('first memory status render uses the real top-level selection initializatio
 const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili', 'renderBiliArchive']
 const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
 const descendants = node => [node, ...node.children.flatMap(descendants)]
+const BUDGET_RENDERERS = ['appendPolicyRow', 'budgetAmount', 'renderBudgetSummary', 'renderBudget']
+const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']
+const budgetData = overrides => ({ schema: 'unified-budget/v1', availability: 'available', revision: 'a'.repeat(64),
+  effective: { currency: 'USD', basis: 'meter_api_usd_estimate', limits: { autonomy: 1, private: 0, group: 0 }, reserve_usd: 0.05 },
+  usage: { date: '2026-11-01', coverage_start: 1793520000000, buckets: {
+    autonomy: { spent_usd: 0, reserved_usd: 0.05, remaining_usd: 0.95, unknown_count: 0, exhausted: false },
+    private: { spent_usd: 0.12, reserved_usd: 0, remaining_usd: null, unknown_count: 0, exhausted: false },
+    group: { spent_usd: 0.25, reserved_usd: 0, remaining_usd: null, unknown_count: 0, exhausted: false } } },
+  enforcement: { before_turn: true, before_action: true, runtime_gate_bound: true, provider_hard_cap: false }, ...overrides })
+const autonomyData = overrides => ({ schema: 'dsh-panel-autonomy-settings/v1', availability: 'available',
+  mode: 'unified', revision: 'b'.repeat(64), writable_fields: ['opportunity_minutes'],
+  effective: { opportunity_minutes: 3 }, existing_reviews_unchanged: true,
+  group_observation: { availability: 'available', read_only: true, running_values_verified: false,
+    activation: 'observer_startup_configuration', settings: { poll_seconds: 30, quiet_minutes: 20 } }, ...overrides })
 const biliData = overrides => ({ status: 'ok', coverage: { owner_verified_scopes: 2 },
   records: [], recent_videos: [], replies: [], ...overrides })
+
+test('new USD budget shows reserved and uncertain cost separately and never promises a provider hard cap', () => {
+  const data = budgetData()
+  data.usage.buckets.autonomy = { spent_usd: 0.2, reserved_usd: 0.3, remaining_usd: 0.5, unknown_count: 2, exhausted: false }
+  const h = harness({ functions: BUDGET_RENDERERS })
+  h.context.renderBudget(data, false, 0)
+  const text = treeText(h.node('budgetBuckets')) + treeText(h.node('budgetEnforcement'))
+  assert.match(text, /已计 \$0\.2000 · 预留 \$0\.3000/)
+  assert.match(text, /2 轮费用待确认/)
+  assert.match(text, /未知费用保留预留，不自动重试或伪造退款/)
+  assert.match(h.node('mAccounting').textContent, /(?:真实|实际)模型轮次.*API.*估值/)
+  assert.match(h.node('mAccounting').textContent, /历史费用不回填为零/)
+  assert.equal(h.node('sMoney').textContent, '部分费用待确认')
+  const meter = descendants(h.node('budgetBuckets')).find(node => node.role === 'progressbar')
+  assert.equal(meter['aria-valuenow'], '50')
+  assert.equal(meter.dataset.state, 'unknown')
+  assert.equal(h.node('bAutonomy').value, 1)
+  assert.equal(h.node('bReserve').value, 0.05)
+  assert.doesNotMatch(text, /￥|人民币|免费|账户硬限额已生效/)
+})
+
+test('configured budget without a fresh runtime gate is never shown as an active spending guard', () => {
+  const h = harness({ functions: BUDGET_RENDERERS })
+  h.context.renderBudget(budgetData({ enforcement: { before_turn: true, before_action: true, runtime_gate_bound: false } }), false, 0)
+  assert.equal(h.node('sMoney').textContent, '预算门控未确认')
+  assert.equal(h.node('mState').textContent, '运行门控未确认')
+  assert.doesNotMatch(treeText(h.node('budgetEnforcement')), /已接入/)
+})
+
+test('remaining balance below a new reservation is not labeled available or fully exhausted', () => {
+  const data = budgetData()
+  data.usage.buckets.autonomy = { spent_usd: 0.98, reserved_usd: 0, remaining_usd: 0.02,
+    unknown_count: 0, exhausted: false, can_start_new_turn: false, blocked_reason: 'insufficient_reserve' }
+  const h = harness({ functions: BUDGET_RENDERERS })
+  h.context.renderBudget(data, false, 0)
+  assert.equal(h.node('sMoney').textContent, '新轮次预留不足')
+  assert.match(treeText(h.node('budgetBuckets')), /余额不足以预留下一轮/)
+  assert.doesNotMatch(h.node('sMoney').textContent, /额度可用|额度已用完/)
+  assert.match(treeText(h.node('budgetBuckets')), /必要的?控制判断/)
+})
+
+test('not-started budget permits current settings without displaying fabricated historic zero usage', () => {
+  const data = budgetData({ availability: 'not_started', usage: { status: 'not_started', coverage_start: null, buckets: {} } })
+  const h = harness({ functions: BUDGET_RENDERERS })
+  h.context.renderBudget(data, false, 0)
+  assert.equal(h.node('bAutonomy').disabled, false)
+  assert.equal(h.node('budgetSave').disabled, false)
+  assert.equal(h.node('bAutonomy').value, 1)
+  assert.match(h.node('mAvailability').textContent, /尚未起算/)
+  assert.match(treeText(h.node('budgetBuckets')), /尚无新版计费记录/)
+  assert.doesNotMatch(treeText(h.node('budgetBuckets')), /已计 \$0|剩余 \$|已使用和预留 0/)
+  for (const meter of descendants(h.node('budgetBuckets')).filter(node => node.role === 'progressbar')) {
+    assert.equal(meter['aria-valuenow'], undefined)
+    assert.equal(meter.dataset.state, 'unknown')
+  }
+})
+
+test('unavailable budget and failed refresh retain the previous editable values without inventing zero cost', async () => {
+  const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget'), extra: {
+    api: async () => ({ ok: false, error: 'synthetic ledger failure' }) } })
+  h.context.renderBudget(budgetData(), false, 0)
+  const before = treeText(h.node('budgetBuckets'))
+  h.node('bAutonomy').value = '0.7'
+  await h.context.loadBudget(false)
+  assert.equal(h.node('bAutonomy').value, '0.7')
+  assert.equal(treeText(h.node('budgetBuckets')), before)
+  assert.equal(h.node('budgetSave').disabled, true)
+  assert.equal(h.node('mState').textContent, '预算状态未确认')
+  assert.match(h.node('moneyOut').textContent, /读取失败/)
+})
+
+test('a late read cannot reset budget fields that were edited while it was waiting', async () => {
+  const waiting = deferred()
+  const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget'), extra: { api: () => waiting.promise } })
+  const read = h.context.loadBudget(false)
+  h.node('bAutonomy').value = '0.8'
+  h.context.pageEdits.set('money', 1); h.context.dirtyPages.add('money')
+  waiting.resolve({ ok: true, budget: budgetData() }); await read
+  assert.equal(h.node('bAutonomy').value, '0.8')
+  assert.equal(h.context.budgetSettingsRevision, null)
+  assert.equal(h.node('budgetSave').disabled, true)
+})
+
+test('a budget save sends only new bucket settings and its exact revision', async () => {
+  const requests = []
+  const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (...args) => {
+    requests.push(args); return { ok: true, budget: budgetData({ revision: 'c'.repeat(64) }) }
+  } } })
+  h.context.budgetSettingsRevision = 'a'.repeat(64)
+  for (const [id, value] of Object.entries({ bAutonomy: '0.8', bPrivate: '0', bGroup: '2', bReserve: '0.07' })) h.node(id).value = value
+  await h.context.saveBudget()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0][0], '/budget')
+  assert.equal(requests[0][1].method, 'POST')
+  assert.deepEqual(JSON.parse(requests[0][1].body), { revision: 'a'.repeat(64), settings: {
+    limits: { autonomy: 0.8, private: 0, group: 2 }, reserve_usd: 0.07 } })
+  assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
+})
+
+test('new edits during a budget save remain dirty and are not replaced by the saved response', async () => {
+  const waiting = deferred()
+  const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: () => waiting.promise } })
+  h.context.budgetSettingsRevision = 'a'.repeat(64)
+  for (const id of ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve']) h.node(id).value = '0.1'
+  const save = h.context.saveBudget()
+  h.node('bAutonomy').value = '0.9'; h.context.pageEdits.set('money', 1); h.context.dirtyPages.add('money')
+  waiting.resolve({ ok: true, budget: budgetData({ revision: 'c'.repeat(64) }) }); await save
+  assert.equal(h.node('bAutonomy').value, '0.9')
+  assert.equal(h.context.dirtyPages.has('money'), true)
+  assert.match(h.node('moneyOut').textContent, /还有未保存/)
+})
+
+test('a budget read started before a completed save cannot roll the saved revision back', async () => {
+  const oldRead = deferred(), saved = budgetData({ revision: 'c'.repeat(64) })
+  saved.effective.limits.autonomy = 0.8
+  const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget', 'saveBudget'), extra: {
+    api: async (_path, options) => options?.method === 'POST' ? { ok: true, budget: saved } : oldRead.promise } })
+  h.context.budgetSettingsRevision = 'a'.repeat(64)
+  const read = h.context.loadBudget(false)
+  for (const [id, value] of Object.entries({ bAutonomy: '0.8', bPrivate: '0', bGroup: '0', bReserve: '0.05' })) h.node(id).value = value
+  await h.context.saveBudget()
+  oldRead.resolve({ ok: true, budget: budgetData() }); await read
+  assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
+  assert.equal(h.node('bAutonomy').value, 0.8)
+})
+
+test('budget mutation transport failure is not retried and never writes the legacy topup route', async () => {
+  const h = harness({ functions: API_FUNCTIONS.concat(BUDGET_RENDERERS, 'saveBudget'),
+    extra: { currentPage: 'money' }, fetch: async () => { throw new TypeError('synthetic ambiguous transport') } })
+  h.context.budgetSettingsRevision = 'a'.repeat(64)
+  for (const id of ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve']) h.node(id).value = '0.1'
+  await h.context.saveBudget()
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.calls[0].url, 'http://127.0.0.1:19389/api/budget')
+  assert.match(h.node('moneyOut').textContent, /重新读取/)
+})
+
+test('invalid reserve values never reach a budget mutation', async () => {
+  for (const reserve of ['0', '-1', 'NaN', 'Infinity', '']) {
+    let writes = 0
+    const h = harness({ functions: ['saveBudget'], extra: { api: () => { writes++; throw new Error('must not call') } } })
+    h.context.budgetSettingsRevision = 'a'.repeat(64)
+    for (const id of ['bAutonomy', 'bPrivate', 'bGroup']) h.node(id).value = '0'
+    h.node('bReserve').value = reserve
+    await h.context.saveBudget()
+    assert.equal(writes, 0, reserve)
+  }
+})
+
+test('unified settings expose only opportunity cadence and label group values as unverified startup configuration', () => {
+  const h = harness({ functions: AUTONOMY_RENDERERS })
+  h.context.renderAutonomySettings(autonomyData(), false, 0)
+  assert.equal(h.node('activityInterval').value, 3)
+  assert.equal(h.context.autonomySettingsRevision, 'b'.repeat(64))
+  assert.match(treeText(h.node('talkObservation')), /启动时读取的配置.*尚未逐项核验/)
+  assert.doesNotMatch(treeText(h.node('talkObservation')), /当前进程.*已生效|每轮必须/)
+})
+
+test('settings background refresh and delayed reads preserve unsaved cadence and revision', async () => {
+  const waiting = deferred()
+  const h = harness({ functions: AUTONOMY_RENDERERS.concat('loadAutonomySettings'), extra: { api: () => waiting.promise } })
+  const read = h.context.loadAutonomySettings(false)
+  h.node('activityInterval').value = '4'
+  h.context.pageEdits.set('activity', 1); h.context.dirtyPages.add('activity')
+  waiting.resolve({ ok: true, settings: autonomyData() }); await read
+  assert.equal(h.node('activityInterval').value, '4')
+  assert.equal(h.context.autonomySettingsRevision, null)
+})
+
+test('settings save changes only cadence and keeps persistent silence outside the request', async () => {
+  const requests = []
+  const h = harness({ functions: AUTONOMY_RENDERERS.concat('saveAutonomySettings'), extra: { api: async (...args) => {
+    requests.push(args); return { ok: true, settings: autonomyData() }
+  } } })
+  h.context.autonomySettingsRevision = 'b'.repeat(64); h.node('activityInterval').value = '4'
+  await h.context.saveAutonomySettings()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0][0], '/autonomy/settings')
+  assert.deepEqual(JSON.parse(requests[0][1].body), { revision: 'b'.repeat(64), settings: { opportunity_minutes: 4 } })
+  assert.match(h.node('actOut').textContent, /已有复查保持原计划/)
+})
+
+test('a settings read started before a completed save cannot replace the saved cadence', async () => {
+  const oldRead = deferred(), saved = autonomyData({ revision: 'd'.repeat(64), effective: { opportunity_minutes: 4 } })
+  const h = harness({ functions: AUTONOMY_RENDERERS.concat('loadAutonomySettings', 'saveAutonomySettings'), extra: {
+    api: async (_path, options) => options?.method === 'POST' ? { ok: true, settings: saved } : oldRead.promise } })
+  h.context.autonomySettingsRevision = 'b'.repeat(64)
+  const read = h.context.loadAutonomySettings(false)
+  h.node('activityInterval').value = '4'; await h.context.saveAutonomySettings()
+  oldRead.resolve({ ok: true, settings: autonomyData() }); await read
+  assert.equal(h.context.autonomySettingsRevision, 'd'.repeat(64))
+  assert.equal(h.node('activityInterval').value, 4)
+})
+
+for (const target of ['budget', 'autonomy']) test(target + ' real GET/save/new GET use distinct generations and old cleanup preserves the new pending read', async () => {
+  const old = deferred(), fresh = deferred(), route = target === 'budget' ? '/budget' : '/autonomy/settings'
+  const page = target === 'budget' ? 'money' : 'activity'
+  const load = target === 'budget' ? 'loadBudget' : 'loadAutonomySettings'
+  const save = target === 'budget' ? 'saveBudget' : 'saveAutonomySettings'
+  const field = target === 'budget' ? 'budget' : 'settings'
+  const saved = target === 'budget' ? budgetData({ revision: 'c'.repeat(64) }) : autonomyData({ revision: 'd'.repeat(64), effective: { opportunity_minutes: 4 } })
+  let reads = 0
+  const h = harness({ functions: API_FUNCTIONS.concat(target === 'budget' ? BUDGET_RENDERERS : AUTONOMY_RENDERERS, load, save),
+    extra: { currentPage: page }, fetch: async (_url, options) => {
+      if (options.method === 'POST') return response({ ok: true, [field]: saved })
+      reads++; assert.ok(reads <= 2, 'Only the original and fresh GET should reach transport')
+      return reads === 1 ? old.promise : fresh.promise
+    } })
+  if (target === 'budget') {
+    h.context.budgetSettingsRevision = 'a'.repeat(64)
+    for (const id of ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve']) h.node(id).value = '0.1'
+  } else {
+    h.context.autonomySettingsRevision = 'b'.repeat(64); h.node('activityInterval').value = '4'
+  }
+  h.context.noteRecord(route, 'live', Date.now())
+  const firstRead = h.context[load](false)
+  assert.equal(reads, 1)
+  await h.context[save]()
+  const secondRead = h.context[load](false)
+  assert.equal(reads, 2, 'Post-save GET cannot reuse the invalidated pre-save promise')
+  old.resolve(response({ ok: false, error: 'old synthetic failure' })); await firstRead
+  assert.equal(h.node('recordSync').dataset.state, 'live')
+  assert.equal(h.context.recordRequests.has('live:' + route), true, 'Old finally must not remove the new read')
+  const sharedRead = h.context.api(route, null, true)
+  assert.equal(reads, 2)
+  fresh.resolve(response({ ok: true, [field]: saved })); await Promise.all([secondRead, sharedRead])
+  assert.equal(h.context.recordRequests.size, 0)
+  assert.equal(h.node('recordSync').dataset.state, 'live')
+})
+
+test('current budget and autonomy views expose no legacy frequency, activity toggle or topup mutations', () => {
+  const source = readFileSync(PANEL, 'utf8')
+  assert.doesNotMatch(source, /function (?:saveTunables|saveActivities|topup|addActivity|deleteActivity)\(/)
+  assert.doesNotMatch(source, /api\(['"]\/(?:activities(?:\/|['"])|tunables['"]|budget\/topup)/)
+  assert.match(source, /单位 USD/)
+  assert.match(source, /不是服务商账户硬限额/)
+})
 
 test('Bili view separates targeted video reads from recommendation candidates and action-only targets', () => {
   const h = harness({ functions: BILI_RENDERERS })

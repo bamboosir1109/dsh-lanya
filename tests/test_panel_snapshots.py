@@ -38,6 +38,10 @@ class SnapshotPublishing(unittest.TestCase):
         self.panel.scheduled_tasks = lambda: []
         self.panel.memory_overview = lambda: {"entries": []}
         self.panel.bili_snapshot = lambda: {"records": []}
+        self.panel.unified_budget_snapshot = lambda: {
+            "schema": "unified-budget/v1", "availability": "not_started",
+            "usage": {"coverage_start": None, "counts_complete": False},
+            "effective": {"currency": "USD"}}
         self.panel.list_dir_files = lambda *args, **kwargs: []
         for path in (self.panel.BUDGET, self.panel.CONFIG, self.panel.TUNABLES, self.panel.MEMECFG):
             Path(path).write_text('{}', encoding='utf-8')
@@ -110,7 +114,7 @@ class SnapshotPublishing(unittest.TestCase):
         self.module.dump("budget", {"ok": True, "budget": {"spent": 4}})
         dest = self.made / "lanya-budget.json"
         before = dest.read_bytes()
-        Path(self.panel.BUDGET).write_text('{INVALID', encoding='utf-8')
+        self.panel.unified_budget_snapshot = lambda: {"availability": "error"}
         game = self.made / "games/fixture/index.html"
         game.parent.mkdir(parents=True)
         game.write_bytes(b"fixture")
@@ -120,6 +124,19 @@ class SnapshotPublishing(unittest.TestCase):
         works = json.loads((self.made / "lanya-works.json").read_bytes())
         self.assertIn("games/fixture/index.html", [row["name"] for row in works["files"]])
         self.assertEqual(works["_snapshot"]["schema"], 1)
+
+    def test_main_uses_unified_budget_and_never_relabels_legacy_zero_as_new_usage(self):
+        Path(self.panel.BUDGET).write_text('{INVALID', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.module.main()
+        result = json.loads((self.made / "lanya-budget.json").read_bytes())
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["budget"]["schema"], "unified-budget/v1")
+        self.assertEqual(result["budget"]["availability"], "not_started")
+        self.assertIsNone(result["budget"]["usage"]["coverage_start"])
+        self.assertFalse(result["budget"]["usage"]["counts_complete"])
+        self.assertEqual(result["budget"]["effective"]["currency"], "USD")
+        self.assertNotIn("spent", result["budget"])
 
     def test_memory_availability_error_keeps_last_success_bytes_and_time(self):
         self.module.dump("memory", {"ok": True, "memory": {

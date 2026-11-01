@@ -30,6 +30,16 @@ if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Mi
 if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
 $null = Test-QqUnifiedMode
 
+# Unified decisions own their real per-turn ledger. This retired timer may
+# display the new snapshot, but never rewrites legacy numbers or emits alerts.
+if (Test-QqUnifiedMode) {
+  $budgetHelper = Join-Path $PSScriptRoot 'budget_runtime.py'
+  if (-not (Test-Path -LiteralPath $budgetHelper -PathType Leaf)) { throw 'Unified budget helper unavailable' }
+  $python = if ($env:LANYA_PYTHON) { $env:LANYA_PYTHON } else { [string](Get-ProjectConfValue 'pythonExecutable' 'python') }
+  & $python -B $budgetHelper --snapshot
+  exit $LASTEXITCODE
+}
+
 # ---- shared project config ------------------------------------------------
 # Reads <repo>\config\project.json. The helper carries the same defaults, so a
 # missing or broken config file leaves behaviour exactly as it was.
