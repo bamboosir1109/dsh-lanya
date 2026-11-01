@@ -492,7 +492,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <div class="field"><label for="bGroup">每天群聊额度（USD）</label><input type="number" min="0" step="0.01" id="bGroup" disabled></div>
       <div class="field"><label for="bReserve">每轮预留（USD）</label><input type="number" min="0.000001" step="0.01" id="bReserve" disabled></div>
     </div>
-    <div class="btnrow"><button class="pri" id="budgetSave" onclick="saveBudget()" disabled>保存额度</button><button onclick="loadBudget()">重新读取</button></div>
+    <div class="btnrow"><button class="pri" id="budgetSave" onclick="saveBudget()" disabled>保存额度</button><button onclick="reloadCurrentSettings('money')">放弃修改并重读</button></div>
     <div class="out" id="moneyOut"></div>
   </div>
   <div class="card"><h3>如何生效</h3><div class="filelist" id="budgetEnforcement"></div></div>
@@ -797,7 +797,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <div class="field"><label for="activityInterval">自主机会间隔（分钟，2–60）</label><input type="number" id="activityInterval" min="2" max="60" step="1" disabled></div>
       <div class="field"><label>执行方式</label><p id="activityExecution" class="note">正在确认主 agent 托管状态</p></div>
     </div>
-    <div class="btnrow"><button class="pri" id="activitySave" onclick="saveAutonomySettings()" disabled>保存设置</button><button onclick="loadAutonomySettings()">重新读取</button><button onclick="goto('money')">查看自主预算</button></div>
+    <div class="btnrow"><button class="pri" id="activitySave" onclick="saveAutonomySettings()" disabled>保存设置</button><button onclick="reloadCurrentSettings('activity')">放弃修改并重读</button><button onclick="goto('money')">查看自主预算</button></div>
     <div class="out" id="actOut"></div>
   </div>
   <div class="card">
@@ -1434,6 +1434,25 @@ async function installPlugin(){
 
 let autonomySettingsRevision = null;
 let autonomySettingsEpoch = 0, autonomySettingsSaving = false;
+
+async function reloadCurrentSettings(page){
+  if(!['activity','money'].includes(page) || (page === 'activity' ? autonomySettingsSaving : budgetSettingsSaving)) return;
+  const route = page === 'activity' ? '/autonomy/settings' : '/budget';
+  for(const key of ['live:' + route, 'read:' + route]){
+    const pending = recordRequests.get(key);
+    if(pending) pending.invalidated = true;
+    recordRequests.delete(key);
+  }
+  dirtyPages.delete(page); pageEdits.set(page, (pageEdits.get(page) || 0) + 1);
+  if(page === 'activity'){
+    autonomySettingsEpoch++; autonomySettingsRevision = null;
+    await loadAutonomySettings(false);
+  }else{
+    budgetSettingsEpoch++; budgetSettingsRevision = null;
+    await loadBudget(false);
+  }
+  renderRecordSync();
+}
 
 function appendPolicyRow(box, text){
   const row = document.createElement('div'); row.className = 'frow'; row.textContent = text; box.appendChild(row);

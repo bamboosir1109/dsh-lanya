@@ -592,6 +592,47 @@ test('a settings read started before a completed save cannot replace the saved c
   assert.equal(h.node('activityInterval').value, 4)
 })
 
+test('explicit discard-and-reload recovers a stale revision while background reads preserve unsaved edits', async () => {
+  for (const target of ['budget', 'autonomy']) {
+    const money = target === 'budget', page = money ? 'money' : 'activity'
+    const field = money ? 'budget' : 'settings', input = money ? 'bAutonomy' : 'activityInterval'
+    const revisionKey = money ? 'budgetSettingsRevision' : 'autonomySettingsRevision'
+    const load = money ? 'loadBudget' : 'loadAutonomySettings', save = money ? 'saveBudget' : 'saveAutonomySettings'
+    const oldRevision = (money ? 'a' : 'b').repeat(64), newRevision = (money ? 'c' : 'd').repeat(64)
+    const fresh = money ? budgetData({ revision: newRevision }) : autonomyData({ revision: newRevision, effective: { opportunity_minutes: 4 } })
+    const calls = []
+    const h = harness({ functions: (money ? BUDGET_RENDERERS : AUTONOMY_RENDERERS).concat(load, save, 'reloadCurrentSettings', 'renderRecordSync'),
+      extra: { currentPage: page, api: async (...args) => {
+        calls.push(args)
+        if (args[1]?.method === 'POST' && JSON.parse(args[1].body).revision === oldRevision) return { ok: false, error: 'synthetic revision conflict' }
+        return { ok: true, [field]: fresh }
+      } } })
+    h.context[revisionKey] = oldRevision; h.context.dirtyPages.add(page)
+    if (money) for (const [id, value] of Object.entries({ bPrivate: '0', bGroup: '0', bReserve: '0.05' })) h.node(id).value = value
+    h.node(input).value = money ? '0.7' : '7'
+    await h.context[save]()
+    assert.match(h.node(money ? 'moneyOut' : 'actOut').textContent, /重新读取/)
+    assert.equal(h.context.dirtyPages.has(page), true)
+    await h.context[load](true)
+    assert.equal(h.node(input).value, money ? '0.7' : '7')
+    assert.equal(h.context[revisionKey], oldRevision)
+    const view = h.source.split('<div class="page" id="page-' + page + '">')[1].split('<div class="page"')[0]
+    const handler = view.match(/<button\b[^>]*onclick="([^"]+)"[^>]*>放弃修改并重读<\/button>/)?.[1]
+    assert.ok(handler, 'The real button must name its discard intent: ' + page)
+    await h.run(handler)
+    assert.equal(h.context.dirtyPages.has(page), false)
+    assert.equal(h.context[revisionKey], newRevision)
+    assert.equal(h.node(input).value, money ? 1 : 4)
+    for (const id of money ? ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve'] : ['activityInterval']) h.node(id).value = money ? '0.1' : '5'
+    h.context.dirtyPages.add(page); await h.context[save]()
+    const writes = calls.filter(([, options]) => options?.method === 'POST')
+    assert.equal(writes.length, 2)
+    assert.equal(JSON.parse(writes[0][1].body).revision, oldRevision)
+    assert.equal(JSON.parse(writes[1][1].body).revision, newRevision)
+    assert.equal(h.context.dirtyPages.has(page), false)
+  }
+})
+
 for (const target of ['budget', 'autonomy']) test(target + ' real GET/save/new GET use distinct generations and old cleanup preserves the new pending read', async () => {
   const old = deferred(), fresh = deferred(), route = target === 'budget' ? '/budget' : '/autonomy/settings'
   const page = target === 'budget' ? 'money' : 'activity'
