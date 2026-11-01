@@ -31,7 +31,7 @@ function response(data, status = 200) {
 
 function element() {
   const classes = new Set(), listeners = new Map()
-  return { style: {}, dataset: {}, value: '', textContent: '', innerHTML: '',
+  const node = { style: {}, dataset: {}, value: '', textContent: '',
     hidden: false, disabled: false, checked: false, children: [],
     classList: { add(...names) { names.forEach(name => classes.add(name)) },
       remove(...names) { names.forEach(name => classes.delete(name)) },
@@ -47,6 +47,9 @@ function element() {
     setAttribute(name, value) { this[name] = value },
     removeAttribute(name) { delete this[name] },
     listeners }
+  let html = ''
+  Object.defineProperty(node, 'innerHTML', { get() { return html }, set(value) { html = value; this.children = []; this.textContent = '' } })
+  return node
 }
 
 function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}, functions = [] } = {}) {
@@ -379,7 +382,7 @@ test('first memory status render uses the real top-level selection initializatio
 })
 
 
-const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili', 'renderBiliArchive']
+const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili']
 const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
 
 test('activity displays a local no-decision outcome without inventing an LLM verdict or hiding uncertain scheduling', async () => {
@@ -418,7 +421,8 @@ test('activity keeps actual scheduler offline distinct from a living background 
   await h.context.loadLive()
   assert.equal(h.node('liveWatch').textContent, '看护状态未确认')
 })
-const BUDGET_RENDERERS = ['appendPolicyRow', 'budgetAmount', 'renderBudgetSummary', 'renderBudget']
+const DAILY_RENDERERS = ['spendingDayState', 'spendingAmount', 'nativeSpendingReady', 'renderTodaySpending', 'selectSpendingDate', 'renderDailySpending']
+const BUDGET_RENDERERS = ['appendPolicyRow', 'budgetAmount', 'renderBudgetSummary', ...DAILY_RENDERERS, 'renderBudget']
 const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']
 const budgetData = overrides => ({ schema: 'unified-budget/v1', availability: 'available', revision: 'a'.repeat(64),
   effective: { currency: 'USD', basis: 'meter_api_usd_estimate', limits: { autonomy: 1, private: 0, group: 0 }, reserve_usd: 0.05 },
@@ -434,6 +438,158 @@ const autonomyData = overrides => ({ schema: 'dsh-panel-autonomy-settings/v1', a
     activation: 'observer_startup_configuration', settings: { poll_seconds: 30, quiet_minutes: 20 } }, ...overrides })
 const biliData = overrides => ({ status: 'ok', coverage: { owner_verified_scopes: 2 },
   records: [], recent_videos: [], replies: [], ...overrides })
+const spendingDay = (date, overrides = {}) => ({ date, autonomy: 0.12, private: 0.34, group: 0.56, total: 1.02,
+  status: 'partial', turn_count: 3, settled_count: 3, pending_count: 0, unknown_count: 0, ...overrides })
+const spendingData = days => ({ schema: 'daily-spending/v1', currency: 'USD', timezone: 'Asia/Shanghai',
+  today: days.at(-1)?.date, days, coverage: { complete_days: false, scope: 'current_mapped_main_agent_native_turns',
+    owner_verified_scopes: 2, configured_scopes: 2 } })
+
+test('daily spending plots actual per-day USD buckets and exposes the same accessible table values', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  h.context.renderDailySpending(spendingData([spendingDay('2026-11-01')]))
+  const bar = h.node('spendChart').children[0]
+  assert.match(bar['aria-label'], /2026-11-01.*合计 \$1\.0200.*自主 \$0\.1200.*私聊 \$0\.3400.*群聊 \$0\.5600/)
+  const pieces = descendants(bar).filter(node => ['autonomy', 'private', 'group'].includes(node.className))
+  assert.equal(pieces.length, 3)
+  assert.ok(parseFloat(pieces[0].style.height) > 0)
+  assert.ok(parseFloat(pieces[2].style.height) > parseFloat(pieces[0].style.height))
+  assert.match(treeText(h.node('spendTable')), /2026-11-01.*\$0\.1200.*\$0\.3400.*\$0\.5600.*\$1\.0200/)
+  assert.equal(bar['aria-pressed'], 'true')
+  assert.equal(h.node('spendSelectedDate').value, '2026-11-01')
+})
+
+test('whole-day spending and the budget gate use independent sources without adding either amount twice', () => {
+  const h = harness({ functions: BUDGET_RENDERERS })
+  const budget = budgetData({ daily_spending: spendingData([spendingDay('2026-11-01', { autonomy: 1.2, total: 2.1 })]) })
+  budget.gate_usage = structuredClone(budget.usage)
+  budget.gate_usage.buckets.autonomy.spent_usd = 0.07
+  budget.usage.buckets.autonomy.spent_usd = 9
+  h.context.renderBudget(budget, false, 0)
+  assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*今日已计 \$1\.2000 USD/)
+  assert.doesNotMatch(treeText(h.node('dailyTodayBuckets')), /\$0\.0700|\$9\.0000/)
+  assert.match(treeText(h.node('budgetBuckets')), /执行已计 \$0\.0700/)
+  assert.equal(h.node('mDailyTotal').textContent, '$2.1000')
+  assert.equal(h.node('mDate').textContent, '2026-11-01')
+  assert.match(h.node('mCoverage').textContent, /已核验 2\/2 个绑定范围/)
+  assert.match(h.node('mGateAccounting').textContent, /不与上方每日花销相加/)
+  assert.match(h.node('sMoneySub').textContent, /\$0\.0700/)
+})
+
+test('a partial gate ledger is never a substitute for missing native whole-day costs', () => {
+  for (const daily of [undefined, { ...spendingData([spendingDay('2026-11-01')]), coverage: { scope: 'trusted_main_agent_turns' } },
+    { ...spendingData([spendingDay('2026-11-01')]), availability: 'unavailable' }]) {
+    const h = harness({ functions: BUDGET_RENDERERS })
+    h.context.renderBudget(budgetData({ daily_spending: daily }), false, 0)
+    assert.equal(h.node('mDailyTotal').textContent, '待核算')
+    assert.equal(h.node('mDailyAvailability').textContent, '来源未确认')
+    assert.doesNotMatch(treeText(h.node('dailyTodayBuckets')), /\$0\.0000|\$0\.1200/)
+    assert.match(treeText(h.node('spendChart')), /暂不可用/)
+    assert.equal(h.node('spendTable').children.length, 0)
+    assert.match(treeText(h.node('budgetBuckets')), /执行已计 \$0\.1200/)
+  }
+})
+
+test('native whole-day unknown categories stay unpriced in the daily summary', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  const today = spendingDay('2026-11-01', { autonomy: null, total: null, unknown_count: 1,
+    buckets: { autonomy: { unknown_count: 1 } } })
+  h.context.renderDailySpending(spendingData([today]))
+  assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*今日已计 待核算 USD/)
+  assert.match(treeText(h.node('dailyTodayBuckets')), /1 轮待核算/)
+  assert.equal(h.node('mDailyTotal').textContent, '待核算')
+})
+
+test('missing daily coverage renders unknown instead of a zero-height zero-cost day, and unsettled cost stays separate', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  h.context.renderDailySpending(spendingData([
+    spendingDay('2026-10-31', { autonomy: null, private: null, group: null, total: null, status: 'unknown' }),
+    spendingDay('2026-11-01', { autonomy: 0, total: 0.9, pending_count: 1, unknown_count: 2 })]))
+  const [missing, pending] = h.node('spendChart').children
+  assert.doesNotMatch(treeText(missing), /\$0\.0000/)
+  assert.equal(descendants(missing).find(node => node.className === 'spend-stack').dataset.state, 'unknown')
+  assert.match(treeText(pending), /\$0\.9000 \+ \?/)
+  assert.match(treeText(h.node('spendTable')), /未覆盖.*1 轮计费中.*2 轮待核算/)
+  assert.match(h.node('spendHistoryNote').textContent, /未覆盖记录不能当作零费用/)
+  assert.match(treeText(h.node('spendDetail')), /1 轮计费中.*2 轮待核算/)
+})
+
+test('daily range and actual date button select details without editing settings or calling an API', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  const days = Array.from({ length: 30 }, (_, i) => spendingDay('2026-10-' + String(i + 1).padStart(2, '0'), { total: i + 1 }))
+  h.context.renderDailySpending(spendingData(days))
+  assert.equal(h.node('spendChart').children.length, 14)
+  h.node('spendRange').value = '30'; h.context.renderDailySpending()
+  assert.equal(h.node('spendChart').children.length, 30)
+  h.node('spendChart').children[3].onclick()
+  assert.equal(h.node('spendSelectedDate').value, '2026-10-04')
+  assert.match(treeText(h.node('spendDetail')), /2026-10-04.*\$4\.0000/)
+  assert.equal(h.node('spendChart').children[3]['aria-pressed'], 'true')
+  assert.equal(h.node('spendTable').children[3]['aria-current'], 'date')
+  assert.equal(h.context.budgetSettingsRevision, null)
+  assert.equal(h.calls.length, 0)
+})
+
+test('actual input and change listeners exclude chart navigation while retaining real settings edits on every page', () => {
+  const h = harness({ functions: ['renderRecordSync'] })
+  for (const event of ['input', 'change']) {
+    const start = h.source.indexOf("document.addEventListener('" + event + "',")
+    const end = h.source.indexOf('\n});', start)
+    assert.ok(start >= 0 && end > start)
+    h.run(h.source.slice(start, end + 4))
+    const listener = h.events.get(event)
+    assert.equal(typeof listener, 'function')
+    for (const [id, tag, page, shouldEdit] of [
+      ['spendRange', 'select', 'money', false], ['spendSelectedDate', 'select', 'money', false],
+      ['bAutonomy', 'input', 'money', true], ['bReserve', 'input', 'money', true],
+      ['syntheticBudgetOption', 'select', 'money', true], ['activityInterval', 'input', 'activity', true],
+      ['memOwner', 'select', 'memory', true], ['persona', 'textarea', 'persona', true]
+    ]) {
+      h.context.currentPage = page; h.context.dirtyPages.clear(); h.context.pageEdits.clear()
+      const target = { matches(selectors) { return selectors.split(',').some(selector => selector === tag || selector === '#' + id) } }
+      listener({ target })
+      assert.equal(h.context.dirtyPages.has(page), shouldEdit, event + ' ' + id)
+      assert.equal(h.context.pageEdits.get(page), shouldEdit ? 1 : undefined, event + ' ' + id)
+    }
+  }
+})
+
+test('daily history follows a new Beijing day by default but preserves an explicitly selected day on refresh', () => {
+  for (const explicit of [false, true]) {
+    const h = harness({ functions: DAILY_RENDERERS })
+    const yesterday = spendingDay('2026-11-01'), today = spendingDay('2026-11-02', { total: 0.7 })
+    h.context.renderDailySpending(spendingData([yesterday]))
+    if (explicit) h.context.selectSpendingDate(yesterday.date)
+    h.context.renderDailySpending(spendingData([yesterday, today]))
+    assert.equal(h.node('spendSelectedDate').value, explicit ? yesterday.date : today.date)
+    assert.equal(h.node('spendChart').children.length, 2)
+  }
+})
+
+test('daily history failure and empty history clear previous bars without claiming zero spending', () => {
+  for (const bad of [null, spendingData([]), { schema: 'other', days: [] }]) {
+    const h = harness({ functions: DAILY_RENDERERS })
+    h.context.renderDailySpending(spendingData([spendingDay('2026-11-01')]))
+    h.context.renderDailySpending(bad)
+    assert.equal(h.node('spendSelectedDate').disabled, true)
+    assert.equal(h.node('spendTable').children.length, 0)
+    assert.equal(h.node('spendDetail').children.length, 0)
+    assert.match(treeText(h.node('spendChart')), /暂无可核验|暂不可用/)
+    assert.doesNotMatch(treeText(h.node('spendChart')), /\$0\.0000|spend-day/)
+  }
+})
+
+test('missing current bucket values never produce a measured zero progressbar', () => {
+  const h = harness({ functions: BUDGET_RENDERERS })
+  const budget = budgetData()
+  budget.usage.buckets.autonomy.spent_usd = null
+  h.context.renderBudget(budget, false, 0)
+  const meter = descendants(h.node('budgetBuckets')).find(node => node.role === 'progressbar')
+  assert.equal(meter['aria-valuenow'], undefined)
+  assert.equal(meter.dataset.state, 'unknown')
+  assert.equal(meter['aria-valuetext'], '费用待核算')
+  assert.equal(h.node('sMoney').textContent, '费用待确认')
+  assert.match(treeText(h.node('budgetBuckets')), /执行已计 待核算/)
+})
 
 test('new USD budget shows reserved and uncertain cost separately and never promises a provider hard cap', () => {
   const data = budgetData()
@@ -444,8 +600,8 @@ test('new USD budget shows reserved and uncertain cost separately and never prom
   assert.match(text, /已计 \$0\.2000 · 预留 \$0\.3000/)
   assert.match(text, /2 轮费用待确认/)
   assert.match(text, /未知费用保留预留，不自动重试或伪造退款/)
-  assert.match(h.node('mAccounting').textContent, /(?:真实|实际)模型轮次.*API.*估值/)
-  assert.match(h.node('mAccounting').textContent, /历史费用不回填为零/)
+  assert.match(h.node('mAccounting').textContent, /原生模型轮次.*API.*估值/)
+  assert.match(h.node('mAccounting').textContent, /未覆盖记录不能当作零费用/)
   assert.equal(h.node('sMoney').textContent, '部分费用待确认')
   const meter = descendants(h.node('budgetBuckets')).find(node => node.role === 'progressbar')
   assert.equal(meter['aria-valuenow'], '50')
@@ -482,8 +638,8 @@ test('not-started budget permits current settings without displaying fabricated 
   assert.equal(h.node('bAutonomy').disabled, false)
   assert.equal(h.node('budgetSave').disabled, false)
   assert.equal(h.node('bAutonomy').value, 1)
-  assert.match(h.node('mAvailability').textContent, /尚未起算/)
-  assert.match(treeText(h.node('budgetBuckets')), /尚无新版计费记录/)
+  assert.match(h.node('mAvailability').textContent, /等待首条计费回执/)
+  assert.match(treeText(h.node('budgetBuckets')), /等待计费回执，费用未确认/)
   assert.doesNotMatch(treeText(h.node('budgetBuckets')), /已计 \$0|剩余 \$|已使用和预留 0/)
   for (const meter of descendants(h.node('budgetBuckets')).filter(node => node.role === 'progressbar')) {
     assert.equal(meter['aria-valuenow'], undefined)
@@ -547,7 +703,8 @@ test('new edits during a budget save remain dirty and are not replaced by the sa
 })
 
 test('a budget read started before a completed save cannot roll the saved revision back', async () => {
-  const oldRead = deferred(), saved = budgetData({ revision: 'c'.repeat(64) })
+  const oldRead = deferred(), saved = budgetData({ revision: 'c'.repeat(64),
+    daily_spending: spendingData([spendingDay('2026-11-01', { total: 0.8 })]) })
   saved.effective.limits.autonomy = 0.8
   const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget', 'saveBudget'), extra: {
     api: async (_path, options) => options?.method === 'POST' ? { ok: true, budget: saved } : oldRead.promise } })
@@ -555,9 +712,11 @@ test('a budget read started before a completed save cannot roll the saved revisi
   const read = h.context.loadBudget(false)
   for (const [id, value] of Object.entries({ bAutonomy: '0.8', bPrivate: '0', bGroup: '0', bReserve: '0.05' })) h.node(id).value = value
   await h.context.saveBudget()
-  oldRead.resolve({ ok: true, budget: budgetData() }); await read
+  oldRead.resolve({ ok: true, budget: budgetData({ daily_spending: spendingData([spendingDay('2026-11-01')]) }) }); await read
   assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
   assert.equal(h.node('bAutonomy').value, 0.8)
+  assert.match(treeText(h.node('spendChart')), /\$0\.8000/)
+  assert.doesNotMatch(treeText(h.node('spendChart')), /\$1\.0200/)
 })
 
 test('budget mutation transport failure is not retried and never writes the legacy topup route', async () => {
@@ -762,7 +921,7 @@ test('Bili source failure and older projection snapshots never masquerade as an 
     h.context.renderMainBili(data)
     assert.equal(h.node('bMainCount').textContent, '—')
     assert.equal(h.node('bMainReplies').textContent, '—')
-    assert.match(treeText(h.node('bMainReplyRecords')), /暂不可用|快照未含新版记录/)
+    assert.match(treeText(h.node('bMainReplyRecords')), /暂不可用|快照未含完整读取记录/)
     assert.doesNotMatch(treeText(h.node('bMainReplyRecords')), /从未发|还没发过/)
   }
 })
@@ -778,23 +937,12 @@ test('Bili links are constructed only from validated video ids; titles remain te
   assert.equal(invalid.textContent, 'Unsafe ID')
 })
 
-test('Bili legacy archive is read-only text and does not imply current delivery or public visibility', () => {
-  const h = harness({ functions: BILI_RENDERERS })
-  h.context.renderBiliArchive({ videos: [{ bv: 'BV1234567890', title: '<b>old</b>', date: '2026-01-01' }],
-    comments: [{ bv: 'BV1234567890', text: '<img src=x>', time: '2026-01-02' }] })
-  const body = treeText(h.node('bLegacyRecords'))
-  assert.match(body, /旧评论记录 · 结果未复核/)
-  assert.match(body, /<img src=x>/)
-  assert.equal(descendants(h.node('bLegacyRecords')).some(row => row.onclick || row.src), false)
-  assert.equal(h.calls.length, 0)
-})
-
-test('Bili page removes obsolete duty editors, launch and delete controls while preserving login and archives', () => {
+test('Bili page uses current main-agent records and removes obsolete archives and duty controls while preserving login', () => {
   const source = readFileSync(PANEL, 'utf8')
   const view = source.split('<div class="page" id="page-bili">')[1].split('<div class="page" id="page-schedule">')[0]
   assert.match(view, /id="bMainVideos"/)
   assert.match(view, /id="bMainReplyRecords"/)
-  assert.match(view, /旧记录存档/)
+  assert.doesNotMatch(view, /旧|bLegacyRecords|renderBiliArchive/)
   assert.match(view, /startBiliLogin/)
   assert.doesNotMatch(view, /id="(?:biliDuty|biliSeen|biliLog)"|doOneRun|deleteOnBili|deleteBiliRecord|bili\/onerun/)
   assert.doesNotMatch(source, /function (?:runBiliNow|doOneRun|deleteOnBili|deleteBiliRecord|verifyComment|loadBiliDuty|saveBiliDuty)\(/)

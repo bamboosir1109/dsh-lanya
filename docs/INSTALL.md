@@ -62,6 +62,8 @@ Set-Location -LiteralPath $repo
 
 旧群节奏文件是兼容配置，不代表统一自主策略的当前可编辑设置或已经加载的频率。统一自主设置和费用预算从面板对应的新接口读取；群观察的启动配置与运行验证分开显示。设置文件的读取优先级与环境变量见[系统架构](ARCHITECTURE.md)。
 
+每日费用报表还需要已安装成本插件及支持 `node:module.registerHooks` 的 Node（22.15 或更高）。可在可信项目配置的 `tools.nodeExecutable` 指定绝对路径；缺少依赖或来源不可核验时显示待核算，不读取历史猜测金额替代。安装器会一起复制 `budget_reports.py` 与 `budget-native-report.mjs`，面板常驻进程需重新加载后才生效。
+
 新安装不创建旧 `activities.json` 清单，它不能授权统一主 agent 执行活动。升级保留已有文件供显式 legacy 兼容，不删除使用者的数据，也不将其中的 `enabled` 当作新版活动开关。
 
 老安装如果仍使用 `dafeiyu-config.json` 或 `dafeiyu-tunables.json`，安装器会保护它们，并跳过新的空模板。升级前先备份，再将它们明确迁移为对应 `lanya-*` 文件；部分后台脚本只识别新名称。已有角色目录或 `napcat/` 中的 `<角色目录名>-人设正文.md` 会保留，不生成一份优先级更高的空 `persona.md`。

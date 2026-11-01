@@ -96,6 +96,31 @@ main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
 .budget-meter i{display:block;height:100%;width:0;background:var(--acc);transition:width .25s}
 .budget-meter[data-state="blocked"] i{background:var(--bad)}
 .budget-meter[data-state="unknown"] i{background:var(--warn)}
+.spend-toolbar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.spend-toolbar label{color:var(--fg2);font-size:12px;display:flex;align-items:center;gap:7px}
+.spend-toolbar select{font:inherit;font-size:12px;color:var(--fg);background:var(--card2);border:1px solid var(--line2);border-radius:8px;padding:6px 9px}
+.spend-legend{display:flex;gap:15px;flex-wrap:wrap;font-size:12px;color:var(--fg2);margin:8px 0 14px}
+.spend-legend span:before{content:"";display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px;background:var(--acc)}
+.spend-legend .private:before{background:var(--acc2)}
+.spend-legend .group:before{background:var(--ok)}
+.spend-chart{display:flex;gap:7px;min-height:215px;overflow-x:auto;padding:4px 2px 10px;border-bottom:1px solid var(--line)}
+.spend-day{flex:1;min-width:43px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:5px;padding:5px 3px;border-color:transparent;background:transparent;box-shadow:none}
+.spend-day:hover,.spend-day[aria-pressed="true"]{border-color:var(--acc);background:var(--card2);box-shadow:none}
+.spend-total{height:30px;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;font-size:10px;line-height:1.3;color:var(--fg2);font-variant-numeric:tabular-nums;text-align:center}
+.spend-stack{height:140px;width:22px;display:flex;flex-direction:column;justify-content:flex-end;border-bottom:1px solid var(--line2);position:relative}
+.spend-stack i{display:block;flex:none;width:100%;background:var(--acc);min-height:0}
+.spend-stack i.private{background:var(--acc2)}
+.spend-stack i.group{background:var(--ok)}
+.spend-stack[data-state="unknown"]:after{content:"?";position:absolute;inset:0;display:grid;place-items:center;color:var(--warn);border:1px dashed var(--line2);font-size:18px}
+.spend-date{font-size:10px;color:var(--dim);white-space:nowrap}
+.spend-detail{display:flex;gap:10px 18px;flex-wrap:wrap;padding:15px 0;color:var(--fg2);font-size:12px}
+.spend-detail b{color:var(--fg);font-variant-numeric:tabular-nums}
+.spend-table{overflow-x:auto}
+.spend-table caption{text-align:left;color:var(--dim);font-size:12px;padding:12px 0}
+.spend-table td{white-space:nowrap}
+.spend-table tr[aria-current="date"] td{background:var(--card2)}
+.spend-state{font-size:12px;color:var(--dim);margin:10px 0 0}
+.spend-state[data-state="error"],.spend-state[data-state="partial"]{color:var(--warn)}
 .setting-state{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;background:var(--card2);color:var(--fg2)}
 .record-row{padding:12px 0;border-top:1px solid var(--line)}
 .record-row:first-child{border-top:0}
@@ -336,7 +361,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <a class="navitem on" data-page="overview"><span class="ni">◈</span>概览</a>
     <a class="navitem" data-page="system"><span class="ni">⚙</span>部件与插件<span class="cnt" id="navParts">—</span></a>
     <a class="navitem" data-page="talk"><span class="ni">💬</span>会话策略</a>
-    <a class="navitem" data-page="money"><span class="ni">💰</span>自主预算</a>
+    <a class="navitem" data-page="money"><span class="ni">💰</span>零花钱</a>
     <a class="navitem" data-page="memes"><span class="ni">😀</span>表情包<span class="cnt" id="navMemes">—</span></a>
     <a class="navitem" data-page="schedule"><span class="ni">⏰</span>定时<span class="cnt" id="navSched">—</span></a>
     <a class="navitem" data-page="activity"><span class="ni">🌤</span>她在干嘛</a>
@@ -477,12 +502,26 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-money">
-  <div class="phead"><h1>自主预算</h1><p>按真实决策轮次记录 API 美元估值。自主、私聊、群聊分账；不再按会话名字猜费用。</p></div>
+  <div class="phead"><h1>零花钱</h1><p>按天查看自主、私聊和群聊的 API 美元估值。当前页面每 15 秒检查更新。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">当前预算门控</div><div class="v" id="mState" style="font-size:20px">—</div><div class="s" id="mStateSub">正在读取新版账本</div></div>
-    <div class="stat"><div class="k">计费日期</div><div class="v" id="mDate" style="font-size:20px">—</div><div class="s" id="mCoverage">新账本开始记录后计费</div></div>
+    <div class="stat"><div class="k">当前预算门控</div><div class="v" id="mState" style="font-size:20px">—</div><div class="s" id="mStateSub">正在读取当前账本</div></div>
+    <div class="stat"><div class="k">今日日期</div><div class="v" id="mDate" style="font-size:20px">—</div><div class="s" id="mCoverage">按北京时间每日统计</div></div>
+    <div class="stat"><div class="k">今日已计合计</div><div class="v" style="font-size:23px"><span id="mDailyTotal">—</span><small>USD</small></div><div class="s">当前绑定范围的 API 估值</div></div>
   </div>
-  <div class="card"><h3>今日用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mAccounting">正在核对计费覆盖范围。</p></div>
+  <div class="card"><h3>今日花销 <span class="setting-state" id="mDailyAvailability">正在读取</span></h3><div class="policy-grid" id="dailyTodayBuckets"></div><p class="note" id="mAccounting">正在核对计费覆盖范围。</p></div>
+  <div class="card" id="dailySpending">
+    <h3>每日花销 <span class="setting-state">USD</span></h3>
+    <div class="spend-toolbar">
+      <label for="spendRange">显示范围 <select id="spendRange" onchange="renderDailySpending()"><option value="14">最近 14 天</option><option value="30">最近 30 天</option></select></label>
+      <label for="spendSelectedDate">查看日期 <select id="spendSelectedDate" onchange="selectSpendingDate(this.value)" disabled></select></label>
+    </div>
+    <div class="spend-legend" aria-label="图例"><span>自主</span><span class="private">私聊</span><span class="group">群聊</span></div>
+    <div class="spend-chart" id="spendChart" role="group" aria-label="每日 API 花销柱状图，单位美元"><div class="empty">正在读取每日花销…</div></div>
+    <div class="spend-detail" id="spendDetail" aria-live="polite"></div>
+    <p class="spend-state" id="spendHistoryNote" role="status">正在核对按日记录。</p>
+    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，金额单位 USD；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
+  </div>
+  <div class="card"><h3>预算执行用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mGateAccounting">预算预留与剩余额度单独核对。</p></div>
   <div class="card">
     <h3>当前执行额度</h3>
     <p class="note">单位 USD。0 表示不限。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
@@ -733,10 +772,6 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
   <details class="card"><summary>推荐与调用明细</summary>
     <div class="record-list" id="bMainRecords"><div class="empty">正在读取…</div></div>
-  </details>
-  <details class="card"><summary>旧记录存档</summary>
-    <p class="note">独立保存的旧值班记录，时间与状态沿用原记录，不计入上方当前浏览。</p>
-    <div class="record-list" id="bLegacyRecords"></div>
   </details>
   <details class="card"><summary>账号登录</summary>
     <p class="note">需要登录时展开操作，不会自动请求观看或发评论。</p>
@@ -1023,10 +1058,10 @@ function renderRecordSync(){
   if(button) button.disabled = refreshingPages.has(currentPage);
 }
 document.addEventListener('input', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 document.addEventListener('change', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 
 async function refreshCurrentPage(manual){
@@ -1358,8 +1393,7 @@ async function refreshOverview(){
     if(tasks.redundant > 0){
       $('banner').classList.add('show');
       setText('bannerTitle', '还有 ' + tasks.redundant + ' 个重复的计划任务');
-      setHtml('bannerText', '这些活插件已经在做了，旧任务还在会重复跑一遍（每个一闪就退，不占内存）。<br>'
-        + '想清掉：双击 <code>&lt;你的仓库&gt;\\napcat\\cleanup-tasks.cmd</code>。不删也能正常用。');
+      setText('bannerText', '检测到 ' + tasks.redundant + ' 个计划任务与插件功能重叠。请在定时页面核对实际任务状态，避免重复执行。');
     }else{ $('banner').classList.remove('show'); }
       await loadActivityBudget();
     }catch(e){ setText('footStamp', '读取失败：' + e.message); }
@@ -1460,7 +1494,7 @@ function appendPolicyRow(box, text){
 }
 
 function renderAutonomySettings(value, background, revision){
-  if(!value || value.mode !== 'unified' || !value.effective || !Number.isFinite(value.effective.opportunity_minutes)) throw new Error('新版自主设置暂不可用');
+  if(!value || value.mode !== 'unified' || !value.effective || !Number.isFinite(value.effective.opportunity_minutes)) throw new Error('当前自主设置暂不可用');
   const writable = value.availability === 'available' && Array.isArray(value.writable_fields) && value.writable_fields.includes('opportunity_minutes');
   const editing = dirtyPages.has('activity') || (pageEdits.get('activity') || 0) !== revision;
   if(!background && !editing){
@@ -1531,23 +1565,23 @@ let budgetSettingsRevision = null;
 let budgetSettingsEpoch = 0, budgetSettingsSaving = false;
 
 function budgetAmount(value){
-  return typeof value === 'number' && Number.isFinite(value) ? '$' + value.toFixed(4) : '待核算';
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? '$' + value.toFixed(4) : '待核算';
 }
 
 function renderBudgetSummary(budget){
-  const bucket = budget.usage?.buckets?.autonomy, available = budget.availability === 'available' && bucket;
+  const bucket = (budget.gate_usage || budget.usage)?.buckets?.autonomy, available = budget.availability === 'available' && bucket && typeof bucket.spent_usd === 'number' && Number.isFinite(bucket.spent_usd) && bucket.spent_usd >= 0;
   const bound = budget.enforcement?.runtime_gate_bound === true;
   const label = !bound ? '预算门控未确认' : budget.availability === 'not_started' ? '等待首轮计费' : !available ? '费用待确认' : bucket.exhausted ? '自主额度已用完' : bucket.can_start_new_turn === false ? '新轮次预留不足' : bucket.unknown_count ? '部分费用待确认' : '自主额度可用';
   setText('sMoney', label); setText('liveMoney', label);
-  const detail = available ? '记录内已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : budget.availability === 'not_started' ? '新账本尚未起算，历史费用不回填' : '账本暂不可用，不能按零费用判断';
+  const detail = available ? '今日已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : budget.availability === 'not_started' ? '等待首条计费回执，当前费用未确认' : '账本暂不可用，不能按零费用判断';
   setText('sMoneySub', detail); setText('liveMoneySub', detail);
 }
 
 function renderBudget(budget, background, revision){
-  if(!budget || budget.schema !== 'unified-budget/v1') throw new Error('当前接口未提供新版预算');
+  if(!budget || budget.schema !== 'unified-budget/v1') throw new Error('当前预算接口暂不可用');
   renderBudgetSummary(budget);
   const available = ['available','not_started'].includes(budget.availability), tracking = budget.availability === 'available';
-  const effective = budget.effective || {}, limits = effective.limits || {}, usage = budget.usage || {};
+  const effective = budget.effective || {}, limits = effective.limits || {}, usage = budget.gate_usage || budget.usage || {};
   const editing = dirtyPages.has('money') || (pageEdits.get('money') || 0) !== revision;
   if(!background && !editing){
     budgetSettingsRevision = budget.revision;
@@ -1556,26 +1590,25 @@ function renderBudget(budget, background, revision){
   }
   ['bAutonomy','bPrivate','bGroup','bReserve'].forEach(id => { $(id).disabled = !available; });
   $('budgetSave').disabled = !available || !budgetSettingsRevision;
-  setText('mAvailability', !available ? '账本不可用' : tracking ? '新版真实轮次账本' : '新账本尚未起算');
+  setText('mAvailability', !available ? '账本不可用' : tracking ? '执行账本' : '等待首条计费回执');
   const bound = budget.enforcement?.runtime_gate_bound === true;
   setText('mState', !available ? '预算状态未确认' : bound ? '决策与动作前核对' : '运行门控未确认');
   setText('mStateSub', !available ? '当前不能核算可用额度' : bound ? '预留与未知费用保留，不自动清零' : '配置存在不代表运行进程已经加载');
-  setText('mDate', usage.date || '—');
   const coverage = usage.coverage_start || budget.coverage_start;
-  setText('mCoverage', coverage ? '开始记录于 ' + new Date(coverage).toLocaleString('zh-CN') : '旧账本不回填为真实轮次费用');
-  setText('mAccounting', '这里只统计开始记录后的真实模型轮次 API 估值，按可信触发来源归类。历史费用不回填为零；缺少计价回执的轮次保留待确认。');
+  setText('mGateAccounting', '预算执行用量用于当前额度门控，预留和未知费用保留。' + (coverage ? '接入于 ' + new Date(coverage).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'}) + '。' : '计费覆盖范围尚未确认。') + '不与上方每日花销相加。');
   const box = $('budgetBuckets'); box.innerHTML = '';
   for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
     const bucket = usage.buckets?.[key] || {}, limit = limits[key];
     const card = document.createElement('div'); card.className = 'policy-item';
     const head = document.createElement('b'); head.textContent = name; card.appendChild(head);
-    const amount = document.createElement('p'); amount.textContent = tracking ? '记录内已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : '尚无新版计费记录'; card.appendChild(amount);
+    const amount = document.createElement('p'); amount.textContent = tracking ? '执行已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : '等待计费回执，费用未确认'; card.appendChild(amount);
     const meter = document.createElement('div'); meter.className = 'budget-meter'; meter.setAttribute('role','progressbar'); meter.setAttribute('aria-label',name + '预算使用');
-    const used = Number(bucket.spent_usd) + Number(bucket.reserved_usd), measurable = tracking && Number.isFinite(used) && typeof limit === 'number' && limit > 0;
+    const used = bucket.spent_usd + bucket.reserved_usd, costKnown = tracking && typeof bucket.spent_usd === 'number' && bucket.spent_usd >= 0 && typeof bucket.reserved_usd === 'number' && bucket.reserved_usd >= 0 && Number.isFinite(used);
+    const measurable = costKnown && typeof limit === 'number' && limit > 0;
     const percent = measurable ? Math.max(0, Math.min(100, used / limit * 100)) : 0;
-    meter.dataset.state = !tracking || bucket.unknown_count ? 'unknown' : bucket.exhausted ? 'blocked' : 'available';
+    meter.dataset.state = !costKnown || bucket.unknown_count ? 'unknown' : bucket.exhausted ? 'blocked' : 'available';
     if(measurable){ meter.setAttribute('aria-valuenow', String(Math.round(percent))); meter.setAttribute('aria-valuemin','0'); meter.setAttribute('aria-valuemax','100'); }
-    meter.setAttribute('aria-valuetext', !tracking ? '尚未起算' : limit === 0 ? '不限额' : '已使用和预留 ' + percent.toFixed(1) + '%');
+    meter.setAttribute('aria-valuetext', !tracking ? '尚未起算' : !costKnown ? '费用待核算' : limit === 0 ? '不限额' : '已使用和预留 ' + percent.toFixed(1) + '%');
     const fill = document.createElement('i'); fill.style.width = percent + '%'; meter.appendChild(fill); card.appendChild(meter);
     const detail = document.createElement('p'); detail.textContent = !available ? '费用未确认' : limit === 0 ? '每日不限额' : '每日 ' + budgetAmount(limit) + ' · ' + (tracking ? '记录内剩余 ' + budgetAmount(bucket.remaining_usd) : '等待起算'); card.appendChild(detail);
     if(bucket.unknown_count){ const unknown = document.createElement('p'); unknown.textContent = bucket.unknown_count + ' 轮费用待确认'; card.appendChild(unknown); }
@@ -1589,6 +1622,99 @@ function renderBudget(budget, background, revision){
   appendPolicyRow(enforcement, '动作执行前检查：' + (bound && gates.before_action === true ? '已接入' : '未确认'));
   appendPolicyRow(enforcement, '有限额会话仍可判断静默或恢复，这类控制判断可能继续产生模型费用。');
   appendPolicyRow(enforcement, '正在进行的模型调用可能超出预留；未知费用保留预留，不自动重试或伪造退款。');
+  renderDailySpending(budget.daily_spending);
+}
+
+function spendingDayState(day){
+  const pending = Number.isInteger(day.pending_count) && day.pending_count > 0 ? day.pending_count : 0;
+  const unknown = Number.isInteger(day.unknown_count) && day.unknown_count > 0 ? day.unknown_count : 0;
+  const parts = [];
+  if(day.status === 'unknown') parts.push('未覆盖');
+  else if(day.status === 'partial') parts.push('部分记录');
+  if(pending) parts.push(pending + ' 轮计费中');
+  if(unknown) parts.push(unknown + ' 轮待核算');
+  return parts.join(' · ') || '已核验';
+}
+
+function spendingAmount(value){
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? '$' + value.toFixed(4) : '待核算';
+}
+
+function nativeSpendingReady(data){
+  return data?.schema === 'daily-spending/v1' && data.currency === 'USD' && data.timezone === 'Asia/Shanghai' && data.availability !== 'unavailable' && data.coverage?.scope === 'current_mapped_main_agent_native_turns' && Array.isArray(data.days);
+}
+
+function renderTodaySpending(history){
+  const ready = nativeSpendingReady(history), today = ready && /^\d{4}-\d{2}-\d{2}$/.test(history.today) ? history.today : null;
+  const row = ready ? history.days.find(day => day.date === today) : null;
+  const available = row && row.status !== 'unknown';
+  setText('mDate', today || '—');
+  setText('mDailyTotal', available ? spendingAmount(row.total) : '待核算');
+  setText('mDailyAvailability', !ready ? '来源未确认' : !available ? '费用待核算' : spendingDayState(row));
+  const coverage = ready ? history.coverage : {};
+  setText('mCoverage', Number.isInteger(coverage.owner_verified_scopes) && Number.isInteger(coverage.configured_scopes) ? '按北京时间归日 · 已核验 ' + coverage.owner_verified_scopes + '/' + coverage.configured_scopes + ' 个绑定范围' : '等待核验当前费用来源');
+  setText('mAccounting', '按当前绑定范围的原生模型轮次统计 API 美元估值，自主触发单独归类。未覆盖记录不能当作零费用；缺少计价或归类回执的轮次保留待核算。');
+  const box = $('dailyTodayBuckets'); box.innerHTML = '';
+  for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
+    const card = document.createElement('div'); card.className = 'policy-item';
+    const title = document.createElement('b'); title.textContent = name; card.appendChild(title);
+    const amount = document.createElement('p'); amount.textContent = '今日已计 ' + spendingAmount(available ? row[key] : null) + ' USD'; card.appendChild(amount);
+    const bucket = available ? row.buckets?.[key] : null;
+    const state = document.createElement('p'); state.textContent = !available ? '缺少可核验的当天费用' : bucket?.unknown_count ? bucket.unknown_count + ' 轮待核算，已计金额为已知小计' : bucket?.pending_count ? bucket.pending_count + ' 轮计费中' : '来自实际模型轮次计价记录'; card.appendChild(state);
+    box.appendChild(card);
+  }
+}
+
+function selectSpendingDate(date){
+  const root = $('dailySpending');
+  if(!root || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return;
+  root.dataset.date = date; root.dataset.followToday = 'false';
+  renderDailySpending();
+}
+
+function renderDailySpending(data){
+  const root = $('dailySpending'); if(!root) return;
+  if(arguments.length) root.spendingData = data;
+  const history = root.spendingData;
+  renderTodaySpending(history);
+  const chart = $('spendChart'), table = $('spendTable'), detail = $('spendDetail'), select = $('spendSelectedDate'), note = $('spendHistoryNote');
+  chart.innerHTML = ''; table.innerHTML = ''; detail.innerHTML = ''; select.innerHTML = '';
+  const ready = nativeSpendingReady(history);
+  const days = ready ? history.days.filter(day => day && /^\d{4}-\d{2}-\d{2}$/.test(day.date)).sort((a,b) => a.date.localeCompare(b.date)) : [];
+  const visible = days.slice(-($('spendRange').value === '30' ? 30 : 14));
+  select.disabled = !visible.length;
+  if(!visible.length){
+    const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = ready ? '暂无可核验的每日花销。' : '每日花销暂不可用，请稍后刷新。'; chart.appendChild(empty);
+    note.dataset.state = ready ? 'empty' : 'error'; note.textContent = ready ? '有真实计费记录后会显示柱状图；缺失记录不按零计算。' : '未取得按日账本，不能据此判断没有花销。';
+    return;
+  }
+  const selected = (root.dataset.followToday === 'false' ? visible.find(day => day.date === root.dataset.date) : null) || visible[visible.length - 1];
+  root.dataset.date = selected.date;
+  const keys = [['autonomy','自主'],['private','私聊'],['group','群聊']];
+  const known = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const sum = day => keys.reduce((total,[key]) => total + (known(day[key]) ? day[key] : 0), 0);
+  const ceiling = Math.max(0.0001, ...visible.map(sum));
+  visible.forEach(day => {
+    const option = document.createElement('option'); option.value = day.date; option.textContent = day.date; select.appendChild(option);
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'spend-day'; button.dataset.date = day.date;
+    button.setAttribute('aria-pressed', String(day.date === selected.date));
+    const description = day.date + '，已计合计 ' + spendingAmount(day.total) + '，' + keys.map(([key,name]) => name + ' ' + spendingAmount(day[key])).join('，') + '，' + spendingDayState(day);
+    button.setAttribute('aria-label', description); button.title = description; button.onclick = () => selectSpendingDate(day.date);
+    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? spendingAmount(day.total) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
+    const stack = document.createElement('span'); stack.className = 'spend-stack'; stack.setAttribute('aria-hidden','true');
+    stack.dataset.state = keys.every(([key]) => !known(day[key])) ? 'unknown' : 'measured';
+    keys.forEach(([key]) => { const piece = document.createElement('i'); piece.className = key; piece.style.height = (known(day[key]) ? day[key] / ceiling * 140 : 0) + 'px'; stack.appendChild(piece); });
+    button.appendChild(stack);
+    const date = document.createElement('span'); date.className = 'spend-date'; date.textContent = day.date.slice(5); button.appendChild(date); chart.appendChild(button);
+    const row = document.createElement('tr'); if(day.date === selected.date) row.setAttribute('aria-current','date');
+    [day.date, ...keys.map(([key]) => spendingAmount(day[key])), spendingAmount(day.total), spendingDayState(day)].forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); }); table.appendChild(row);
+  });
+  select.value = selected.date;
+  const date = document.createElement('strong'); date.textContent = selected.date + ' · 已计合计 ' + spendingAmount(selected.total); detail.appendChild(date);
+  keys.forEach(([key,name]) => { const item = document.createElement('span'); item.textContent = name + ' '; const amount = document.createElement('b'); amount.textContent = spendingAmount(selected[key]); item.appendChild(amount); detail.appendChild(item); });
+  const status = document.createElement('span'); status.textContent = spendingDayState(selected); detail.appendChild(status);
+  note.dataset.state = visible.some(day => day.status !== 'complete' || day.pending_count || day.unknown_count) ? 'partial' : 'live';
+  note.textContent = '按北京时间每日归集，展示当前绑定范围内原生模型轮次的 API 估值；+ ? 表示另有计费中或待核算轮次。未覆盖记录不能当作零费用，预算预留不计入此图。';
 }
 
 async function loadBudget(background){
@@ -1604,6 +1730,7 @@ async function loadBudget(background){
     if(epoch !== budgetSettingsEpoch) return;
     setText('mAvailability','刷新失败，保留上次记录'); setText('mState','预算状态未确认');
     ['bAutonomy','bPrivate','bGroup','bReserve','budgetSave'].forEach(id => { $(id).disabled = true; });
+    renderDailySpending(null);
     show('moneyOut','读取失败：' + error.message);
   }
 }
@@ -1630,7 +1757,7 @@ async function saveBudget(){
   try{
     const result = await api('/budget', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({revision:budgetSettingsRevision,settings:{limits:{autonomy:values[0],private:values[1],group:values[2]},reserve_usd:values[3]}})});
     if(!result.ok) throw new Error(result.error || '保存失败');
-    if((pageEdits.get('money') || 0) === revision){ dirtyPages.delete('money'); renderBudget(result.budget,false,revision); show('moneyOut','已保存。后续决策和动作将读取新版额度。'); }
+    if((pageEdits.get('money') || 0) === revision){ dirtyPages.delete('money'); renderBudget(result.budget,false,revision); show('moneyOut','已保存。后续决策和动作将读取当前额度。'); }
     else show('moneyOut','先前额度已保存；当前还有未保存的修改。');
   }catch(error){ show('moneyOut','保存失败：' + error.message + '。请重新读取后再保存。'); }
   finally{ budgetSettingsSaving = false; $('budgetSave').disabled = !budgetSettingsRevision; }
@@ -2031,7 +2158,7 @@ function renderMainBili(history){
   const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};
   const empty = (box, text) => { const node = document.createElement('div'); node.className = 'empty'; node.textContent = text; box.appendChild(node); };
   const meta = (entry, text) => { const node = document.createElement('span'); node.className = 'dsc'; node.textContent = text; entry.appendChild(node); };
-  const unavailable = !available ? '记录源暂不可用，请稍后刷新。' : !projectionReady ? '当前快照未含新版记录，请恢复实时连接后刷新。' : '';
+  const unavailable = !available ? '记录源暂不可用，请稍后刷新。' : !projectionReady ? '当前快照未含完整读取记录，请恢复实时连接后刷新。' : '';
   const videoBox = $('bMainVideos');
   if(videoBox){
     videoBox.innerHTML = '';
@@ -2081,22 +2208,6 @@ function renderMainBili(history){
   });
 }
 
-function renderBiliArchive(bili){
-  const box = $('bLegacyRecords'); if(!box) return;
-  box.innerHTML = '';
-  const append = (row, comment) => {
-    const entry = document.createElement('div'); entry.className = 'record-row';
-    entry.appendChild(biliVideoLink(row));
-    const text = document.createElement('span'); text.className = 'dsc';
-    text.textContent = [row.time || row.date || '旧记录时间未确认', comment ? '旧评论记录 · 结果未复核' : '旧视频记录 · ' + (row.status || '状态未确认')].join(' · '); entry.appendChild(text);
-    if(comment && typeof row.text === 'string'){ const body = document.createElement('p'); body.className = 'reply-text'; body.textContent = row.text; entry.appendChild(body); }
-    box.appendChild(entry);
-  };
-  (Array.isArray(bili.videos) ? bili.videos : []).forEach(row => append(row, false));
-  (Array.isArray(bili.comments) ? bili.comments : []).forEach(row => append(row, true));
-  if(!box.children.length){ const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '暂无旧值班记录。'; box.appendChild(empty); }
-}
-
 async function loadBili(){
   hide('biliOut');
   try{
@@ -2104,7 +2215,6 @@ async function loadBili(){
     if(!j.ok) throw new Error(j.error || '读取失败');
     const b = j.bili || {};
     renderMainBili(b.mainAgent);
-    renderBiliArchive(b);
   }catch(e){ setText('bMainState', '刷新失败，保留上次记录'); show('biliOut', '读取失败：' + e.message); }
 }
 

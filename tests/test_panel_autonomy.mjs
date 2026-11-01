@@ -81,7 +81,7 @@ const plugin = fs.readFileSync(new URL('../plugin/lib/index.js', import.meta.url
 function mainContext(api) {
   const messages = []
   const context = vm.createContext({ api, show: (_id, text) => messages.push(text), setTimeout() {},
-    refreshOverview() {}, loadActivities() {}, loadLive() {} })
+    refreshOverview() {}, loadActivities() {}, loadLive() {}, loadAutonomySettings() {} })
   vm.runInContext(panel.slice(panel.indexOf('let componentActionPending = false;'), panel.indexOf('const PART = {')), context)
   return { context, messages }
 }

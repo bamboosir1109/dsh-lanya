@@ -30,6 +30,13 @@ if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Mi
 if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
 $null = Test-QqUnifiedMode
 
+# Resolve project configuration before either accounting entry point uses it.
+$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
+if (Test-Path $confHelper) { . $confHelper }
+if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
+  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
+}
+
 # Unified decisions own their real per-turn ledger. This retired timer may
 # display the new snapshot, but never rewrites legacy numbers or emits alerts.
 if (Test-QqUnifiedMode) {
@@ -43,11 +50,6 @@ if (Test-QqUnifiedMode) {
 # ---- shared project config ------------------------------------------------
 # Reads <repo>\config\project.json. The helper carries the same defaults, so a
 # missing or broken config file leaves behaviour exactly as it was.
-$confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
-if (Test-Path $confHelper) { . $confHelper }
-if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
-  function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
-}
 # An explicit -Limit still wins; the config only replaces the DEFAULT (1.0).
 if (-not $PSBoundParameters.ContainsKey('Limit')) {
   

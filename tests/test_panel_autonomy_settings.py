@@ -31,7 +31,12 @@ class AutonomySettingsTests(unittest.TestCase):
                        "enforcement": {"runtime_gate_bound": False, "runtime_owner_verified": False}}
         self.save_budget = mock.Mock(return_value=self.budget)
         self.get_budget = mock.Mock(return_value=self.budget)
-        patch = mock.patch.dict(sys.modules, {"budget_runtime": SimpleNamespace(get_snapshot=self.get_budget, save_config=self.save_budget)})
+        self.daily = {"schema": "daily-spending/v1", "today": "synthetic", "days": [],
+                      "coverage": {"scope": "current_mapped_main_agent_native_turns"}}
+        self.get_daily = mock.Mock(return_value=self.daily)
+        patch = mock.patch.dict(sys.modules, {
+            "budget_runtime": SimpleNamespace(get_snapshot=self.get_budget, save_config=self.save_budget),
+            "budget_reports": SimpleNamespace(native_daily_spending=self.get_daily)})
         patch.start(); self.addCleanup(patch.stop)
 
     def settings(self): return self.base.route("/api/autonomy/settings")[1]["settings"]
@@ -124,12 +129,13 @@ class AutonomySettingsTests(unittest.TestCase):
             self.assertEqual(self.settings()["availability"], "error")
 
     def test_live_and_budget_routes_share_actual_runtime_module(self):
-        self.assertEqual(self.base.route("/api/budget")[1]["budget"], self.budget)
+        expected = dict(self.budget, gate_usage=self.budget["usage"], daily_spending=self.daily)
+        self.assertEqual(self.base.route("/api/budget")[1]["budget"], expected)
         live = self.base.route("/api/live")[1]["live"]
-        self.assertEqual(live["budget"], self.budget); self.assertNotIn("money", live)
+        self.assertEqual(live["budget"], expected); self.assertNotIn("money", live)
         request = {"revision": "a"*64, "settings": {"limits": {"autonomy": 2, "private": 0, "group": 0}, "reserve_usd": 0.05}}
         code, result = self.base.route("/api/budget", request)
-        self.assertEqual(code, 200); self.assertEqual(result["budget"], self.budget)
+        self.assertEqual(code, 200); self.assertEqual(result["budget"], expected)
         self.save_budget.assert_called_once_with(request["settings"], request["revision"])
         self.get_budget.side_effect = OSError("PRIVATE PATH SQL BODY")
         out = self.base.route("/api/budget")[1]
@@ -138,6 +144,41 @@ class AutonomySettingsTests(unittest.TestCase):
         import sqlite3
         self.get_budget.side_effect = sqlite3.DatabaseError("PRIVATE SQL BODY")
         self.assertEqual(self.base.route("/api/budget")[1]["budget"]["availability"], "error")
+
+    def test_daily_report_uses_only_trusted_owner_and_keeps_gate_usage_separate(self):
+        self.value["decisions"]["agentPreset"] = "fixture-agent"
+        self.value["panelRecords"] = {"dshHome": str(self.root / "fixture-home"),
+                                     "onebotMappingFile": str(self.root / "mapping.json")}
+        self.value["fanGroup"] = "fixture-group"
+        self.base.write(self.base.config, self.value)
+        self.daily["days"] = [{"date": "synthetic", "autonomy": 1.25, "private": 0.1,
+                              "group": 0.2, "total": 1.55}]
+        self.budget["usage"] = {"date": "synthetic", "buckets": {"autonomy": {"spent_usd": 0.03}}}
+        before = json.loads(json.dumps(self.budget))
+        result = self.base.route("/api/budget?workspace=foreign&agentPreset=foreign")[1]["budget"]
+        self.assertEqual(result["daily_spending"]["days"][0]["autonomy"], 1.25)
+        self.assertEqual(result["gate_usage"], before["usage"])
+        self.assertEqual(self.budget, before)
+        args = self.get_daily.call_args.kwargs
+        self.assertEqual({key: value for key, value in args.items() if key != "node_executable"}, {
+            "workspace": str(self.root), "agent_preset": "fixture-agent", "identity_file": str(self.base.data / "lanya-config.json"),
+            "dsh_home": str(self.root / "fixture-home"), "mapping_file": str(self.root / "mapping.json"),
+            "group_fallback": "fixture-group"})
+        self.get_daily.side_effect = OSError("PRIVATE RECORD BODY")
+        failed = self.base.route("/api/budget")[1]["budget"]
+        self.assertIsNone(failed["daily_spending"])
+        self.assertEqual(failed["gate_usage"], before["usage"])
+        self.assertEqual(failed["enforcement"], before["enforcement"])
+        self.assertNotIn("PRIVATE RECORD", json.dumps(failed))
+
+    def test_invalid_daily_configuration_does_not_reclassify_or_disable_quota(self):
+        self.value["panelRecords"] = {"dshHome": "relative-home"}
+        self.base.write(self.base.config, self.value)
+        result = self.base.route("/api/budget")[1]["budget"]
+        self.assertIsNone(result["daily_spending"])
+        self.assertEqual(result["gate_usage"], self.budget["usage"])
+        self.assertEqual(result["effective"], self.budget["effective"])
+        self.get_daily.assert_not_called()
 
     def test_gate_bound_requires_current_verified_owner_and_loaded_file_hashes(self):
         profile = self.root / "profile"

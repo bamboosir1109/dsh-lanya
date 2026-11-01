@@ -416,7 +416,7 @@ def request_autonomy_check():
     global _AUTONOMY_REQUEST
     status = autonomy_snapshot()
     if status.get("mode") != "unified" or status.get("can_request_check") is not True:
-        return {"ok": False, "code": "autonomy_unavailable", "error": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4\uff0c\u672a\u542f\u52a8\u65e7\u5faa\u73af", "autonomy": status}
+        return {"ok": False, "code": "autonomy_unavailable", "error": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4\uff0c\u8bf7\u68c0\u67e5\u8fd0\u884c\u72b6\u6001", "autonomy": status}
     with _AUTONOMY_REQUEST_LOCK:
         now = time.monotonic()
         previous = _AUTONOMY_REQUEST["process"]
@@ -444,7 +444,7 @@ def autonomy_label(status):
         return "\u4e3b agent \u6258\u7ba1\uff0c\u90e8\u5206\u89c2\u5bdf\u8bc1\u636e\u7f3a\u5931"
     return {"waiting": "\u4e3b agent \u6258\u7ba1\uff0c\u7b49\u5f85\u81ea\u4e3b\u673a\u4f1a", "scheduled": "\u4e3b agent \u6258\u7ba1\uff0c\u5df2\u7ea6\u590d\u67e5",
             "processing": "\u4e3b agent \u6258\u7ba1\uff0c\u89c2\u5bdf\u5f85\u5904\u7406", "uncertain": "\u4e3b agent \u6258\u7ba1\uff0c\u4e0a\u6b21\u7ed3\u679c\u672a\u77e5",
-            "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u65e7\u7248\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
+            "offline": "\u4e3b agent \u8c03\u5ea6\u79bb\u7ebf", "unknown": "\u4e3b agent \u8c03\u5ea6\u72b6\u6001\u672a\u786e\u8ba4"}.get(status.get("status"), "\u72ec\u7acb\u6d3b\u52a8\u5faa\u73af")
 
 
 def autonomy_settings_snapshot():
@@ -488,6 +488,19 @@ def unified_budget_snapshot():
         enforcement.pop("gate_pid", None)
         enforcement.update(runtime_gate_bound=bool(bound), runtime_owner_verified=bool(bound))
         value = dict(value, enforcement=enforcement)
+        try:
+            from budget_reports import native_daily_spending
+            options = _panel_native_record_options()
+            node = next((path for path in _executable_paths("NODE_EXE", "tools.nodeExecutable", "node", (
+                [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe")] if DSH_ROOT else []))
+                if os.path.isabs(path) and os.path.isfile(path)), None)
+            value["daily_spending"] = native_daily_spending(**options, node_executable=node)
+        except Exception:
+            # Reporting failures never become zero spending or weaken the gate.
+            value["daily_spending"] = None
+        # Reporting can cover earlier native turns; quota enforcement retains
+        # its own recorded usage and is never reconstructed from the report.
+        value["gate_usage"] = value.get("usage")
         return value
     except Exception:
         # A missing/unreadable ledger is unavailable, never a fresh zero balance.
@@ -580,7 +593,7 @@ def request_works_service():
                     "note": "\u670d\u52a1\u5df2\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u91cd\u590d\u542f\u52a8" if value["healthy"] else "\u5df2\u8bf7\u6c42\u540e\u53f0\u6062\u590d\uff0c\u7b49\u5f85\u771f\u5b9e\u5065\u5eb7\u68c0\u67e5"}
     except Exception:
         pass
-    return {"ok": False, "service_check": True, "healthy": False, "error": "\u4f5c\u54c1\u670d\u52a1\u770b\u62a4\u672a\u786e\u8ba4\uff0c\u672a\u89e6\u53d1\u65e7\u4efb\u52a1"}
+    return {"ok": False, "service_check": True, "healthy": False, "error": "\u4f5c\u54c1\u670d\u52a1\u770b\u62a4\u672a\u786e\u8ba4\uff0c\u8bf7\u68c0\u67e5\u8fd0\u884c\u72b6\u6001"}
 
 
 def control_action(body):
@@ -759,7 +772,6 @@ def run_task(name):
 # Extra data the multi-page console needs: budget, memes, notes/diary, works.
 # ---------------------------------------------------------------------------
 LANYA_DIR = DATA
-BUDGET    = os.path.join(LANYA_DIR, "budget.json")
 MEME_ROOT = os.path.join(
     os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop",
                             "node_modules", "dsh-meme", "memes"),
@@ -908,26 +920,30 @@ BILI_SEEN = os.path.join(BILI_HOME, "seen.md")
 COVER_CACHE_FILE = os.path.join(BILI_HOME, "cover-cache.json")
 
 
+def _panel_native_record_options():
+    """Only local trusted configuration selects native record owners."""
+    config = project_conf.load(reload=True)
+    decisions = config.get("decisions", {})
+    if not isinstance(decisions, dict) or decisions.get("mode", "unified") not in ("unified", "legacy"):
+        raise ValueError("Invalid decision configuration")
+    preset = decisions.get("agentPreset", "")
+    records = config.get("panelRecords", {})
+    if not isinstance(records, dict) or not isinstance(preset, str):
+        raise ValueError("Invalid record configuration")
+    home = records.get("dshHome", os.path.join(os.path.expanduser("~"), ".dsh"))
+    mapping = records.get("onebotMappingFile")
+    if not isinstance(home, str) or not os.path.isabs(home) or (mapping is not None and
+            (not isinstance(mapping, str) or not os.path.isabs(mapping))):
+        raise ValueError("Invalid record paths")
+    return dict(workspace=REPO, agent_preset=preset, identity_file=CONFIG,
+                dsh_home=home, mapping_file=mapping, group_fallback=config.get("fanGroup", ""))
+
+
 def panel_main_activity():
     """Trusted local projection only; request parameters cannot select owners."""
     try:
         from panel_activity import activity_snapshot
-        config = project_conf.load(reload=True)
-        decisions = config.get("decisions", {})
-        if not isinstance(decisions, dict) or decisions.get("mode", "unified") not in ("unified", "legacy"):
-            raise ValueError("Invalid decision configuration")
-        preset = decisions.get("agentPreset", "")
-        records = config.get("panelRecords", {})
-        if not isinstance(records, dict) or not isinstance(preset, str):
-            raise ValueError("Invalid record configuration")
-        home = records.get("dshHome", os.path.join(os.path.expanduser("~"), ".dsh"))
-        mapping = records.get("onebotMappingFile")
-        if not isinstance(home, str) or not os.path.isabs(home) or (mapping is not None and
-                (not isinstance(mapping, str) or not os.path.isabs(mapping))):
-            raise ValueError("Invalid record paths")
-        return activity_snapshot(workspace=REPO, agent_preset=preset, identity_file=CONFIG,
-                                 dsh_home=home, mapping_file=mapping,
-                                 group_fallback=config.get("fanGroup", ""))
+        return activity_snapshot(**_panel_native_record_options())
     except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
         base = {"status": "unavailable", "generated_at": int(time.time() * 1000),
                 "records": [], "coverage": {"reasons": ["invalid_configuration"],

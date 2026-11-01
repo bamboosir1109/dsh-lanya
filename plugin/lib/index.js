@@ -62,7 +62,7 @@ const COMPONENTS = [
   { tag: 'works',       kind: 'server', match: 'lanya-panel-server\\.py', desc: '控制台服务' },
   { tag: 'tts',         kind: 'server', match: 'api_v2\\.py',           desc: '本地语音 (9880)' },
   { tag: 'supervisor',  kind: 'timer',  match: '(?:lanya|dafeiyu)-supervisor\\.ps1', desc: '外部调度器' },
-  { tag: 'tick',        kind: 'timer',  match: '(?:lanya|dafeiyu)-tick\\.ps1', desc: '旧版到期作业' },
+  { tag: 'tick',        kind: 'timer',  match: '(?:lanya|dafeiyu)-tick\\.ps1', desc: '独立到期调度进程' },
   { tag: 'napcat',      kind: 'bridge', match: 'napimain',              desc: 'NapCat 注入进程' },
   { tag: 'headless',    kind: 'agent',  match: '--profile headless',    desc: '无头 agent（堆积就是它）' }
 ]
@@ -136,10 +136,16 @@ export async function panelAutonomy(runtime, { check = false, fetchImpl = global
 }
 
 export function decorateAutonomyComponents(state, autonomy) {
-  return { ...state, autonomy, components: (state.components || []).map(row =>
+  // The current console lists the active architecture. Keep any actual residual
+  // process visible for diagnosis, and never treat unavailable counts as zero.
+  return { ...state, autonomy, components: (state.components || []).filter(row =>
+    autonomy.mode !== 'unified' || ['lifeloop', 'mind'].includes(row.tag) ||
+      !RETIRED_UNIFIED.has(row.tag) || row.count !== 0).map(row =>
     ['lifeloop', 'mind'].includes(row.tag) && autonomy.mode !== 'legacy'
       ? { ...row, kind: 'timer', managed_by: 'main_agent', control: 'request_check', status: autonomy.status, autonomy }
-      : autonomy.mode !== 'legacy' && RETIRED_UNIFIED.has(row.tag) ? { ...row, control: 'retired' } : row) }
+      : autonomy.mode !== 'legacy' && RETIRED_UNIFIED.has(row.tag)
+        ? { ...row, control: 'retired', desc: row.count > 0
+          ? '独立进程仍在运行，统一调度已接管' : '独立进程状态待确认' } : row) }
 }
 
 export async function componentAction(runtime, body, deps = {}) {
@@ -257,7 +263,7 @@ export function createPanelServiceSupervisor(runtime, options = {}) {
         child.once('exit', ended); child.once('error', ended); child.unref()
         return { ok: true, service_check: true, status: 'starting', healthy: false, note: '已请求后台启动，等待真实健康检查' }
       } catch { return { ok: false, service_check: true, status: 'backoff', healthy: false, error: '服务启动失败，稍后由后台再检查' } }
-    })().catch(() => ({ ok: false, service_check: true, status: 'unknown', healthy: false, error: '服务看护暂不可用，未启动旧任务' }))
+    })().catch(() => ({ ok: false, service_check: true, status: 'unknown', healthy: false, error: '服务看护暂不可用，本次未启动任务' }))
       .finally(() => { state.pending = null })
     return state.pending
   }

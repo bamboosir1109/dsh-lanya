@@ -76,7 +76,7 @@ foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $Repo 'server') -File -
 }
 foreach ($folder in 'scripts', 'prompts') {
     foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $Repo $folder) -File)) {
-        if ($file.Extension -notin '.ps1', '.py', '.cmd', '.txt') { continue }
+        if ($file.Extension -notin '.ps1', '.py', '.mjs', '.cmd', '.txt') { continue }
         $map += @{ From = $file.FullName; To = (Join-Path $napcat $file.Name); Protected = $false }
     }
 }
