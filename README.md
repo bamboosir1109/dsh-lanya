@@ -1,5 +1,7 @@
 # dsh-lanya
 
+当前开发版本：**v1.4.0-dev.1**。每批更新递增版本，变更与验收见 [更新日志](CHANGELOG.md) 和 [开发日志](docs/DEVLOG.md)；开发版本号不表示已创建正式 Release。
+
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 
 它包含两部分程序：DSH 插件，以及安装到工作区 `napcat/` 的 Python / PowerShell 服务。人设、身份和日记等本机数据独立保存。**拉取仓库、部署脚本、更新 DSH 中已安装的插件，是三个步骤。**

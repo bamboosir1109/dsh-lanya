@@ -321,6 +321,8 @@ python -B scripts/patch_onebot_egress_activity.py --meme-dir $memePlugin --onebo
 
 ## 提交与隐私
 
+每批准备推送的更新必须有新的版本号，以根 `package.json` 为准，同时更新 README 当前版本、CHANGELOG 和 DEVLOG。开发预览从 `1.4.0-dev.1` 起逐批递增 `dev.N`，包括仅文档或修复更新；同批多个提交共用该批版本，已经推送的版本不再用于下一批改动。正式版本按兼容性递增 patch、minor 或 major。
+
 ```powershell
 git status --short
 git diff --stat
@@ -332,13 +334,17 @@ python -B scripts/privacy-scan.py
 
 逐一检查身份配置、账号凭证、私人对话、角色记忆、日记、真实安装路径和截图。`.gitignore` 只防止误加，已经被 Git 跟踪的文件不会因为新规则自动消失。提交时显式选择文件，避免把运行数据与程序一起添加。
 
+脱敏和删除针对公开副本及待推送内容，不删除或清空正在使用的本机配置、凭据和记忆。除当前文件外，还要检查本次待推送提交的新增内容、PR 说明和最终打包清单；检查报告只保留脱敏计数与结果。发现已公开的凭据须另外处理撤销／轮换和历史清理，不能仅靠删除当前文件宣称泄露已消除。
+
 仓库没有提供 `sync_sanitize.py` 或 `verify_privacy.py`。它们在历史记录中出现过，不能作为新使用者必须依赖的步骤；当前提供的是 `scripts/privacy-scan.py`。从线上复制文件时，要自行核对映射与脱敏结果，再运行检查。
 
 ## 打包与发布
 
 `package.json` 的入口是 `plugin/lib/index.js`，bundle patch 是根目录 `cordis.patch.yml`。打包白名单包括后台程序、前端、提示词、默认配置和公开说明，不包含历史完整 profile 示例。用 `npm pack --dry-run --ignore-scripts` 检查最终清单，不要仅检查 Git 中的目录是否存在。
 
-正式发布需要对齐 `package.json` 版本、CHANGELOG、Git tag 和 GitHub Release。补丁修复使用 patch 版本；在测试和部署验证完成前，放在“未发布”条目，不为尚未发布的源码伪造 Release 状态。
+每次开发更新都先对齐版本与日志，通过适当检查和隐私审阅后提交、推送开发分支，读回远端 commit 并同步现有 PR。版本号和推送不等于生产重载或正式发布；仅更新版本与文档无需重启业务服务。
+
+正式发布另需对齐 `package.json` 版本、CHANGELOG、Git tag 和 GitHub Release。未完成正式验收时保留 `-dev.N` 开发版本，不为已推送源码伪造稳定版、tag 或 Release 状态。
 
 发布流程：审核差异与隐私 → 离线检查 → 隔离安装/界面验证 → 确定版本与说明 → 创建对应提交和 tag → 推送 → 创建 Release → 用 GitHub API 或网页核对 commit、tag 和 Release。推送、发布和生产部署是独立动作，执行前要有对应授权。
 
