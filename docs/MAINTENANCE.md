@@ -245,6 +245,38 @@ python -B scripts/patch_onebot_egress_images.py --plugin-dir ABSOLUTE_ONEBOT_PAC
 
 `--host-stopped` 仍是操作者断言，不会停止进程或证明全工作区停写；应用和恢复都要 fresh 指纹。私有备份须在公开源码与安装包之外，保留原模块、哈希和本层 manifest；中断后的部分状态先按该层 manifest 预检恢复，未知父层或后续编辑拒绝覆盖。替换使用新 inode，避免改写 HardLink 共享原件。恢复仅撤本层程序与 marker，不倒回 policy、队列、会话或记忆。源码及隔离验证不代表运行实例已经升级，也不代替真实 QQ 格式或媒体验收。
 
+## QQ 表情选图补丁
+
+`scripts/patch_meme_qq_picker.py` 仅支持已审阅文件哈希的 `dsh-meme 0.1.47` 与 `dsh-onebot-qq 0.8.1`。OneBot 必须已完整安装 autonomy V1、continuity 及其 policy V1、replay、egress、images 父链，原私有 manifest、原件、marker 与当前程序均须通过核验；只有版本号相同不够，未知定制不能整包覆盖。
+
+本层只改四个程序：meme 包的 `index.js`、`memes.js`、新增 `lanya-qq-meme.mjs`，以及 OneBot 包的 `lib/bridge.js`；另写本层 `.lanya-qq-picker.patch.json` 标记。它不改图库、设置、角色数据或发送策略。以下均是绝对路径占位值，从源码仓库运行；沿用创建父层维护记录时的 Python 解释器，不能编辑旧 manifest 绕过文件身份差异。
+
+```powershell
+# 默认只读预览；工具不寻找默认安装位置
+python -B scripts/patch_meme_qq_picker.py --meme-dir ABSOLUTE_MEME_PACKAGE --onebot-dir ABSOLUTE_ONEBOT_PACKAGE
+
+# 先停止对应宿主，再取 fresh preview fingerprint；备份放在源码和两个包之外
+python -B scripts/patch_meme_qq_picker.py --meme-dir ABSOLUTE_MEME_PACKAGE --onebot-dir ABSOLUTE_ONEBOT_PACKAGE --apply --host-stopped --expected-fingerprint PREVIEW_FINGERPRINT --backup-dir ABSOLUTE_PRIVATE_BACKUP_DIRECTORY
+
+# 恢复默认只预检；使用本层实际返回的私有 patch.json
+python -B scripts/patch_meme_qq_picker.py --meme-dir ABSOLUTE_MEME_PACKAGE --onebot-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_PICKER_PATCH_JSON
+python -B scripts/patch_meme_qq_picker.py --meme-dir ABSOLUTE_MEME_PACKAGE --onebot-dir ABSOLUTE_ONEBOT_PACKAGE --restore-manifest ABSOLUTE_PICKER_PATCH_JSON --apply --host-stopped --expected-fingerprint RESTORE_PREVIEW_FINGERPRINT
+```
+
+`--host-stopped` 是操作者断言，不会停止或重启进程；应用和恢复都要求新指纹。两包 OS 锁、完整私有原件和生成副本须保留。bridge 替换前另保留包内同卷实体原件槽位，恢复时用它归回原 inode，再实际复核旧父层；私有字节副本不能代替这个实体槽位。不要清理槽位或锁文件。多文件替换不是整批原子事务，中断后只用本层 manifest 预检已知 before/after 状态，未知修改、原件缺失或身份变化先拒绝，不覆盖后续定制。
+
+升级已安装的旧 helper 时，先停宿主，用**旧层自己的 manifest** 完成恢复并确认旧 bridge 原身份及父链通过；再用新源码重新 preview、fresh fingerprint 和新的私有备份执行 apply。恢复从私有生成副本核验 helper，不依赖当前源码仍为旧版本；不能直接覆盖已安装 helper、重写旧 manifest，或把旧指纹用于新版本。最后读回四文件与标记，并单独重载、核对实际加载版本。
+
+QQ 中 `send_meme` 只选图，参数是 `query`、`tag`、`limit`（1–20，默认 8），不加 `action` 或任意文件路径。例如：
+
+```json
+{"query":"开心","tag":"happy","limit":3}
+```
+
+`mode=qq_selection` 返回受控媒体目录中的真实候选路径，`selected` 不等于已发送，`delivered` 仍为 `false`。caption 为空或 `requires_visual_review=true` 时，先用实际可用的图片读取工具查看原图，不能把标签或来源记录编成描述。需要发图时，仍须本轮 `qq_decide(reply)` 的有效许可，再调用 `qq_send_image({sources:[candidate.path]})`；选图不解除静默，也不授权重试未知发送。无图就不发，不写占位表情文字。无 QQ capability 的 Web 选图行为保留。
+
+本机维护的 746 张图库是私有资产，不随仓库或 npm 包分发；安装补丁不会下载、识图或自动补齐素材。其他环境需独立准备并启用可信索引图库。只从已启用索引中读取真实常规图片，拒绝越界、链接和非法格式；受支持图片即使旧扩展名不符，转存后缀也按真实文件头确定，原图不修改。离线选图和模拟媒体回执不代表真实 QQ 客户端已经收到或正确显示图片。
+
 ## 提交与隐私
 
 ```powershell
