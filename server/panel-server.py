@@ -357,6 +357,11 @@ def autonomy_snapshot(now=None, owner_probe=None):
     result = {"mode": "unknown", "managed_by": "main_agent", "status": "unknown",
               "reason": "metadata_unavailable", "can_request_check": False}
     try:
+        from main_agent_watch import public_status
+        result["watch"] = public_status(DATA, now=now)
+    except (ImportError, OSError, ValueError, TypeError):
+        result["watch"] = {"configured": False, "status": "unknown", "reason": "watch_reader_unavailable"}
+    try:
         mode = decision_mode()
         result["mode"] = mode
         if mode == "legacy":

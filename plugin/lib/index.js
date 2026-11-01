@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
 import { createReminderObserver } from './reminder-observer.js'
 
@@ -28,6 +28,25 @@ export const inject = ['systemPrompt']
 
 export const PERSONA_SECTION = 'dafeiyu:persona'
 export const AFFINITY_SECTION = 'dafeiyu:affinity'
+
+export function writeSchedulerMarker(file, value) {
+  const temp = path.join(path.dirname(file), '.' + path.basename(file) + '.' + randomUUID() + '.tmp')
+  let fd, owned
+  try {
+    fd = fs.openSync(temp, 'wx', 0o600)
+    owned = fs.fstatSync(fd, { bigint: true })
+    fs.writeFileSync(fd, JSON.stringify(value))
+    fs.fsyncSync(fd)
+    fs.closeSync(fd); fd = undefined
+    fs.renameSync(temp, file)
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+    if (owned && fs.existsSync(temp)) {
+      const current = fs.lstatSync(temp, { bigint: true })
+      if (current.isFile() && current.dev === owned.dev && current.ino === owned.ino) fs.unlinkSync(temp)
+    }
+  }
+}
 
 
 // 常驻部件实测只有一百多 MB，3 GB 阈值足够松。
@@ -804,8 +823,8 @@ export function apply(ctx, config = {}) {
   const writeMarker = () => {
     if (!schedulerEnabled) return
     try {
-      fs.writeFileSync(MARKER, JSON.stringify({ version: 2, pid: process.pid, at: Date.now(),
-        jobs: ['reminders', ...SCHEDULE.map((job) => job.name)] }))
+      writeSchedulerMarker(MARKER, { version: 2, pid: process.pid, at: Date.now(),
+        jobs: ['reminders', ...SCHEDULE.map((job) => job.name)] })
     } catch { }
   }
   // 这个标记文件的作用：让 dafeiyu-tick.ps1 知道自己不用再干活了，避免两套调度

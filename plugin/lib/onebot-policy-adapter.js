@@ -77,6 +77,11 @@ export class OneBotDecisionAdapter {
     this.budgetProvider = budgetProvider || ((request) => this.readTrustedHelper(config.budgetRuntimeScript, request, { timeout: 7000 }))
     this.budgetToolChecks = new WeakMap()
     this.budgetScopes = new WeakSet()
+    this.startRequested = false
+    this.startEpoch = 0
+    this.startAttempt = null
+    this.pumpRunning = false
+    this.recoveryTimer = null
     if (this.budgetEnabled) {
       const install = bridge.installChannelScope
       const adapter = this
@@ -97,16 +102,48 @@ export class OneBotDecisionAdapter {
   }
 
   async start() {
-    if (this.budgetEnabled && !this.budgetTimer) {
-      await this.budgetHeartbeat()
-      this.budgetTimer = setInterval(() => { void this.budgetHeartbeat().catch(error => this.log('warn', 'budget_gate_unavailable:' + error.name)) }, 30000)
-      this.budgetTimer.unref?.()
+    if (!this.startRequested) {
+      this.startRequested = true
+      this.startEpoch += 1
     }
-    return this.pump.start()
+    // Install recovery before the first asynchronous helper call. A temporary
+    // budget failure or a still-living previous consumer must not permanently
+    // disable this bridge. Each retry uses the unchanged SQLite claim guard.
+    if (!this.recoveryTimer) {
+      this.recoveryTimer = setInterval(() => {
+        void this.ensureObservationConsumer().catch(error => this.log('warn', 'observation_pump_recovery_failed:' + error.name))
+      }, 30000)
+      this.recoveryTimer.unref?.()
+    }
+    return this.ensureObservationConsumer()
+  }
+
+  async ensureObservationConsumer() {
+    if (!this.startRequested) return false
+    if (this.startAttempt) return this.startAttempt
+    const epoch = this.startEpoch
+    const attempt = (async () => {
+      if (this.budgetEnabled) await this.budgetHeartbeat()
+      if (!this.startRequested || epoch !== this.startEpoch) return false
+      if (this.pumpRunning) return true
+      const claimed = await this.pump.start()
+      if (!this.startRequested || epoch !== this.startEpoch) {
+        if (claimed) this.pump.stop()
+        return false
+      }
+      this.pumpRunning = claimed === true
+      return this.pumpRunning
+    })()
+    this.startAttempt = attempt
+    try { return await attempt }
+    finally { if (this.startAttempt === attempt) this.startAttempt = null }
   }
   async stop() {
+    this.startRequested = false
+    this.startEpoch += 1
+    if (this.recoveryTimer) { clearInterval(this.recoveryTimer); this.recoveryTimer = null }
     this.pump.stop()
-    if (this.budgetTimer) { clearInterval(this.budgetTimer); this.budgetTimer = null }
+    this.pumpRunning = false
     for (const entry of this.observations.values()) entry.reject(new Error('Bridge stopped before observation settled'))
     this.observations.clear()
   }

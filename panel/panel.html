@@ -787,6 +787,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="phead"><h1>自主活动</h1><p>同一个主 agent 决定刷 B站、玩游戏、写东西或休息。这里显示正在使用的配置和真实记录。</p></div>
   <div class="stats">
     <div class="stat"><div class="k">自主调度</div><div class="v" id="liveLast" style="font-size:17px">—</div><div class="s" id="liveLastAt">正在读取</div></div>
+    <div class="stat"><div class="k">后台待命</div><div class="v" id="liveWatch" style="font-size:17px">—</div><div class="s" id="liveWatchAt">正在核对看护状态</div></div>
     <div class="stat"><div class="k">自主机会间隔</div><div class="v" id="activityCadence">—</div><div class="s" id="activityNext">正在核对下次复查</div></div>
     <div class="stat"><div class="k">执行预算</div><div class="v" id="liveMoney" style="font-size:17px">—</div><div class="s" id="liveMoneySub">正在读取当前规则</div></div>
   </div>
@@ -1847,6 +1848,12 @@ async function loadLive(){
     if(check) check.disabled = componentActionPending || autonomy.mode !== 'unified' || autonomy.can_request_check !== true;
     setText('liveLast', autonomyLabel(autonomy));
     setText('liveLastAt', observer.last_completed_at ? '上次观察处理于 ' + new Date(observer.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
+    const watch = autonomy.watch || {};
+    setText('liveWatch', ({healthy:'看护在线', waiting:'看护在线，等待恢复', starting:'正在恢复宿主',
+      blocked:'看护受阻', paused:'看护已暂停', error:'看护检查异常', offline:'看护离线',
+      not_configured:'看护未配置', unknown:'看护状态未确认'})[watch.status] || '看护状态未确认');
+    setText('liveWatchAt', watch.last_seen_at ? '最近检查 ' + new Date(watch.last_seen_at).toLocaleTimeString('zh-CN')
+      : watch.status === 'not_configured' ? '尚未启用宿主退出恢复' : '等待有效看护回执');
     const next = observer.next_review_at || observer.next_opportunity_at;
     setText('activityNext', next ? '下次检查 ' + new Date(next).toLocaleString('zh-CN') : '等待新的自主机会');
     const schedule = $('activitySchedule');
@@ -1871,6 +1878,7 @@ async function loadLive(){
     await loadActivityBudget();
   }catch(error){
     setText('liveLast','刷新失败，状态未确认'); setText('liveLastAt','无法读取最新调度状态，请稍后刷新。');
+    setText('liveWatch','看护状态未确认'); setText('liveWatchAt','最新状态读取失败');
     if($('liveCheck')) $('liveCheck').disabled = true;
   }
 }

@@ -1,5 +1,23 @@
 # 维护与发布
 
+## 主 agent 持续待命与恢复
+
+预算心跳与观察消费者有同一个有界恢复循环：首次启动失败、租约暂被活 owner 占用或临时异常不会永久停止重试；活 owner 的租约不能因时间过去被抢走。停止后迟到的异步启动不能重新持租约，进行中或 unknown 的轮次不能通过重启被自动重放。
+
+`scripts/main_agent_watch.py` 是独立于 DSH 宿主的 Windows 看护。默认只读预览，`--watch --apply` 才允许持续运行和恢复。它持有原生文件锁，每十五秒检查真实进程、两个核心端口和调度心跳；只在连续确认没有宿主、没有不明进程且端口未占用后，复核固定程序和启动配置哈希再启动一次，失败后退避。它不会发送消息、调用模型、强杀存活宿主或因旧心跳启动第二个实例。活动页分别展示调度与看护，不能用看护在线掩盖消费者离线。
+
+私有配置放在角色目录的 `main-agent-watch.config.json`：`schema` 为 `dsh-main-agent-watch/v1`，`enabled` 为布尔值，`host_executable` 为已核实的 DSH 绝对路径，`host_sha256` 为该程序 SHA-256，`arguments` 固定为空数组，`scheduler_file` 为本工作区 `napcat/scheduler-in-plugin.flag`，`core_ports` 为该宿主的两个核心端口。`startup_bindings` 固定包含两项 `{path, sha256}`，分别绑定实际 profile 和当前 profile 选择配置，防止恢复错环境。真实路径和内容留在本机，不提交这份配置。
+
+```powershell
+# 用已部署位置和实际私有配置替换占位值；默认只读，不拉起宿主
+python -B ABSOLUTE_INSTALLED_MAIN_AGENT_WATCH --config ABSOLUTE_PRIVATE_WATCH_CONFIG
+
+# 已确认配置后，使用该安装的 pythonw 隐藏运行
+pythonw -B ABSOLUTE_INSTALLED_MAIN_AGENT_WATCH --config ABSOLUTE_PRIVATE_WATCH_CONFIG --watch --apply
+```
+
+登录待命可通过当前用户 Startup 中的独立快捷方式调用同一命令，明确绑定 Python、已部署脚本及私有配置；先核实已有入口，不能覆盖不明启动项。操作性维护前将私有配置 `enabled` 设为 `false`，核对暂停状态后再停宿主，维护完成后恢复 `true`。这是停机维护的抑制开关，不是清空队列。DSH 程序或启动 profile 改变后先重新核验绑定；阻塞或未知状态要核对原因，不能删除状态、抢租约或关掉校验来强行变绿。
+
 ## 本地无决策收尾升级
 
 最新自主链同时依赖 `decision-policy.js`、`observation-queue.js`、`onebot-policy-adapter.js` 与 Python `decision_events.py`、`mind.py`。OneBot 安装副本中的三个对应模块也必须同步；仅替换 adapter 会缺少本地收尾方法。面板服务和 HTML 同步更新，才能识别 `no_decision` 并显示等待下次机会。

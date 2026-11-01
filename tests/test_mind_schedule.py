@@ -56,6 +56,24 @@ class MindScheduleTests(unittest.TestCase):
     def state(self):
         return json.loads(Path(self.mind.MIND).read_text(encoding="utf-8"))
 
+    def test_autonomous_payload_offers_private_social_choice_without_changing_group_or_send_authority(self):
+        primary = self.mind._observation_payload({"plan": None, "mood": "fixture"}, [], primary=True)
+        group = self.mind._observation_payload({"plan": None, "mood": "fixture"}, [], primary=False)
+        self.assertEqual(primary["activity_role"], "internal_leisure")
+        self.assertIn("natural short private chat or suitable real meme", primary["instruction"])
+        self.assertIn("do not wait for a major achievement", primary["instruction"])
+        self.assertNotIn("natural short private chat", group["instruction"])
+        self.assertEqual(group["activity_role"], "conversation_social")
+        self.assertIn("Only contact this group", group["instruction"])
+        for value in (primary, group):
+            self.assertIn("one qq_decide decision", value["instruction"])
+            self.assertIn("reuse an existing valid reply ticket", value["instruction"])
+            self.assertIn("an earlier decision cannot be upgraded", value["instruction"])
+            self.assertIn("Respect persistent silence", value["instruction"])
+            self.assertIn("policy, agent/profile or configuration files", value["instruction"])
+        self.ask.assert_not_called()
+        self.deliver.assert_not_called()
+
     def test_eta_gates_repeated_ticks_until_due(self):
         self.assertEqual(self.mind.one_cycle(), 0)
         self.assertEqual(self.state()["next_check_ts"], 1720)

@@ -48,6 +48,7 @@ class PackageTests(unittest.TestCase):
             "scripts/androidd.py", "scripts/android_panel.py", "scripts/memory_context.py",
             "scripts/panel_activity.py", "scripts/panel_record_files.py",
             "scripts/panel_autonomy.py", "scripts/budget_runtime.py",
+            "scripts/main_agent_watch.py", "tests/test_main_agent_watch.py", "tests/test_scheduler_marker.mjs",
             "tests/test_panel_activity.py", "tests/test_panel_record_views.py",
             "tests/test_panel_record_files.py", "tests/test_panel_snapshots.py", "tests/test_panel_records.mjs",
             "tests/fixtures/onebot_policy/lib/bridge.js", "tests/fixtures/onebot_policy/package.json",

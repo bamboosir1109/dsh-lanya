@@ -399,6 +399,25 @@ test('activity displays a local no-decision outcome without inventing an LLM ver
   }
 })
 const descendants = node => [node, ...node.children.flatMap(descendants)]
+
+test('activity keeps actual scheduler offline distinct from a living background watcher and clears stale watch labels on error', async () => {
+  let fail = false
+  const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', 'loadLive'], extra: {
+    componentActionPending: false, loadActivityBudget: async () => {},
+    api: async () => {
+      if (fail) throw new Error('fixture unavailable')
+      return { ok: true, live: { autonomy: { mode: 'unified', status: 'offline', can_request_check: false,
+        watch: { status: 'healthy', last_seen_at: 1793535000000 } }, recentActivity: { status: 'ok', records: [] } } }
+    }
+  } })
+  await h.context.loadLive()
+  assert.match(h.node('liveLast').textContent, /调度离线/)
+  assert.equal(h.node('liveWatch').textContent, '看护在线')
+  assert.equal(h.node('liveCheck').disabled, true)
+  fail = true
+  await h.context.loadLive()
+  assert.equal(h.node('liveWatch').textContent, '看护状态未确认')
+})
 const BUDGET_RENDERERS = ['appendPolicyRow', 'budgetAmount', 'renderBudgetSummary', 'renderBudget']
 const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']
 const budgetData = overrides => ({ schema: 'unified-budget/v1', availability: 'available', revision: 'a'.repeat(64),

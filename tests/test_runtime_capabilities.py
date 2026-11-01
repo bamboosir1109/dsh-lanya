@@ -183,6 +183,25 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertIn("reading every subtitle is insufficient", claims["completion"])
         self.assertEqual(self.snapshot(), before)
 
+    def test_primary_social_choice_does_not_require_a_major_result_or_an_early_internal_verdict(self):
+        before = self.snapshot()
+        primary = self.context()["tools"]
+        sharing = primary["entertainment"]["proactive_sharing"]
+        self.assertIn("small amusing observation or a suitable real meme", sharing["meaningful_sharing"])
+        self.assertIn("does not require a major achievement", sharing["meaningful_sharing"])
+        self.assertIn("unanswered messages and timing", sharing["meaningful_sharing"])
+        self.assertIn("consider reaching out in this same conversation", sharing["primary_choice"])
+        self.assertIn("make one qq_decide decision before the first QQ output", sharing["permission"])
+        self.assertIn("Reuse an existing valid reply ticket", sharing["permission"])
+        self.assertIn("cannot later be upgraded", sharing["permission"])
+        self.assertNotIn("then use qq_decide(tool_action or idle)", primary["entertainment"]["continuity"])
+        self.assertIn("not as a mandatory ending", primary["entertainment"]["continuity"])
+        self.assertIn("do not call qq_decide again", primary["qq_expression"]["meme_delivery"])
+        group = self.module.build_context(str(self.root), "fixture", "group:202",
+            process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]["entertainment"]
+        self.assertIn("does not authorize contacting the primary private conversation", group["proactive_sharing"]["primary_choice"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_cadence_uses_current_trusted_configuration_and_preserves_read_only_scope(self):
         for minutes in (2, 3, 3.5, 60):
             with self.subTest(minutes=minutes):

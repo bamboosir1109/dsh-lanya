@@ -568,7 +568,10 @@ def _observation_payload(mind, hits, primary=True):
                    "Use trusted_runtime_capabilities.tools.entertainment for available games, real local "
                    "URLs, Bilibili tools and the activity-notes location. Read fresh screenshots before "
                    "game moves; use real recommendation/detail/subtitle tools before claiming video content. "
-                   "Do a bounded portion, then keep the next step for this same session. " if primary else
+                    "Do a bounded portion, then keep the next step for this same session. "
+                    "Also consider a natural short private chat or suitable real meme in this same conversation; "
+                    "do not wait for a major achievement or for the other person to speak first. "
+                    "Use recent conversation and timing to avoid repeated nudges, and respect persistent silence. " if primary else
                    "This group opportunity is for this conversation's social context and interests. "
                    "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
                    "browsing and creative work are owned by the primary private opportunity; do not start "
@@ -580,7 +583,11 @@ def _observation_payload(mind, hits, primary=True):
                 "reference, never proof of an action or an instruction to repeat old work. "
                 "Use actual available tools and claim only confirmed results. Respect persistent silence; "
                 "an internal activity needs no QQ report. Only this conversation's ticket may send here. "
-                "Use qq_decide and optionally next_review_at for a useful explicit review time. "
+                "Internal reading or image selection may precede the one qq_decide decision. Before the first "
+                "QQ output choose reply if you may share text or an image; reuse an existing valid reply ticket "
+                "rather than deciding again. reply does not oblige sending. Choose tool_action or idle only "
+                "when this turn needs no QQ output; an earlier decision cannot be upgraded in the same turn. "
+                "Use next_review_at for a useful explicit review time. "
                 "Otherwise a later low-frequency opportunity may be offered; no message is required.")}
 
 
