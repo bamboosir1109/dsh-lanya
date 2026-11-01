@@ -735,37 +735,37 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-bili">
-  <div class="phead"><h1>刷 B 站</h1><p>她刷什么、怎么写评论，都在下面这份「值班说明」里。</p></div>
+  <div class="phead"><h1>刷 B 站</h1><p>这里展示旧值班目录和记录，不涵盖主 agent 直接浏览的完整活动。</p></div>
 
   <div class="stats">
-    <div class="stat"><div class="k">插件状态</div><div class="v" id="bState" style="font-size:17px">—</div><div class="s" id="bStateSub">—</div></div>
-    <div class="stat"><div class="k">值班说明</div><div class="v" id="bDuty">—<small>字</small></div><div class="s">决定了刷什么</div></div>
-    <div class="stat"><div class="k">看过的视频</div><div class="v" id="bWatched">—</div><div class="s">判重表记录</div></div>
+    <div class="stat"><div class="k">旧值班目录</div><div class="v" id="bState" style="font-size:17px">—</div><div class="s" id="bStateSub">—</div></div>
+    <div class="stat"><div class="k">旧值班说明</div><div class="v" id="bDuty">—<small>字</small></div><div class="s">不代表当前主 agent 的活动计划</div></div>
+    <div class="stat"><div class="k">旧表视频条目</div><div class="v" id="bWatched">—</div><div class="s">不是主 agent 浏览总数</div></div>
   </div>
 
   <div class="card">
-    <h3>她刷过什么</h3>
-    <p class="note">判重表里的记录。每刷一轮都会追加。</p>
+    <h3>旧值班视频记录</h3>
+    <p class="note">仅来自旧值班 seen.md；主 agent 的搜索、推荐和字幕调用不会自动写入此表。</p>
     <div class="filelist" id="biliVideos" style="max-height:340px;overflow:auto"></div>
     <div class="out" id="biliVideosOut"></div>
   </div>
 
   <div class="card">
-    <h3>她发过的评论</h3>
-    <p class="note">B 站账号下真实发出去的。发一条就会记一笔。</p>
+    <h3>旧值班评论记录</h3>
+    <p class="note">仅展示旧判重表中的评论条目；不代表当前账号的完整评论清单。</p>
     <div class="filelist" id="biliComments"></div>
   </div>
 
   <div class="card">
-    <h3>立刻刷一条</h3>
+    <h3>请求娱乐检查</h3>
     <p class="note">
-      点一下：她自己去推荐/热门里挑一个没刷过的视频，写一句像人话的评论，
-      <b>真发到 B 站上</b>，然后记进判重表。<b>算她的零花钱。</b>
+      统一模式仅提交观察，由同一主 agent 决定浏览、其他活动或 idle。
+      下方选项是本次偏好，不保证观看、评论或提醒，也不保证更新旧值班表。
     </p>
     <div class="btnrow">
-      <button class="pri" onclick="doOneRun(true, true)">刷一条 + 评论（@管理员）</button>
-      <button onclick="doOneRun(true, false)">刷一条 + 评论</button>
-      <button onclick="doOneRun(false)">只刷不评论</button>
+      <button class="pri" onclick="doOneRun(true, true)">请求检查（允许评论和提醒）</button>
+      <button onclick="doOneRun(true, false)">请求检查（允许评论）</button>
+      <button onclick="doOneRun(false)">请求检查（不评论）</button>
       <span class="dsc" id="oneRunState" style="align-self:center"></span>
     </div>
     <div class="out" id="oneRunOut"></div>
@@ -787,10 +787,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
 
   <div class="card">
-    <h3>值班说明（改这个真的会改变她的行为）</h3>
+    <h3>旧值班说明</h3>
     <p class="note">
-      这份文字就是她刷 B 站时的作业指导——看什么类型、怎么判断值不值得看、
-      评论写多长、哪些不碰。改完<b>下一轮就按新的来</b>。<br>
+      这份文字供旧值班流程使用；保存不等于主 agent 已读取，
+      也不会改变自主复查周期或保证下一轮执行。<br>
       保存会自动备份一份 <code>duty.md.bak</code>。
     </p>
     <textarea id="biliDuty" placeholder="点下面的「读取」"></textarea>
@@ -802,21 +802,21 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   </div>
 
   <div class="card">
-    <h3>最近日志</h3>
+    <h3>旧值班日志</h3>
     <pre class="out" id="biliLog" style="display:block;margin-top:0"></pre>
   </div>
 
   <div class="card">
-    <h3>判重表（看过的视频 / 评论过的）</h3>
+    <h3>旧值班判重表</h3>
     <pre class="out" id="biliSeen" style="display:block;margin-top:0"></pre>
   </div>
 
   <div class="card">
-    <h3>怎么跑一轮</h3>
+    <h3>这些记录的范围</h3>
     <p class="note" style="margin:0">
-      这个插件没有网页接口，跑一轮要从对话里叫我：<code>bili_run</code>。<br>
-      面板这里能看状态、改值班说明，但触发还是走对话——因为跑一轮要花时间和 token，
-      不适合挂个按钮乱点。
+      统一模式的 <code>bili_run</code> 和搜索、字幕等工具由当前主 agent 直接执行。<br>
+      这里尚未接入这些工具的完整活动记录；旧表为空不能据此判断她没有浏览。
+      本页目录是否存在，也不表示当前主 agent 正在刷 B 站。
     </p>
   </div>
 </div>
@@ -1764,8 +1764,8 @@ function renderBiliComments(cms){
 
 async function doOneRun(withComment, withMention){
   const st = $('oneRunState');
-  if(st) st.textContent = '正在刷…（挑视频 + 写评论，要一两分钟）';
-  show('oneRunOut', '开始了，别关页面。');
+  if(st) st.textContent = '正在提交检查请求…';
+  show('oneRunOut', '正在等待请求结果，不代表已开始观看或评论。');
   try{
     const j = await api('/bili/onerun', { method:'POST',
       headers:{'content-type':'application/json'},
@@ -1775,10 +1775,8 @@ async function doOneRun(withComment, withMention){
       show('oneRunOut', '没成：' + (j.error || '未知原因'));
       return;
     }
-    if(st) st.textContent = '刷完了';
-    show('oneRunOut', '刷了一条：' + (j.title || j.bv)
-      + (j.comment ? ('\n评论：' + j.comment + (j.rpid ? ('（rpid ' + j.rpid + '）') : '')) : '')
-      + '\n\n下面列表刷新一下就能看到。');
+    if(st) st.textContent = '请求已处理';
+    show('oneRunOut', '请求已返回。统一模式仅提交观察，由主 agent 决定是否行动；不代表已观看或评论。当前列表只展示旧值班记录。');
     loadBili();
   }catch(e){
     if(st) st.textContent = '没成';
@@ -2139,15 +2137,15 @@ async function loadBili(){
     const j = await api('/bili');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const b = j.bili || {};
-    setText('bState', b.installed ? '已安装' : '没找到');
+    setText('bState', b.installed ? '目录存在' : '未找到旧目录');
     $('bState').style.color = b.installed ? 'var(--ok)' : 'var(--bad)';
     setText('bStateSub', b.home || '');
     setHtml('bDuty', (b.dutyChars || 0) + '<small>字</small>');
     setText('bWatched', b.watched || 0);
     renderBiliVideos(b.videos || [], b.covers || {});
     renderBiliComments(b.comments || []);
-    setText('biliLog', b.log || '（还没有日志）');
-    setText('biliSeen', b.seen || '（判重表是空的，说明还没刷过）');
+    setText('biliLog', b.log || '暂无旧值班日志');
+    setText('biliSeen', b.seen || '暂无旧值班判重记录；不代表主 agent 未浏览');
   }catch(e){ show('biliOut', '读取失败：' + e.message); }
 }
 
@@ -2171,7 +2169,7 @@ async function saveBiliDuty(){
       body: JSON.stringify({ text })
     });
     show('biliOut', j.ok
-      ? ('已保存，' + (j.chars || text.length) + ' 字。下一轮刷 B 站就按这个来。\n（旧的备份成 duty.md.bak 了）')
+      ? ('已保存，' + (j.chars || text.length) + ' 字。仅更新旧值班说明，不代表主 agent 已读取。\n（旧的备份成 duty.md.bak 了）')
       : ('保存失败：' + (j.error || '未知原因')));
   }catch(e){ show('biliOut', '保存失败：' + e.message); }
 }

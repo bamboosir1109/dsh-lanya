@@ -211,6 +211,17 @@ def decision_mode():
     return mode
 
 
+def bili_entertainment_review(body):
+    """Only an explicitly configured legacy mode may use the old subprocess."""
+    if not isinstance(body, dict):
+        raise ValueError("Invalid entertainment preferences")
+    if decision_mode() == "legacy":
+        return None
+    from autonomy_observers import entertainment_review
+    return entertainment_review(do_comment=body.get("comment", True) is not False,
+                                mention=body.get("mention", False) is True)
+
+
 def _ordinary_metadata(path):
     absolute = os.path.abspath(path)
     current = absolute
@@ -2428,6 +2439,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": okk2, "note": note2})
 
         if path == "/api/bili/onerun":
+            try:
+                observed = bili_entertainment_review(body)
+            except Exception as error:
+                return self._json(503, {"ok": False, "queued": False, "delivered": False,
+                                        "error_class": type(error).__name__})
+            if observed is not None:
+                return self._json(200, observed)
             # Really do one round: pick a video, write a comment, post it, record it.
             # Talks to the bili MCP server over JSON-RPC directly, so it does not
             # need a DSH agent with tools loaded.
@@ -2506,6 +2524,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/bili/run":
+            try:
+                observed = bili_entertainment_review(body)
+            except Exception as error:
+                return self._json(503, {"ok": False, "queued": False, "delivered": False,
+                                        "error_class": type(error).__name__})
+            if observed is not None:
+                return self._json(200, observed)
             # Spawn a headless agent to actually run one Bilibili duty pass.
             # Nothing happens on its own: seen.md stays empty until asked.
             try:
