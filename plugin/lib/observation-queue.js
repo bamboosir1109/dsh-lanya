@@ -17,14 +17,17 @@ const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256
 const terminalStatus = (x) => ['decided', 'sent', 'unknown', 'suppressed'].includes(x)
 const decisionIdentity = (x) => identity(x) && x.trim().length > 0
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
+export const MAX_OBSERVATION_BYTES = 256 * 1024
+// Sixfold string escaping plus repeated event identities and bounded metadata.
+export const MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
 function stable(value) {
   if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']'
   if (plain(value)) return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}'
   return JSON.stringify(value)
 }
 
-function validateCompletion(marker, event, sha256) {
-  if (!plain(marker) || marker.version !== 1 || marker.event_sha256 !== sha256 ||
+function validateCompletion(marker, event, sha256, raw) {
+  if (!plain(marker) || ![1, 2].includes(marker.version) || marker.event_sha256 !== sha256 ||
       !terminalStatus(marker.status) || !decisionIdentity(marker.decision_id) ||
       ('scope' in marker && marker.scope !== event.scope) ||
       ('event_id' in marker && marker.event_id !== event.event_id) ||
@@ -32,6 +35,12 @@ function validateCompletion(marker, event, sha256) {
       ('next_review_at' in marker && (!Number.isSafeInteger(marker.next_review_at) ||
         marker.next_review_at <= 0 || marker.next_review_at <= event.created_at))) {
     throw new ObservationQueueError('Invalid terminal completion or review metadata')
+  }
+  if (marker.version === 2 && (typeof marker.event_raw !== 'string' ||
+      marker.scope !== event.scope || marker.event_id !== event.event_id ||
+      Buffer.from(marker.event_raw, 'utf8').toString('utf8') !== marker.event_raw ||
+      !Buffer.from(marker.event_raw, 'utf8').equals(raw))) {
+    throw new ObservationQueueError('Completion original does not match immutable evidence')
   }
   return marker
 }
@@ -67,13 +76,41 @@ function ordinaryDirectories(value, create = false) {
   return absolute
 }
 
-function readRegular(file) {
+function readRegular(file, maxBytes = MAX_COMPLETION_BYTES) {
   const before = fs.lstatSync(file, { bigint: true })
-  if (!before.isFile() || before.isSymbolicLink() || before.size > 512n * 1024n) throw new ObservationQueueError('Inbox entry is not a bounded ordinary file')
+  if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(maxBytes)) throw new ObservationQueueError('Inbox entry is not a bounded ordinary file')
   const raw = fs.readFileSync(file)
   const after = fs.lstatSync(file, { bigint: true })
   if (['dev', 'ino', 'size', 'mtimeNs'].some((k) => before[k] !== after[k])) throw new ObservationQueueError('Inbox entry changed during read')
-  return { value: JSON.parse(raw.toString('utf8')), sha256: hash(raw) }
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(raw)
+  return { raw, value: JSON.parse(text), sha256: hash(raw) }
+}
+
+/** Missing pending is recoverable only from a valid v2 terminal original.
+ * Present corrupt evidence always wins over the backup: never hide tampering.
+ */
+export function readObservationEvidence(directory, key) {
+  if (!/^[0-9a-f]{64}$/.test(key)) throw new ObservationQueueError('Invalid evidence filename')
+  const base = ordinaryDirectories(directory)
+  const target = path.join(ordinaryDirectories(path.join(base, 'pending')), key + '.json')
+  const markerPath = path.join(ordinaryDirectories(path.join(base, 'done')), key + '.json')
+  let read, marker, hasMarker = false
+  try { read = readRegular(target, MAX_OBSERVATION_BYTES) } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    marker = readRegular(markerPath).value
+    hasMarker = true
+    if (!plain(marker) || marker.version !== 2 || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires a v2 completion')
+    const raw = Buffer.from(marker.event_raw, 'utf8')
+    if (raw.length > MAX_OBSERVATION_BYTES || raw.toString('utf8') !== marker.event_raw) throw new ObservationQueueError('Invalid UTF8 completion original')
+    read = { raw, value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)), sha256: hash(raw) }
+  }
+  const event = validateObservation(read.value)
+  if (observationKey(event.scope, event.event_id) !== key) throw new ObservationQueueError('Observation filename/identity mismatch')
+  if (!hasMarker) {
+    try { marker = readRegular(markerPath).value; hasMarker = true } catch (error) { if (error.code !== 'ENOENT') throw error }
+  }
+  if (hasMarker) validateCompletion(marker, event, read.sha256, read.raw)
+  return { ...read, completion: hasMarker ? marker : null }
 }
 
 function publish(file, value) {
@@ -101,6 +138,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   const done = path.join(base, 'done')
   const leaseFile = path.join(base, 'consumer.sqlite')
   let timer, busy = false, stopped = true, release = null, leaseDb = null
+  const invalidEvidence = new Set()
 
   function takeClaim() {
     ordinaryDirectories(pending, true)
@@ -165,23 +203,18 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         previous_decision_id: completed.decision_id, scheduled_at: completed.next_review_at,
       } },
     })
-    if (Buffer.byteLength(JSON.stringify(review), 'utf8') > 256 * 1024) throw new ObservationQueueError('Review observation exceeds size limit')
+    if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
     const name = observationKey(review.scope, review.event_id) + '.json'
     const target = path.join(pending, name)
-    if (!fs.existsSync(target)) {
-      if (fs.existsSync(path.join(done, name))) throw new ObservationQueueError('Review completion has no original evidence')
+    if (!fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
       try { publish(target, review) } catch (error) { if (error.code !== 'EEXIST') throw error }
     }
-    const read = readRegular(target)
+    const read = readObservationEvidence(base, name.slice(0, -5))
     validateObservation(read.value)
     if (stable(read.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
-    const marker = path.join(done, name)
-    if (fs.existsSync(marker)) {
-      validateCompletion(readRegular(marker).value, review, read.sha256)
-      return null
-    }
+    if (read.completion) return null
     if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) return null
-    return { event: review, name, sha256: read.sha256 }
+    return { event: review, name, sha256: read.sha256, raw: read.raw }
   }
 
   async function drain() {
@@ -189,31 +222,35 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     busy = true
     let processed = 0
     try {
-      ordinaryDirectories(pending)
+      ordinaryDirectories(pending, true)
       ordinaryDirectories(done)
-      const names = fs.readdirSync(pending).filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+      const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
       const entries = new Map()
       for (const name of names) {
         try {
           if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
-          const read = readRegular(path.join(pending, name))
+          const read = readObservationEvidence(base, name.slice(0, -5))
           const event = validateObservation(read.value)
           if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
-          const marker = path.join(done, name)
-          if (fs.existsSync(marker)) {
-            const completed = validateCompletion(readRegular(marker).value, event, read.sha256)
+          if (read.completion) {
+            const completed = read.completion
             // A crash after durable completion but before core acknowledgement
             // is recovered here, without running the model or sending again.
             await acknowledge(event, completed)
             const review = scheduleReview(event, completed)
             if (review) entries.set(review.name, review)
+            invalidEvidence.delete(name)
             continue
           }
-          entries.set(name, { event, name, sha256: read.sha256 })
-        } catch (error) { log('error', 'observation_invalid:' + name + ':' + error.name) }
+          entries.set(name, { event, name, sha256: read.sha256, raw: read.raw })
+          invalidEvidence.delete(name)
+        } catch (error) {
+          if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
+          invalidEvidence.add(name)
+        }
       }
       const ordered = [...entries.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
-      for (const { event, name, sha256 } of ordered) {
+      for (const { event, name, sha256, raw } of ordered) {
         if (stopped) break
         if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
         let outcome
@@ -229,9 +266,15 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           log('warn', 'observation_without_terminal_decision:' + name)
           continue
         }
-        const current = readRegular(path.join(pending, name))
+        let current
+        try { current = readRegular(path.join(pending, name), MAX_OBSERVATION_BYTES) } catch (error) {
+          if (error.code !== 'ENOENT') throw error
+          // A cleanup during the turn cannot discard the already validated
+          // bytes captured before dispatch or force the completed turn to replay.
+          current = { sha256: hash(raw) }
+        }
         if (current.sha256 !== sha256) throw new ObservationQueueError('Observation changed before completion')
-        const marker = { version: 1, event_id: event.event_id, scope: event.scope,
+        const marker = { version: 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
           event_sha256: sha256, completed_at: now(), status: outcome.status,
           decision_id: outcome.decision_id }
         // null/undefined in a dispatch receipt means the LLM did not schedule a
@@ -239,7 +282,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         if (outcome.next_review_at !== undefined && outcome.next_review_at !== null) {
           marker.next_review_at = outcome.next_review_at
         }
-        try { validateCompletion(marker, event, sha256) } catch (error) {
+        try { validateCompletion(marker, event, sha256, raw) } catch (error) {
           parkInvalidTerminal(name)
           log('error', 'observation_invalid_terminal_parked:' + name + ':' + error.name)
           continue

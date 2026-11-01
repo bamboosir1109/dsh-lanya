@@ -20,6 +20,10 @@ class ObservationError(ValueError):
     pass
 
 
+MAX_OBSERVATION_BYTES = 256 * 1024
+MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
+
+
 def canonical_json(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -44,8 +48,8 @@ def _plain_directory(path, create=False):
     return path
 
 
-def validate_event(event):
-    if not isinstance(event, dict) or event.get("version") != 1:
+def validate_event(event, raw=None, check_size=True):
+    if not isinstance(event, dict) or type(event.get("version")) is not int or event["version"] != 1:
         raise ObservationError("Unsupported observation version")
     if not isinstance(event.get("scope"), str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", event["scope"]):
         raise ObservationError("Expected a canonical string conversation scope")
@@ -64,19 +68,29 @@ def validate_event(event):
     created = event.get("created_at")
     if isinstance(created, bool) or not isinstance(created, int) or created < 0 or created > 2**53 - 1:
         raise ObservationError("Invalid observation creation time")
-    if len(canonical_json(event).encode("utf-8")) > 256 * 1024:
+    canonical = canonical_json(event)  # Also rejects non-finite JSON payloads.
+    size = len(raw) if raw is not None else len((canonical + "\n").encode("utf-8"))
+    if check_size and size > MAX_OBSERVATION_BYTES:
         raise ObservationError("Observation exceeds the bounded event size")
     return event
 
 
-def _read_regular(path):
+def _read_regular_raw(path, max_bytes=MAX_COMPLETION_BYTES):
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or
             getattr(info, "st_file_attributes", 0) & 0x400):
         raise ObservationError("Observation entry is not an ordinary file")
-    if info.st_size > 512 * 1024:
+    if info.st_size > max_bytes:
         raise ObservationError("Observation entry exceeds its size limit")
-    return json.loads(path.read_text(encoding="utf-8"))
+    raw = path.read_bytes()
+    after = path.lstat()
+    if any(getattr(info, key) != getattr(after, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns")):
+        raise ObservationError("Observation entry changed during read")
+    return json.loads(raw.decode("utf-8")), raw
+
+
+def _read_regular(path):
+    return _read_regular_raw(path)[0]
 
 
 def _semantic(event):
@@ -86,10 +100,18 @@ def _semantic(event):
 
 def _validated_completion(result, event, raw):
     """Only a complete, evidence-bound terminal decision may acknowledge work."""
-    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] != 1 or
+    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] not in (1, 2) or
             result.get("event_sha256") != hashlib.sha256(raw).hexdigest() or
             result.get("status") not in ("decided", "sent", "unknown", "suppressed")):
         raise ObservationError("Invalid observation completion evidence")
+    if result["version"] == 2:
+        original = result.get("event_raw")
+        try:
+            exact = isinstance(original, str) and original.encode("utf-8") == raw
+        except UnicodeError:
+            exact = False
+        if not exact or any(result.get(key) != event[key] for key in ("scope", "event_id")):
+            raise ObservationError("Completion original does not match immutable evidence")
     decision = result.get("decision_id")
     if not isinstance(decision, str) or not decision.strip() or len(decision) > 256 or re.search(r"[\x00-\x1f]", decision):
         raise ObservationError("Invalid observation completion decision")
@@ -106,6 +128,39 @@ def _validated_completion(result, event, raw):
     return result
 
 
+def _read_evidence(base, key):
+    """Only ENOENT permits terminal-v2 recovery; never hide a bad pending file."""
+    target = _plain_directory(base / "pending") / (key + ".json")
+    marker = _plain_directory(base / "done") / (key + ".json")
+    missing = object()
+    completion = missing
+    try:
+        event, raw = _read_regular_raw(target, MAX_OBSERVATION_BYTES)
+    except FileNotFoundError:
+        completion = _read_regular(marker)
+        if (not isinstance(completion, dict) or type(completion.get("version")) is not int or
+                completion["version"] != 2 or not isinstance(completion.get("event_raw"), str)):
+            raise ObservationError("Missing original requires a v2 completion")
+        try:
+            raw = completion["event_raw"].encode("utf-8")
+        except UnicodeError as error:
+            raise ObservationError("Invalid UTF8 completion original") from error
+        if len(raw) > MAX_OBSERVATION_BYTES:
+            raise ObservationError("Completion original exceeds event size limit")
+        event = json.loads(raw.decode("utf-8"))
+    event = validate_event(event, raw=raw)
+    if event_key(event["scope"], event["event_id"]) != key:
+        raise ObservationError("Observation filename/identity mismatch")
+    if completion is missing:
+        try:
+            completion = _read_regular(marker)
+        except FileNotFoundError:
+            pass
+    if completion is not missing:
+        _validated_completion(completion, event, raw)
+    return event, raw, None if completion is missing else completion
+
+
 def submit_observation(*, scope, kind, payload, producer, event_id,
                        workspace_key, agent_key, directory=None, created_at=None):
     if directory is None:
@@ -115,30 +170,31 @@ def submit_observation(*, scope, kind, payload, producer, event_id,
                             "kind": kind, "producer": producer,
                             "created_at": int(time.time() * 1000) if created_at is None else created_at,
                             "payload": payload, "workspace_key": workspace_key, "agent_key": agent_key,
-                            "origin": "observation", "control_allowed": False})
-    base = _plain_directory(directory, create=True)
-    pending = _plain_directory(base / "pending", create=True)
-    done = _plain_directory(base / "done", create=True)
+                            "origin": "observation", "control_allowed": False}, check_size=False)
+    # An idempotent retry can match a legal compact UTF8 original even when
+    # this producer's escaped ASCII encoding would be too large to publish.
+    base = _plain_directory(directory)
+    pending = _plain_directory(base / "pending")
+    done = _plain_directory(base / "done")
     key = event_key(scope, event_id)
     target = pending / (key + ".json")
     marker = done / (key + ".json")
 
     def existing():
-        previous = validate_event(_read_regular(target))
+        previous, _, completed = _read_evidence(base, key)
         if _semantic(previous) != _semantic(event):
             raise ObservationError("Event identity already contains different evidence")
-        state = "pending"
-        if os.path.lexists(marker):
-            _validated_completion(_read_regular(marker), previous, target.read_bytes())
-            state = "done"
+        state = "done" if completed is not None else "pending"
         return {"submitted": False, "state": state, "key": key, "event_id": event_id}
 
-    if os.path.lexists(target):
+    if os.path.lexists(target) or os.path.lexists(marker):
         return existing()
-    if os.path.lexists(marker):
-        raise ObservationError("Completion marker exists without its immutable event")
-    temporary = pending / (".publish-" + uuid.uuid4().hex + ".tmp")
     raw = (canonical_json(event) + "\n").encode("utf-8")
+    if len(raw) > MAX_OBSERVATION_BYTES:
+        raise ObservationError("Observation exceeds the bounded event size")
+    _plain_directory(pending, create=True)
+    _plain_directory(done, create=True)
+    temporary = pending / (".publish-" + uuid.uuid4().hex + ".tmp")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -239,25 +295,24 @@ def observation_review_chain(scope, event_id, directory=None, limit=128):
     _plain_directory(base / "done")
     for _ in range(limit):
         key = event_key(scope, event_id)
-        target = base / "pending" / (key + ".json")
-        event = validate_event(_read_regular(target))
+        event, _, completion = _read_evidence(base, key)
         if event["scope"] != scope or event["event_id"] != event_id:
             raise ObservationError("Invalid review observation identity")
-        completion = observation_completion(scope, event_id, directory=base)
         result = {"event": event, "completion": completion, "waiting_review": False}
         if completion is None or completion["status"] == "unknown" or "next_review_at" not in completion:
             return result
         due = completion["next_review_at"]
         successor_id = "main-review:" + key + ":" + str(due)
         child = base / "pending" / (event_key(scope, successor_id) + ".json")
-        if not os.path.lexists(child):
+        child_done = base / "done" / child.name
+        if not os.path.lexists(child) and not os.path.lexists(child_done):
             result["waiting_review"] = event["kind"] not in ("activity_due", "reminder.due")
             return result
         expected = dict(event, event_id=successor_id, producer="main-review", created_at=due,
                         payload=dict(event["payload"], review_context={
                             "parent_observation_key": key, "parent_event_id": event_id,
                             "previous_decision_id": completion["decision_id"], "scheduled_at": due}))
-        actual = validate_event(_read_regular(child))
+        actual, _, _ = _read_evidence(base, event_key(scope, successor_id))
         if canonical_json(actual) != canonical_json(expected):
             raise ObservationError("Review successor conflicts with immutable evidence")
         event_id = successor_id
@@ -276,11 +331,10 @@ def observation_completion(scope, event_id, directory=None):
         return None
     _plain_directory(marker.parent)
     _plain_directory(target.parent)
-    result = _read_regular(marker)
-    event = validate_event(_read_regular(target))
+    event, _, result = _read_evidence(base, key)
     if event["scope"] != scope or event["event_id"] != event_id:
         raise ObservationError("Invalid observation completion evidence")
-    return _validated_completion(result, event, target.read_bytes())
+    return result
 
 
 def main(argv=None):

@@ -25,6 +25,9 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.config.parent.mkdir()
         self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "android": {
             "serial": "emulator-5556"}}), encoding="utf-8")
+        self.identity = self.root / "FixtureRole" / "lanya-config.json"
+        self.identity.parent.mkdir()
+        self.identity.write_text(json.dumps({"adminQQ": ["101", "303"]}), encoding="utf-8")
         env = mock.patch.dict(os.environ)
         env.start(); self.addCleanup(env.stop)
         os.environ.pop("LANYA_PROJECT_CONFIG", None)
@@ -123,10 +126,13 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 cadence = context["tools"]["entertainment"]["cadence"]
                 self.assertTrue(cadence["valid"])
                 self.assertEqual(cadence["configured_opportunity_min"], minutes)
-                self.assertIn("entire conversation", cadence["explicit_review"])
-                self.assertIn("Existing explicit reviews remain authoritative", cadence["explicit_review"])
-                self.assertIn("not an activity quota", cadence["preference"])
+                self.assertIn("new trusted primary", cadence["explicit_review"])
+                self.assertIn("Already persisted decisions are not changed", cadence["explicit_review"])
+                self.assertIn("not a requirement for a new action", cadence["preference"])
+                self.assertIn("do not lock all future leisure", cadence["preference"])
                 self.assertIn("not evidence", cadence["longer_interval"])
+                self.assertIn("does not extend the next autonomous review", cadence["longer_interval"])
+                self.assertIn("may remain idle, continue resting or keep watching", cadence["longer_interval"])
                 self.assertIn("no sending authority", cadence["communication"])
                 group = self.module.build_context(str(self.root), "fixture", "group:202",
                     process_probe=lambda paths: {}, now=lambda: 1234.0)
@@ -134,6 +140,33 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertEqual(group_guide["cadence"]["configured_opportunity_min"], minutes)
                 self.assertIn("Group opportunities remain social only", group_guide["cadence"]["communication"])
                 self.assertNotEqual(group_guide["activity_notes"]["path"], context["tools"]["entertainment"]["activity_notes"]["path"])
+                self.assertTrue(context["tools"]["entertainment"]["primary_identity_valid"])
+                self.assertTrue(context["tools"]["entertainment"]["primary_internal_leisure"])
+                self.assertFalse(group_guide["primary_internal_leisure"])
+
+    def test_primary_identity_comes_from_owner_data_not_administrator_allowlist_order(self):
+        for admins in (["303", "101"], "303", 303):
+            with self.subTest(admins=admins):
+                self.identity.write_text(json.dumps({"adminQQ": admins}), encoding="utf-8")
+                guide = self.context()["tools"]["entertainment"]
+                self.assertTrue(guide["primary_identity_valid"])
+                self.assertFalse(guide["primary_internal_leisure"])
+                primary = self.module.build_context(str(self.root), "fixture", "private:303",
+                    process_probe=lambda paths: {})["tools"]["entertainment"]
+                self.assertTrue(primary["primary_internal_leisure"])
+
+    def test_missing_or_malformed_identity_cannot_claim_primary_autonomy(self):
+        for body in (None, "{damaged", "[]", json.dumps({"adminQQ": []}),
+                     json.dumps({"adminQQ": True}), json.dumps({"adminQQ": ["0101"]})):
+            with self.subTest(body=body):
+                if body is None:
+                    self.identity.unlink()
+                else:
+                    self.identity.write_text(body, encoding="utf-8")
+                guide = self.context()["tools"]["entertainment"]
+                self.assertFalse(guide["primary_identity_valid"])
+                self.assertFalse(guide["primary_internal_leisure"])
+                self.assertEqual(guide["cadence"]["configured_opportunity_min"], 6)
 
     def test_missing_cadence_matches_mind_dotted_lookup_default(self):
         for extra in ({}, {"mind": {}}, {"mind": None}, {"mind": "fixture legacy scalar"}):

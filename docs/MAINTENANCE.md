@@ -1,5 +1,11 @@
 # 维护与发布
 
+## 自主连续性增量层
+
+`scripts/patch_autonomy_continuity.py` 更新已完成 autonomy V1 安装的外部 OneBot 适配器和观察队列。默认 preview 只读；应用需先确认对应宿主停止，提供新的私有备份目录和本次 preview fingerprint。它核验历史父层、保存两个程序的精确原件及生成副本，使用独立 `lanya-continuity.patch.json` 标记，不覆盖旧层记录或策略状态。未知修改与部分应用必须用该层自己的私有 manifest 诊断、恢复，不能重跑旧安装器覆盖。
+
+同时部署本项目的 `decision_events.py`、`runtime_capabilities.py` 及观察生产者等对应源码，然后重载实际 OneBot 宿主；只更新磁盘或热读取 helper 不算完成。版本 1 的缺失事件从原归档逐一按完成标记 SHA 恢复，保留归档原件和 done；不能删 done、清空 mind 或重放旧事件。新的版本 2 完成记录可在 pending 原件归档后继续校验；尚未完成的事件及整个 done 目录仍是运行数据，不能作为冗余清理。
+
 ## 修改在哪里生效
 
 公开源码、`napcat/` 运行副本与 DSH profile 中的插件可能处在不同版本。排查前分别记录源码 HEAD、运行文件内容与进程启动时间、插件实际加载位置与版本。磁盘文件变了，不代表常驻进程已经加载新代码。

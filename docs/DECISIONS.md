@@ -30,6 +30,8 @@
 
 Python `decision_events.py`、PowerShell `qq_observation.ps1` 和 Node `observation-producer.js` 写入同一角色的 `decision-inbox/pending/`。事件身份是 scope 与 event_id 的 SHA256；原件不可覆盖，完成标记保存在 `done/`，绑定原件物理 UTF-8 字节的哈希。只保存来源事实，不把图中或通知正文的指令升级为权限。
 
+新完成记录使用版本 2，以 `event_raw` 保存完整原始 UTF-8 文本，保留原换行和字段顺序，不能用重新序列化后的相似 JSON 冒充原哈希。原路径缺失时，Python 与 Node 读取器才允许采用已验证的版本 2 副本；原路径存在但损坏、哈希不符或身份不符仍拒绝。扫描兼顾 `pending` 与 `done`，已完成记录仅确认终态或派生合法的到期后继，不重新执行原动作，`unknown` 没有自动后继。版本 1 记录仍需真实原件；缺失只能从精确匹配的备份恢复。
+
 OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租约排除另一个活消费者，只有确定死亡的旧 owner 可接替。入站观察先复制输入快照，必须精确匹配可信聊天的规范工作区与异步解析后的 preset ID；不符时不建 pin、不交给 agent，也不回显 payload。生产者的 `decisions.agentPreset` 应填写该实际 ID，不能用别名、旧角色或其他聊天的 preset 代替。preset 去除首尾空白，Windows 再转小写，其他平台保留大小写。空 agent 共享键保留既有语义；registry 的 `undefined` 无法区分未装 provider 与解析失败，不能拿配置默认值替代其结果。它将证据交给同一个聊天 agent，等真实 decision 与 turn 结束，再写完成记录和释放持久 pin。模型失败保留待处理证据并持久退避；有终态后重启不会再运行模型或重发。
 
 | 来源 | unified 行为 |
@@ -42,11 +44,13 @@ OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租�
 | 记忆维护 | 有范围的维护建议；不在后台改写正在追加的跨聊日志或删除旧饭菜记录 |
 | 旧 life/agentchat/voice/late-night/PS reminders | 暂停并返回非零；保留旧积压，不能将暂停当已送达 |
 
-`next_review_at` 可省略，省略表示不约该次决定的明确复查；提交时必须在未来一分钟至七天内。提醒及旧 `activity_due` 保留生产者复查语义，新的 `activity.opportunity` 与其他观察由 consumer 按持久完成记录产生唯一的 `main-review` 后继事件，scope、owner、kind 保持不变。mind 只读核对并推进后继锚点，不重复提交该次复查。unknown 不继承复查；派生事件同样遵守持久失败退避。
+除下述主管理员自主轮次外，`next_review_at` 可省略，省略表示不约该次决定的明确复查；提交时必须在未来一分钟至七天内。提醒及旧 `activity_due` 保留生产者复查语义，新的 `activity.opportunity` 与其他观察由 consumer 按持久完成记录产生唯一的 `main-review` 后继事件，scope、owner、kind 保持不变。mind 只读核对并推进后继锚点，不重复提交该次复查。unknown 不继承复查；派生事件同样遵守持久失败退避。
 
 ### 自主机会与面板控制
 
-完成一次决定却没指定复查，不应让自主功能永久睡眠。统一模式的 mind 在已知终态后按可信项目配置 `mind.opportunityMin` 提供下一次可选机会，允许范围为 2—60 分钟，公开默认 6 分钟；旧计划的 `next_check_min` 不覆盖这项配置。这只唤醒同一主 agent 观察，不预设发送、娱乐动作或成功结果。明确复查优先，待处理事件和同证据的 unknown 不因时钟或手动检查重放；真正的新证据可另作判断。持久静默仍约束最终 QQ 出口。
+完成一次决定却没指定复查，不应让自主功能永久睡眠。统一模式按可信项目配置 `mind.opportunityMin` 提供下一次可选机会，允许范围为 2—60 分钟，公开默认 6 分钟；旧计划的 `next_check_min` 不覆盖这项配置。这只唤醒同一主 agent 观察，不预设发送、娱乐动作或成功结果。
+
+对可信身份配置中的主管理员私聊、`activity.opportunity` 和 `mind` / `main-review` 生产者，适配器在新轮次冻结当前可信周期。`qq_decide` 没指定复查时补齐该周期；指定更晚时返回实际收敛后的 `next_review_at`，同时明确请求时间与调整结果，避免把远期任务期限当作全部自主活动的休眠期限。主 LLM 仍可选择 idle 或继续观看，不要求每次调用工具、切换活动或发消息。其他私聊、群聊、真实用户轮次及其他事件不套用这一上限；已经持久化的旧复查不被改写。待处理事件和同证据的 `unknown` 不因时钟或手动检查重放；真正的新证据可另作判断。持久静默仍约束最终 QQ 出口。
 
 主管理员与配置群聊使用各自可信 scope、事件和固定票，计划延续在各自原会话中进行。旧单范围状态原样保存在 `decision_legacy`，迁移后的控制状态放在版本 2 的 `decision_scopes`；旧管理员计划只是未核实参考，不注入群聊或冒充已完成动作。
 

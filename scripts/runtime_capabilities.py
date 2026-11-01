@@ -160,6 +160,22 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
                 return False
         return stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
 
+    primary_valid = False
+    primary_leisure = False
+    identity_path = data / "lanya-config.json"
+    try:
+        if ordinary_local(identity_path) and identity_path.stat().st_size <= 1024 * 1024:
+            identity = json.loads(identity_path.read_text(encoding="utf-8-sig"))
+            if isinstance(identity, dict):
+                admin = identity.get("adminQQ")
+                if isinstance(admin, list):
+                    admin = admin[0] if admin else ""
+                if not isinstance(admin, bool) and re.fullmatch(r"[1-9][0-9]*", str(admin or "")):
+                    primary_valid = True
+                    primary_leisure = conversation_key == "private:" + str(admin)
+    except (OSError, UnicodeError, ValueError):
+        pass
+
     try:
         if ordinary_local(made, directory=True):
             # Only a direct, ordinary folder with an index page is a runnable
@@ -182,15 +198,17 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
         pass
     return {
         "execution": "same_main_agent_no_independent_model",
+        "primary_identity_valid": primary_valid,
+        "primary_internal_leisure": primary_leisure,
         "cadence": {
             "valid": valid_cadence,
             "configured_opportunity_min": cadence if valid_cadence else None,
             "configuration": ("This is the trusted configured opportunity preference, not proof that a scheduler is running or that a review is due."
                               if valid_cadence else "The configured opportunity interval is invalid, so no trustworthy cadence is available. Do not assume a default schedule or edit configuration to repair it."),
             "preference_scope": "primary_internal_leisure_only_groups_social",
-            "preference": "The user prefers more frequent real games and Bilibili browsing in the primary personal opportunity. After a short confirmed activity, usually consider another useful small segment around the configured opportunity interval, rather than routinely putting all leisure off for hours. This is a preference, not an activity quota or a requirement to call a tool or speak; the same main agent still chooses activity, idle or defer.",
-            "explicit_review": "An explicit next_review_at postpones ordinary autonomous opportunities for this entire conversation until that time, not just one game's or video's next step. A distant project milestone may stay in the scoped notes while you consider an earlier useful leisure review. Existing explicit reviews remain authoritative: this guide does not cancel, shorten, replay or wake one.",
-            "longer_interval": "A longer interval is valid for a concrete activity, rest need, unavailable tool or other real reason. Keep the actual reason, confirmed progress and next intent in this conversation's activity note; distinguish a planned rest or future task from verified activity. Saying you are busy is not evidence that an action occurred.",
+            "preference": "The user wants more frequent autonomous Bilibili browsing and varied interests. After a small game segment, actively consider real Bilibili recommendations, subtitles, frames or another interesting activity. Continuing notes or a distant 2048 target do not lock all future leisure to that game. Use the configured interval to review what is useful next; the same main agent may choose activity, idle, rest or defer. A review is not a requirement for a new action, comment or QQ speech.",
+            "explicit_review": "For a new trusted primary activity.opportunity from mind or main-review, qq_decide schedules the next review within the configured interval. A missing next_review_at uses that interval; a later request is adjusted to it and the tool returns both requested_next_review_at and the actual next_review_at. A valid earlier request is retained. Keep distant task deadlines in the scoped activity note, not as a reason to suspend every autonomous opportunity for hours. Already persisted decisions are not changed or replayed; this guide cannot cancel or wake an existing review. Other conversations and ordinary live turns retain their own review semantics.",
+            "longer_interval": "A longer activity or rest may retain its target time and concrete reason in this conversation's activity note, but it does not extend the next autonomous review beyond the configured interval. At a periodic review you may remain idle, continue resting or keep watching; the check does not require ending a rest, taking a new action or sending a message. Keep the actual reason, confirmed progress and next intent in the note; distinguish a planned rest or future task from verified activity. Saying you are busy is not evidence that an action occurred.",
             "communication": "QQ silence limits communication, not local games, ordinary activity notes or read-only Bilibili browsing. Internal leisure needs no QQ report. This guide grants no sending authority or silence-control permission. Group opportunities remain social only and must not start a second copy of private entertainment."
         },
         "activity_notes": {"path": str(data / "notes" / ("activity-" + hashlib.sha256(conversation_key.encode("utf-8")).hexdigest() + ".md")),

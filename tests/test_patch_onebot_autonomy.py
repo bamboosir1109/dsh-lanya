@@ -25,6 +25,7 @@ import patch_onebot_egress_images as images
 import patch_onebot_autonomy as autonomy
 
 FIXTURE = ROOT / 'tests/fixtures/onebot_autonomy/adapter-c684991.js'
+LEGACY_QUEUE = ROOT / 'tests/fixtures/onebot_autonomy/legacy_queue/observation-queue.js'
 
 
 class AutonomyPatchTests(unittest.TestCase):
@@ -36,7 +37,8 @@ class AutonomyPatchTests(unittest.TestCase):
         cls.old = cls.fixture_root / 'old-source'
         (cls.old / 'plugin/lib').mkdir(parents=True)
         for name in ('decision-policy.js', 'observation-queue.js'):
-            shutil.copyfile(ROOT / 'plugin/lib' / name, cls.old / 'plugin/lib' / name)
+            source = LEGACY_QUEUE if name == 'observation-queue.js' else ROOT / 'plugin/lib' / name
+            shutil.copyfile(source, cls.old / 'plugin/lib' / name)
         shutil.copyfile(FIXTURE, cls.old / 'plugin/lib/onebot-policy-adapter.js')
         shutil.copyfile(ROOT / 'tests/fixtures/onebot_egress/qq-egress-v1.js', cls.old / 'plugin/lib/qq-egress.js')
         assert hashlib.sha256(autonomy.base_adapter(FIXTURE.read_bytes())).hexdigest() == autonomy.LEGACY_BASE_SHA256
@@ -55,7 +57,8 @@ class AutonomyPatchTests(unittest.TestCase):
         (self.source / 'plugin/lib').mkdir(parents=True)
         (self.source / 'package.json').write_text('{"name":"dsh-lanya","type":"module"}\n', encoding='utf-8')
         for name in autonomy.DEPENDENCIES:
-            shutil.copyfile(ROOT / 'plugin/lib' / name, self.source / 'plugin/lib' / name)
+            source = LEGACY_QUEUE if name == 'observation-queue.js' else ROOT / 'plugin/lib' / name
+            shutil.copyfile(source, self.source / 'plugin/lib' / name)
         # The updater accepts explicitly reviewed source, not mutable git HEAD.
         self.updated_source = b'// Synthetic reviewed update; no app execution.\n' + FIXTURE.read_bytes()
         (self.source / 'plugin/lib/onebot-policy-adapter.js').write_bytes(self.updated_source)

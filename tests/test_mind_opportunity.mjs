@@ -13,7 +13,8 @@ const names = ['native opportunity follows only queue-owned explicit review',
   'native unknown opportunity never creates an automatic successor',
   'native silent opportunity can use same-agent Bili primitives without QQ speech',
   'native autonomous file permission stays member outside the exact trusted administrator route',
-  'native foreign autonomous owner is refused before any role, pin or followup']
+  'native foreign autonomous owner is refused before any role, pin or followup',
+  'native primary cadence bounds eight hours and schedules the omitted next review without speech']
 
 // The existing native host executes the actual upstream source under inert SDK,
 // transport and subprocess boundaries. Keep VM flags out of the normal runner.
@@ -66,6 +67,12 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'character/syn
     const h = await nativeHost(plugin, directory)
     const { createObservationPump } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-observation-queue.js')).href)
     let now = Date.now()
+    h.bridge.lanyaPolicy.now = () => now
+    h.bridge.lanyaPolicy.runtimeCapabilities = async (scope, owner) => ({
+      schema: 'dsh-runtime-capabilities/v1', read_only: true, conversation_key: scope,
+      owner: { workspace_key: owner.workspace_key, agent_key: owner.agent_key }, tools: { entertainment: {
+        primary_identity_valid: true, primary_internal_leisure: scope === 'private:101',
+        cadence: { valid: true, configured_opportunity_min: 3 } } } })
     const inbox = path.join(data, 'decision-inbox')
     h.bridge.lanyaPolicy.pump = createObservationPump({ directory: inbox,
       dispatch: event => h.bridge.lanyaPolicy.dispatchObservation(event),
@@ -91,11 +98,12 @@ with mock.patch.object(mind.time,'time',return_value=int(sys.argv[2])/1000), moc
       assert.equal(h.followups.length, before + 1)
       h.start()
       if (beforeDecision) await beforeDecision()
-      await h.decide(verdict, extra)
+      const decision = await h.decide(verdict, extra)
       if (during) await during()
       if (outcome) h.bridge.lanyaPolicy.state(h.chat).active.outcomes.push(outcome)
       h.end()
       await draining
+      return decision
     }
     return { ...h, mind, events, settle, pump: h.bridge.lanyaPolicy.pump, advance: ms => { now += ms }, now: () => now, data, config }
   }
@@ -123,7 +131,8 @@ with mock.patch.object(mind.time,'time',return_value=int(sys.argv[2])/1000), moc
     h.mind()
     assert.equal(h.events().length, 2)
     const state = JSON.parse(fs.readFileSync(path.join(h.data, 'mind.json'), 'utf8')).decision_scopes['private:101']
-    assert.equal(state.pending, undefined)
+    assert.ok(state.pending)
+    assert.equal(state.next_review_at, h.now() + 180000)
     assert.equal(state.last_status, 'decided')
     assert.equal(h.calls.filter(c => /^(send_|upload_)/.test(c.action)).length, 0)
     assert.equal((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).observations.length, 0)
@@ -141,6 +150,23 @@ with mock.patch.object(mind.time,'time',return_value=int(sys.argv[2])/1000), moc
     assert.equal(h.events().length, 1)
     assert.equal(h.followups.length, 1)
     assert.equal(h.calls.filter(c => /^(send_|upload_)/.test(c.action)).length, 0)
+  })
+
+  test(names[5], async t => {
+    const h = await setup(t)
+    h.mind(); await h.pump.start({ poll: false })
+    const first = await h.settle({ next_review_at: h.now() + 8 * 3600000 })
+    assert.equal(first.next_review_at, h.now() + 180000)
+    assert.equal(first.requested_next_review_at, h.now() + 8 * 3600000)
+    assert.equal(first.next_review_adjusted, true)
+    h.mind(); h.advance(180000)
+    const second = await h.settle({})
+    assert.equal(second.requested_next_review_at, null)
+    assert.equal(second.next_review_at, h.now() + 180000)
+    assert.equal(second.next_review_adjusted, true)
+    assert.equal(h.events().length, 2)
+    assert.equal(h.followups.length, 2)
+    assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
   })
 
   test(names[2], async t => {
@@ -190,7 +216,8 @@ with mock.patch.object(mind.time,'time',return_value=int(sys.argv[2])/1000), moc
     assert.equal(h.calls.filter(c => /^(send_|upload_)/.test(c.action)).length, 0)
     const state = JSON.parse(fs.readFileSync(path.join(h.data, 'mind.json'), 'utf8')).decision_scopes['private:101']
     assert.equal(state.last_status, 'decided')
-    assert.equal(state.pending, undefined)
+    assert.ok(state.pending)
+    assert.equal(state.next_review_at, h.now() + 180000)
   })
 
   test(names[3], async t => {

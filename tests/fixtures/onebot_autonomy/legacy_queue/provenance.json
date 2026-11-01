@@ -1,0 +1,9 @@
+{
+  "origin": "https://github.com/bamboosir1109/dsh-lanya",
+  "commit": "b512dcf8764f6a14bada0838cab229e01f758566",
+  "source": "plugin/lib/observation-queue.js",
+  "sha256": "2e35c703c7b1edc2bb3d0f107a9c65976d1a8f8d601b470340557fe8d14e1dce",
+  "modifications": "none",
+  "purpose": "Historical v1 autonomy dependency fixture, not current runtime",
+  "license": "MIT; repository LICENSE copied alongside"
+}

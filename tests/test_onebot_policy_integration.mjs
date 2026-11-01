@@ -85,6 +85,122 @@ async function setup(t) {
   return { dir, plugin, stateFile, calls, logs, tools, prompts, bridge, deps, receive, start, exec, decide, assistant, end }
 }
 
+async function cadenceFixture(h) {
+  let clock = Date.now(), minutes = 3
+  const { createDecisionPolicy } = await import(pathToFileURL(path.join(h.plugin, 'lib/lanya-decision-policy.js')).href)
+  h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: h.stateFile, now: () => clock })
+  h.bridge.lanyaPolicy.now = () => clock
+  h.bridge.lanyaPolicy.runtimeCapabilities = async (scope, owner) => ({
+    schema: 'dsh-runtime-capabilities/v1', read_only: true, conversation_key: scope,
+    owner: { workspace_key: owner.workspace_key, agent_key: owner.agent_key },
+    tools: { entertainment: { primary_identity_valid: true, primary_internal_leisure: scope === 'private:101',
+      cadence: { valid: true, configured_opportunity_min: minutes } } } })
+  return { now: () => clock, advance: ms => { clock += ms }, minutes: value => { minutes = value } }
+}
+
+async function opportunity(h, change = {}) {
+  const scope = change.scope || 'private:101'
+  const before = h.bridge.chats.get(scope)?.messages.length || 0
+  const completion = h.bridge.dispatchObservation({ version: 1, event_id: 'obs:cadence-' + ++sequence,
+    scope, kind: 'activity.opportunity', producer: 'mind', created_at: h.bridge.lanyaPolicy.now(),
+    workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation',
+    control_allowed: false, payload: {}, ...change })
+  await waitUntil(() => (h.bridge.chats.get(scope)?.messages.length || 0) === before + 1, 'cadence-bound observation')
+  const chat = h.bridge.chats.get(scope), turn = h.start(chat)
+  return { chat, completion, end: () => h.end(chat, turn) }
+}
+
+test('primary autonomous reviews cap eight hours and fill omission using one trusted bound cadence', async t => {
+  const h = await setup(t), clock = await cadenceFixture(h)
+  // Primary identity comes from the helper, not the allowlist's first element.
+  h.deps.policy.adminUsers = ['303', '101']
+  for (const requested of [clock.now() + 8 * 3600_000, undefined, clock.now() + 60_000]) {
+    const current = await opportunity(h, { payload: { opportunityMin: 60, primary_internal_leisure: false } })
+    const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
+    const accepted = requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000)
+    assert.equal(result.accepted, true)
+    assert.equal(result.next_review_at, accepted)
+    assert.equal(result.requested_next_review_at, requested ?? null)
+    assert.equal(result.next_review_adjusted, accepted !== (requested ?? null))
+    await current.end()
+    assert.equal((await current.completion).next_review_at, accepted)
+  }
+  assert.equal(h.calls.length, 0)
+})
+
+test('ordinary live group other-kind producer and nonprimary admin retain their explicit review', async t => {
+  const h = await setup(t), clock = await cadenceFixture(h), future = clock.now() + 8 * 3600_000
+  h.deps.policy.adminUsers = ['303', '101']
+  const live = await h.receive(), turn = h.start(live)
+  const original = await h.decide(live, 'idle', { next_review_at: future })
+  assert.equal(original.next_review_at, future)
+  assert.equal(original.next_review_adjusted, undefined)
+  await h.end(live, turn)
+  for (const change of [{ scope: 'group:202' }, { scope: 'private:303' },
+    { kind: 'reminder.due' }, { producer: 'observer-repair' }]) {
+    const current = await opportunity(h, change)
+    const result = await h.decide(current.chat, 'idle', { next_review_at: future })
+    assert.equal(result.next_review_at, future)
+    assert.equal(result.next_review_adjusted, undefined)
+    await current.end(); await current.completion
+  }
+  assert.equal(h.calls.length, 0)
+})
+
+test('autonomous cadence belongs to the queued turn while later configurations and scopes change', async t => {
+  const h = await setup(t), clock = await cadenceFixture(h)
+  const first = await opportunity(h)
+  clock.minutes(5); clock.advance(20_000)
+  const result = await h.decide(first.chat, 'idle')
+  assert.equal(result.next_review_at, clock.now() + 180_000)
+  assert.equal(result.autonomous_cadence_min, 3)
+  await first.end(); await first.completion
+  const second = await opportunity(h, { producer: 'main-review' })
+  const next = await h.decide(second.chat, 'idle')
+  assert.equal(next.next_review_at, clock.now() + 300_000)
+  await second.end(); await second.completion
+  assert.equal(h.calls.length, 0)
+})
+
+test('invalid cadence identity or helper owner refuses autonomous dispatch without a model or send', async t => {
+  for (const defect of ['cadence', 'cadence-string', 'cadence-nan', 'cadence-range', 'identity', 'owner']) {
+    const h = await setup(t); await cadenceFixture(h)
+    const fresh = h.bridge.lanyaPolicy.runtimeCapabilities
+    h.bridge.lanyaPolicy.runtimeCapabilities = async (...args) => {
+      const value = await fresh(...args)
+      if (defect === 'cadence') value.tools.entertainment.cadence.valid = false
+      if (defect === 'cadence-string') value.tools.entertainment.cadence.configured_opportunity_min = '3'
+      if (defect === 'cadence-nan') value.tools.entertainment.cadence.configured_opportunity_min = Number.NaN
+      if (defect === 'cadence-range') value.tools.entertainment.cadence.configured_opportunity_min = 61
+      if (defect === 'identity') value.tools.entertainment.primary_identity_valid = false
+      if (defect === 'owner') value.owner.agent_key = 'foreign-fixture'
+      return value
+    }
+    await assert.rejects(h.bridge.dispatchObservation({ version: 1, event_id: 'obs:bad-' + defect,
+      scope: 'private:101', kind: 'activity.opportunity', producer: 'mind', created_at: Date.now(),
+      workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation',
+      control_allowed: false, payload: { valid: true, opportunityMin: 3 } }), /unavailable|Invalid scoped helper owner/)
+    assert.equal(h.bridge.chats.size, 0)
+    assert.equal(h.calls.length, 0)
+  }
+})
+
+test('already persisted autonomous decisions retain old future reviews without reading a new cadence', async t => {
+  const h = await setup(t), clock = await cadenceFixture(h), future = clock.now() + 8 * 3600_000
+  const event = { version: 1, event_id: 'obs:persisted-prior', scope: 'private:101', kind: 'activity.opportunity',
+    producer: 'mind', created_at: clock.now(), workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset',
+    origin: 'observation', control_allowed: false, payload: {} }
+  const pin = await h.bridge.lanyaPolicy.policy.recordObservation({ scope: event.scope, eventId: event.event_id,
+    kind: event.kind, producer: event.producer, createdAt: event.created_at })
+  await h.bridge.lanyaPolicy.policy.decide({ scope: event.scope, messageId: pin.messageId,
+    expectedRevision: pin.revision, verdict: 'idle', nextReviewAt: future })
+  h.bridge.lanyaPolicy.runtimeCapabilities = async () => { throw new Error('must not read new cadence for settled evidence') }
+  const outcome = await h.bridge.dispatchObservation(event)
+  assert.equal(outcome.next_review_at, future)
+  assert.equal(outcome.status, 'decided')
+  assert.equal(h.bridge.chats.size, 0)
+})
+
 test('patched bridge registers exclusive qq_decide and starts with no speech permit', async t => {
   const h = await setup(t)
   assert.equal(h.tools.get('qq_decide').isConcurrencySafe(), false)
@@ -440,6 +556,8 @@ test('ordinary QQ and main-review share one agent and refresh its actual owner-b
   const projectConfig = path.join(runtime, 'config', 'project.json')
   const configuration = { dataDirName: 'FixtureRole', android: { serial: 'emulator-5556' }, mind: { opportunityMin: 3 } }
   fs.writeFileSync(projectConfig, JSON.stringify(configuration))
+  fs.mkdirSync(path.join(h.dir, 'FixtureRole'))
+  fs.writeFileSync(path.join(h.dir, 'FixtureRole', 'lanya-config.json'), JSON.stringify({ adminQQ: ['101'] }))
   h.bridge.lanyaPolicy.runtimeCapabilities = (scope, owner) => h.bridge.lanyaPolicy.readRuntimeCapabilities(scope, owner)
   const chat = await h.receive({ text: 'what tools are actually available?' })
   const agent = chat.agent
