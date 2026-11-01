@@ -11,6 +11,8 @@ const PANEL = fileURLToPath(new URL('../panel/panel.html', import.meta.url))
 function panelFunction(source, name) {
   const match = new RegExp('(?:async )?function ' + name + '\\(').exec(source)
   assert.ok(match, 'Actual panel function exists: ' + name)
+  const lineEnd = source.indexOf('\n', match.index)
+  if(source.slice(match.index, lineEnd).trimEnd().endsWith('}')) return source.slice(match.index, lineEnd)
   const end = source.indexOf('\n}', match.index)
   assert.ok(end > match.index, 'Top-level function boundary exists: ' + name)
   return source.slice(match.index, end + 2)
@@ -29,9 +31,9 @@ function response(data, status = 200) {
     async text() { return JSON.stringify(data) } }
 }
 
-function element() {
+function element(tag = 'div') {
   const classes = new Set(), listeners = new Map()
-  const node = { style: {}, dataset: {}, value: '', textContent: '',
+  const node = { style: {}, dataset: {}, value: '', textContent: '', tagName: String(tag).toUpperCase(),
     hidden: false, disabled: false, checked: false, children: [],
     classList: { add(...names) { names.forEach(name => classes.add(name)) },
       remove(...names) { names.forEach(name => classes.delete(name)) },
@@ -42,13 +44,17 @@ function element() {
         return on
       } },
     addEventListener(name, callback) { listeners.set(name, callback) },
-    appendChild(child) { this.children.push(child); return child },
+    appendChild(child) { this.children.push(child); child.parentElement = child.parentNode = this; return child },
+    insertBefore(child, before) { const i = this.children.indexOf(before); if(i < 0) return this.appendChild(child); this.children.splice(i, 0, child); child.parentElement = child.parentNode = this; return child },
+    remove() { if(this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this) },
     querySelector() { return null }, querySelectorAll() { return [] },
     setAttribute(name, value) { this[name] = value },
     removeAttribute(name) { delete this[name] },
     listeners }
   let html = ''
   Object.defineProperty(node, 'innerHTML', { get() { return html }, set(value) { html = value; this.children = []; this.textContent = '' } })
+  Object.defineProperty(node, 'className', { get() { return [...classes].join(' ') }, set(value) { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach(name => classes.add(name)) } })
+  Object.defineProperty(node, 'firstChild', { get() { return this.children[0] || null } })
   return node
 }
 
@@ -71,7 +77,8 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
     autonomySettingsRevision: null, budgetSettingsRevision: null,
     autonomySettingsEpoch: 0, autonomySettingsSaving: false,
     budgetSettingsEpoch: 0, budgetSettingsSaving: false,
-    searchOn: false, selected: {}, workSel: {}, currentDir: 'diary', currentWorkDir: 'made',
+    searchOn: false, selected: {}, workSel: {}, currentDir: 'diary', currentWorkDir: 'made', FILE_LIMIT: 1000,
+    memeSel: null, memeMutationPending: false, memeCur: 0, memeShown: 0, MEME_PAGE: 120, memeData: [],
     console: { log() {}, warn() {}, error() {} },
     $: node, setText(id, value) { node(id).textContent = value },
     setHtml(id, value) { node(id).innerHTML = value },
@@ -946,4 +953,163 @@ test('Bili page uses current main-agent records and removes obsolete archives an
   assert.match(view, /startBiliLogin/)
   assert.doesNotMatch(view, /id="(?:biliDuty|biliSeen|biliLog)"|doOneRun|deleteOnBili|deleteBiliRecord|bili\/onerun/)
   assert.doesNotMatch(source, /function (?:runBiliNow|doOneRun|deleteOnBili|deleteBiliRecord|verifyComment|loadBiliDuty|saveBiliDuty)\(/)
+})
+
+function loadCalendar(h) {
+  const start = h.source.indexOf('const GROUPS = [')
+  h.run(h.source.slice(start, h.source.indexOf('\n];', start) + 3))
+  h.load('groupOf')
+}
+
+test('memory groups use Beijing calendar day week and month across midnight rather than rolling hours', () => {
+  const h = harness({ now: Date.parse('2026-11-02T00:09:00+08:00') })
+  loadCalendar(h)
+  const group = date => h.context.groupOf(Date.parse(date) / 1000).key
+  assert.equal(group('2026-11-02T00:01:00+08:00'), 'today')
+  assert.equal(group('2026-11-01T21:17:00+08:00'), 'month')
+  assert.equal(group('2026-10-31T23:59:00+08:00'), 'past')
+  assert.equal(group('2026-11-03T00:01:00+08:00'), 'future')
+  assert.equal(h.context.groupOf(NaN).key, 'unknown')
+  h.setNow(Date.parse('2027-01-01T12:00:00+08:00'))
+  assert.equal(group('2026-12-31T19:00:00+08:00'), 'week')
+})
+
+test('real file pagination appends beyond sixty without replacing expanded rows or selection', () => {
+  const h = harness({ functions: ['appendPlainRow', 'renderFileRows', 'appendFileRows', 'updateBulk', 'fmtSize', 'fmtTime'],
+    extra: { FILE_PAGE: 60, fileCache: [], fileShown: 0, currentDir: 'notes', openFile() {}, deleteFile() {} } })
+  loadCalendar(h)
+  h.context.fileCache = Array.from({ length: 110 }, (_, index) => ({ name: index === 0 ? '<readable & literal>.md' : 'note-' + index + '.md', size: 5, mtime: Date.now() / 1000 }))
+  h.context.renderFileRows('notes')
+  const list = h.node('fileList'), first = Object.values(list.fileGroups).find(group => group.shown).wrap.children[0]
+  const firstIdentity = first
+  first.classList.add('open')
+  first.children.find(node => node.className === 'fchk').onchange({ target: { checked: true } })
+  const expansion = element(); expansion.textContent = 'Preserved expanded content'; first.appendChild(expansion)
+  assert.equal(h.context.fileShown, 60)
+  assert.match(treeText(first), /<readable & literal>\.md/)
+  list.fileMoreButton.onclick()
+  assert.equal(h.context.fileShown, 110)
+  assert.equal(list.fileMoreButton, null)
+  assert.equal(Object.values(list.fileGroups).find(group => group.shown).wrap.children[0], firstIdentity)
+  assert.equal(h.context.selected['<readable & literal>.md'], true)
+  assert.equal(first.classList.contains('open'), true)
+  assert.match(treeText(first), /Preserved expanded content/)
+  assert.equal(Object.values(list.fileGroups).reduce((count, group) => count + group.shown, 0), 110)
+  assert.equal(h.calls.length, 0)
+})
+
+test('file loading requests bounded metadata beyond the first sixty instead of an incomplete preview cache', async () => {
+  const calls = []
+  const h = harness({ functions: ['loadFiles'], extra: { fileLoadGeneration: 0, FILE_LIMIT: 1000,
+    fileCache: [], updateBulk() {}, renderFileRows() {}, api: async path => { calls.push(path); return { ok: true, files: [] } } } })
+  await h.context.loadFiles('diary')
+  assert.deepEqual(calls, ['/files?dir=diary&preview=0&limit=1000'])
+})
+
+const MEME_FUNCTIONS = ['memeItems', 'memeList', 'appendMemes', 'selectMeme', 'updateMemeSelection', 'moveSelectedMeme', 'editTags', 'moveMeme', 'deleteMeme']
+test('real meme card selects the exact physical item and enables page tags with movement restricted to collected images', () => {
+  const items = [{ key: 'first', source: 'plugin', tag: 'physical-a', file: 'same.png' },
+    { key: 'second', source: 'stolen', tag: 'physical-b', file: 'same.png' }]
+  const h = harness({ functions: MEME_FUNCTIONS, extra: { memeData: [{ source: 'merged', tag: 'display-alias', count: 2, items }] } })
+  h.context.document.querySelectorAll = selector => descendants(h.node('memeGrid')).filter(node => selector === '.meme-select' ? node.className === 'meme-select' : selector === '.meme-delete' ? node.classList.contains('meme-delete') : false)
+  h.context.appendMemes()
+  const cards = h.node('memeGrid').children
+  assert.equal(cards.length, 2)
+  const button = cards[0].children[0]
+  assert.equal(button.tagName, 'BUTTON')
+  assert.match(button.children[0].src, /\/plugin\/physical-a\/same\.png$/)
+  button.onclick()
+  assert.equal(h.context.memeSel.key, 'first')
+  assert.equal(h.node('memeTagSave').disabled, false)
+  assert.equal(h.node('memeMove').disabled, true)
+  cards[1].children[0].onclick()
+  assert.equal(h.context.memeSel.key, 'second')
+  assert.equal(h.node('memeMove').disabled, false)
+  assert.equal(button['aria-pressed'], 'false')
+  assert.equal(cards[1].children[0]['aria-pressed'], 'true')
+  assert.equal(h.calls.length, 0)
+})
+
+test('meme tag save preserves the selected physical tuple and concurrent clicks submit only one mutation', async () => {
+  const waiting = deferred(), requests = []
+  let reloads = 0
+  const h = harness({ functions: MEME_FUNCTIONS, extra: { loadMemes: async () => { reloads++ },
+    api: async (...args) => { requests.push(args); return waiting.promise } } })
+  h.context.selectMeme({ key: 'selected', source: 'stolen', tag: 'physical', file: 'same.png' })
+  h.node('tagInput').value = 'friendly,calm'
+  const save = h.context.editTags()
+  await h.context.editTags()
+  assert.equal(requests.length, 1)
+  assert.deepEqual(JSON.parse(requests[0][1].body), { source: 'stolen', tag: 'physical', file: 'same.png', tags: ['friendly', 'calm'] })
+  waiting.resolve({ ok: true, tags: ['friendly', 'calm'] }); await save
+  assert.equal(reloads, 1)
+  assert.equal(h.context.memeMutationPending, false)
+})
+
+test('new meme items keep same-name files separate and refuse ambiguous legacy merged metadata', () => {
+  const h = harness({ functions: ['memeItems'] })
+  assert.equal(h.context.memeItems({ source: 'merged', tag: 'alias', files: ['same.png'], refs: { 'same.png': 'plugin' } }).length, 0)
+  const group = { source: 'merged', tag: 'alias', items: [
+    { key: 'one', source: 'plugin', tag: 'first', file: 'same.png' },
+    { key: 'two', source: 'stolen', tag: 'second', file: 'same.png' }] }
+  assert.equal(h.context.memeItems(group).length, 2)
+})
+
+test('picture review uses confirmed main-agent observation receipt and makes no claim of independent finished classification', async () => {
+  const requests = []
+  const h = harness({ functions: ['loadMemeConfig', 'startClassify'], extra: { api: async (...args) => {
+    requests.push(args)
+    if(args[0] === '/memes/config') return { ok: true, config: { maxPerRun: 12 },
+      behavior: { mode: 'unified', managed_by: 'main_agent', collection: 'existing-files-only' } }
+    return { ok: true, managed_by: 'main_agent', queued: true }
+  } } })
+  await h.context.loadMemeConfig(); await h.context.startClassify()
+  assert.equal(h.node('memeReview').disabled, false)
+  assert.match(h.node('classifyOut').textContent, /观察已排队.*主 agent 决定/)
+  assert.doesNotMatch(h.node('classifyOut').textContent, /分类完成|已经开始在后台归类|500/)
+  assert.equal(requests.length, 2)
+})
+
+test('picture settings reject fractional and out-of-range batches before any mutation', async () => {
+  for (const value of ['1.5', '21', '0', '', 'NaN']) {
+    let calls = 0
+    const h = harness({ functions: ['saveMemeConfig'], extra: { api() { calls++; throw Error('must not call') } } })
+    h.node('mcfgSave').disabled = false; h.node('mcfgMax').value = value
+    await h.context.saveMemeConfig()
+    assert.equal(calls, 0)
+  }
+})
+
+test('NapCat refresh loads real profile and waits for its four startup readers', async () => {
+  const waiting = deferred(); let profiles = 0
+  const h = harness({ functions: ['loadNapcat'], extra: { loadNapcat2: () => waiting.promise,
+    loadQQFriends: async () => {}, loadQQGroups: async () => {}, loadNapcatProfile: async () => { profiles++ },
+    api: async () => ({ ok: true, napcat: { found: false } }) } })
+  let finished = false
+  const loading = h.context.loadNapcat().then(() => { finished = true })
+  await Promise.resolve(); assert.equal(profiles, 1); assert.equal(finished, false)
+  waiting.resolve(); await loading; assert.equal(finished, true)
+})
+
+test('current schedule omits only verified inactive retired tasks and treats reminder and QQ names as text', async () => {
+  const h = harness({ functions: ['loadSchedule', 'loadQQFriends', 'loadQQGroups', 'appendPlainRow', 'plainMessage'], extra: { api: async path =>
+    path === '/schedule' ? { ok: true, mode: 'unified', reminders: [{ i: 0, text: '<img onerror=unsafe()>' }], tasks: [
+      { name: 'inactive', retired: true, inactive_verified: true }, { name: 'unknown', retired: true },
+      { name: 'running', retired: true, inactive_verified: false }] }
+      : path === '/qq/friends' ? { ok: true, friends: [{ nickname: '<script>nickname</script>' }] }
+      : { ok: true, groups: [{ group_name: '<img src=untrusted>' }] } } })
+  await h.context.loadSchedule(); await h.context.loadQQFriends(); await h.context.loadQQGroups()
+  assert.equal(h.node('taskBody').children.length, 2)
+  assert.doesNotMatch(treeText(h.node('taskBody')), /inactive/)
+  assert.match(treeText(h.node('remBody')), /<img onerror=unsafe\(\)>/)
+  assert.match(treeText(h.node('qqFriendList')), /<script>nickname<\/script>/)
+  assert.match(treeText(h.node('qqGroupList')), /<img src=untrusted>/)
+  for (const node of descendants(h.node('remBody')).concat(descendants(h.node('qqFriendList')), descendants(h.node('qqGroupList')))) assert.doesNotMatch(node.innerHTML, /unsafe|nickname|untrusted/)
+})
+
+test('visible controls expose current capabilities without archive browsers or an online pull pretending to deploy', () => {
+  const source = readFileSync(PANEL, 'utf8')
+  assert.doesNotMatch(source, /doUpdate|api\('\/update'|data-ext="\.archive"|memTrimSeen|memCorpusLoad|500 多张|能看、能审批|没它就没法斗图|文字会原样发出去/)
+  assert.match(source, /运行部署和实际加载需要分别核验/)
+  assert.match(source, /主 agent.*静默状态和发送许可/)
 })

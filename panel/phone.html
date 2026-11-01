@@ -65,13 +65,13 @@ button:disabled{opacity:.4;cursor:not-allowed}.row{display:flex;flex-wrap:wrap;g
 'use strict';
 const el = id => document.getElementById(id);
 const image = el('shot');
-const state = {serial:'', seq:null, frame:null, candidate:null, busy:false, epoch:0, expiresAt:0, reading:false};
+const state = {serial:'', seq:null, frame:null, candidate:null, busy:false, epoch:0, expiresAt:0, reading:false, captureReady:false, availabilityError:false};
 let pointer = null;
 
 function controls(){
   const usable = Boolean(state.frame) && !state.busy && Date.now() < state.expiresAt;
   document.querySelectorAll('[data-needs-view]').forEach(button => { button.disabled = !usable; });
-  el('capture').disabled = !state.serial || state.busy;
+  el('capture').disabled = !state.serial || !state.captureReady || state.busy;
   return usable;
 }
 function clearFrame(message){
@@ -83,7 +83,7 @@ function clearFrame(message){
   controls();
 }
 function fail(message){
-  state.epoch++; state.busy = false; state.seq = null;
+  state.epoch++; state.busy = false; state.seq = null; state.captureReady = false;
   clearFrame('离线、失败或截图已失效');
   el('status').textContent = '不可操作';
   el('error').textContent = message; el('error').hidden = false;
@@ -104,12 +104,20 @@ async function request(path, options){
     const response = await fetch('/api/android/' + path, {cache:'no-store', ...options, signal:controller.signal});
     let data;
     try { data = await response.json(); } catch (_) { throw new Error('Android 接口没有返回 JSON，请从控制台服务打开此页'); }
-    if (!response.ok) throw new Error(data.error || data.code || ('HTTP ' + response.status));
+    if (!response.ok) {
+      const error = new Error(androidError(data, 'HTTP ' + response.status)); error.code = data.code;
+      throw error;
+    }
     return data;
   } catch (error) {
     if (error.name === 'AbortError') throw new Error('Android 接口超时，请重新截图');
     throw error;
   } finally { clearTimeout(timeout); }
+}
+function androidError(data, fallback='Android 接口暂不可用'){
+  if (data.code === 'worker_offline') return '设备服务未在线。启动 Android worker 后刷新状态。';
+  if (data.code === 'device_offline') return 'Android 设备未在线。请先启动设备或模拟器。';
+  return data.error || data.code || fallback;
 }
 function display(data){
   if (data.serial !== state.serial || data.seq !== state.seq ||
@@ -147,6 +155,7 @@ async function refreshStatus(){
   if (state.reading) return;
   state.reading = true;
   const ticket = state.epoch;
+  let mayCapture = false;
   try {
     const data = await request('status' + (state.serial ? '?serial=' + encodeURIComponent(state.serial) : ''));
     if (ticket !== state.epoch) return;
@@ -156,6 +165,12 @@ async function refreshStatus(){
     }
     if (data.serial !== state.serial) throw new Error('设备 serial 已改变，请重新打开页面');
     showClaimWait(data.claim_wait);
+    mayCapture = !data.claim_wait && ['capture_required','stale_view','invalid_frame'].includes(data.code)
+      && (!state.busy || (state.seq !== null && data.seq === state.seq));
+    state.captureReady = !data.claim_wait && data.ok === true || mayCapture;
+    if (state.captureReady && state.availabilityError) {
+      state.availabilityError = false; el('error').textContent = ''; el('error').hidden = true;
+    }
     if (state.seq === null && data.ok === true) {
       el('status').textContent = '点击「截取屏幕」获取新的设备画面'; controls(); return;
     }
@@ -167,17 +182,25 @@ async function refreshStatus(){
     if (data.code === 'capture_required' && state.seq === null) {
       clearFrame('尚未采集设备画面'); el('status').textContent = '点击「截取屏幕」开始'; return;
     }
-    throw new Error(data.error || data.code || 'Android 设备不可用');
+    const error = new Error(['stale_view','invalid_frame'].includes(data.code)
+      ? '截图已失效或无法验证，请重新截取屏幕。' : androidError(data));
+    error.code = data.code; throw error;
   } catch (error) {
-    if (ticket === state.epoch) fail(String(error.message || error));
+    if (ticket === state.epoch) {
+      state.availabilityError = ['worker_offline','device_offline'].includes(error.code);
+      fail(String(error.message || error));
+      if (mayCapture) { state.captureReady = true; controls(); }
+    }
   } finally { state.reading = false; }
 }
 async function submit(action, fields={}){
   if (state.busy || !state.serial) return;
+  if (action === 'shot' && !state.captureReady) return;
   if (action !== 'shot' && !controls()) { fail('先获取新的截图，再操作'); return; }
   const job = {...fields, action, serial:state.serial};
   if (action !== 'shot') job.expected_shot_id = state.frame.shot_id;
   state.epoch++; const ticket = state.epoch;
+  state.availabilityError = false;
   state.busy = true; state.seq = null;
   clearFrame('等待设备处理请求'); el('status').textContent = '正在提交请求';
   try {

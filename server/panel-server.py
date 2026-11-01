@@ -673,7 +673,7 @@ def tool_status(item):
             version = ""
         except Exception:
             version = ""
-    running = False
+    running = None
     if item.get("port"):
         running = port_open(item["port"])
     elif item.get("proc"):
@@ -690,8 +690,9 @@ def tool_status(item):
         "kind": item.get("kind", ""),
         "note": item.get("note", ""),
         "path": found or "",
-        "installed": bool(found),
+        "installed": bool(found) or running is True,
         "running": running,
+        "update_supported": item["key"] in UPSTREAM,
         "port": item.get("port"),
     }
 
@@ -700,7 +701,6 @@ def tool_status(item):
 # 每个工具的上游仓库，用来查最新版本。查不到不算错——离线时本来就不通。
 UPSTREAM = {
     "napcat": ("NapNeko/NapCatQQ", "NapCat"),
-    "dsh":    ("deepseek-ai/DeepSeek-Harness", "DeepSeek Harness"),
 }
 
 
@@ -1515,66 +1515,74 @@ def _onebot_token():
 def _extra_tags():
     try:
         with open(MEME_TAGS, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            value = json.load(fh)
+        return value if isinstance(value, dict) else {}
     except Exception:
         return {}
 
 
+def _meme_key(source, tag, name):
+    identity = json.dumps([source, tag, name], ensure_ascii=False, separators=(",", ":"))
+    return "item:v1:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def meme_behavior():
+    unified = decision_mode() != "legacy"
+    return {"mode": "unified" if unified else "legacy",
+            "collection": "existing-files-only" if unified else "group-history",
+            "managed_by": "main_agent" if unified else "independent_worker",
+            "batch_max": 20 if unified else None,
+            "independent_classification": not unified}
+
+
 def meme_groups_with_tags():
-    """把基础分组按多标签表展开：一张图挂在几个标签下就算几次。"""
+    """Display tags retain each image's exact physical source and directory."""
     base = meme_groups()
     extra = _extra_tags()
+    by_legacy_key = {}
+    for group in base:
+        group["items"] = []
+        for name in group["files"]:
+            item = {"key": _meme_key(group["source"], group["tag"], name),
+                    "source": group["source"], "tag": group["tag"], "file": name}
+            group["items"].append(item)
+            for key in (name, group["tag"] + "/" + name):
+                by_legacy_key.setdefault(key, set()).add(item["key"])
     if not extra:
         return base
 
-    # 建立 "文件名 -> [额外标签]" 索引，key 用 标签/文件名 或裸文件名
-    by_name = {}
-    for k, tags in extra.items():
-        nm = k.split("/")[-1]
-        by_name.setdefault(nm, set()).update(tags or [])
-
-    groups = {}
-    for g in base:
-        r = groups.setdefault((g["source"], g["tag"]),
-                              {"source": g["source"], "name": g["name"],
-                               "tag": g["tag"], "count": 0, "files": []})
-        for f in g["files"]:
-            r["files"].append(f)
-            r["count"] += 1
-
-    # 再按额外标签建一份分组
-    for g in base:
-        for f in g["files"]:
-            for t in by_name.get(f, ()):
-                if t == g["tag"]:
-                    continue
-                r = groups.setdefault((g["source"], t),
-                                      {"source": g["source"], "name": g["name"],
-                                       "tag": t, "count": 0, "files": []})
-                r["files"].append(f)
-                r["count"] += 1
-
-    # 同名标签合并：官方包和收回来的都有 happy，分成两行看着乱，
-    # 合成一行「happy 14」才像能用的标签。
     merged = {}
-    for r in groups.values():
-        key = r["tag"]
-        m = merged.get(key)
-        if m is None:
-            m = merged[key] = {"source": "merged", "name": r["tag"], "tag": r["tag"],
-                               "count": 0, "files": [], "refs": {},
-                               "sources": [r["source"]]}
-        for f in r["files"]:
-            if f not in m["files"]:
-                m["files"].append(f)
-                m["refs"][f] = r["source"]
-        if r["source"] not in m["sources"]:
-            m["sources"].append(r["source"])
+    for group in base:
+        for item in group["items"]:
+            keys = (item["file"], item["tag"] + "/" + item["file"])
+            # An exact key, including an empty list, overrides legacy aliases.
+            tags = extra.get(item["key"])
+            if item["key"] not in extra:
+                tags = []
+                for key in keys:
+                    old = extra.get(key)
+                    if by_legacy_key.get(key) == {item["key"]} and isinstance(old, list):
+                        tags.extend(old)
+            labels = {item["tag"]}
+            if isinstance(tags, list):
+                labels.update(tag for tag in tags if isinstance(tag, str) and tag.strip())
+            for label in sorted(labels):
+                row = merged.setdefault(label, {"source": "merged", "name": label, "tag": label,
+                    "count": 0, "files": [], "refs": {}, "sources": [], "items": []})
+                if item["key"] not in {present["key"] for present in row["items"]}:
+                    row["items"].append(dict(item))
+                if item["source"] not in row["sources"]:
+                    row["sources"].append(item["source"])
     out = []
-    for m in merged.values():
-        m["files"] = sorted(set(m["files"]))
-        m["count"] = len(m["files"])
-        out.append(m)
+    for row in merged.values():
+        row["items"].sort(key=lambda item: (item["file"], item["source"], item["tag"]))
+        row["files"] = sorted({item["file"] for item in row["items"]})
+        for name in row["files"]:
+            matches = [item for item in row["items"] if item["file"] == name]
+            if len(matches) == 1:
+                row["refs"][name] = matches[0]["source"]
+        row["count"] = len(row["items"])
+        out.append(row)
     # 常用情绪排前面，别的按字数
     order = ["happy","sad","angry","speechless","cute","shy","surprise",
              "confused","refuse","pray","cheer","thanks","sleepy","lazy",
@@ -1594,29 +1602,33 @@ def meme_path(source, tag, name):
     if not source or not name:
         return None
     base = os.path.basename(str(name))
-    if base != str(name) or base.startswith("."):
+    if (base != str(name) or base.startswith(".") or "/" in base or "\\" in base or ":" in base
+            or not base.lower().endswith(IMG_EXT)):
         return None
     if source == "merged":
-        # 合并同名标签后 source 是 "merged"，真实文件分散在各个源里。
-        # 按文件名把所有源搜一遍。
-        for s0 in sources():
-            _k, _l, root, tagged0 = s0
-            cand = os.path.join(root, tag, base) if tagged0 else os.path.join(root, base)
-            if os.path.isfile(cand):
-                return cand
-        return None
+        # Old clients may use a display group; ambiguity never selects a file.
+        matches = [path for key, _label, _root, _tagged in sources() if key != "merged"
+                   if (path := meme_path(key, tag, base)) is not None]
+        return matches[0] if len(matches) == 1 else None
 
-    src = next((s for s in sources() if s[0] == source), None)
-    if not src:
+    matches = [s for s in sources() if s[0] == source]
+    if len(matches) != 1:
         return None
-    _key, _label, root, tagged = src
+    _key, _label, root, tagged = matches[0]
     if tagged:
         tagbase = os.path.basename(str(tag or ""))
-        if tagbase != str(tag or ""):
+        if (not tagbase or tagbase != str(tag or "") or tagbase.startswith(".")
+                or tagbase in SKIP_DIRS or "/" in tagbase or "\\" in tagbase or ":" in tagbase):
             return None
         full = os.path.join(root, tagbase, base)
     else:
         full = os.path.join(root, base)
+    try:
+        real_root = os.path.normcase(os.path.realpath(root))
+        if os.path.commonpath([real_root, os.path.normcase(os.path.realpath(full))]) != real_root:
+            return None
+    except (OSError, ValueError):
+        return None
     return full if os.path.isfile(full) else None
 
 
@@ -1633,12 +1645,29 @@ REMINDERS_ = os.path.join(LANYA_DIR_, "reminders.json")
 # 插件调度器已经接管的那些，在页面上标出来，免得用户以为重复的也需要留
 COVERED_BY_PLUGIN = {
     "DSH-Reminders": "插件每 30 秒查提醒",
-    "DSH-Lanya-Budget": "插件每 5 分钟算花销",
     "DSH-Lanya-Chats": "插件每 10 分钟导记录",
-    "DSH-Lanya-Steal": "插件每 10 分钟收表情",
-    "DSH-Lanya-Greet": "插件每 60 分钟问好",
+    "DSH-Lanya-Steal": "插件定期提交已有图片审阅机会",
+    "DSH-Lanya-Greet": "插件定期提交社交机会",
     "NapCat-DSH-Bridge": "插件每 10 分钟查 QQ",
 }
+_RETIRED_TASK_OWNERS = {
+    "DSH-Lanya-Life": "main_agent", "DSH-Lanya-Voice": "main_agent",
+    "DSH-Lanya-Mind": "main_agent", "DSH-Lanya-Supervisor": "plugin_supervisor",
+    "DSH-Lanya-Works": "panel_service_supervisor",
+    "DSH-Dafeiyu-Life": "main_agent", "DSH-Dafeiyu-Voice": "main_agent",
+    "DSH-Dafeiyu-Mind": "main_agent", "DSH-Dafeiyu-Supervisor": "plugin_supervisor",
+    "DSH-Dafeiyu-Works": "panel_service_supervisor",
+}
+
+
+def _scheduled_task_metadata(name, current_state, enabled_state, mode):
+    state = {"disabled": "disabled", "已禁用": "disabled", "running": "running",
+             "正在运行": "running", "ready": "ready", "就绪": "ready"}.get(current_state.casefold(), "unknown")
+    enabled = {"enabled": True, "已启用": True, "disabled": False, "已禁用": False}.get(enabled_state.casefold())
+    owner = _RETIRED_TASK_OWNERS.get(name) if mode == "unified" else None
+    return {"mode": mode, "task_state": state, "enabled": enabled,
+            "retired": owner is not None, "managed_by": owner,
+            "inactive_verified": state == "disabled" and enabled is False}
 
 
 def reminders_snapshot():
@@ -1687,7 +1716,11 @@ def scheduled_tasks():
         return []
     if len(rows) < 2:
         return []
-    seen = set()
+    try:
+        mode = decision_mode()
+    except Exception:
+        mode = "unavailable"
+    by_name = {}
     out = []
     for r in rows[1:]:
         if not r:
@@ -1699,13 +1732,20 @@ def scheduled_tasks():
         name = (r[1] if len(r) > 1 else "").strip()
         if name.startswith("\\"):
             name = name[1:]
-        if not name or name in seen:
+        if not name:
             continue
         if not (name.startswith("DSH-") or name.startswith("NapCat")):
             continue
-        seen.add(name)
-        st = (r[11] if len(r) > 11 else "").strip() or (r[4] if len(r) > 4 else "").strip()
-        out.append({
+        st = (r[3] if len(r) > 3 else "").strip()
+        enabled = (r[11] if len(r) > 11 else "").strip()
+        metadata = _scheduled_task_metadata(name, st, enabled, mode)
+        if name in by_name:
+            previous = by_name[name]
+            if any(previous[key] != metadata[key] for key in ("task_state", "enabled")):
+                previous.update(task_state="unknown", enabled=None, inactive_verified=False,
+                                status="状态变化中")
+            continue
+        row = {
             "name": name,
             "next": (r[2] if len(r) > 2 else "").strip(),
             "status": st,
@@ -1713,7 +1753,10 @@ def scheduled_tasks():
             "result": (r[6] if len(r) > 6 else "").strip(),
             "action": (r[8] if len(r) > 8 else "").strip()[:120],
             "plugin": COVERED_BY_PLUGIN.get(name, ""),
-        })
+            **metadata,
+        }
+        by_name[name] = row
+        out.append(row)
     out.sort(key=lambda x: x["name"])
     return out
 
@@ -1993,8 +2036,13 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"ok": False, "text": "", "error": str(e)})
         if path == "/api/schedule":
+            try:
+                mode = decision_mode()
+            except Exception:
+                mode = "unavailable"
             return self._json(200, {
                 "ok": True,
+                "mode": mode,
                 "reminders": reminders_snapshot(),
                 "tasks": scheduled_tasks(),
             })
@@ -2195,7 +2243,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/memes/config":
             try:
                 with open(MEMECFG, "r", encoding="utf-8") as fh:
-                    return self._json(200, {"ok": True, "config": json.load(fh)})
+                    return self._json(200, {"ok": True, "config": json.load(fh), "behavior": meme_behavior()})
             except Exception as e:
                 return self._json(200, {"ok": False, "config": {}, "error": str(e)})
 
@@ -2769,6 +2817,11 @@ class Handler(SimpleHTTPRequestHandler):
             cfg = body.get("config")
             if not isinstance(cfg, dict):
                 return self._json(400, {"ok": False, "error": "config must be an object"})
+            for key in ("stealEnabled", "autoClassify"):
+                if key in cfg and type(cfg[key]) is not bool:
+                    return self._json(400, {"ok": False, "error": key + " must be boolean"})
+            if "maxPerRun" in cfg and (type(cfg["maxPerRun"]) is not int or not 1 <= cfg["maxPerRun"] <= 20):
+                return self._json(400, {"ok": False, "error": "maxPerRun must be an integer from 1 to 20"})
             try:
                 with open(MEMECFG, "r", encoding="utf-8") as fh:
                     cur = json.load(fh)
@@ -2787,8 +2840,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/memes/classify":
-            # 触发按情绪归类。跑起来要几分钟到几十分钟（每张都要过一遍读图），
-            # 所以 detached 起一个后台进程，接口立刻返回。
+            if decision_mode() != "legacy":
+                try:
+                    from meme_observations import observe_existing_memes
+                    result = observe_existing_memes(limit=20)
+                    return self._json(200, dict(result, ok=True, managed_by="main_agent"))
+                except Exception:
+                    return self._json(503, {"ok": False, "error": "MemeReviewUnavailable"})
+            # An explicitly configured independent worker retains its own path.
             script = os.path.join(NAPCAT, "classify_emotion.py")
             if not os.path.isfile(script):
                 return self._json(404, {"ok": False, "error": "classifier missing"})
@@ -2809,16 +2868,14 @@ class Handler(SimpleHTTPRequestHandler):
             want = body.get("tags")
             if not isinstance(want, list):
                 return self._json(400, {"ok": False, "error": "tags must be a list"})
-            if not fname:
-                return self._json(400, {"ok": False, "error": "missing file"})
+            if src == "merged" or not meme_path(src, tag, fname):
+                return self._json(404, {"ok": False, "error": "exact meme file not found"})
             try:
                 cur = _extra_tags()
-                key = str(tag) + "/" + os.path.basename(fname)
+                key = _meme_key(src, tag, fname)
                 cleaned = [str(t).strip()[:24] for t in want if str(t).strip()][:6]
-                if cleaned:
-                    cur[key] = cleaned
-                else:
-                    cur.pop(key, None)
+                # Retain an empty exact entry to override any legacy alias.
+                cur[key] = cleaned
                 tmp = MEME_TAGS + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump(cur, fh, ensure_ascii=False, indent=1)
@@ -2845,8 +2902,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "bad tag"})
             dst_dir = os.path.join(LANYA_MEMES, "stolen", safe_tag)
             try:
+                real_root = os.path.normcase(os.path.realpath(os.path.join(LANYA_MEMES, "stolen")))
+                if (safe_tag in SKIP_DIRS or os.path.commonpath([
+                        real_root, os.path.normcase(os.path.realpath(dst_dir))]) != real_root):
+                    return self._json(400, {"ok": False, "error": "bad tag"})
+                destination = os.path.join(dst_dir, os.path.basename(full))
+                if os.path.lexists(destination):
+                    return self._json(409, {"ok": False, "error": "destination already exists"})
                 os.makedirs(dst_dir, exist_ok=True)
-                os.replace(full, os.path.join(dst_dir, os.path.basename(full)))
+                # On Windows rename refuses a target created after the check.
+                os.rename(full, destination)
                 return self._json(200, {"ok": True, "toTag": safe_tag})
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})

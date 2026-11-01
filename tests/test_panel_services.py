@@ -73,12 +73,17 @@ class PanelServiceTests(unittest.TestCase):
                 self.assertFalse(status["works"]["healthy"])
                 self.assertIsNone(status["works"]["count"])
 
-    def test_activity_ready_uses_http_health_rather_than_process_count(self):
+    def test_retired_activity_config_stays_hidden_and_service_uses_http_health(self):
         self.write(self.data / "activities.json", {"activities": [{"id": "fixture", "bound": "works"}]})
         values = self.services(); values["works"].update(status="unhealthy", healthy=False)
         with mock.patch.object(self.module, "panel_services", return_value=values):
-            activity = self.route("/api/activities")[1]["data"]["activities"][0]
-            self.assertFalse(activity["ready"])
+            data = self.route("/api/activities")[1]["data"]
+            self.assertEqual(data["activities"], [])
+            self.assertTrue(data["retired_controls"])
+            state = self.module.panel_state_snapshot()
+            works = next(row for row in state["components"] if row["tag"] == "works")
+            self.assertEqual(works["count"], 1)
+            self.assertFalse(works["service"]["healthy"])
 
 
 class WindowsStateReducerTests(unittest.TestCase):

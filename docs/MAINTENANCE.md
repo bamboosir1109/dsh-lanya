@@ -337,7 +337,7 @@ python -B scripts/patch_onebot_egress_activity.py --meme-dir $memePlugin --onebo
 
 `scripts/panel_activity.py` 只读验证当前 OneBot 映射、原生会话版本 4 header、工作区、preset、继承边界及调用／结果配对，输出白名单字段。默认读取 DSH home 下的 `media/onebot/chat-sessions.json`；自定义位置通过可信 project 配置 `panelRecords.dshHome`、`panelRecords.onebotMappingFile` 指定绝对路径。HTTP 参数不能挑选其他身份或会话。记录限最近七天及有界当前会话，压缩文件需要本机已有 zstandard；不扫描目录猜最新、不重放事件、不输出聊天原文、原始参数或凭证。公共评论的正文由专用白名单投影，私信正文与接收人不输出。
 
-`/api/bili` 的 `mainAgent` 与 `/api/live` 的 `recentActivity` 共享该读取器，旧值班记录仍独立。`mainAgent.recent_videos` 仅归并定向视频读取，不混入推荐候选或仅评论的目标；`replies` 展示评论尝试正文及接口状态，`accepted` 仅代表接口接受，公开可见性仍未核验，`unknown` 不当作发送成功。公共正文限 2000 字并标记截取，私信只给状态；通用活动接口不带回复正文。B 站页保留只读旧存档，不再提供旧值班编辑、手动娱乐检查或删除评论按钮；兼容 API 仍保留。`/api/works` 使用 `panel_record_files.py` 列出真实子目录入口；遇到读取上限明确表示列表不完整。嵌套作品通过受控相对 URL 打开，不传给仅支持平铺文件的旧删除入口。安装器已自动包含两个新 helper，更新服务程序时需一并复制，并核对 `/api/service-health` 的实际加载哈希；只复制 HTML 不会升级后台读取器。
+`/api/bili` 的 `mainAgent` 与 `/api/live` 的 `recentActivity` 共享该读取器，历史值班原件和兼容字段仍独立保留，不进入当前页面。`mainAgent.recent_videos` 仅归并定向视频读取，不混入推荐候选或仅评论的目标；`replies` 展示评论尝试正文及接口状态，`accepted` 仅代表接口接受，公开可见性仍未核验，`unknown` 不当作发送成功。公共正文限 2000 字并标记截取，私信只给状态；通用活动接口不带回复正文。B 站页只展示当前主 agent 的近七天记录，不提供历史存档入口、值班编辑、手动娱乐检查或删除评论按钮；兼容 API 仍保留。`/api/works` 使用 `panel_record_files.py` 列出真实子目录入口；内部浏览器资料、缓存、依赖及归档目录不作为作品展示，遇到读取上限明确表示列表不完整。作品归档原件继续留在本机，当前页面不展示归档标签。嵌套作品通过受控相对 URL 打开，不传给仅支持平铺文件的旧删除入口。安装器已自动包含两个新 helper，更新服务程序时需一并复制，并核对 `/api/service-health` 的实际加载哈希；只复制 HTML 不会升级后台读取器。
 
 ## 提交与隐私
 

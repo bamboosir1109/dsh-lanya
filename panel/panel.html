@@ -262,6 +262,10 @@ code{background:rgba(0,0,0,.4);border:1px solid var(--line);padding:1.5px 6px;bo
 .meme{position:relative;aspect-ratio:1;border-radius:11px;overflow:hidden;
   background:#080a0f;border:1px solid var(--line);transition:.15s}
 .meme img{width:100%;height:100%;object-fit:cover;display:block}
+.meme.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc)}
+.meme-select{display:block;width:100%;height:100%;padding:0;border:0;border-radius:0;background:transparent}
+.meme-select:hover{background:transparent;box-shadow:none}
+.meme-select:focus-visible{outline:3px solid var(--acc);outline-offset:-3px}
 .meme:hover{border-color:rgba(91,157,255,.5);transform:translateY(-2px);
   box-shadow:0 8px 22px -10px rgba(0,0,0,.8)}
 .meme .del{
@@ -422,8 +426,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>运行中的部件</h3>
     <p class="note">
-      灰点＝没在跑，绿点＝正常，黄点＝开了多个。
-      <b>右边的按钮可以直接启动或重启</b>——QQ 没开的时候就在这儿点。
+      主 agent 按调度与连接回执确认，服务按健康检查确认。
+      灰点表示未运行，黄点表示待核验或存在多个进程；右侧按部件提供检查或恢复操作。
     </p>
     <table>
       <thead><tr><th>部件</th><th>作用</th><th class="num">进程</th><th class="num">内存</th><th class="op"></th></tr></thead>
@@ -459,18 +463,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="out" id="recOut"></div>
   </div>
 
-  <div class="card">
-    <h3>在这个仓库上更新</h3>
-    <p class="note">
-      面板本身是从 GitHub 仓库 <code>dsh-lanya</code> 来的。点下面拉最新代码，
-      拉完刷新页面。<b>不会覆盖你的配置和她的数据。</b>
-    </p>
-    <div class="btnrow">
-      <button class="pri" onclick="doUpdate()">检查并更新</button>
-      <span class="dsc" id="updState" style="align-self:center"></span>
-    </div>
-    <div class="out" id="updOut"></div>
-  </div>
+  <div class="card"><h3>版本与维护</h3><p class="note">已安装程序的版本与仓库链接见上方插件列表。源码同步、运行部署和实际加载需要分别核验；刷新页面不会升级运行副本。</p></div>
 
   <div class="card">
     <h3>安装 / 更新</h3>
@@ -489,7 +482,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <div class="policy-item"><b>短而自然</b><p>默认简短直接，按内容说完。没有固定两行或总句数；步骤、解释需要时再展开。</p></div>
       <div class="policy-item"><b>是否开口由主 agent 判断</b><p>收到消息、冷场或自主机会都只是观察。可以回复，也可以保持安静。</p></div>
       <div class="policy-item"><b>静默持续有效</b><p>明确要求暂停后，等待当前会话的恢复指令；活动、表情和语音都不能绕过静默。</p></div>
-      <div class="policy-item"><b>表情与主动分享</b><p>合适时发真实图片。有值得分享的发现再开口，不逐步播报分数、操作或笔记路径。</p></div>
+      <div class="policy-item"><b>表情与主动分享</b><p>合适时发真实图片，可以自然闲聊或分享发现，不逐步播报分数、操作或笔记路径。</p></div>
     </div>
   </div>
   <div class="card">
@@ -541,31 +534,31 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="phead"><h1>表情包</h1><p>共 <b id="memeTotal">—</b> 张。点图右上角能删。</p></div>
 
   <div class="card">
-    <h3>行为开关</h3>
-    <p class="note">控制她能不能从群里收图、收了之后要不要自动判断和分类。改完立刻生效。</p>
+    <h3>图片审阅</h3>
+    <p class="note" id="memeBehaviorNote">正在核对当前图片审阅方式。</p>
     <div class="grid2">
       <div class="field">
-        <label>允许偷表情包</label>
+        <label>定期观察现有图片</label>
         <div class="two-in" style="padding-top:2px">
           <label class="sw"><input type="checkbox" id="mcfgSteal"><i></i></label>
-          <span>关掉之后一张都不收</span>
+          <span>供后续观察机会读取</span>
         </div>
       </div>
       <div class="field">
-        <label>自动判断 + 分类</label>
+        <label>允许提交图片审阅</label>
         <div class="two-in" style="padding-top:2px">
           <label class="sw"><input type="checkbox" id="mcfgClassify"><i></i></label>
-          <span>关掉就全收进「收回来的」不分类</span>
+          <span>交给主 agent 判断是否处理</span>
         </div>
       </div>
       <div class="field">
-        <label>每轮最多收几张</label>
-        <input type="number" id="mcfgMax" placeholder="12">
+        <label>每批候选图片（1–20）</label>
+        <input type="number" id="mcfgMax" min="1" max="20" placeholder="12">
       </div>
     </div>
     <div class="btnrow">
       <button onclick="loadMemeConfig()">重新读取</button>
-      <button class="pri" onclick="saveMemeConfig()">保存开关</button>
+      <button class="pri" id="mcfgSave" onclick="saveMemeConfig()" disabled>保存设置</button>
     </div>
     <div class="out" id="mcfgOut"></div>
   </div>
@@ -574,16 +567,16 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <div class="card">
     <h3>归类</h3>
     <p class="note">
-      点图选中它，然后：<b>左边填分类名点 ⇄ 移过去</b>；<b>右边填几个标签点「改标签」</b>，
-      一张图可以同时挂在多个情绪下。<br>
-      包自带的图不能挪（动了会让插件找不到）。
+      点图或用键盘选中图片，再修改页面分类标签。收回来的图片可以移到分类；包内素材保留原目录。页面标签不代表主 agent 的图库索引已经同步。
     </p>
     <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="moveTarget" placeholder="分类名（点图上 ⇄ 移过去）" style="flex:1;min-width:160px">
+      <input type="text" id="moveTarget" placeholder="目标分类（仅收回来的图片可移动）" style="flex:1;min-width:160px">
+      <button class="sm" id="memeMove" onclick="moveSelectedMeme()" disabled>移动到分类</button>
       <input type="text" id="tagInput" placeholder="多个标签，如 happy,cute" style="flex:1;min-width:160px">
-      <button class="sm" onclick="editTags()">改标签</button>
-      <button class="pri" onclick="startClassify()">按情绪自动归类</button>
+      <button class="sm" id="memeTagSave" onclick="editTags()" disabled>保存页面标签</button>
+      <button id="memeReview" onclick="startClassify()" disabled>提交图片审阅</button>
     </div>
+    <p class="dsc" id="memeSelection" role="status">尚未选择图片</p>
     <div class="out" id="classifyOut"></div>
   </div>
 <div class="tabs" id="memeTabs"></div>
@@ -648,12 +641,19 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>长期记忆</h3>
     <p class="note" id="memLongNote">读取中…</p>
+    <div id="memOwnerControls">
+      <label for="memOwner">记忆范围（轨道 / 层级 / 工作区 / agent）</label>
+      <select id="memOwner" style="width:100%;margin:8px 0" onchange="memOwnerChange()">
+        <option value="">先选择记忆范围</option>
+      </select>
+      <div class="note" id="memOwnerInfo">尚未选择；共享空键也需要明确选择。</div>
+    </div>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memNew" placeholder="让她记住一件事（短句，别写作文）"
              style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')addMemory()">
       <button class="pri" id="memAdd" onclick="addMemory()" disabled>记住</button>
     </div>
-    <p class="note">添加前请在下方选择记忆范围；修改和移除按条目原范围及版本校验。</p>
+    <p class="note">先在上方选择记忆范围，再添加；修改和移除按条目原范围及版本校验。</p>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
       <input type="text" id="memSearch" placeholder="搜记忆…（关键词/相似度）" style="flex:1;min-width:160px"
              onkeydown="if(event.key==='Enter') memSmartSearch()">
@@ -674,24 +674,16 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="out" id="memHits"></div>
 
   <div class="card" style="margin-top:14px">
-    <h3>可塑性</h3>
+    <h3>记忆整理</h3>
     <p class="note">
       先选记忆范围，再预览或执行。合并与压缩会保留原文和恢复批次。
       下方统计与搜索是管理视图；维护只作用于所选范围。
     </p>
-    <label for="memOwner">维护范围（轨道 / 层级 / 工作区 / agent）</label>
-    <select id="memOwner" style="width:100%;margin:8px 0" onchange="memOwnerChange()">
-      <option value="">先选择记忆范围</option>
-    </select>
-    <div class="note" id="memOwnerInfo">尚未选择；共享空键也需要明确选择。</div>
-    <div class="filelist" id="memCorpus"></div>
     <div class="btnrow" style="margin-top:10px">
-      <button onclick="memCorpusLoad()">看看有多少</button>
       <button id="memMergePreview" onclick="memConsolidate(true)" disabled>预览合并</button>
       <button id="memMergeApply" class="pri" onclick="memConsolidate(false)" disabled>合并</button>
       <button id="memCompressPreview" onclick="memCompress(true)" disabled>预览压缩</button>
       <button id="memCompressApply" onclick="memCompress(false)" disabled>压缩</button>
-      <button onclick="memTrimSeen()">收判重表</button>
     </div>
     <div class="out" id="memCorpusOut"></div>
   </div>
@@ -709,7 +701,6 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
         <div class="tab" data-ext=".gif">动图</div>
         <div class="tab" data-ext=".js">脚本</div>
         <div class="tab" data-ext=".dep">依赖</div>
-        <div class="tab" data-ext=".archive">归档</div>
       </div>
       <span class="dsc" id="workCount" style="margin-left:auto">—</span>
       <button class="sm" onclick="toggleAllWork()">全选/取消</button>
@@ -793,8 +784,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>她自己的提醒</h3>
     <p class="note">
-      这些是她用「明天九点叫我」这种方式加的。<b>文字会原样发出去</b>——
-      写的是她会说的话，不是她要做的动作。
+      到期后交给主 agent 判断，结合当前上下文、静默状态和发送许可决定是否提醒。
+      这里显示提醒内容与时间，不代表消息已经送达。
     </p>
     <table>
       <thead><tr><th>内容</th><th>时间</th><th>发给</th><th class="op"></th></tr></thead>
@@ -807,8 +798,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>系统计划任务</h3>
     <p class="note">
-      「已由插件接管」的那些，其实插件里已经在做了，留着只是重复跑一遍——
-      留着不出错，删掉更干净。
+      显示本机任务的实际状态与功能归属。插件托管的观察由主 agent 判断，任务存在不代表独立循环正在运行。
     </p>
     <table>
       <thead><tr><th>任务</th><th>状态</th><th>下次</th><th>说明</th></tr></thead>
@@ -881,8 +871,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>好友</h3>
     <p class="note">
-      <b>能看、能审批，不能主动加</b>——主动加好友是 QQ 客户端的行为，
-      OneBot 协议层没有这个接口。别人加她的话，在这里能看到并放行。
+      只读查看当前好友。此处提供列表刷新，添加和审批请使用 QQ 客户端。
     </p>
     <div class="btnrow">
       <button onclick="loadQQFriends()">刷新好友</button>
@@ -926,10 +915,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>更新说明</h3>
     <p class="note" style="margin:0">
-      <b>NapCat</b> 和 <b>QQ</b> 的升级要把注入器整个换掉，命令行做不干净——
-      去 <a class="url" href="https://github.com/NapNeko/NapCatQQ/releases" target="_blank">NapCatQQ releases</a> 下新包，
-      解压后覆盖 <code>&lt;你的仓库&gt;\napcat\framework</code>，然后点上面那个按钮重启。<br><br>
-      <b>Python 插件</b>靠 <code>pip install -U</code>，<b>DSH 插件</b>在「插件」页点安装就行。
+      本页检查工具安装与运行状态；「查更新」只读取上游版本。
+      DSH 插件在「部件与插件」页管理。运行程序升级后需重新核验服务，查看版本不代表已经完成安装。
     </p>
   </div>
 </div>
@@ -983,12 +970,8 @@ async function doSearch(){
     head.textContent = '在 ' + hits.length + ' 个文件里找到（点开看全文）';
     box.appendChild(head);
     hits.forEach(function(it){
-      const d = document.createElement('div');
-      d.className = 'frow';
-      d.innerHTML = '<div class="fmain"><span class="fname">' + it.name + '</span>'
-        + '<span class="fprev">' + (it.snippet || '').replace(/</g, '&lt;') + '</span></div>';
+      const d = appendPlainRow(box, it.name, it.snippet || '');
       d.onclick = function(){ openFile(currentDir, it.name, d); };
-      box.appendChild(d);
     });
   }catch(e){ box.innerHTML = '<div class="empty">搜索失败：' + e.message + '</div>'; }
 }
@@ -1130,6 +1113,16 @@ function setText(id, val){
 
 function show(id, text){ const el=$(id); if(el){ el.style.display='block'; el.textContent=text; } }
 function hide(id){ const el=$(id); if(el) el.style.display='none'; }
+function appendPlainRow(box, title, detail){
+  const row = document.createElement('div'); row.className = 'frow';
+  const main = document.createElement('div'); main.className = 'fmain';
+  const name = document.createElement('span'); name.className = 'fname'; name.textContent = title; main.appendChild(name);
+  if(detail){ const description = document.createElement('span'); description.className = 'fprev'; description.textContent = detail; main.appendChild(description); }
+  row.appendChild(main); box.appendChild(row); return row;
+}
+function plainMessage(box, text){
+  box.innerHTML = ''; const row = document.createElement('div'); row.className = 'empty'; row.textContent = text; box.appendChild(row);
+}
 function staticFor(path){
   // 读操作优先读同源静态快照：内嵌视图会挡跨端口 fetch，但同源文件不会。
   const bare = path.split('?')[0].replace(/^\/api/, '');
@@ -1219,7 +1212,7 @@ function num(id){
   return Number.isNaN(n) ? null : n;
 }
 function fmtSize(n){ return n<1024 ? n+' B' : (n<1048576 ? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(1)+' MB'); }
-function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function fmtTime(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 
 let componentActionPending = false;
 function autonomyLabel(a){
@@ -1264,7 +1257,7 @@ const PART = {
 const PLUGIN = {
   'dsh-onebot-qq':'她怎么上 QQ：收消息、发消息、发图发语音',
   'dsh-lanya':'人设 + 这个控制台',
-  'dsh-meme':'图库、挑图、发图，斗图靠它',
+  'dsh-meme':'可选表情图库扩展，实际发送由 QQ 通道完成',
   'dsh-memento':'记住聊过的事，关掉会明显健忘',
   'dsh-mnemon':'另一种记忆组织方式，和上面互补',
   'dsh-auto-memory':'重要的事自动写进记忆文件',
@@ -1416,7 +1409,7 @@ const RECOMMENDED = [
     repo: 'https://github.com/c1overzz/dsh-bili-scroll' },
   { name: 'dsh-bili-whale', desc: 'B 站社区互动：点赞、评论、跟人聊',
     repo: 'https://github.com/Alterssss/dsh-bili-whale' },
-  { name: 'dsh-meme', desc: '表情包图库。没它就没法斗图',
+  { name: 'dsh-meme', desc: '可选表情图库扩展，当前可用图片以本机图库为准',
     repo: '' },
   { name: 'dsh-cost-meter', desc: '统计花了多少 token，零花钱制度靠它',
     repo: 'https://github.com/Han-1413141/dsh-cost-meter' },
@@ -1764,6 +1757,7 @@ async function saveBudget(){
 }
 
 let memeData = [], memeCur = 0, memeFingerprint = '';
+let memeSel = null, memeMutationPending = false;
 
 function loadSystem(){ refreshOverview(); }
 
@@ -1780,7 +1774,7 @@ async function loadTools(){
     list.forEach(x => {
       const st = !x.installed
         ? '<span class="dsc" style="color:var(--bad)">未安装</span>'
-        : (x.running
+        : (x.running === null ? '<span class="dsc">已安装 · 运行状态未监测</span>' : x.running
             ? '<span class="dsc" style="color:var(--ok)">● 运行中</span>'
             : '<span class="dsc">○ 没在跑</span>');
       const tr = document.createElement('tr');
@@ -1788,16 +1782,17 @@ async function loadTools(){
         + '<span class="dsc" style="font-size:11px">' + (x.path || '找不到路径') + '</span></td>'
         + '<td class="dsc">' + x.note + '</td>'
         + '<td>' + st + '</td>'
-        + '<td class="op"><button class="sm">详情</button> <button class="sm">查更新</button></td>';
+        + '<td class="op"><button class="sm">详情</button> <button class="sm"' + (x.update_supported === true ? '' : ' disabled') + '>' + (x.update_supported === true ? '查看上游版本' : '无版本来源') + '</button></td>';
       const b = tr.querySelectorAll('button');
       b[0].onclick = function(){
         show('toolsOut', x.name + '\n\n类型：' + x.kind
           + '\n路径：' + (x.path || '（没找到）')
           + '\n已安装：' + (x.installed ? '是' : '否')
-          + '\n正在运行：' + (x.running ? '是' : '否')
+          + '\n正在运行：' + (x.running === null ? '未监测' : x.running ? '是' : '否')
           + (x.port ? '\n监听端口：' + x.port : ''));
       };
       b[1].onclick = async function(){
+        if(x.update_supported !== true) return;
         b[1].disabled = true;
         show('toolsOut', '正在查 ' + x.name + ' 的最新版本…');
         try{
@@ -1819,7 +1814,7 @@ async function loadSchedule(){
     const j = await api('/schedule');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const rems = j.reminders || [];
-    const tasks = j.tasks || [];
+    const tasks = (j.tasks || []).filter(task => !((j.mode === 'unified' || task.mode === 'unified') && task.retired === true && task.inactive_verified === true));
 
     setText('navSched',rems.length + '');
     const rb = $('remBody');
@@ -1830,13 +1825,11 @@ async function loadSchedule(){
                         : (r.daily ? ('每天 ' + r.daily) : '—');
       const to = r.target === 'group' ? '群里' : (r.target || '你');
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td><span class="nm">' + (r.text || '') + '</span>'
-        + (r.mention ? '<br><span class="dsc">会 @ ' + r.mention + '</span>' : '')
-        + (r.image ? '<br><span class="dsc">附带一张图</span>' : '') + '</td>'
-        + '<td class="dsc">' + when + '</td>'
-        + '<td class="dsc">' + to + '</td>'
-        + '<td class="op"><button class="sm dan" data-i="' + r.i + '">删</button></td>';
-      tr.querySelector('button').onclick = function(){ deleteReminder(r.i); };
+      for(const value of [(r.text || '') + (r.mention ? ' · 会 @ ' + r.mention : '') + (r.image ? ' · 附带图片' : ''), when, to]){
+        const cell = document.createElement('td'); cell.textContent = value; tr.appendChild(cell);
+      }
+      const actions = document.createElement('td'), remove = document.createElement('button'); actions.className = 'op'; remove.className = 'sm dan'; remove.textContent = '移除';
+      remove.onclick = () => deleteReminder(r.i); actions.appendChild(remove); tr.appendChild(actions);
       rb.appendChild(tr);
     });
 
@@ -1845,13 +1838,9 @@ async function loadSchedule(){
     $('taskEmpty').style.display = tasks.length ? 'none' : 'block';
     tasks.forEach(function(t){
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td><span class="nm">' + t.name + '</span><br>'
-        + '<span class="dsc" style="font-size:11px">' + (t.action || '') + '</span></td>'
-        + '<td class="dsc">' + (t.status || '') + '</td>'
-        + '<td class="dsc">' + (t.next || '') + '</td>'
-        + '<td class="dsc">' + (t.plugin
-            ? '<span style="color:var(--warn)">已由插件接管</span> — ' + t.plugin
-            : '') + '</td>';
+      for(const value of [t.name + (t.action ? ' · ' + t.action : ''), t.status || '', t.next || '', t.plugin ? '功能归属：' + t.plugin : '']){
+        const cell = document.createElement('td'); cell.textContent = value; tr.appendChild(cell);
+      }
       tb.appendChild(tr);
     });
   }catch(e){ show('schedOut', '读取失败：' + e.message); }
@@ -1915,22 +1904,16 @@ async function loadQQFriends(){
   box.innerHTML = '<div class="empty">读取中…</div>';
   try{
     const j = await api('/qq/friends', null, true);
-    if(!j.ok){ box.innerHTML = '<div class="empty">读不到：' + (j.error || '') + '</div>'; return; }
+    if(!j.ok){ plainMessage(box, '读不到：' + (j.error || '')); return; }
     const list = j.friends || [];
     setText('qqFriendCount', list.length + ' 个好友');
     box.innerHTML = '';
     if(!list.length){ box.innerHTML = '<div class="empty">没有好友</div>'; return; }
     list.forEach(function(f){
-      const d = document.createElement('div');
-      d.className = 'frow';
+      const d = appendPlainRow(box, f.remark || f.nickname || '?', String(f.qq || f.user_id || '') + '　' + (f.nickname || ''));
       d.style.cursor = 'default';
-      d.innerHTML = '<div class="fmain">'
-        + '<span class="fname">' + (f.remark || f.nickname || '?') + '</span>'
-        + '<span class="fprev">' + (f.qq || f.user_id || '') + '　'
-        + (f.nickname || '') + '</span></div>';
-      box.appendChild(d);
     });
-  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
+  }catch(e){ plainMessage(box, '读不到：' + e.message); }
 }
 
 async function loadQQGroups(){
@@ -1939,22 +1922,16 @@ async function loadQQGroups(){
   box.innerHTML = '<div class="empty">读取中…</div>';
   try{
     const j = await api('/qq/groups', null, true);
-    if(!j.ok){ box.innerHTML = '<div class="empty">读不到：' + (j.error || '') + '</div>'; return; }
+    if(!j.ok){ plainMessage(box, '读不到：' + (j.error || '')); return; }
     const list = j.groups || [];
     setText('qqGroupCount', list.length + ' 个群');
     box.innerHTML = '';
     if(!list.length){ box.innerHTML = '<div class="empty">没加群</div>'; return; }
     list.forEach(function(g){
-      const d = document.createElement('div');
-      d.className = 'frow';
+      const d = appendPlainRow(box, g.group_name || '?', String(g.group_id || '') + '　' + (g.member_count ?? '未确认') + ' 人');
       d.style.cursor = 'default';
-      d.innerHTML = '<div class="fmain">'
-        + '<span class="fname">' + (g.group_name || '?') + '</span>'
-        + '<span class="fprev">' + (g.group_id || '') + '　'
-        + (g.member_count || '') + ' 人</span></div>';
-      box.appendChild(d);
     });
-  }catch(e){ box.innerHTML = '<div class="empty">读不到：' + e.message + '</div>'; }
+  }catch(e){ plainMessage(box, '读不到：' + e.message); }
 }
 
 async function loadBiliCred(){
@@ -2077,9 +2054,7 @@ async function loadNapcat2(){
 }
 
 async function loadNapcat(){
-  loadNapcat2();
-  loadQQFriends();
-  loadQQGroups();
+  await Promise.all([loadNapcat2(), loadQQFriends(), loadQQGroups(), loadNapcatProfile()]);
   const box = $('napcatBody');
   if(!box) return;
   try{
@@ -2105,23 +2080,6 @@ async function loadNapcat(){
   }catch(e){
     box.innerHTML = '<div class="dsc">读不到：' + e.message + '</div>';
   }
-}
-
-async function doUpdate(){
-  show('updOut', '正在拉取…');
-  setText('updState', '');
-  try{
-    const j = await api('/update', { method:'POST',
-      headers:{'content-type':'application/json'}, body: '{}' });
-    if(!j.ok){
-      show('updOut', '更新失败：' + (j.error || '未知原因'));
-      return;
-    }
-    show('updOut', (j.message || '已更新。')
-      + (j.changed ? ('\n\n改了这些：\n' + (j.changed || []).join('\n')) : '')
-      + '\n\n刷新一下页面（Ctrl+Shift+R）。');
-    setText('updState', j.changed ? '' : '已经是最新');
-  }catch(e){ show('updOut', '更新失败：' + e.message); }
 }
 
 function biliRecordTime(at){
@@ -2224,18 +2182,24 @@ async function loadMemeConfig(){
     const j = await api('/memes/config');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const c = j.config || {};
+    const current = j.behavior?.mode === 'unified' && j.behavior?.managed_by === 'main_agent' && j.behavior?.collection === 'existing-files-only';
+    setText('memeBehaviorNote', current ? '观察现有本机图片并交给主 agent 审阅；不在此抓取群图，不启动独立分类循环。设置供后续观察读取。' : '图片审阅方式尚未确认，先读取当前运行配置。');
+    $('memeReview').disabled = !current;
     $('mcfgSteal').checked    = c.stealEnabled !== false;
     $('mcfgClassify').checked = c.autoClassify !== false;
     $('mcfgMax').value        = c.maxPerRun || 12;
-  }catch(e){ show('mcfgOut', '读取失败：' + e.message); }
+    ['mcfgSteal','mcfgClassify','mcfgMax','mcfgSave'].forEach(id => { $(id).disabled = !current; });
+  }catch(e){ ['mcfgSteal','mcfgClassify','mcfgMax','mcfgSave','memeReview'].forEach(id => { $(id).disabled = true; }); show('mcfgOut', '读取失败：' + e.message); }
 }
 
 async function saveMemeConfig(){
-  const n = parseInt($('mcfgMax').value.trim(), 10);
+  if($('mcfgSave').disabled){ show('mcfgOut','请先读取当前图片审阅配置。'); return; }
+  const raw = $('mcfgMax').value.trim(), n = Number(raw);
+  if(!raw || !Number.isInteger(n) || n < 1 || n > 20){ show('mcfgOut','每批候选请输入 1–20 的整数。'); return; }
   const cfg = {
     stealEnabled: $('mcfgSteal').checked,
     autoClassify: $('mcfgClassify').checked,
-    maxPerRun: Number.isNaN(n) ? 12 : n
+    maxPerRun: n
   };
   show('mcfgOut', '保存中…');
   try{
@@ -2244,9 +2208,9 @@ async function saveMemeConfig(){
       body: JSON.stringify({ config: cfg })
     });
     show('mcfgOut', j.ok
-      ? ('已保存。\n\n偷表情包：' + (cfg.stealEnabled ? '开' : '关')
-         + '\n自动分类：' + (cfg.autoClassify ? '开' : '关')
-         + '\n每轮上限：' + cfg.maxPerRun + ' 张')
+      ? ('已保存。\n\n定期观察：' + (cfg.stealEnabled ? '开' : '关')
+         + '\n允许审阅：' + (cfg.autoClassify ? '开' : '关')
+         + '\n每批候选：' + cfg.maxPerRun + ' 张，供后续观察读取')
       : ('保存失败：' + (j.error || '未知原因')));
   }catch(e){ show('mcfgOut', '保存失败：' + e.message); }
 }
@@ -2263,11 +2227,11 @@ async function loadMemes(background){
     // 最前面放一个「全部」——把每个来源的图都摊在一起，
     // 免得 514 张那种大分类要自己点进去才发现。
     const allFiles = [], allSeen = new Set();
-    groups.forEach(function(g){
-      g.files.forEach(function(f){ const key = (g.refs?.[f] || g.source) + ':' + f; if(!allSeen.has(key)) { allSeen.add(key); allFiles.push({ g: g, f: f }); } });
-    });
+    groups.forEach(g => memeItems(g).forEach(item => { if(!allSeen.has(item.key)){ allSeen.add(item.key); allFiles.push(item); } }));
     memeData = [{ source: '__all__', name: '全部', tag: '__all__',
                   count: allFiles.length, files: [], all: allFiles }].concat(groups);
+    if(memeSel && !allFiles.some(item => item.key === memeSel.key)) memeSel = null;
+    updateMemeSelection();
     setText('memeTotal', allFiles.length);
     setText('navMemes', allFiles.length);
     if(!memeData.length){ $('memeEmpty').style.display = 'block'; return; }
@@ -2290,7 +2254,7 @@ async function loadMemes(background){
       d.onclick = function(){ memeCur = i; renderMemes(); };
       tabs.appendChild(d);
     });
-    setText('memeHint', allFiles.length + ' 个图片文件；同一图片可属于多个分类。一次最多显示 ' + MEME_PAGE + ' 张，往下滚自动加载');
+    setText('memeHint', allFiles.length + ' 个图片文件；同一图片可属于多个分类。每次加载 ' + MEME_PAGE + ' 张，可点下方加载更多。');
     renderMemes();
   }catch(e){ show('memeOut', '读取失败：' + e.message); }
 }
@@ -2306,23 +2270,51 @@ function renderMemes(){
   const g = memeData[memeCur];
   const grid = $('memeGrid');
   grid.innerHTML = '';
-  if(!g || !g.count){ $('memeEmpty').style.display = 'block'; return; }
+  if(!g || !g.count || !memeList().length){ $('memeEmpty').style.display = 'block'; setText('memeEmpty', g?.count ? '当前记录缺少真实图片定位，请恢复实时连接后刷新。' : '这个分类里还没有图'); return; }
   $('memeEmpty').style.display = 'none';
   memeShown = 0;
-  appendMemes();
   const more = document.createElement('button');
   more.className = 'morebtn';
   more.id = 'memeMore';
   more.textContent = '加载更多';
   more.onclick = function(){ appendMemes(); };
   grid.parentNode.insertBefore(more, grid.nextSibling);
+  appendMemes();
 }
 
 function memeList(){
   const g = memeData[memeCur];
   if(!g) return [];
   if(g.all) return g.all;
-  return g.files.map(function(f){ return { g: g, f: f }; });
+  return memeItems(g);
+}
+
+function memeItems(group){
+  if(Array.isArray(group.items)) return group.items.filter(item => item && ['key','source','tag','file'].every(key => typeof item[key] === 'string' && item[key])).map(item => ({...item, g:group, f:item.file}));
+  if(group.source === 'merged') return [];
+  return (Array.isArray(group.files) ? group.files : []).map(file => ({key:JSON.stringify([group.source,group.tag,file]), source:group.source, tag:group.tag, file, f:file, g:group}));
+}
+
+function selectMeme(item){
+  memeSel = {key:item.key, source:item.source, tag:item.tag, file:item.file};
+  updateMemeSelection();
+}
+
+function updateMemeSelection(){
+  document.querySelectorAll('.meme-select').forEach(button => {
+    const selected = !!memeSel && button.dataset.key === memeSel.key;
+    button.setAttribute('aria-pressed', String(selected));
+    button.parentElement?.classList.toggle('selected', selected);
+  });
+  document.querySelectorAll('.meme-delete').forEach(button => { button.disabled = memeMutationPending; });
+  setText('memeSelection', memeSel ? '已选：' + memeSel.file + ' · ' + memeSel.tag : '尚未选择图片');
+  if($('memeTagSave')) $('memeTagSave').disabled = !memeSel || memeMutationPending;
+  if($('memeMove')) $('memeMove').disabled = !memeSel || memeSel.source !== 'stolen' || memeMutationPending;
+}
+
+function moveSelectedMeme(){
+  if(!memeSel || memeSel.source !== 'stolen' || memeMutationPending) return;
+  return moveMeme(memeSel.source, memeSel.tag, memeSel.file);
 }
 
 function appendMemes(){
@@ -2333,30 +2325,35 @@ function appendMemes(){
     const it = items[i];
     const div = document.createElement('div');
     div.className = 'meme';
-    const url = API + '/memes/' + encodeURIComponent(it.g.source) + '/'
-      + encodeURIComponent(it.g.tag) + '/' + encodeURIComponent(it.f);
+    const url = API + '/memes/' + encodeURIComponent(it.source) + '/'
+      + encodeURIComponent(it.tag) + '/' + encodeURIComponent(it.file);
+    const choose = document.createElement('button'); choose.className = 'meme-select'; choose.type = 'button';
+    choose.dataset.key = it.key; choose.setAttribute('aria-label','选择图片 ' + it.file);
+    choose.setAttribute('aria-pressed', String(memeSel?.key === it.key));
+    if(memeSel?.key === it.key) div.classList.add('selected');
+    choose.onclick = () => selectMeme(it);
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.alt = it.f;
     img.src = url;
     img.onerror = function(){
-      div.innerHTML = '<div style="display:grid;place-items:center;height:100%;'
-        + 'font-size:11px;color:#ff9b9b;text-align:center;padding:6px">加载失败<br>'
-        + it.f.slice(0, 14) + '</div>';
+      choose.disabled = true;
+      choose.textContent = '加载失败：' + it.file.slice(0, 14);
+      if(memeSel?.key === it.key){ memeSel = null; updateMemeSelection(); }
     };
     const del = document.createElement('button');
-    del.className = 'del';
+    del.className = 'del meme-delete'; del.disabled = memeMutationPending;
     del.title = '删除这张';
     del.textContent = '×';
     del.onclick = function(ev){
       ev.stopPropagation();
       ev.preventDefault();
-      deleteMeme(it.g.source, it.g.tag, it.f);
+      deleteMeme(it.source, it.tag, it.file);
     };
     const lab = document.createElement('span');
     lab.className = 'taglabel';
     lab.textContent = it.g.name;
-    div.appendChild(img);
+    choose.appendChild(img); div.appendChild(choose);
     div.appendChild(del);
     div.appendChild(lab);
     grid.appendChild(div);
@@ -2374,44 +2371,44 @@ function appendMemes(){
   }
 }
 
-let memeSel = null;
-
-function editTags(){
+async function editTags(){
   if(!memeSel){ show('memeOut', '先在下面点一张图选中它。'); return; }
   const box = $('tagInput');
   if(!box){ show('memeOut', '页面缺少标签输入框。'); return; }
   const raw = box.value.trim();
   if(!raw){ show('memeOut', '在标签框里写上要挂的标签，用逗号分隔。'); return; }
   const tags = raw.split(/[,，\s]+/).filter(Boolean);
-  const name = memeSel.file;
-  (async function(){
+  if(memeMutationPending) return;
+  const target = {...memeSel}, name = target.file;
+  memeMutationPending = true; updateMemeSelection();
     try{
       const j = await api('/memes/tag', {
         method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ source: memeSel.source, tag: memeSel.tag,
+        body: JSON.stringify({ source: target.source, tag: target.tag,
                               file: name, tags: tags })
       });
+      if(j.ok) await loadMemes();
       show('memeOut', j.ok
         ? ('已设置：' + name + '\n标签：' + (j.tags || []).join(' / '))
         : ('失败：' + (j.error || '未知原因')));
-      setTimeout(loadMemes, 800);
     }catch(e){ show('memeOut', '失败：' + e.message); }
-  })();
+    finally{ memeMutationPending = false; updateMemeSelection(); }
 }
 
 async function startClassify(){
-  show('classifyOut', '正在启动归类…');
+  const button = $('memeReview'); if(button?.disabled) return;
+  if(button) button.disabled = true;
+  show('classifyOut', '正在提交图片观察…');
   try{
     const j = await api('/memes/classify', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({})
     });
-    show('classifyOut', j.ok
-      ? ('已经开始在后台归类了。\n\n它会把每张图看一遍，判断是什么情绪'
-         + '（开心/无语/生气/困/要钱…），然后分到对应目录。\n'
-         + '500 多张大概要跑一阵。跑完刷新这页就能看到新分类。')
-      : ('启动失败：' + (j.error || '未知原因')));
-  }catch(e){ show('classifyOut', '启动失败：' + e.message); }
+    show('classifyOut', j.ok && j.managed_by === 'main_agent'
+      ? (j.queued ? '图片观察已排队，是否审阅或改标签由主 agent 决定。' : '本次未排入新的图片观察，请查看当前观察状态。')
+      : ('未确认提交：' + (j.error || '未取得当前主 agent 的观察回执')));
+  }catch(e){ show('classifyOut', '提交失败：' + e.message); }
+  finally{ if(button) button.disabled = false; }
 }
 
 async function moveMeme(source, tag, file){
@@ -2419,42 +2416,33 @@ async function moveMeme(source, tag, file){
   // 页面顶部有个「目标分类」输入框，读它。
   const box = $('moveTarget');
   const to = box ? box.value.trim() : '';
-  if(!to){ show('memeOut', '先在表情包页顶部填一个「目标分类」，再点 ⇄。'); return; }
+  if(!to){ show('memeOut', '请先填写目标分类。'); return; }
+  if(source !== 'stolen' || memeMutationPending){ show('memeOut','仅能移动收回来的图片，请等待当前操作完成。'); return; }
+  memeMutationPending = true; updateMemeSelection();
   try{
     const j = await api('/memes/move', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({ source, tag, file, toTag: to.trim() })
     });
     if(!j.ok) throw new Error(j.error || '未知原因');
-    show('memeOut', '已移到「' + j.toTag + '」：' + file
-      + '\n\n刷新一下就能在新分类里看到它。');
-    setTimeout(function(){ loadMemes(); }, 900);
+    memeSel = null; await loadMemes();
+    show('memeOut', '文件已移到「' + j.toTag + '」：' + file);
   }catch(e){ show('memeOut', '移动失败：' + e.message); }
+  finally{ memeMutationPending = false; updateMemeSelection(); }
 }
 
 async function deleteMeme(source, tag, file){
-  // confirm 在 DSH 内置浏览器里弹不出来，会把删除卡死，所以直接删。
+  if(memeMutationPending) return;
+  memeMutationPending = true; updateMemeSelection();
   try{
     const j = await api('/memes/delete', { method:'POST', headers:{'content-type':'application/json'},
                                            body: JSON.stringify({ source, tag, file }) });
     if(!j.ok) throw new Error(j.error || '未知原因');
+    if(memeSel?.source === source && memeSel.tag === tag && memeSel.file === file) memeSel = null;
+    await loadMemes();
     show('memeOut', '已删除：' + file);
-    const g = memeData.find(x => x.source === source && x.tag === tag);
-    if(g){ g.files = g.files.filter(x => x !== file); g.count = g.files.length; }
-    setText('memeTotal', memeData.reduce((a, b) => a + b.count, 0));
-    // 牌面数量变了，标签上的数字也要跟着变
-    // 「全部」那一份也要同步删掉，否则切回去还能看到已删的图
-    if(memeData[0] && memeData[0].all){
-      memeData[0].all = memeData[0].all.filter(function(it){
-        return !(it.g.source === source && it.g.tag === tag && it.f === file);
-      });
-      memeData[0].count = memeData[0].all.length;
-    }
-    document.querySelectorAll('#memeTabs .tab').forEach(function(el, i){
-      if(memeData[i]) el.textContent = memeData[i].name + ' ' + memeData[i].count;
-    });
-    renderMemes();
   }catch(e){ show('memeOut', '删除失败：' + e.message); }
+  finally{ memeMutationPending = false; updateMemeSelection(); }
 }
 
 let currentDir = 'diary';
@@ -2469,7 +2457,7 @@ $('fileTabs').addEventListener('click', (e) => {
 
 let fileCache = [];
 let fileShown = 0;
-const FILE_PAGE = 60;
+const FILE_PAGE = 60, FILE_LIMIT = 1000;
 
 // 记忆总览：把 memento 的审计流水、待审提议，和其他记忆来源的计数拉到一页。
 // 只读——写记忆要走 memento 自己的流程，别在这儿绕过它。
@@ -2637,51 +2625,6 @@ async function memOwnersLoad(){
     if($('memOwnerInfo')) $('memOwnerInfo').textContent = '范围读取失败：' + e.message;
   }
 }
-async function memCorpusLoad(){
-  const box = $('memCorpus');
-  const out = $('memCorpusOut');
-  if(out) out.textContent = '读中…';
-  try{
-    const j = await api('/memory/corpus', null, true);
-    if(!j.ok){ if(out) out.textContent = '读不了：' + (j.error||''); return; }
-    if(out) out.textContent = '';
-    const st = j.stats || {};
-    box.innerHTML = '';
-    [['数据库', st.db], ['日记', st.diary], ['刷过的视频', st.seen], ['合计', st.total]]
-      .forEach(function(pair){
-        const d = document.createElement('div');
-        d.className = 'frow';
-        d.style.cursor = 'default';
-        d.innerHTML = '<div class="fmain"><span class="fname">' + pair[0]
-          + '</span><span class="fprev">' + (pair[1] || 0) + ' 条</span></div>';
-        box.appendChild(d);
-      });
-    if(j.mergeable){
-      if(out) out.textContent = '全库管理统计：能合并 ' + j.mergeable + ' 组。';
-    }else if(out){
-      out.textContent = '没有可以合并的。';
-    }
-  }catch(e){ if(out) out.textContent = '读不了：' + e.message; }
-}
-
-// 判重表（看过哪些视频）只增不减，收一下：老的搬到归档，
-// 判重读 live + archive 两份，所以不会被重刷。
-async function memTrimSeen(){
-  const out = $('memCorpusOut');
-  if(out) out.textContent = '收中…';
-  try{
-    const j = await api('/memory/trim-seen', { method:'POST',
-      headers:{'content-type':'application/json'}, body: '{}' });
-    if(!j.ok){ if(out) out.textContent = '不行：' + (j.error||''); return; }
-    if(out){
-      out.textContent = j.moved
-        ? ('搬了 ' + j.moved + ' 条到归档，留 ' + j.kept + ' 条')
-        : (j.note || '没超上限');
-    }
-    memCorpusLoad();
-  }catch(e){ if(out) out.textContent = '不行：' + e.message; }
-}
-
 async function memConsolidate(dry){
   const out = $('memCorpusOut');
   const selection = memSelectedOwner();
@@ -2896,8 +2839,7 @@ async function loadFiles(dir, background){
   const generation = ++fileLoadGeneration;
   hide('fileOut');
   try{
-    const j = await api('/files?dir=' + encodeURIComponent(dir)
-      + '&preview=1&limit=' + FILE_PAGE);
+    const j = await api('/files?dir=' + encodeURIComponent(dir) + '&preview=0&limit=' + FILE_LIMIT);
     if(!j.ok) throw new Error(j.error || '读取失败');
     if(generation !== fileLoadGeneration || dir !== currentDir) return;
     if(background && JSON.stringify(fileCache) === JSON.stringify(j.files || [])) return;
@@ -2911,85 +2853,82 @@ async function loadFiles(dir, background){
 }
 
 const GROUPS = [
-  { key: 'today', label: '今天',   days: 1 },
-  { key: 'week',  label: '这周',   days: 7 },
-  { key: 'month', label: '这个月', days: 31 },
-  { key: 'old',   label: '更早',   days: 99999 }
+  { key: 'today', label: '今天' }, { key: 'week', label: '本周' },
+  { key: 'month', label: '本月' }, { key: 'past', label: '更早' },
+  { key: 'future', label: '未来时间' }, { key: 'unknown', label: '时间未确认' }
 ];
 
 function groupOf(ts){
-  const d = (Date.now() / 1000 - ts) / 86400;
-  for(const g of GROUPS){ if(d <= g.days) return g; }
-  return GROUPS[GROUPS.length - 1];
+  const now = new Date(Date.now() + 8 * 3600000), date = new Date(ts * 1000 + 8 * 3600000);
+  const day = value => Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+  let key = 'unknown';
+  if(typeof ts === 'number' && Number.isFinite(ts) && !Number.isNaN(date.getTime())){
+    const today = day(now), fileDay = day(date), weekStart = today - ((now.getUTCDay() + 6) % 7) * 86400000;
+    key = fileDay > today ? 'future' : fileDay === today ? 'today' : fileDay >= weekStart ? 'week'
+      : fileDay >= Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) ? 'month' : 'past';
+  }
+  return GROUPS.find(group => group.key === key);
 }
 
 function renderFileRows(dir){
   const list = $('fileList');
   list.innerHTML = '';
-  const slice = fileCache.slice(0, FILE_PAGE);
-
-  // 按时间分组，每组一个可折叠的头
-  const buckets = {};
-  slice.forEach(function(f){
-    const g = groupOf(f.mtime);
-    (buckets[g.key] = buckets[g.key] || { g: g, items: [] }).items.push(f);
-  });
-
-  const order = GROUPS.map(g => g.key);
-  order.forEach(function(k, gi){
-    const b = buckets[k];
-    if(!b) return;
+  list.fileGroups = {}; list.fileMoreButton = null; fileShown = 0;
+  GROUPS.forEach(group => {
     const head = document.createElement('div');
-    head.className = 'fghead' + (gi > 0 ? ' closed' : '');
-    head.innerHTML = '<span class="caret">▼</span>' + b.g.label
-      + '<span class="n">' + b.items.length + ' 个</span>';
-    list.appendChild(head);
-
+    head.className = 'fghead closed'; head.style.display = 'none'; head.tabIndex = 0; head.setAttribute('role','button'); head.setAttribute('aria-expanded','false');
+    const title = document.createElement('span'); title.textContent = group.label; head.appendChild(title);
+    const count = document.createElement('span'); count.className = 'n'; head.appendChild(count);
     const wrap = document.createElement('div');
-    wrap.style.display = gi > 0 ? 'none' : '';
+    wrap.style.display = 'none';
     head.onclick = function(){
       const closed = head.classList.toggle('closed');
       wrap.style.display = closed ? 'none' : '';
+      head.setAttribute('aria-expanded', String(!closed));
     };
+    head.onkeydown = event => { if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); head.onclick(); } };
+    list.fileGroups[group.key] = {head, wrap, count, shown:0}; list.appendChild(head); list.appendChild(wrap);
+  });
+  appendFileRows(dir);
+}
 
-    b.items.forEach(function(f){
-      const d = document.createElement('div');
-      d.className = 'frow';
-      d.innerHTML = '<input type="checkbox" class="fchk" data-name="' + f.name + '">'
-        + '<div class="fmain">'
-        + '<span class="fname">' + f.name + '</span>'
-        + (f.preview ? '<span class="fprev">' + f.preview.replace(/</g, '&lt;') + '</span>' : '')
-        + '</div>'
-        + '<span class="fmeta">' + fmtSize(f.size) + '</span>'
-        + '<span class="fmeta">' + fmtTime(f.mtime) + '</span>'
-        + '<button class="fdel" title="删除">×</button>';
+function appendFileRows(dir){
+  if(dir !== currentDir) return;
+  const list = $('fileList'); list.fileMoreButton?.remove(); list.fileMoreButton = null;
+  const end = Math.min(fileShown + FILE_PAGE, fileCache.length);
+  fileCache.slice(fileShown, end).forEach(f => {
+      const group = list.fileGroups[groupOf(f.mtime).key];
+      if(group.shown === 0 && Object.values(list.fileGroups).every(row => row.shown === 0)){
+        group.head.classList.remove('closed'); group.head.setAttribute('aria-expanded','true'); group.wrap.style.display = '';
+      }
+      group.shown++; group.head.style.display = ''; group.count.textContent = group.shown + ' 个';
+      const d = appendPlainRow(group.wrap, f.name, f.preview || '');
+      const check = document.createElement('input'); check.type = 'checkbox'; check.className = 'fchk'; check.dataset.name = f.name; check.checked = !!selected[f.name]; d.insertBefore(check, d.firstChild);
+      for(const text of [fmtSize(f.size), fmtTime(f.mtime)]){ const meta = document.createElement('span'); meta.className = 'fmeta'; meta.textContent = text; d.appendChild(meta); }
+      const remove = document.createElement('button'); remove.className = 'fdel'; remove.title = '删除'; remove.textContent = '×'; d.appendChild(remove);
       d.onclick = function(ev){
         if(ev.target.classList.contains('fchk')) return;
         if(ev.target.classList.contains('fdel')) return;
         openFile(dir, f.name, d);
       };
-      d.querySelector('.fchk').onchange = function(ev){
+      check.onchange = function(ev){
         if(ev.target.checked) selected[f.name] = true;
         else delete selected[f.name];
         updateBulk();
       };
-      d.querySelector('.fdel').onclick = function(ev){
+      remove.onclick = function(ev){
         ev.stopPropagation();
         deleteFile(dir, f.name);
       };
-      wrap.appendChild(d);
     });
-    list.appendChild(wrap);
-  });
-
-  fileShown = slice.length;
-  if(fileCache.length > FILE_PAGE){
+  fileShown = end;
+  if(fileShown < fileCache.length){
     const more = document.createElement('button');
     more.className = 'morebtn';
-    more.textContent = '还有 ' + (fileCache.length - FILE_PAGE) + ' 个没显示';
-    more.onclick = function(){ show('fileOut', '预览快照一次只取前 ' + FILE_PAGE + ' 个文件，先删掉或搜索一下更好找。'); };
-    list.appendChild(more);
+    more.textContent = '加载更多（已显示 ' + fileShown + '/' + fileCache.length + '）';
+    more.onclick = () => appendFileRows(dir); list.fileMoreButton = more; list.appendChild(more);
   }
+  if(fileCache.length >= FILE_LIMIT) show('fileOut','列表已达到 ' + FILE_LIMIT + ' 条读取上限，可用关键词搜索；这里不代表全部文件。');
 }
 
 function updateBulk(){
@@ -3095,11 +3034,10 @@ let worksTruncated = false;
 async function loadWorks(background){
   const generation = ++workLoadGeneration;
   hide('worksOut');
-  // 「归档」标签读归档目录，其它读 made/
-  currentWorkDir = (workExt === '.archive') ? 'archive' : 'made';
+  currentWorkDir = 'made';
   const directory = currentWorkDir;
   try{
-    const j = await api(directory === 'made' ? '/works' : '/files?dir=archive');
+    const j = await api('/works');
     if(!j.ok) throw new Error(j.error || '读取失败');
     if(generation !== workLoadGeneration || directory !== currentWorkDir) return;
     const next = (j.files || []).slice().sort((a, b) => b.size - a.size);
@@ -3118,9 +3056,7 @@ function renderWorks(){
   tb.innerHTML = '';
   const DEP = ['.js', '.py', '.ps1', '.json', '.db', '.txt', '.md', '.wav'];
   const isDep = (n) => DEP.some(e => n.toLowerCase().endsWith(e));
-  const list = workExt === '.archive'
-    ? workData
-    : workExt === 'all'
+  const list = workExt === 'all'
     ? workData.filter(f => !isDep(f.name))          // 全部 = 真正的作品，不含依赖
     : (workExt === '.dep'
         ? workData.filter(f => isDep(f.name))
@@ -3307,12 +3243,7 @@ document.addEventListener('click', function(ev){
   if(!t) return;
   document.querySelectorAll('#workTabs .tab').forEach(x => x.classList.toggle('on', x === t));
   workExt = t.dataset.ext;
-  if(workExt === '.archive' || currentWorkDir === 'archive'){
-    if(workExt !== '.archive') currentWorkDir = 'made';
-    loadWorks();
-  }else{
-    renderWorks();
-  }
+  renderWorks();
 });
 
 (async function boot(){

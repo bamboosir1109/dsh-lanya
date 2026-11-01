@@ -7,6 +7,24 @@ from urllib.parse import quote
 _ENTRY_EXTENSIONS = frozenset((".html", ".htm", ".png", ".jpg", ".jpeg", ".gif",
                                ".webp", ".bmp", ".svg", ".pdf", ".mp4", ".webm",
                                ".mp3", ".ogg", ".wav"))
+_INTERNAL_DIRECTORIES = frozenset((
+    "node_modules", "__pycache__", "cache", "caches", "code cache", "gpucache",
+    "shadercache", "grshadercache", "dawncache", "extensions", "local storage",
+    "session storage", "service worker", "archive", "archives", "_archive",
+    "_uitest", "_effect", "_videoframes"))
+
+
+def _internal_directory(folder):
+    """Prune tooling/profile trees before they consume the traversal budget."""
+    name = folder.name.casefold()
+    if name in _INTERNAL_DIRECTORIES or name in ("_edge", "_edge2") or name.startswith("_edge-"):
+        return True
+    # Browser profiles can have arbitrary generated names. Detect their layout,
+    # rather than suppressing legitimate games with names such as "profile".
+    default = folder / "Default"
+    return ((folder / "Local State").is_file() and default.is_dir()) or (
+        (default / "Preferences").is_file() and any(
+            (default / child).is_dir() for child in ("Cache", "Extensions", "Local Storage")))
 
 
 def _ordinary(path, directory=False):
@@ -34,7 +52,7 @@ def works_snapshot(root, excluded=None, max_entries=1000, max_nodes=5000, max_de
     _ordinary(root, directory=True)
     excluded = excluded or (lambda _name: False)
     entries = []
-    visited = skipped = 0
+    visited = skipped = internal = 0
     truncated = False
 
     def add(path, entry_type):
@@ -59,12 +77,15 @@ def works_snapshot(root, excluded=None, max_entries=1000, max_nodes=5000, max_de
             skipped += 1
 
     def visit(folder, depth):
-        nonlocal visited, skipped, truncated
+        nonlocal visited, skipped, truncated, internal
         if depth > max_depth or len(entries) >= max_entries or visited >= max_nodes:
             truncated = True
             return
         try:
             _ordinary(folder, directory=True)
+            if depth and _internal_directory(folder):
+                internal += 1
+                return
             children = sorted(folder.iterdir(), key=lambda item: item.name.casefold())
         except (OSError, ValueError):
             skipped += 1
@@ -98,4 +119,5 @@ def works_snapshot(root, excluded=None, max_entries=1000, max_nodes=5000, max_de
     visit(root, 0)
     entries.sort(key=lambda item: (-item["mtime"], item["name"].casefold()))
     return {"ok": True, "files": entries, "truncated": truncated,
-            "skipped_unsafe_or_unreadable": skipped, "source": "made_filesystem"}
+            "skipped_unsafe_or_unreadable": skipped, "skipped_internal_directories": internal,
+            "source": "made_filesystem"}

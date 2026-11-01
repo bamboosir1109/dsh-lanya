@@ -76,13 +76,49 @@ test('opening page never displays cached successful results or automatically ope
   assert.match(f.elements.get('status').textContent, /获取新的设备画面/)
 })
 
-test('offline response preserves its error and cannot create an image or enabled actions', async () => {
+test('offline response explains the unavailable worker and blocks capture and device actions', async () => {
   const f = await fixture({ok:false, status:'offline', serial, code:'worker_offline', error:'fixture worker offline'})
   assert.equal(f.image.hidden, true)
-  assert.equal(f.elements.get('error').textContent, 'fixture worker offline')
+  assert.match(f.elements.get('error').textContent, /设备服务未在线/)
+  assert.equal(f.elements.get('capture').disabled, true)
   assert.ok(f.buttons.every(button => button.disabled))
   await f.functions.submit('key', {key:'HOME'})
+  await f.functions.submit('shot')
   assert.equal(f.requests.filter(request => request.options.method === 'POST').length, 0)
+})
+
+test('a fresh status permits capture again only after the worker is available and no claim is pending', async () => {
+  const f = await fixture({ok:false, status:'offline', serial, code:'worker_offline'})
+  assert.equal(f.elements.get('capture').disabled, true)
+  f.status({ok:false, status:'error', serial, code:'capture_required'})
+  await f.functions.refreshStatus()
+  assert.equal(f.elements.get('capture').disabled, false)
+  assert.equal(f.elements.get('error').hidden, true)
+  assert.equal(f.elements.get('error').textContent, '')
+  f.status({ok:false, status:'pending', serial, seq:99, code:'pending', claim_wait:{present:true}})
+  await f.functions.refreshStatus()
+  assert.equal(f.elements.get('capture').disabled, true)
+  await f.functions.submit('shot')
+  assert.equal(f.requests.filter(request => request.body).length, 0)
+})
+
+test('verified expired or invalid screenshots allow an explicit fresh capture while device actions stay disabled', async () => {
+  for (const code of ['stale_view','invalid_frame']) {
+    const f = await fixture(); await f.capture()
+    const before = f.requests.filter(request => request.body).length
+    f.status({ok:false, status:'error', serial, seq:2, code})
+    await f.functions.refreshStatus()
+    assert.equal(f.elements.get('capture').disabled, false)
+    assert.equal(f.image.hidden, true)
+    assert.ok(f.buttons.every(button => button.disabled))
+    assert.equal(f.requests.filter(request => request.body).length, before)
+    f.post({ok:false, status:'pending', serial, seq:3})
+    f.status({ok:false, status:'pending', serial, seq:3, code:'pending'})
+    await f.functions.submit('shot')
+    const jobs = f.requests.filter(request => request.body)
+    assert.equal(jobs.length, before + 1)
+    assert.equal(jobs.at(-1).body.action, 'shot')
+  }
 })
 
 test('pending is not success; actions enable only after matching screenshot actually loads', async () => {
@@ -129,7 +165,7 @@ test('unverifiable claim age is explicit and its diagnostics clear after queue c
     claim_wait:{present:true, count:1, age_seconds:null, detail:'clock_anomaly', result:'unknown'}})
   assert.match(f.elements.get('claimWait').textContent, /等待时长暂无法确认/)
   assert.match(f.elements.get('claimWait').textContent, /仍有操作结果未确认/)
-  assert.equal(f.elements.get('error').textContent, 'offline')
+  assert.match(f.elements.get('error').textContent, /设备服务未在线/)
   assert.ok(f.buttons.every(button => button.disabled))
   f.status({ok:false, status:'error', serial, code:'capture_required', claim_wait:null})
   await f.functions.refreshStatus()

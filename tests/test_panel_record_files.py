@@ -100,6 +100,43 @@ class WorkEntries(unittest.TestCase):
         self.assertEqual(files.works_snapshot(self.root,
             excluded=lambda name: name.startswith("lanya-panel"))["files"], [])
 
+    def test_tooling_browser_dependencies_and_archives_do_not_hide_real_works(self):
+        for prefix in ('_uitest/_p4/Default/Extensions/fixture', '_effect/profile/Default/Cache',
+                       '_edge-shot-data/Default', 'node_modules/package', 'archive/retired',
+                       'games/dependencies/node_modules/package', 'cache/generated'):
+            self.put(prefix + '/index.html')
+        self.put('games/current/index.html')
+        self.put('dist/current/index.html')
+        self.put('profile/index.html')
+        self.put('_mygame/index.html')
+        result = files.works_snapshot(self.root)
+        self.assertEqual({row['name'] for row in result['files']}, {
+            'games/current/index.html', 'dist/current/index.html', 'profile/index.html', '_mygame/index.html'})
+        self.assertEqual(result['skipped_internal_directories'], 7)
+        self.assertFalse(result['truncated'])
+
+    def test_arbitrary_browser_profile_name_is_detected_by_layout_before_index(self):
+        self.put('random-browser-dir/Local State')
+        self.put('random-browser-dir/Default/Cache/cached.html')
+        self.put('random-browser-dir/index.html')
+        self.put('other-browser-dir/Default/Preferences')
+        self.put('other-browser-dir/Default/Extensions/package/index.html')
+        self.put('profile-game/Default/rules.png')
+        self.put('profile-game/index.html')
+        result = files.works_snapshot(self.root)
+        self.assertEqual([row['name'] for row in result['files']], ['profile-game/index.html'])
+        self.assertEqual(result['skipped_internal_directories'], 2)
+
+    def test_large_internal_tree_is_pruned_before_node_budget_is_spent(self):
+        for index in range(50):
+            self.put('_uitest/_p4/Default/Extensions/%03d/index.html' % index)
+        game = self.put('z-game/index.html')
+        before = game.read_bytes()
+        result = files.works_snapshot(self.root, max_nodes=4)
+        self.assertEqual([row['name'] for row in result['files']], ['z-game/index.html'])
+        self.assertFalse(result['truncated'])
+        self.assertEqual(game.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
