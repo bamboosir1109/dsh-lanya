@@ -170,7 +170,8 @@ def extract(src, outdir, interval, max_frames, t_from=0, t_to=0):
     cmd += ["-i", src, "-vf", vf, "-vsync", "vfr",
             "-frames:v", str(max_frames), "-q:v", "3", "-y",
             os.path.join(outdir, "f_%03d.jpg")]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if p.returncode != 0:
         raise RuntimeError("ffmpeg: " + (p.stderr or "")[:250])
 

@@ -95,6 +95,8 @@ class BiliPathsTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[command.index("-t") + 1], "30")
         self.assertEqual(command[command.index("-frames:v") + 1], "12")
+        self.assertEqual(run.call_args.kwargs["creationflags"],
+                         getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def test_downloads_have_distinct_temporary_files(self):
         watch = self.load("bili_watch")

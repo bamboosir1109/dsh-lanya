@@ -46,22 +46,44 @@ function PS1Task([string]$name, [string]$script, [string]$extra = '') {
 }
 
 function RepeatTask([string]$name, [string]$script, [int]$minutes) {
-  $act = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' +
-               (Join-Path $napcat $script) + '"')
+  if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+    Note ($name + '  already exists, left alone')
+    return
+  }
+  # A hidden PowerShell flag can still flash its initial console. Start this
+  # periodic task through pythonw, then create its child with CREATE_NO_WINDOW.
+  $projectConfig = Get-ProjectConf
+  if ($projectConfig.Contains('pythonExecutable')) {
+    $configuredPython = [string]$projectConfig['pythonExecutable']
+  }
+  else {
+    # Resolve the default once; never run Python or a shell to discover it.
+    $pythonCommand = Get-Command -Name 'python.exe' -CommandType Application -ErrorAction Stop |
+      Select-Object -First 1
+    $configuredPython = [string]$pythonCommand.Path
+  }
+  if (-not $configuredPython -or -not [IO.Path]::IsPathRooted($configuredPython)) {
+    throw 'A configured absolute pythonExecutable is required for hidden periodic tasks'
+  }
+  $pythonw = Join-Path (Split-Path -Parent $configuredPython) 'pythonw.exe'
+  $hiddenRunner = Join-Path $napcat 'hidden_task.py'
+  $target = Join-Path $napcat $script
+  foreach ($file in @($configuredPython, $pythonw, $hiddenRunner, $target)) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+      throw 'Hidden periodic task runtime is unavailable; task was not registered'
+    }
+  }
+  $act = New-ScheduledTaskAction -Execute $pythonw `
+    -Argument ('-B "' + $hiddenRunner + '" --script "' + $target + '"') `
+    -WorkingDirectory $napcat
   $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
     -RepetitionInterval (New-TimeSpan -Minutes $minutes)
   $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes ([math]::Max(3, $minutes - 2)))
-  if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-    Note ($name + '  already exists, left alone')
-  }
-  else {
-    Register-ScheduledTask -TaskName $name -Action $act -Trigger $trg `
-      -Settings $set -Force | Out-Null
-    Note ($name + '  <-  ' + $script + ' every ' + $minutes + 'min')
-  }
+  Register-ScheduledTask -TaskName $name -Action $act -Trigger $trg `
+    -Settings $set -Force | Out-Null
+  Note ($name + '  <-  ' + $script + ' every ' + $minutes + 'min')
 }
 
 Write-Host ''
