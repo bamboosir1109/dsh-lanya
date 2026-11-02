@@ -107,6 +107,36 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
 
 const API_FUNCTIONS = ['recordPage', 'noteRecord', 'renderRecordSync', 'staticFor', 'api']
 
+test('voice status separates demand-based synthesis, process evidence and delivery', () => {
+  const h = harness({ functions: ['renderVoiceStatus'] })
+  const value = { schema:'dsh-voice-status/v1', mode:'unified', execution:'main_agent_on_demand',
+    daemon_required:false, executor:{installed:true}, read_only:true,
+    engine:{type:'local_tts_process_observation', process_count:1, observation_state:'fresh'},
+    synthesis:{state:'not_probed'}, delivery:{state:'unverified'} }
+  h.context.renderVoiceStatus(value)
+  assert.match(h.node('voiceMode').textContent, /同一主 Agent 按需合成/)
+  assert.equal(h.node('voiceExecutor').textContent, '已安装')
+  assert.equal(h.node('voiceEngine').textContent, '已发现进程')
+  assert.equal(h.node('voiceEvidence').textContent, '按次核验')
+  h.context.renderVoiceStatus({ ...value, engine:{...value.engine, observation_state:'stale'} })
+  assert.equal(h.node('voiceEngine').textContent, '待确认')
+  assert.match(h.node('voiceEngineNote').textContent, /过期/)
+  h.context.renderVoiceStatus(null)
+  assert.equal(h.node('voiceExecutor').textContent, '待确认')
+  assert.equal(h.node('voiceEngine').textContent, '待确认')
+})
+
+test('voice status never renders untrusted service claims or HTML as readiness', () => {
+  const h = harness({ functions: ['renderVoiceStatus'] })
+  h.context.renderVoiceStatus({schema:'dsh-voice-status/v1', mode:'unified', read_only:true,
+    executor:{installed:'<img src=x onerror=bad()>'}, engine:{type:'local_tts_process_observation',
+      process_count:'1', observation_state:'fresh'}, synthesis:{state:'ready'}, delivery:{state:'sent'}})
+  for (const id of ['voiceMode','voiceExecutor','voiceEngine','voiceEngineNote','voiceEvidence']) {
+    assert.doesNotMatch(h.node(id).textContent, /img|已送达|已发现进程/)
+    assert.equal(h.node(id).innerHTML, '')
+  }
+})
+
 test('actual API prefers same-origin live GET and never reads an old snapshot on success', async () => {
   const h = harness({ functions: API_FUNCTIONS, fetch: async url => {
     assert.equal(url, '/api/bili')

@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
+import socket
 import stat
 import sys
 import time
@@ -30,6 +31,12 @@ class VoiceError(ValueError):
 
 class VoiceBusy(VoiceError):
     pass
+
+
+class VoiceHTTPError(VoiceError):
+    def __init__(self, status):
+        self.http_status = status if type(status) is int and 100 <= status <= 599 else None
+        super().__init__("Local TTS returned an HTTP error")
 
 
 def canonical(value):
@@ -181,7 +188,8 @@ def context(request):
     directory = plain_path(root / name / "voice")
     payload = dict(text=request["text"], text_lang="zh", ref_audio_path=str(reference), prompt_text=prompt,
                    prompt_lang="zh", top_k=15, top_p=1.0, temperature=1.0, text_split_method="cut5", batch_size=1,
-                   speed_factor=float(speed), seed=0, parallel_infer=True, repetition_penalty=1.35, ref_free=not prompt)
+                   speed_factor=float(speed), seed=0, parallel_infer=True, repetition_penalty=1.35, ref_free=not prompt,
+                   media_type="wav", streaming_mode=False)
     input_sha = digest(dict(owner=owner, conversation_key=request["conversation_key"], request_id=request["request_id"],
                             port=port, payload=payload, reference_sha256=hashlib.sha256(resource_bytes(reference)).hexdigest()))
     key = digest(dict(owner=owner, conversation_key=request["conversation_key"], request_id=request["request_id"]))
@@ -236,7 +244,9 @@ def fetch_audio(port, payload):
         connection.request("POST", "/tts", canonical(payload).encode("utf-8"), {"Content-Type": "application/json"})
         response = connection.getresponse()
         if response.status != 200:
-            raise VoiceError("Local TTS returned an error")
+            # Error bodies can echo reference transcripts or synthesis text.
+            # Keep only the numeric transport status, never the server body.
+            raise VoiceHTTPError(response.status)
         raw = response.read(MAX_AUDIO + 1)
         if len(raw) > MAX_AUDIO:
             raise VoiceError("Oversized local TTS output")
@@ -276,9 +286,12 @@ def synthesize(request, *, fetch=fetch_audio):
             raise VoiceError("Unclaimed audio file exists; manual review required")
         saved = dict(version=1, input_sha256=info["input_sha256"], base=base, state="reserved", created_at=int(time.time() * 1000))
         atomic_json(metadata, saved)
+        stage = "fetch"
         try:
             raw = fetch(info["port"], info["payload"])
+            stage = "validate_audio"
             duration = validate_audio(raw)
+            stage = "publish"
             temporary = output.with_name(output.name + "." + uuid.uuid4().hex + ".tmp")
             try:
                 with temporary.open("xb") as stream:
@@ -300,10 +313,24 @@ def synthesize(request, *, fetch=fetch_audio):
             saved.update(state="ready", result=result)
             atomic_json(metadata, saved)
             return result
-        except VoiceError:
-            saved.update(state="error", code="local_synthesis_failed")
+        except VoiceHTTPError as error:
+            saved.update(state="error", code="local_tts_http_error", http_status=error.http_status)
             atomic_json(metadata, saved)
-            return dict(base, status="error", code="local_synthesis_failed", file=None)
+            return dict(base, status="error", code="local_tts_http_error", http_status=error.http_status, file=None)
+        except VoiceError:
+            code = "invalid_local_audio" if stage == "validate_audio" else "local_synthesis_failed"
+            saved.update(state="error", code=code)
+            atomic_json(metadata, saved)
+            return dict(base, status="error", code=code, file=None)
+        except ConnectionRefusedError:
+            saved.update(state="error", code="local_tts_unreachable")
+            atomic_json(metadata, saved)
+            return dict(base, status="error", code="local_tts_unreachable", file=None)
+        except (TimeoutError, socket.timeout):
+            # A timeout may follow submission. Do not infer safe retry.
+            saved.update(state="unknown", code="local_tts_timeout")
+            atomic_json(metadata, saved)
+            return dict(base, status="unknown", code="local_tts_timeout", file=None)
         except (OSError, http.client.HTTPException):
             saved.update(state="unknown", code="uncertain_local_synthesis")
             atomic_json(metadata, saved)

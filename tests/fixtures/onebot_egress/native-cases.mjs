@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { nativeHost } from './native-host.mjs'
+import * as nativeMedia from './native-media.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-native-egress-'))
 after(() => { assert.ok(path.basename(root).startsWith('lanya-native-egress-')); fs.rmSync(root, { recursive: true, force: true }) })
 let count = 0
-async function setup(t) {
+async function setup(t, options = {}) {
   const directory = path.join(root, 'case-' + ++count), plugin = path.join(directory, 'plugin')
   fs.mkdirSync(directory)
   const prepare = String.raw`
@@ -37,10 +38,134 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'synthetic-pol
 `
   const result = spawnSync('python', ['-B', '-c', prepare, repo, plugin], { encoding: 'utf8', windowsHide: true })
   assert.equal(result.status, 0, result.stderr)
-  const h = await nativeHost(plugin, directory)
+  const h = await nativeHost(plugin, directory, options)
   t.after(() => h.close())
   return h
 }
+
+function stagedVoiceFixture(h) {
+  fs.mkdirSync(h.deps.config.mediaDir, { recursive: true })
+  const bytes = Buffer.alloc(44 + 1600)
+  bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8)
+  bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22)
+  bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(8000 * 2, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34)
+  bytes.write('data', 36); bytes.writeUInt32LE(1600, 40)
+  const file = path.join(h.directory, 'original-local-synthesis.wav')
+  fs.writeFileSync(file, bytes)
+  let calls = 0
+  // Synthetic PCM replaces only the helper/provider boundary; the compiled
+  // adapter, real media roots/fence, tool body and egress/policy execute.
+  h.bridge.lanyaPolicy.readTrustedHelper = async (_script, request) => {
+    calls++
+    return { schema: 'dsh-voice-result/v1', owner: {
+      workspace_key: process.platform === 'win32' ? h.directory.toLowerCase() : h.directory, agent_key: 'fixture',
+    }, conversation_key: request.conversation_key, request_id: request.request_id,
+    status: 'ready', delivered: false, file, bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'), duration_seconds: 0.1 }
+  }
+  return { file, bytes, calls: () => calls }
+}
+
+test('native member voice uses verified staging through real media fence without workspace access', async t => {
+  const h = await setup(t, { nativeMedia, peer: '202' }), fixture = stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  const roots = await h.bridge.mediaSendRoots(h.agent.session.id)
+  assert.equal(roots.isTurnAdmin, false)
+  assert.deepEqual([...roots.roots], [await fs.promises.realpath(h.deps.config.mediaDir)])
+  await assert.rejects(() => nativeMedia.fileToBase64(fixture.file, 20 * 1024 * 1024, roots.roots), /path not allowed/)
+  const synthExec = h.exec(), synth = h.tools.get('qq_synthesize_voice')
+  const [result, reused] = await Promise.all([synth.execute({ text: 'neutral fixture' }, synthExec),
+    synth.execute({ text: 'neutral fixture' }, synthExec)])
+  assert.equal(result.file, reused.file)
+  assert.deepEqual(fs.readdirSync(h.deps.config.mediaDir), [path.basename(result.file)])
+  assert.equal(result.delivered, false)
+  assert.equal(path.dirname(result.file), fs.realpathSync(h.deps.config.mediaDir))
+  const canonical = fs.realpathSync.native(result.file)
+  let alias = canonical
+  if (process.platform === 'win32') {
+    const query = spawnSync('python', ['-B', '-c', 'import ctypes,sys;b=ctypes.create_unicode_buffer(32768);n=ctypes.windll.kernel32.GetShortPathNameW(sys.argv[1],b,len(b));print(b.value if n and n<len(b) else sys.argv[1])', canonical],
+      { encoding: 'utf8', windowsHide: true })
+    assert.equal(query.status, 0)
+    alias = query.stdout.trim()
+    assert.equal(fs.realpathSync.native(alias).toLowerCase(), canonical.toLowerCase())
+  }
+  assert.equal((await h.tools.get('qq_send_voice').execute({ path: alias }, h.exec())).sent, true)
+  const sent = h.calls.filter(call => call.action === 'send_msg')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].params.message[0].data.file, 'base64://' + fixture.bytes.toString('base64'))
+  for (const file of [result.file, path.join(path.dirname(result.file), path.basename(result.file).toUpperCase())]) {
+    await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: file }, h.exec()), /voice_artifact_unavailable/)
+  }
+  await assert.rejects(() => synth.execute({ text: 'neutral fixture' }, synthExec), /voice_artifact_unavailable/)
+  await h.receive('new turn'); h.start(); await h.decide()
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /voice_artifact_unavailable/)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 1)
+})
+
+test('native staged voice validates final encoded bytes after asynchronous media read', async t => {
+  const h = await setup(t, { nativeMedia, peer: '202' }); stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral fixture' }, h.exec())
+  const original = h.bridge.mediaSendRoots.bind(h.bridge)
+  h.bridge.mediaSendRoots = async (...args) => {
+    const roots = await original(...args), bytes = fs.readFileSync(result.file)
+    bytes[bytes.length - 1] ^= 1; fs.writeFileSync(result.file, bytes)
+    return roots
+  }
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /Voice synthesis packet changed/)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 0)
+})
+
+test('native staged voice unknown is not resent under a new tool call', async t => {
+  const h = await setup(t, { nativeMedia, peer: '202' }), fixture = stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral fixture' }, h.exec())
+  h.deps.onTransmit = async () => { throw new Error('synthetic uncertain transport') }
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /unknown/)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 1)
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /voice_artifact_unavailable/)
+  await assert.rejects(() => h.raw('send_private_msg', { user_id: '202', message: [{ type: 'record',
+    data: { file: 'base64://' + fixture.bytes.toString('base64') } }] }), /voice_artifact_unavailable/)
+  await assert.rejects(() => h.tools.get('qq_synthesize_voice').execute({ text: 'same synthetic audio' }, h.exec()), /voice_artifact_unavailable/)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 1)
+})
+
+test('native staged voice cancellation during media roots cannot transmit', async t => {
+  const h = await setup(t, { nativeMedia, peer: '202' }); stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral fixture' }, h.exec())
+  const controller = new AbortController(), original = h.bridge.mediaSendRoots.bind(h.bridge)
+  h.bridge.mediaSendRoots = async (...args) => { const roots = await original(...args); controller.abort(); return roots }
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, { ...h.exec(), signal: controller.signal }), /unbound_or_aborted_turn/)
+  assert.equal(h.calls.filter(call => call.action.startsWith('send_')).length, 0)
+})
+
+test('native staged voice concurrent raw payload aliases cannot send the same content twice', async t => {
+  const h = await setup(t, { nativeMedia, peer: '202' }), fixture = stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral fixture' }, h.exec())
+  const policy = h.bridge.lanyaPolicy.policy, original = policy.runGuarded.bind(policy)
+  let count = 0, release
+  const gate = new Promise(resolve => { release = resolve })
+  policy.runGuarded = async (...args) => { if (++count === 2) release(); await gate; return original(...args) }
+  const params = { user_id: '202', message: [{ type: 'record', data: { file: 'base64://' + fixture.bytes.toString('base64') } }] }
+  const results = await Promise.allSettled([h.raw('send_private_msg', params), h.raw('send_private_msg', structuredClone(params))])
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+  assert.equal(h.calls.filter(call => call.action.startsWith('send_')).length, 1)
+})
+
+test('native staged voice cannot cross a newer silence or read a linked replacement', async t => {
+  const h = await setup(t, { nativeMedia }), fixture = stagedVoiceFixture(h)
+  await h.receive('local voice fixture'); h.start(); await h.decide()
+  const result = await h.tools.get('qq_synthesize_voice').execute({ text: 'neutral fixture' }, h.exec())
+  fs.unlinkSync(result.file); fs.linkSync(fixture.file, result.file)
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /artifact changed/)
+  fs.unlinkSync(result.file); fs.copyFileSync(fixture.file, result.file)
+  await h.receive('先别回复'); h.start(); await h.decide('silence', { control_update: true })
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec()), /decision_required/)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 0)
+})
 
 test('actual native observeInbound freezes direct live RP and never grants it from quote/negative/model args', async (t) => {
   const h = await setup(t)

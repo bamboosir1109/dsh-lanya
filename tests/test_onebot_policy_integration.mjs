@@ -44,7 +44,9 @@ async function setup(t) {
   fs.mkdirSync(path.dirname(stateFile), { recursive: true })
   fs.writeFileSync(path.join(plugin, 'lib', 'lanya-policy.config.json'), JSON.stringify({ stateFile }))
   const calls = [], logs = [], tools = new Map(), prompts = []
-  const deps = { config: { workspacePath: dir }, policy: { adminUsers: ['101'] }, cwd: dir,
+  const mediaDir = path.join(dir, 'media')
+  fs.mkdirSync(mediaDir)
+  const deps = { config: { workspacePath: dir, mediaDir }, policy: { adminUsers: ['101'] }, cwd: dir,
     log: (level, message) => logs.push({ level, message }),
     connection: { connected: true, call: (action, params) => {
       calls.push({ action, params })
@@ -717,6 +719,7 @@ test('same main agent receives a real helper fixture audio result; synthesis its
   assert.equal(result.status, 'ready')
   assert.equal(result.delivered, false)
   assert.ok(fs.existsSync(result.file))
+  assert.equal(path.dirname(result.file), fs.realpathSync(h.deps.config.mediaDir))
   assert.equal(result.sha256, createHash('sha256').update(fs.readFileSync(result.file)).digest('hex'))
   const request = requests()[0]
   assert.equal(request.cwd, h.dir)
@@ -784,6 +787,50 @@ test('voice receipts validate owner, request, no-delivery and actual bytes; unkn
   assert.equal(result.status, 'unknown')
   assert.equal(result.delivered, false)
   assert.equal(requests().length, before + 1)
+  assert.deepEqual(fs.readdirSync(h.deps.config.mediaDir), [])
+  assert.equal(h.calls.length, 0)
+})
+
+test('voice staging rejects revisions cancellation and owner changes during helper work', async t => {
+  for (const change of ['inbound', 'abort', 'owner']) await t.test(change, async t => {
+    const h = await setup(t); voiceFixture(h)
+    const chat = await h.receive(); h.start(chat); await h.decide(chat)
+    const entered = deferred(), gate = deferred(), helper = h.bridge.lanyaPolicy.readTrustedHelper.bind(h.bridge.lanyaPolicy)
+    h.bridge.lanyaPolicy.readTrustedHelper = async (...args) => {
+      const value = await helper(...args); entered.resolve(); await gate.promise; return value
+    }
+    const controller = new AbortController(), exec = { ...h.exec(chat), signal: controller.signal }
+    const pending = h.bridge.lanyaPolicy.synthesizeVoice({ text: 'local fixture' }, exec)
+    await entered.promise
+    if (change === 'inbound') await h.bridge.lanyaPolicy.policy.recordInbound({ scope: chat.chatId,
+      messageId: 'late-fixture-input', sender: '101', origin: 'live', quoted: false, controlAllowed: true })
+    if (change === 'abort') controller.abort()
+    if (change === 'owner') h.bridge.resolvePresetId = async () => 'changed-fixture-owner'
+    gate.resolve()
+    await assert.rejects(pending, error => error.reason === 'stale_revision' || error.reason === 'unbound_or_aborted_turn' || /owner changed/.test(error.message))
+    assert.deepEqual(fs.readdirSync(h.deps.config.mediaDir), [])
+    assert.equal(h.calls.length, 0)
+  })
+})
+
+test('voice staging refuses changed source hardlink and destination without replacing bytes', async t => {
+  const h = await setup(t); voiceFixture(h)
+  const chat = await h.receive(); h.start(chat); await h.decide(chat)
+  const helper = h.bridge.lanyaPolicy.readTrustedHelper.bind(h.bridge.lanyaPolicy)
+  h.bridge.lanyaPolicy.readTrustedHelper = async (...args) => {
+    const value = await helper(...args)
+    fs.linkSync(value.file, path.join(h.dir, 'foreign-hardlink.wav'))
+    return value
+  }
+  await assert.rejects(() => h.bridge.lanyaPolicy.synthesizeVoice({ text: 'fixture' }, h.exec(chat)), /artifact changed/)
+  assert.deepEqual(fs.readdirSync(h.deps.config.mediaDir), [])
+  fs.unlinkSync(path.join(h.dir, 'foreign-hardlink.wav'))
+  h.bridge.lanyaPolicy.readTrustedHelper = helper
+  const exec = h.exec(chat), result = await h.bridge.lanyaPolicy.synthesizeVoice({ text: 'fixture' }, exec)
+  const corrupt = fs.readFileSync(result.file); corrupt[corrupt.length - 1] ^= 1; fs.writeFileSync(result.file, corrupt)
+  await assert.rejects(() => h.bridge.lanyaPolicy.synthesizeVoice({ text: 'fixture' }, exec), /artifact changed/)
+  assert.deepEqual(fs.readFileSync(result.file), corrupt)
+  await assert.rejects(() => h.tools.get('qq_send_voice').execute({ path: result.file }, h.exec(chat)), /artifact changed/)
   assert.equal(h.calls.length, 0)
 })
 

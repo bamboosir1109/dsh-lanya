@@ -8,9 +8,13 @@ import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export async function nativeHost(plugin, directory) {
+export async function nativeHost(plugin, directory, { nativeMedia = null, peer = '101' } = {}) {
   const loaded = new Map(), calls = [], followups = [], tools = new Map(), timers = new Set()
-  const inside = (file) => { const relative = path.relative(directory, file); return !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative) }
+  const contained = (root, file) => { const relative = path.relative(root, file); return !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative) }
+  const inside = (file) => {
+    if (contained(directory, file)) return true
+    try { return contained(fs.realpathSync.native(directory), fs.realpathSync.native(file)) } catch { return false }
+  }
   const deny = () => { throw new Error('Synthetic host boundary refused') }
   const fds = new Set()
   function guard(source) {
@@ -33,6 +37,10 @@ export async function nativeHost(plugin, directory) {
         if (name === 'closeSync') fds.delete(file)
         return value
       }
+    }
+    if (source.realpathSync?.native) result.realpathSync.native = (...args) => {
+      result.realpathSync(...args) // Apply the same synthetic-directory guard.
+      return source.realpathSync.native(...args)
     }
     if (source.promises) result.promises = guard(source.promises)
     result.default = result
@@ -65,7 +73,7 @@ export async function nativeHost(plugin, directory) {
     else if (key === '@deepseek-ai/dsh-session') exports = { SessionId: (value) => value }
     else if (key === '@deepseek-ai/dsh-agent') exports = { installModelSelection: deny }
     else if (key.endsWith('/connection.js')) exports = { OneBotActionError, OneBotNotConnectedError }
-    else if (key.endsWith('/media.js')) exports = { fileToBase64: async () => 'base64://synthetic', isUrl: (s) => /^https?:/.test(s), extForInboundName: () => '.png' }
+    else if (key.endsWith('/media.js')) exports = { fileToBase64: nativeMedia?.fileToBase64 || (async () => 'base64://synthetic'), isUrl: (s) => /^https?:/.test(s), extForInboundName: () => '.png' }
     else if (key.endsWith('/stt.js')) exports = { transcriptLabel: () => 'fixture voice' }
     else if (key.endsWith('/commands.js')) exports = { tryHandleCommand: async () => false }
     else if (key.endsWith('/card-relay.js')) exports = { relayHostCards: noop }
@@ -104,7 +112,7 @@ export async function nativeHost(plugin, directory) {
   const bridge = new root.namespace.ChatBridge(deps)
   bridge.lanyaPolicy.memoryContext = async () => null
   bridge.lanyaPolicy.runtimeCapabilities = async () => null
-  const scope = 'private:101'
+  const scope = 'private:' + peer
   const agent = { session: { id: 'synthetic-session', header: { cwd: directory, agentPreset: 'fixture' } },
     followup: (value) => followups.push(value) }
   const chat = bridge.registry.createChatAgent(scope, { agent, dispose: noop }, {}, 'fixture')
@@ -113,7 +121,7 @@ export async function nativeHost(plugin, directory) {
     systemPrompt: { section: noop } })
   let inboundSequence = 0, turn = 0, call = 0
   const receive = async (text, extra = {}) => {
-    const event = { post_type: 'message', message_type: 'private', user_id: 101, message_id: 'in-' + ++inboundSequence,
+    const event = { post_type: 'message', message_type: 'private', user_id: Number(peer), message_id: 'in-' + ++inboundSequence,
       message: [{ type: 'text', data: { text } }], raw_message: text, sender: { nickname: 'fixture' }, ...extra }
     await bridge.handleInboundOnce(event, extra.lanyaInjected === true)
     return bridge.lanyaPolicy.state(chat).queue.at(-1)

@@ -509,7 +509,24 @@ def unified_budget_snapshot():
                 "enforcement": {"before_turn": False, "before_action": False, "provider_hard_cap": False}}
 
 
-def panel_state_snapshot():
+def panel_voice_status_snapshot(components, observed_at):
+    try:
+        from voice_status import voice_status
+        return voice_status(runtime_dir=NAPCAT, components=components,
+                            mode=decision_mode(), port=project_conf.get("ttsPort", 9880),
+                            observed_at=observed_at)
+    except Exception:
+        # Reporting is read-only. Unknown infrastructure is not a synthesis failure.
+        return {"schema": "dsh-voice-status/v1", "mode": "unknown", "execution": "unknown",
+                "daemon_required": None, "daemon_process_count": None,
+                "executor": {"installed": None},
+                "engine": {"type": "local_tts_process_observation", "process_count": None,
+                           "observed_at": None, "observation_state": "unavailable", "port": None},
+                "synthesis": {"state": "not_probed"}, "delivery": {"state": "unverified"},
+                "read_only": True}
+
+
+def panel_raw_state_metadata():
     candidates = []
     for name in ("lanya-state.json", "dafeiyu-state.json"):
         try:
@@ -518,7 +535,16 @@ def panel_state_snapshot():
             candidates.append((os.stat(file).st_mtime_ns, value))
         except (OSError, ValueError, TypeError):
             pass
-    value = max(candidates, key=lambda row: row[0])[1] if candidates else {"at": None, "memory": {}, "components": [], "plugins": []}
+    return max(candidates, key=lambda row: row[0])[1] if candidates else {"at": None, "memory": {}, "components": [], "plugins": []}
+
+
+def voice_status_snapshot():
+    value = panel_raw_state_metadata()
+    return panel_voice_status_snapshot(value.get("components") or [], value.get("at"))
+
+
+def panel_state_snapshot():
+    value = panel_raw_state_metadata()
     memory = value.setdefault("memory", {})
     if "lanyaMb" not in memory and "dafeiyuMb" in memory:
         memory["lanyaMb"] = memory["dafeiyuMb"]
@@ -545,6 +571,9 @@ def panel_state_snapshot():
         if type(memory.get(key)) in (int, float):
             memory[key] = round(memory[key] + delta, 1)
     value["services"] = services
+    value["voice"] = panel_voice_status_snapshot(value["components"], value.get("at"))
+    if status.get("mode") == "unified":
+        value["components"] = [row for row in value["components"] if row.get("tag") != "voicedaemon"]
     return value
 
 
@@ -1962,6 +1991,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": settings["availability"] == "available", "settings": settings})
         if path == "/api/state":
             return self._json(200, panel_state_snapshot())
+        if path == "/api/voice-status":
+            return self._json(200, {"ok": True, "voice": voice_status_snapshot()})
         if path in ("/api/android/status", "/api/android/shot"):
             try:
                 from android_panel import AndroidPanel, PanelAndroidError

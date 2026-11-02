@@ -78,6 +78,25 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(result["tools"]["voice"]["synthesis_service"], "unverified_not_probed")
         self.assertNotIn("old-view", json.dumps(result))
 
+    def test_voice_is_an_optional_current_turn_expression_not_an_offline_assumption_or_send_permission(self):
+        self.install("voice_executor.py")
+        reference = self.root / "tts/ref/ref-main.wav"
+        reference.parent.mkdir(parents=True)
+        reference.write_bytes(b"asset presence is not a synthesis receipt")
+        before = self.snapshot()
+        for scope in ("private:101", "group:202"):
+            with self.subTest(scope=scope):
+                voice = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]["voice"]
+                self.assertEqual(voice["synthesis_service"], "unverified_not_probed")
+                self.assertEqual(voice["reference_audio"], "present")
+                self.assertFalse(voice["delivered"])
+                self.assertIn("need not wait for an explicit request", voice["expression"]["choice"])
+                self.assertIn("does not mean offline", voice["expression"]["readiness"])
+                self.assertIn("not a speech permit", voice["expression"]["authority"])
+                self.assertIn("same content twice", voice["expression"]["text_alternative"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_qq_expression_guides_complete_content_and_real_image_route_without_authority(self):
         before = self.snapshot()
         for scope in ("private:101", "group:202"):

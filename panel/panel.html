@@ -434,6 +434,17 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 <div class="page" id="page-system">
   <div class="phead"><h1>部件与插件</h1><p>当前服务的运行状态和已装插件，都在这一页。</p></div>
 
+  <div class="card" id="voiceStatusCard">
+    <h3>语音回复</h3>
+    <p class="note" id="voiceMode">正在读取语音方式。</p>
+    <div class="stats">
+      <div class="stat"><div class="k">合成工具</div><div class="v" style="font-size:20px" id="voiceExecutor">待确认</div><div class="s">由当前聊天决定是否使用</div></div>
+      <div class="stat"><div class="k">本地引擎</div><div class="v" style="font-size:20px" id="voiceEngine">待确认</div><div class="s" id="voiceEngineNote">正在核对进程线索</div></div>
+      <div class="stat"><div class="k">合成与发送</div><div class="v" style="font-size:20px" id="voiceEvidence">按次核验</div><div class="s">音频生成和 QQ 送达分别记录</div></div>
+    </div>
+    <p class="note">这里仅读取运行线索。引擎进程存在不代表音频已经生成，也不代表 QQ 已送达。</p>
+  </div>
+
   <div class="card">
     <h3>运行中的部件</h3>
     <p class="note">
@@ -1310,9 +1321,33 @@ async function loadBrand(){
   }catch(e){ }
 }
 
+function renderVoiceStatus(value){
+  setText('voiceMode', '语音状态待确认');
+  setText('voiceExecutor', '待确认');
+  setText('voiceEngine', '待确认');
+  setText('voiceEngineNote', '进程线索尚未确认');
+  setText('voiceEvidence', '按次核验');
+  if(!value || value.schema !== 'dsh-voice-status/v1' || value.read_only !== true ||
+     !['unified','legacy','unknown'].includes(value.mode) ||
+     value.synthesis?.state !== 'not_probed' || value.delivery?.state !== 'unverified') return;
+  if(value.mode === 'unified' && value.execution === 'main_agent_on_demand' && value.daemon_required === false)
+    setText('voiceMode', '同一主 Agent 按需合成，在合适的聊天中决定使用语音。');
+  else if(value.mode === 'legacy' && value.execution === 'independent_queue' && value.daemon_required === true)
+    setText('voiceMode', '兼容队列模式，合成与发送分别核对。');
+  if(value.executor?.installed === true) setText('voiceExecutor', '已安装');
+  else if(value.executor?.installed === false) setText('voiceExecutor', '未安装');
+  const engine = value.engine;
+  if(!engine || engine.type !== 'local_tts_process_observation') return;
+  if(engine.observation_state === 'stale') { setText('voiceEngineNote', '进程线索已过期，等待刷新'); return; }
+  if(engine.observation_state !== 'fresh' || !Number.isSafeInteger(engine.process_count) || engine.process_count < 0 || engine.process_count > 10000) return;
+  setText('voiceEngine', engine.process_count === 0 ? '未发现进程' : engine.process_count === 1 ? '已发现进程' : '发现多个进程');
+  setText('voiceEngineNote', engine.process_count === 0 ? '当前未见引擎进程，实际合成另行确认' : '仅代表进程线索，实际音频另行确认');
+}
+
 async function refreshOverview(){
   try{
     const s = await api('/state', null, true);
+    renderVoiceStatus(s.voice);
     const m = s.memory;
     setText('footStamp', '部件更新于 ' + new Date(s.at).toLocaleTimeString('zh-CN'));
     setHtml('sMem', m.lanyaMb + '<small>MB</small>');
@@ -1414,7 +1449,7 @@ async function refreshOverview(){
       setText('bannerText', '检测到 ' + tasks.redundant + ' 个计划任务与插件功能重叠。请在定时页面核对实际任务状态，避免重复执行。');
     }else{ $('banner').classList.remove('show'); }
       await loadActivityBudget();
-    }catch(e){ setText('footStamp', '读取失败：' + e.message); }
+    }catch(e){ renderVoiceStatus(null); setText('footStamp', '读取失败：' + e.message); }
 }
 
 async function togglePlugin(el, name){

@@ -26,6 +26,70 @@ const BUDGET_CONTRACT = Object.freeze({ schema: 'unified-budget/v2', currency: '
   source_estimate_basis: 'cost_meter_default_price_estimate', numeric_scale: 1 })
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const identity = (...parts) => createHash('sha256').update(parts.map(String).join('\0')).digest('hex')
+const voiceDigest = bytes => createHash('sha256').update(bytes).digest('hex')
+const sameVoiceFile = (a, b) => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs', 'nlink'].every(key => a[key] === b[key])
+const voicePathKey = file => {
+  const canonical = fs.realpathSync.native(file)
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical
+}
+
+// Only verified helper output is copied across the workspace/media boundary.
+// Read one stable ordinary inode, never a symlink or another hardlink alias.
+function readVoiceArtifact(file, expected) {
+  const before = fs.lstatSync(file)
+  if (!before.isFile() || before.nlink !== 1 || before.size !== expected.bytes) throw new Error('Voice synthesis artifact changed')
+  const fd = fs.openSync(file, 'r')
+  try {
+    if (!sameVoiceFile(before, fs.fstatSync(fd))) throw new Error('Voice synthesis artifact changed')
+    const buffer = Buffer.alloc(expected.bytes + 1)
+    let count = 0, read
+    while (count < buffer.length && (read = fs.readSync(fd, buffer, count, buffer.length - count, null)) > 0) count += read
+    const bytes = buffer.subarray(0, count)
+    if (!sameVoiceFile(before, fs.fstatSync(fd)) || !sameVoiceFile(before, fs.lstatSync(file)) ||
+        bytes.length !== expected.bytes || voiceDigest(bytes) !== expected.sha256 || bytes.length < 44 ||
+        bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE' ||
+        bytes.readUInt32LE(4) !== bytes.length - 8) throw new Error('Voice synthesis artifact changed')
+    return bytes
+  } finally { fs.closeSync(fd) }
+}
+
+function stageVoiceArtifact(mediaDir, value) {
+  if (typeof mediaDir !== 'string' || !path.isAbsolute(mediaDir) ||
+      !fs.lstatSync(mediaDir).isDirectory()) throw new Error('Voice requires a trusted ordinary media directory')
+  const root = fs.realpathSync(mediaDir), bytes = readVoiceArtifact(value.file, value)
+  const file = path.join(root, `media_voice_${value.request_id}_${value.sha256}.wav`)
+  if (fs.existsSync(file)) { readVoiceArtifact(file, value); return file }
+  const candidate = path.join(root, `.voice-${randomUUID()}.tmp`)
+  let fd, failure
+  try {
+    fd = fs.openSync(candidate, 'wx', 0o600)
+    fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined
+    // Exclusive publication cannot replace a changed/foreign destination.
+    try { fs.linkSync(candidate, file) } catch (error) { if (error.code !== 'EEXIST') throw error }
+  } catch (error) { failure = error }
+  const cleanup = []
+  if (fd !== undefined) { try { fs.closeSync(fd) } catch (error) { cleanup.push(error) } }
+  try { fs.unlinkSync(candidate) } catch (error) { if (error.code !== 'ENOENT') cleanup.push(error) }
+  if (cleanup.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanup], 'Voice staging cleanup failed')
+  if (failure) throw failure
+  readVoiceArtifact(file, value)
+  return file
+}
+
+function verifyVoicePacket(artifact, params) {
+  const message = params?.message
+  if (!Array.isArray(message) || message.length !== 1 || message[0]?.type !== 'record') throw new Error('Voice synthesis packet changed')
+  const file = message[0]?.data?.file
+  // Native qq_send_voice has already applied its ordinary media-root fence
+  // and materialized base64. The path branch also supports the older adapter
+  // seam, and still verifies the same stable bytes instead of granting roots.
+  if (typeof file === 'string' && !file.startsWith('base64://') && voicePathKey(file) === artifact.canonicalFile) {
+    readVoiceArtifact(file, artifact); return
+  }
+  if (typeof file !== 'string' || !file.startsWith('base64://') || file.length > 28 * 1024 * 1024) throw new Error('Voice synthesis packet changed')
+  const encoded = file.slice(9), bytes = Buffer.from(encoded, 'base64')
+  if (bytes.length !== artifact.bytes || bytes.toString('base64') !== encoded || voiceDigest(bytes) !== artifact.sha256) throw new Error('Voice synthesis packet changed')
+}
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
 const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
   'cost_meter_unavailable', 'budget_unavailable'])
@@ -820,18 +884,29 @@ export class OneBotDecisionAdapter {
       if (realRelative === '..' || realRelative.startsWith('..' + path.sep) || path.isAbsolute(realRelative)) {
         throw new Error('Voice synthesis artifact is outside the trusted workspace')
       }
-      const stat = fs.statSync(value.file)
-      if (!stat.isFile() || stat.size !== value.bytes || createHash('sha256').update(fs.readFileSync(value.file)).digest('hex') !== value.sha256) {
-        throw new Error('Voice synthesis artifact changed')
-      }
+      // Synthesis can outlast an inbound revision, silence, cancellation or an
+      // owner switch. Recheck before publishing any usable media artifact.
+      const freshOwner = await this.trustedOwner(scope)
+      if (freshOwner.workspace_key !== owner.workspace_key || freshOwner.agent_key !== owner.agent_key) throw new Error('Voice synthesis owner changed')
+      const freshPermission = await this.policy.check(ticket, { scope, kind: 'tool_action' })
+      if (!freshPermission.allowed) throw new PolicyDeliveryError('suppressed', freshPermission.reason)
+      if (exec.signal?.aborted || this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
+      if ([...(record.voiceArtifacts?.values() || [])].some(artifact => artifact.sha256 === value.sha256 &&
+          (artifact.state !== 'ready' || artifact.inFlight))) throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+      const file = stageVoiceArtifact(this.deps.config.mediaDir, value)
+      record.voiceArtifacts ??= new Map()
+      if (!record.voiceArtifacts.has(file)) record.voiceArtifacts.set(file, {
+        file, canonicalFile: voicePathKey(file), bytes: value.bytes, sha256: value.sha256, requestId, state: 'ready', inFlight: false,
+      })
+      return { ...value, file }
     }
     // A local audio file is a tool result, never a QQ delivery or speech permit.
     return value
   }
 
-  envelope(record, operationId) {
+  envelope(record, operationId, voiceArtifact = null, voiceSignal = null) {
     return Object.freeze({ record, ticket: record.ticket, scope: record.binding?.scope,
-      operationId, sequence: { next: 0 } })
+      operationId, sequence: { next: 0 }, voiceArtifact, voiceSignal })
   }
 
   runEnvelope(envelope, run) { return this.context.run({ envelope }, run) }
@@ -851,8 +926,23 @@ export class OneBotDecisionAdapter {
     if (args?.chat_id !== undefined && canonicalScope(args.chat_id) !== scope) throw new PolicyDeliveryError('suppressed', 'scope_mismatch')
     if (!record.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
     if (typeof exec.callId !== 'string' || !exec.callId) throw new PolicyDeliveryError('suppressed', 'missing_call_id')
-    const envelope = this.envelope(record, identity('tool', exec.agent.session.id, exec.callId))
-    return this.runEnvelope(envelope, run)
+    let voiceArtifact = null
+    if (name === 'qq_send_voice' && typeof args?.path === 'string') {
+      let canonical = null
+      try { canonical = voicePathKey(args.path) } catch { /* The native file fence reports ordinary missing files. */ }
+      voiceArtifact = [...(record.voiceArtifacts?.values() || [])].find(artifact => artifact.canonicalFile === canonical) || null
+      if ((/^media_voice_/i.test(path.basename(canonical || args.path)) || voiceArtifact) &&
+          (!voiceArtifact || voiceArtifact.state !== 'ready' || voiceArtifact.inFlight)) throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+    }
+    if (voiceArtifact) {
+      if ([...record.voiceArtifacts.values()].some(artifact => artifact !== voiceArtifact && artifact.sha256 === voiceArtifact.sha256 &&
+          (artifact.state !== 'ready' || artifact.inFlight))) throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+      readVoiceArtifact(args.path, voiceArtifact)
+      voiceArtifact.inFlight = true
+    }
+    const envelope = this.envelope(record, identity('tool', exec.agent.session.id, exec.callId), voiceArtifact, exec.signal)
+    try { return await this.runEnvelope(envelope, run) }
+    finally { if (voiceArtifact) voiceArtifact.inFlight = false }
   }
 
   onAssistantMessage(scope, chat, event) {
@@ -964,6 +1054,23 @@ export class OneBotDecisionAdapter {
     const budget = await this.checkBudget(envelope.record)
     if (!budget.allowed) throw new PolicyDeliveryError('suppressed', budget.reason)
     if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
+    // Input aliases and raw base64 cannot evade this turn's generated-audio
+    // state: match real packet content as well as the tool's canonical path.
+    const packetDigests = new Set((Array.isArray(params?.message) ? params.message : []).flatMap(segment => {
+      const file = segment?.type === 'record' ? segment.data?.file : null
+      return typeof file === 'string' && file.startsWith('base64://') && file.length <= 28 * 1024 * 1024
+        ? [voiceDigest(Buffer.from(file.slice(9), 'base64'))] : []
+    }))
+    const matchingVoice = [...(envelope.record?.voiceArtifacts?.values() || [])].filter(artifact => packetDigests.has(artifact.sha256))
+    if (matchingVoice.some(artifact => artifact.state !== 'ready' || artifact.inFlight && artifact !== envelope.voiceArtifact)) {
+      throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+    }
+    const voiceArtifact = envelope.voiceArtifact || matchingVoice[0] || null
+    if (voiceArtifact) {
+      if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
+      if (voiceArtifact.state !== 'ready') throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+      verifyVoicePacket(voiceArtifact, params)
+    }
     const kind = /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (Array.isArray(params.message) && params.message.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
     let result
@@ -972,14 +1079,23 @@ export class OneBotDecisionAdapter {
         sliceId: String(envelope.sequence.next++), meme: egressPart?.meme === true,
         socialOneOff: envelope.record?.binding?.observationKind === 'social.opportunity' }, () => {
         if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
+        if (voiceArtifact) {
+          if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
+          if (voiceArtifact.state !== 'ready' || matchingVoice.some(artifact => artifact.state !== 'ready' ||
+              artifact.inFlight && artifact !== envelope.voiceArtifact)) throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
+          verifyVoicePacket(voiceArtifact, params)
+          voiceArtifact.state = 'reserved'
+        }
         return Promise.resolve(transmit()).then(normalizeAck)
       })
     } catch (error) {
+      if (voiceArtifact?.state === 'reserved') voiceArtifact.state = 'unknown'
       envelope.record?.outcomes.push('unknown')
       if (envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
       throw error
     }
     envelope.record?.outcomes.push(result.status)
+    if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
     if (/^send_(?:msg|group_msg|private_msg|group_forward_msg|private_forward_msg)$/.test(action)) {

@@ -154,6 +154,7 @@ class VoiceExecutorTests(unittest.TestCase):
             request = dict(self.request, request_id=f"invalid-audio-{index}")
             result = voice.synthesize(request, fetch=lambda *_: raw)
             self.assertEqual(result["status"], "error")
+            self.assertEqual(result["code"], "invalid_local_audio")
             self.assertFalse(result["delivered"])
 
     def test_pcm_alignment_and_byte_rate_must_match_decoded_samples(self):
@@ -205,8 +206,47 @@ class VoiceExecutorTests(unittest.TestCase):
             self.assertEqual(observed[0][0], "/tts")
             self.assertEqual(observed[0][1]["text"], self.request["text"])
             self.assertTrue(observed[0][1]["ref_free"])
+            self.assertEqual(observed[0][1]["media_type"], "wav")
+            self.assertIs(observed[0][1]["streaming_mode"], False)
         finally:
             server.shutdown(); server.server_close(); worker.join(timeout=5)
+
+    def test_http_error_code_is_bounded_and_never_reads_or_returns_service_body(self):
+        response = mock.Mock(status=400)
+        response.read.side_effect = AssertionError("a TTS error body must not be read")
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(voice.http.client, "HTTPConnection", return_value=connection):
+            first = voice.synthesize(self.request)
+            second = voice.synthesize(self.request)
+        self.assertEqual(first["status"], "error")
+        self.assertEqual(first["code"], "local_tts_http_error")
+        self.assertEqual(first["http_status"], 400)
+        self.assertEqual(second["code"], "previous_request_not_replayed")
+        self.assertEqual(connection.request.call_count, 1)
+        response.read.assert_not_called()
+        connection.close.assert_called_once()
+
+    def test_connection_refusal_and_uncertain_timeout_have_distinct_durable_codes(self):
+        for index, (error, status, code) in enumerate((
+                (ConnectionRefusedError("PRIVATE_SERVICE_BODY"), "error", "local_tts_unreachable"),
+                (TimeoutError("PRIVATE_SERVICE_BODY"), "unknown", "local_tts_timeout"),
+                (voice.socket.timeout("PRIVATE_SERVICE_BODY"), "unknown", "local_tts_timeout"),
+                (ConnectionResetError("PRIVATE_SERVICE_BODY"), "unknown", "uncertain_local_synthesis"))):
+            with self.subTest(code=code):
+                calls = []
+                def failed(*args):
+                    calls.append(1)
+                    raise error
+                request = dict(self.request, request_id="safe-failure-" + str(index))
+                first = voice.synthesize(request, fetch=failed)
+                second = voice.synthesize(request, fetch=failed)
+                self.assertEqual((first["status"], first["code"]), (status, code))
+                self.assertEqual(second["status"], status)
+                self.assertEqual(second["code"], "previous_request_not_replayed")
+                self.assertEqual(calls, [1])
+                self.assertNotIn("PRIVATE_SERVICE_BODY", json.dumps(first))
+                self.assertFalse(list((self.root / "role/voice").glob("*.wav")))
 
     def test_cli_never_echoes_invalid_input_or_service_error_text(self):
         out, err = io.StringIO(), io.StringIO()
