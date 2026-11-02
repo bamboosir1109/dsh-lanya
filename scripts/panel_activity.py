@@ -12,6 +12,7 @@ import hashlib
 import datetime as dt
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -30,12 +31,16 @@ SAFE_INTEGER = 9007199254740991
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
     'bili_video_info': 'details', 'bili_subtitle': 'subtitle',
+    'bili_observe_video': 'observation', 'bili_social_inbox': 'social_inbox',
+    'bili_thread': 'comment_thread',
     'bili_frames': 'frames', 'bili_cover': 'cover',
     'bili_reply': 'action', 'bili_send_message': 'action',
 }
 TOOL_LABELS = {
     'recommendation': '读取B站推荐', 'details': '读取视频资料', 'subtitle': '读取视频字幕',
     'frames': '提取视频画面', 'cover': '读取视频封面', 'action': '尝试平台操作',
+    'observation': '读取视频片段内容', 'social_inbox': '查看B站回复与提及',
+    'comment_thread': '读取B站评论线程',
 }
 NAMED_TOOL_LABELS = {
     'pwsh': '运行PowerShell工具', 'exec': '运行本地工具', 'bash': '运行本地工具',
@@ -235,6 +240,8 @@ def _reply_call(name, args):
         # result message, quoted conversation, or private-message argument.
         text.encode('utf-8')
         reply.update(text=text[:MAX_REPLY_TEXT], text_truncated=len(text) > MAX_REPLY_TEXT)
+    if type(args.get('mention_admin')) is bool:
+        reply['mention_admin_requested'] = args['mention_admin']
     return reply
 
 
@@ -255,8 +262,45 @@ def _settle_reply(record, message, error):
         receipt = _comment_id(value.get('rpid_str')) or _comment_id(value.get('rpid'))
         if receipt:
             reply['rpid'] = receipt
+        mention = value.get('mention')
+        if (isinstance(mention, dict) and type(mention.get('requested')) is bool
+                and type(mention.get('applied')) is bool
+                and mention['requested'] == reply.get('mention_admin_requested', False)):
+            reply['mention_applied'] = mention['requested'] and mention['applied']
     if record.get('video'):
         reply['video'] = dict(record['video'])
+
+
+def _seconds(value):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= SAFE_INTEGER
+
+
+def _content_observation(record, value):
+    if (value.get('ok') is not True or value.get('schema') != 'dsh-bili-video-content/v1'
+            or value.get('status') not in ('observed', 'partial')
+            or not _integer(value.get('page')) or not 1 <= value['page'] <= 1000
+            or not _seconds(value.get('duration'))):
+        return
+    subtitle = value.get('subtitle')
+    if not isinstance(subtitle, dict) or subtitle.get('status') not in ('available', 'unavailable', 'failed'):
+        return
+    segments = subtitle.get('segments')
+    if not isinstance(segments, list) or len(segments) > 80 or type(subtitle.get('truncated')) is not bool:
+        return
+    if any(not isinstance(row, dict) or not _seconds(row.get('from')) or not _seconds(row.get('to'))
+           or not row['from'] < row['to'] <= value['duration'] or not isinstance(row.get('text'), str)
+           or not row['text'].strip() for row in segments):
+        return
+    if (subtitle['status'] == 'available') != bool(segments) or sum(len(row['text']) for row in segments) > 12000:
+        return
+    record.update(status='succeeded', page=value['page'], subtitle_status=subtitle['status'],
+                  segment_count=len(segments), content_partial=value['status'] == 'partial')
+    if segments:
+        text = '\n'.join('[%g–%g秒] %s' % (row['from'], row['to'], row['text']) for row in segments)
+        record.update(_excerpt(text), subtitle_chars=sum(len(row['text']) for row in segments),
+                      segment_range={'start_sec': min(row['from'] for row in segments),
+                                     'end_sec': max(row['to'] for row in segments)})
+        record['content_truncated'] |= subtitle['truncated']
 
 
 def _bili_result(record, message, error):
@@ -315,11 +359,20 @@ def _bili_result(record, message, error):
             record['status'] = 'succeeded'
             if type(value.get('image_attached')) is bool:
                 record['image_attached'] = value['image_attached']
+    elif kind == 'observation':
+        if video:
+            _content_observation(record, value)
+    elif kind in ('social_inbox', 'comment_thread'):
+        items = value.get('items' if kind == 'social_inbox' else 'comments')
+        if value.get('ok') is True and isinstance(items, list) and len(items) <= 21:
+            record.update(status='succeeded', item_count=len(items))
     elif kind == 'action':
         sent = (record['tool'] == 'bili_send_message' and value.get('status') == 'sent'
                 and value.get('ok') is True and _receipt(value.get('receipt')))
         receipts = [_comment_id(value.get(key)) for key in ('rpid', 'rpid_str')]
-        replied = (record['tool'] == 'bili_reply' and value.get('success') is True
+        replied = (record['tool'] == 'bili_reply' and (value.get('success') is True or
+                   value.get('ok') is True and value.get('status') == 'accepted' and
+                   _comment_id(value.get('receipt')) in receipts)
                    and any(receipts) and len(set(filter(None, receipts))) == 1)
         if sent or replied:
             record.update(status='succeeded', has_receipt=True)
@@ -475,7 +528,7 @@ def _native(path, session, cwd, preset, role, cutoff, now, *, window_end=None, m
 def _recent_videos(records, limit):
     """Directed read attempts only; recommendations and action-only IDs are not browsing."""
     videos = {}
-    reads = {'details', 'subtitle', 'frames', 'cover'}
+    reads = {'details', 'subtitle', 'frames', 'cover', 'observation'}
     for record in records:
         video = record.get('video')
         if not video or record['kind'] not in reads | {'action'}:
@@ -493,7 +546,8 @@ def _recent_videos(records, limit):
         row['at'] = max(row['at'], record['at'])
         row['kinds'].add(record['kind']); row['statuses'].add(record['status'])
         row['record_count'] += 1
-        row['subtitle_count'] += record['kind'] == 'subtitle' and record['status'] == 'succeeded'
+        row['subtitle_count'] += (record['kind'] == 'subtitle' or
+                                  record['kind'] == 'observation' and record.get('subtitle_status') == 'available') and record['status'] == 'succeeded'
         row['reply_count'] += record['tool'] == 'bili_reply'
     result = []
     for row in videos.values():
@@ -516,7 +570,7 @@ def _evidence(record):
     states = {'succeeded': '已取得工具确认的内容', 'returned': '工具已返回，具体结果未核验',
               'failed': '工具明确失败', 'pending': '等待工具回执', 'unknown': '结果未确认'}
     item['summary'] = states.get(record['status'], '结果未确认')
-    if record['kind'] in ('details', 'subtitle', 'frames', 'cover'):
+    if record['kind'] in ('details', 'subtitle', 'frames', 'cover', 'observation'):
         item['summary'] += '；不代表完整播放'
     if record['tool'] == 'send_meme':
         item['summary'] = '挑图工具' + ('已返回；不代表已发送图片' if record['status'] == 'returned' else '结果未确认')
@@ -545,7 +599,7 @@ def _episodes(records, limit):
         title = '工具活动'
         if bili:
             title = 'B站活动'
-            successful_reads = [row for row in successful if row['kind'] in {'subtitle', 'details', 'frames', 'cover'} and row.get('video')]
+            successful_reads = [row for row in successful if row['kind'] in {'subtitle', 'details', 'frames', 'cover', 'observation'} and row.get('video')]
             if successful_reads:
                 selected = next((row for row in reversed(successful_reads) if row['kind'] == 'subtitle'), successful_reads[-1])
                 video = next((item for item in videos if item['bvid'] == selected['video']['bvid']), selected['video'])
@@ -662,6 +716,7 @@ def _activity_projection(*, workspace, agent_preset, identity_file, dsh_home, ma
     if collect_records:
         return records, coverage, status, now
     counts = dict(recommendation=0, details=0, subtitle=0, frames=0, cover=0, actions=0,
+                  observation=0, social_inbox=0, comment_thread=0,
                   failed=0, unknown=0, pending=0)
     for record in bili:
         if record['status'] == 'succeeded':

@@ -254,6 +254,12 @@ python -B scripts/workspace_archive.py --workspace .. --restore maintenance/work
 
 ## B 站主 agent 补丁
 
+当前主 agent 桥接的 V2 增量保留原私信账本并为评论增加同目标未决保护；缺少明确的 `bilibili.social.comment/reply/mentionAdmin` 布尔授权时关闭对应写入。公开 `config/project.json` 是默认关闭的示例，不能整份覆盖运行项目配置。管理员 B站身份仍在私有 `lanya-config.json` 的 `adminBiliUid`，发送时按真实账号名建立提及映射。
+
+已有 V1 安装需用新版预览与受控迁移，同时处理 index、bridge、配置及 marker；不能只换程序后留下旧 after 指纹。`patch_bili_content.py` 仅针对审定 MCP 原件生成候选及两个 helper，不安装、不读取凭据。当前运行 MCP 与插件 vendor MCP 应分别核对原件，再安装同批 helper；`autonomy_observers.py` 也依赖同目录的 `bili_social_backend.py`。重载后需要确认旧 MCP 子进程退出、新工具 schema 和实际使用的 MCP 路径，磁盘文件变更不是加载证据。
+
+维护备份须按现状纳入已有 B站动作账本及意图库，不假定固定数据库数量；V1 私信记录不得删改或凭空猜成新评论目标。未知评论写入不能用新调用号或改字重发；没有确定回执不标成功，默认探活只读元数据及真实自然调用。
+
 `scripts/patch_bili_main_agent.py` 只支持已审阅的 `dsh-bili-scroll 2.2.0` 文件哈希与 direct MCP client。它按精确锚点修改 index，新增一个 bridge 和仅含 project/ledger 路径的配置；保留其余本机定制，不覆盖整包，不读取凭据。未知版本、文件变化或不完整旧补丁会拒绝。
 
 以下路径是占位值，需改为已确认的绝对私有路径；project 应与同一角色的其他执行器共用，SQLite 账本按 B 站账号独立且不能复用记忆库或 QQ policy JSON：

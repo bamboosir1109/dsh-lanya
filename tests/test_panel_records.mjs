@@ -1433,6 +1433,33 @@ test('Bili public reply details show the exact attempted body and receipt eviden
   assert.equal(descendants(details[0]).find(row => row.tagName === 'PRE').textContent, text)
 })
 
+test('Bili selected-part observations show actual subtitle range and partial content, without inventing frame inspection', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  h.context.renderMainBili(biliData({ recent_videos: [{ bvid: 'BV1234567890', kinds: ['observation'] }],
+    records: [{ tool: 'bili_observe_video', kind: 'observation', status: 'succeeded', video: { bvid: 'BV1234567890' },
+      page: 2, subtitle_status: 'available', segment_count: 2, subtitle_chars: 20,
+      segment_range: { start_sec: 30.5, end_sec: 52 }, content_partial: true,
+      content_excerpt: '<script>source text</script>', content_truncated: true }] }))
+  const text = treeText(h.node('bMainVideos'))
+  assert.match(text, /分P：第 2 段/)
+  assert.match(text, /已读取字幕区间：30.5–52 秒；不代表连续播放/)
+  assert.match(text, /本次内容只覆盖部分片段/)
+  assert.doesNotMatch(text, /取得.*视频帧|已看完|已完整观看/)
+  assert.equal(descendants(h.node('bMainVideos')).find(row => row.tagName === 'PRE').innerHTML, '')
+  assert.equal(h.calls.length, 0)
+})
+
+test('Bili explicit mention status never claims the administrator received a notification', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  h.context.renderMainBili(biliData({ replies: [{ type: 'comment', status: 'accepted',
+    text: 'Fixture public comment', mention_admin_requested: true, mention_applied: true },
+    { type: 'private_message', status: 'unknown', mention_admin_requested: true, mention_applied: true }] }))
+  const text = treeText(h.node('bMainReplyRecords'))
+  assert.match(text, /本次请求已附 @管理员；提醒是否送达仍未知/)
+  assert.doesNotMatch(text, /管理员已收到|提醒送达成功/)
+  assert.equal(h.calls.length, 0)
+})
+
 test('Bili source failure and older projection snapshots never masquerade as an empty successful history', () => {
   for (const data of [{ status: 'unavailable' }, { status: 'ok', records: [] }]) {
     const h = harness({ functions: BILI_RENDERERS })

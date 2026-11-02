@@ -463,7 +463,7 @@ with mock.patch('subprocess.run',side_effect=AssertionError('model forbidden')) 
     def test_social_notifications_only_read_platform_and_deduplicate_immutable_evidence(self):
         observer = self.module("autonomy_observers.py")
         mcp = mock.Mock()
-        mcp.call_json.side_effect = lambda action, args: ({"replies": [{"id": "fixture", "user": {"mid": "303"}, "item": {"title": "hi", "subject_id": "topic"}}]}
+        mcp.call_json.side_effect = lambda action, args: ({"replies": [{"id": "401", "user": {"mid": "303"}, "item": {"title": "fixture video", "source_content": "hi", "subject_id": "501", "source_id": "601"}}]}
                                                        if action == "bili_received_replies" else {"at": {"items": []}})
         first = observer.social_notifications(mcp)
         second = observer.social_notifications(mcp)
@@ -478,11 +478,56 @@ with mock.patch('subprocess.run',side_effect=AssertionError('model forbidden')) 
     def test_social_dry_read_never_consumes_notifications_or_queues_them(self):
         observer = self.module("autonomy_observers.py")
         mcp = mock.Mock()
-        mcp.call_json.return_value = {"items": [{"id": "fixture", "content": "hi"}]}
+        mcp.call_json.return_value = {"items": [{"id": "401", "content": "hi"}]}
         result = observer.social_notifications(mcp, dry=True)
         self.assertEqual(result["sent"], 0)
         self.assertEqual(result["queued"], 0)
         self.assertFalse((self.data / "decision-inbox").exists())
+
+    def test_notification_known_heads_do_not_starve_later_rows(self):
+        observer = self.module("autonomy_observers.py")
+        rows = [{"id": str(401 + index), "user": {"mid": "303"}, "item": {
+            "title": "video metadata", "source_content": "reply " + str(index),
+            "subject_id": "501", "source_id": str(601 + index), "target_id": "600",
+            "root_id": "600", "business_id": 1, "type": "reply",
+            "uri": "https://www.bilibili.com/video/BV1234567890"}} for index in range(4)]
+        mcp = mock.Mock()
+        mcp.call_json.side_effect = lambda action, args: {"items": rows} if action == "bili_received_replies" else {"at": {"items": []}}
+        for expected in range(1, 5):
+            result = observer.social_notifications(mcp, max_per_run=1)
+            self.assertEqual(result["queued"], 1)
+            self.assertEqual(len(self.pending()), expected)
+        self.assertEqual(observer.social_notifications(mcp, max_per_run=1)["queued"], 0)
+        payloads = [json.loads(file.read_text(encoding="utf-8"))["payload"]["evidence"] for file in self.pending()]
+        self.assertTrue(all(row["text"].startswith("reply ") for row in payloads))
+        self.assertEqual({row["rpid"] for row in payloads}, {"601", "602", "603", "604"})
+
+    def test_notification_source_errors_are_not_reported_as_empty_success(self):
+        observer = self.module("autonomy_observers.py")
+        mcp = mock.Mock()
+        mcp.call_json.side_effect = lambda action, args: {"error": "fixture login refused"} if action == "bili_received_replies" else {"at_error": "fixture read refused"}
+        result = observer.social_notifications(mcp)
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["errors"], ["ValueError", "ValueError"])
+        self.assertTrue(result["partial"])
+        self.assertFalse(self.pending())
+
+    def test_notification_upgrade_does_not_replay_an_existing_uncertain_notice(self):
+        observer = self.module("autonomy_observers.py")
+        row = {"id": "401", "user": {"mid": "303"}, "item": {
+            "title": "video metadata", "source_content": "new reply body",
+            "subject_id": "501", "source_id": "601", "root_id": "600", "target_id": "600"}}
+        previous_id = observer._previous_notification_id(row, "reply")
+        observer.submit_project_observation(scope="private:101", kind="social.notification", producer="bili-notifications",
+                                            event_id=previous_id, payload={"evidence": {"text": "video metadata"}})
+        self.complete(status="unknown", event=self.pending()[0])
+        before = {file: file.read_bytes() for file in self.pending()}
+        mcp = mock.Mock()
+        mcp.call_json.side_effect = lambda action, args: {"items": [row]} if action == "bili_received_replies" else {"at": {"items": []}}
+        result = observer.social_notifications(mcp)
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["previously_observed"], 1)
+        self.assertEqual(before, {file: file.read_bytes() for file in self.pending()})
 
     def test_memory_timer_preserves_live_logs_and_only_requests_one_scoped_review(self):
         maintenance = self.module("memory-maintenance.py")

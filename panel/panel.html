@@ -2340,7 +2340,7 @@ function biliVideoLink(video){
 function renderMainBili(history){
   const data = history || {}, records = Array.isArray(data.records) ? data.records : [];
   const available = data.status === 'ok' || data.status === 'partial';
-  const readKinds = ['details','subtitle','frames','cover'];
+  const readKinds = ['details','subtitle','frames','cover','observation'];
   const videos = (Array.isArray(data.recent_videos) ? data.recent_videos : []).filter(video =>
     Array.isArray(video.kinds) && video.kinds.some(kind => readKinds.includes(kind)));
   const replies = Array.isArray(data.replies) ? data.replies : [];
@@ -2351,8 +2351,8 @@ function renderMainBili(history){
   const coverage = data.coverage || {};
   setText('bMainCoverage', available ? '已核验 ' + (coverage.owner_verified_scopes || 0) + ' 个绑定范围' : '无法确认当前记录');
   setText('bMainNote', data.status === 'partial' ? '部分来源缺失或达到读取上限。下方只显示已核验记录，读取方式不代表完整播放。'
-    : available ? '按视频归并近期读取。字幕、资料和画面分别标记；推荐候选不计入。' : '记录源暂不可用，不能据此判断她没有浏览。');
-  const kinds = {recommendation:'获取推荐',details:'视频资料',subtitle:'字幕',frames:'视频帧',cover:'封面',action:'平台操作'};
+    : available ? '按视频归并近期读取，区分分P、时间轴片段、字幕和画面；推荐候选不计入，读取不等于完整播放。' : '记录源暂不可用，不能据此判断她没有浏览。');
+  const kinds = {recommendation:'获取推荐',details:'视频资料',subtitle:'字幕',frames:'视频帧',cover:'封面',action:'平台操作',observation:'视频片段内容',social_inbox:'回复与提及',comment_thread:'评论线程'};
   const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};
   const empty = (box, text) => { const node = document.createElement('div'); node.className = 'empty'; node.textContent = text; box.appendChild(node); };
   const meta = (entry, text) => { const node = document.createElement('span'); node.className = 'dsc'; node.textContent = text; entry.appendChild(node); };
@@ -2371,7 +2371,7 @@ function renderMainBili(history){
       meta(entry, biliRecordTime(video.at));
       if(video.author) meta(entry, '作者：' + video.author);
       meta(entry, methods.length ? methods.join('；') : (video.kinds || []).filter(kind => readKinds.includes(kind)).map(kind => kinds[kind]).join('、'));
-      const subtitle = reads.find(row => row.kind === 'subtitle' && row.status === 'succeeded' && typeof row.content_excerpt === 'string');
+      const subtitle = reads.find(row => ['subtitle','observation'].includes(row.kind) && row.status === 'succeeded' && typeof row.content_excerpt === 'string');
       const excerpt = typeof video.content_excerpt === 'string' ? video.content_excerpt : subtitle?.content_excerpt;
       const truncated = video.content_truncated === true || subtitle?.content_truncated === true;
       if(excerpt) recordText(entry, '字幕摘录：' + excerpt.slice(0, 160) + (excerpt.length > 160 ? '…' : ''));
@@ -2382,6 +2382,12 @@ function renderMainBili(history){
         recordText(details, biliRecordTime(row.at) + ' · ' + (kinds[row.kind] || '读取') + ' · ' + (statuses[row.status] || '结果未知'), 'dsc');
         if(Number.isInteger(row.subtitle_chars)) recordText(details, '原始字幕 ' + row.subtitle_chars + ' 字' + (Number.isInteger(row.segment_count) ? '，' + row.segment_count + ' 段' : ''), 'dsc');
         if(Number.isInteger(row.frame_count)) recordText(details, '取得 ' + row.frame_count + ' 个视频帧；不等于连续播放。', 'dsc');
+        if(Number.isInteger(row.page) && row.page > 0) recordText(details, '分P：第 ' + row.page + ' 段', 'dsc');
+        if(row.segment_range && Number.isFinite(row.segment_range.start_sec) && Number.isFinite(row.segment_range.end_sec))
+          recordText(details, '已读取字幕区间：' + row.segment_range.start_sec + '–' + row.segment_range.end_sec + ' 秒；不代表连续播放。', 'dsc');
+        if(row.kind === 'observation' && row.subtitle_status !== 'available')
+          recordText(details, '本次字幕' + (row.subtitle_status === 'failed' ? '读取失败' : '不可用') + '，仅保留取得的资料。', 'dsc');
+        if(row.content_partial === true) recordText(details, '本次内容只覆盖部分片段。', 'dsc');
       });
       recordText(details, '推荐、资料、字幕和单帧读取都不能单独证明完整观看。', 'dsc');
       videoBox.appendChild(entry);
@@ -2412,6 +2418,8 @@ function renderMainBili(history){
       }
       if(reply.status === 'accepted') meta(entry, reply.type === 'private_message' ? '接口接受回执，未验证接收方可见。' : '有接口回执，公开可见性尚未核验。');
       else if(reply.status === 'unknown') meta(entry, '未获得确定结果，不能认定已发出。');
+      if(reply.type !== 'private_message' && reply.mention_admin_requested === true)
+        meta(entry, reply.mention_applied === true ? '本次请求已附 @管理员；提醒是否送达仍未知。' : '本次请求了 @管理员，尚未确认已附加。');
       replyBox.appendChild(entry);
     });
   }

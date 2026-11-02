@@ -85,6 +85,61 @@ class PanelActivityTests(unittest.TestCase):
             self.assertNotIn(forbidden, rendered)
         self.assertEqual(result['recentActivity']['records'][0]['status'], 'returned')
 
+    def test_timestamped_video_content_keeps_selected_part_and_only_public_excerpt(self):
+        fixture = Path(__file__).parent / 'fixtures/bili_video_content/observed.json'
+        value = json.loads(fixture.read_text(encoding='utf-8'))
+        value['private_extra'] = SECRET
+        self.call('bili_observe_video', value, args={'bvid': value['bvid'], 'page': value['page']})
+        self.call('bili_social_inbox', {'ok': True, 'items': [{'text': SECRET, 'author_uid': SECRET}]})
+        self.call('bili_thread', {'ok': True, 'bvid': value['bvid'], 'comments': [{'text': SECRET}]},
+                  args={'bvid': value['bvid'], 'root': '123'})
+        main = self.snapshot()['mainAgent']
+        record = next(row for row in main['records'] if row['tool'] == 'bili_observe_video')
+        self.assertEqual(record['status'], 'succeeded')
+        self.assertEqual(record['page'], value['page'])
+        self.assertEqual(record['segment_count'], len(value['subtitle']['segments']))
+        self.assertEqual(record['segment_range'], value['subtitle']['range'])
+        self.assertIn(value['subtitle']['segments'][0]['text'], record['content_excerpt'])
+        self.assertEqual(main['recent_videos'][0]['subtitle_count'], 1)
+        self.assertEqual(main['counts']['observation'], 1)
+        self.assertEqual(main['counts']['social_inbox'], 1)
+        rendered = json.dumps(main)
+        self.assertNotIn(SECRET, rendered)
+        self.assertNotIn('playback_verified', rendered)
+        self.assertNotIn('author_uid', rendered)
+
+    def test_video_content_invalid_or_metadata_only_never_invents_a_subtitle(self):
+        template = {'schema': 'dsh-bili-video-content/v1', 'ok': True, 'status': 'partial',
+                    'bvid': BV, 'page': 2, 'duration': 30, 'subtitle': {
+                        'status': 'unavailable', 'segments': [], 'truncated': False}}
+        self.call('bili_observe_video', template, args={'bvid': BV, 'page': 2})
+        self.call('bili_observe_video', {**template, 'schema': 'untrusted'}, args={'bvid': BV})
+        self.call('bili_observe_video', {**template, 'bvid': 'BV0123456789'}, args={'bvid': BV})
+        for segment in ({'from': True, 'to': 5, 'text': SECRET},
+                        {'from': 5, 'to': 2, 'text': SECRET},
+                        {'from': 1, 'to': 40, 'text': SECRET}):
+            self.call('bili_observe_video', {**template, 'subtitle': {
+                'status': 'available', 'segments': [segment], 'truncated': False}}, args={'bvid': BV})
+        records = self.snapshot()['mainAgent']['records']
+        self.assertEqual(sum(row['status'] == 'succeeded' for row in records), 1)
+        successful = next(row for row in records if row['status'] == 'succeeded')
+        self.assertEqual(successful['subtitle_status'], 'unavailable')
+        self.assertNotIn('content_excerpt', successful)
+        self.assertNotIn(SECRET, json.dumps(records))
+
+    def test_main_agent_comment_receipt_and_explicit_mention_stay_separate_from_visibility(self):
+        self.call('bili_reply', {'ok': True, 'status': 'accepted', 'receipt': '345', 'rpid': '345',
+                   'mention': {'requested': True, 'applied': True}},
+                  args={'bvid': BV, 'text': 'Public fixture opinion', 'mention_admin': True})
+        self.call('bili_reply', {'ok': True, 'status': 'accepted', 'receipt': '345', 'rpid': '346'},
+                  args={'bvid': BV, 'text': 'Unconfirmed fixture'})
+        replies = self.snapshot()['mainAgent']['replies']
+        accepted = next(row for row in replies if row['status'] == 'accepted')
+        self.assertTrue(accepted['receipt_present'])
+        self.assertTrue(accepted['mention_applied'])
+        self.assertEqual(accepted['public_visibility'], 'unverified')
+        self.assertEqual(next(row for row in replies if row['text'] == 'Unconfirmed fixture')['status'], 'unknown')
+
     def test_empty_subtitle_or_false_success_never_becomes_watched_or_sent(self):
         self.call('bili_subtitle', {'message': 'No subtitles'}, args={'bvid': BV})
         self.call('bili_subtitle', {'bvid': BV, 'segments': 3, 'text': ''}, args={'bvid': BV})

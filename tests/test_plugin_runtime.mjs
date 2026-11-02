@@ -4,7 +4,32 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { resolveRuntime, processReminders, localDay, acquireReminderLock } from '../plugin/lib/runtime.js'
-import { apply, launchScript } from '../plugin/lib/index.js'
+import { apply, launchScript, biliSchedule } from '../plugin/lib/index.js'
+
+test('unified Bili notifications run without enabling independent entertainment', () => {
+  const project = { decisions: { mode: 'unified' }, bilibili: { social: { reply: true } } }
+  for (const legacyEnabled of [false, true]) {
+    assert.deepEqual(biliSchedule(project, legacyEnabled), [
+      { name: 'bili-social', everySec: 600, script: 'bili_social.py', args: ['--max=3'] }
+    ])
+  }
+})
+
+test('notification polling requires explicit reply permission and a valid mode', () => {
+  for (const reply of [undefined, false, 'true', 1]) {
+    assert.deepEqual(biliSchedule({ bilibili: { social: { reply } } }, true), [])
+  }
+  assert.throws(() => biliSchedule({ decisions: { mode: 'unrecognized' } }, true), /Invalid decision mode/)
+  assert.throws(() => biliSchedule({ decisions: [] }, true), /Invalid decision configuration/)
+})
+
+test('legacy Bili scheduling preserves its explicit switch and intervals', () => {
+  const project = { decisions: { mode: 'legacy' }, bilibili: { social: { reply: true } } }
+  assert.deepEqual(biliSchedule(project, false), [])
+  assert.deepEqual(biliSchedule(project, 'true'), [])
+  assert.deepEqual(biliSchedule(project, true).map(job => [job.name, job.everySec]),
+    [['bili', 10800], ['bili-social', 5400]])
+})
 
 function workspace(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'character runtime '))

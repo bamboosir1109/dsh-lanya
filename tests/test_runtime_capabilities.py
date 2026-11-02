@@ -215,6 +215,30 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertIn("reading every subtitle is insufficient", claims["completion"])
         self.assertEqual(self.snapshot(), before)
 
+    def test_bilibili_preferences_are_fresh_strict_and_do_not_expose_account_configuration(self):
+        initial = self.context()["tools"]["entertainment"]["bilibili"]
+        self.assertEqual(initial["preferences"], {"valid": True, "comment": False,
+                                                "reply": False, "mentionAdmin": False})
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["bilibili"] = {"social": {"comment": True, "reply": True, "mentionAdmin": True},
+                              "private_account_marker": "PRIVATE_BILI_ACCOUNT_NOT_FOR_GUIDE"}
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        before = self.snapshot()
+        guide = self.context()["tools"]["entertainment"]["bilibili"]
+        self.assertEqual(guide["preferences"], {"valid": True, "comment": True,
+                                              "reply": True, "mentionAdmin": True})
+        self.assertNotIn("PRIVATE_BILI_ACCOUNT_NOT_FOR_GUIDE", json.dumps(guide))
+        self.assertEqual(self.snapshot(), before)
+        for invalid in (None, [], True, {"comment": "true"}, {"reply": 1}, {"mentionAdmin": None}):
+            with self.subTest(invalid=invalid):
+                config["bilibili"]["social"] = invalid
+                self.config.write_text(json.dumps(config), encoding="utf-8")
+                before = self.snapshot()
+                preferences = self.context()["tools"]["entertainment"]["bilibili"]["preferences"]
+                self.assertEqual(preferences, {"valid": False, "comment": False,
+                                               "reply": False, "mentionAdmin": False})
+                self.assertEqual(self.snapshot(), before)
+
     def test_primary_social_choice_does_not_require_a_major_result_or_an_early_internal_verdict(self):
         before = self.snapshot()
         primary = self.context()["tools"]

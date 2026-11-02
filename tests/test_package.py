@@ -34,6 +34,10 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         paths = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
         required = {
+            "scripts/bili_social_backend.py", "scripts/bili_video_content.py", "scripts/patch_bili_content.py",
+            "tests/fixtures/bili_video_content/observed.json",
+            "tests/fixtures/bili_main/v1-main-agent.js", "tests/fixtures/bili_main/frames-registration.js",
+            "tests/fixtures/bili_main/LICENSE", "tests/fixtures/bili_main/README.md",
             "plugin/lib/index.js", "plugin/lib/runtime.js", "cordis.patch.yml", "install.ps1",
             "server/panel-server.py", "server/meme_sources.py", "server/make_snapshots.py",
             "scripts/project_conf.py", "scripts/project_conf.ps1", "scripts/mind.py",

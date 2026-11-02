@@ -203,6 +203,81 @@ class BiliPatchTests(unittest.TestCase):
         self.assertFalse(json.loads(run.stdout)["applied"])
         self.assertEqual(before, self.tree())
 
+    def install_v1_fixture(self):
+        original = (self.plugin / patcher.TARGET).read_bytes()
+        module = (ROOT / "tests/fixtures/bili_main/v1-main-agent.js").read_bytes()
+        self.assertEqual(patcher.sha256(module), patcher.V1_MODULE)
+        outputs = {patcher.TARGET: patcher.transform_v1(original), patcher.MODULE: module,
+                   patcher.CONFIG: (json.dumps({"projectConfig": str(self.project), "ledgerFile": str(self.ledger)}, indent=2) + "\n").encode()}
+        backup = self.root / "v1-originals"
+        backup.mkdir()
+        (backup / patcher.TARGET).write_bytes(original)
+        record = {"patch": patcher.LEGACY_ID, "state": "prepared", "plugin": str(self.plugin), "backup": str(backup),
+                  "metadata": patcher.package_snapshot(self.plugin), "before": {patcher.TARGET: patcher.sha256(original)},
+                  "after": {name: patcher.sha256(raw) for name, raw in outputs.items()}}
+        (backup / "patch.json").write_bytes((json.dumps(record, indent=2) + "\n").encode())
+        for name, raw in outputs.items(): (self.plugin / name).write_bytes(raw)
+        (self.plugin / patcher.MARKER).write_bytes((json.dumps(dict(record, state="patched"), indent=2) + "\n").encode())
+        return backup / "patch.json"
+
+    def test_v1_upgrade_preserves_exact_programs_and_marker_then_can_restore_original_v1(self):
+        untouched = self.tree()
+        legacy_manifest = self.install_v1_fixture()
+        before_upgrade = self.tree()
+        self.assertEqual(self.preview()["status"], "upgrade_needed")
+        self.assertEqual(before_upgrade, self.tree())
+        result = self.apply()
+        self.assertIn(b"LANYA_BILI_MAIN_AGENT_V2", (self.plugin / "index.js").read_bytes())
+        self.assertEqual(self.preview()["status"], "already_patched")
+        self.assertFalse(self.ledger.exists())
+        self.restored(result)
+        self.assertEqual(before_upgrade, self.tree())
+        old = patcher.restore(self.plugin, legacy_manifest)
+        patcher.restore(self.plugin, legacy_manifest, apply=True, host_stopped=True, expected_fingerprint=old["fingerprint"])
+        self.assertEqual(untouched, self.tree())
+
+    def test_v1_upgrade_rejects_unknown_helper_index_marker_and_changed_explicit_paths(self):
+        self.install_v1_fixture()
+        for name in (patcher.TARGET, patcher.MODULE, patcher.CONFIG, patcher.MARKER):
+            file = self.plugin / name
+            saved = file.read_bytes()
+            file.write_bytes(saved + b"\nprivate later edit")
+            before = self.tree()
+            with self.subTest(name=name), self.assertRaises((patcher.PatchError, ValueError)): self.preview()
+            self.assertEqual(before, self.tree())
+            file.write_bytes(saved)
+        with self.assertRaises(patcher.PatchError):
+            patcher.patch(self.plugin, project_config=self.project, ledger_file=self.root / "other.sqlite")
+
+    def test_interrupted_v1_upgrade_restores_every_exact_predecessor_without_removing_data(self):
+        self.install_v1_fixture()
+        before = self.tree()
+        original_replace = patcher.os.replace
+        def interrupt(source, target):
+            if Path(target) == self.plugin / "index.js": raise OSError("fixture V2 interruption")
+            return original_replace(source, target)
+        with mock.patch.object(patcher.os, "replace", side_effect=interrupt), self.assertRaises(OSError): self.apply()
+        manifest = next((self.root / "backups").glob("*/patch.json"))
+        preview = patcher.restore(self.plugin, manifest)
+        self.assertIn(patcher.MODULE, preview["restore"])
+        self.ledger.write_bytes(b"private runtime data")
+        patcher.restore(self.plugin, manifest, apply=True, host_stopped=True, expected_fingerprint=preview["fingerprint"])
+        self.assertEqual(before, self.tree())
+        self.assertEqual(self.ledger.read_bytes(), b"private runtime data")
+
+    def test_v1_upgrade_restore_rejects_unknown_later_output_and_private_originals(self):
+        self.install_v1_fixture()
+        result = self.apply()
+        manifest = Path(result["backup"]) / "patch.json"
+        for file in (self.plugin / patcher.TARGET, self.plugin / patcher.MARKER, manifest.parent / patcher.MODULE):
+            saved = file.read_bytes()
+            file.write_bytes(saved + b"\nunknown")
+            before = self.tree()
+            with self.subTest(name=file.name), self.assertRaises((patcher.PatchError, ValueError)):
+                patcher.restore(self.plugin, manifest)
+            self.assertEqual(before, self.tree())
+            file.write_bytes(saved)
+
 
 if __name__ == "__main__":
     unittest.main()

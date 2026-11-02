@@ -113,6 +113,21 @@ function runtimeDecisionMode(runtime) {
   return mode
 }
 
+// Unified decisions consume notification observations in the main agent. They
+// must not depend on the switch for the separate legacy entertainment loop.
+export function biliSchedule(project, legacyEnabled = false) {
+  const mode = runtimeDecisionMode({ project })
+  if (mode === 'unified') {
+    return project.bilibili?.social?.reply === true
+      ? [{ name: 'bili-social', everySec: 600, script: 'bili_social.py', args: ['--max=3'] }]
+      : []
+  }
+  return legacyEnabled === true ? [
+    { name: 'bili', everySec: 10800, script: 'bili_onerun.py', args: ['--mention'] },
+    { name: 'bili-social', everySec: 5400, script: 'bili_social.py', args: ['--max=3'] }
+  ] : []
+}
+
 // Both panel entrypoints use the same lock/cooldown and verified owner in the
 // Python API. An unavailable API never falls back to the retired Life loop.
 export async function panelAutonomy(runtime, { check = false, fetchImpl = globalThis.fetch } = {}) {
@@ -862,12 +877,7 @@ export function apply(ctx, config = {}) {
     { name: 'memory',         everySec: 21600, script: 'memory-maintenance.py' },
     { name: 'patchcheck',     everySec: 86400, script: 'check-patches.ps1' }
   ]
-  if (config.scheduleBili === true) {
-    SCHEDULE.push(
-      { name: 'bili', everySec: 10800, script: 'bili_onerun.py', args: ['--mention'] },
-      { name: 'bili-social', everySec: 5400, script: 'bili_social.py', args: ['--max=3'] }
-    )
-  }
+  SCHEDULE.push(...biliSchedule(project, config.scheduleBili))
 
   const MARKER = path.join(NAPCAT_DIR, 'scheduler-in-plugin.flag')
   const schedulerEnabled = config.schedulerEnabled !== false

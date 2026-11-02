@@ -17,6 +17,13 @@
     "watchCandidates": 4,
     "commentRetries": 3
   },
+  "bilibili": {
+    "social": {
+      "comment": false,
+      "reply": false,
+      "mentionAdmin": false
+    }
+  },
   "budget": {
     "dailyLimit": 1.0
   },
