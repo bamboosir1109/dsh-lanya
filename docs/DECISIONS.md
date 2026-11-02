@@ -39,7 +39,7 @@ OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租�
 | 来源 | unified 行为 |
 | --- | --- |
 | groupwatch | 同一真实静默期只提出一次 quiet 观察；不再重复处理 WS 的真实消息 |
-| mind | 为配置中的主管理员和群聊分别提供低频自主机会；允许娱乐、延续计划或 idle，不定时强求台词 |
+| mind | 按配置为主管理员和群聊分别提供自主机会；允许娱乐、延续计划或 idle，不定时强求台词 |
 | greet | 已交谈过的人产生可选社交观察；不随机挑人、生成开场或直接发送 |
 | reminders | 到期只排证据；有 `sent` 完成记录才消费。idle 保留，unknown 不重发 |
 | B 站娱乐和通知 | 娱乐机会与只读通知交给主 agent；实际动作由真实平台工具执行 |

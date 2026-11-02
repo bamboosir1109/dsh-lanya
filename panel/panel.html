@@ -482,7 +482,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <div class="policy-item"><b>短而自然</b><p>默认简短直接，按内容说完。没有固定两行或总句数；步骤、解释需要时再展开。</p></div>
       <div class="policy-item"><b>是否开口由主 agent 判断</b><p>收到消息、冷场或自主机会都只是观察。可以回复，也可以保持安静。</p></div>
       <div class="policy-item"><b>静默持续有效</b><p>明确要求暂停后，等待当前会话的恢复指令；活动、表情和语音都不能绕过静默。</p></div>
-      <div class="policy-item"><b>表情与主动分享</b><p>合适时发真实图片，可以自然闲聊或分享发现，不逐步播报分数、操作或笔记路径。</p></div>
+      <div class="policy-item"><b>表情与主动分享</b><p>轻松聊天优先考虑真实表情，可以只发图；闲时优先做一小段实际活动。是否开口参考最近对话与静默，不逐步播报操作或笔记路径。</p></div>
     </div>
   </div>
   <div class="card">
@@ -495,34 +495,35 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-money">
-  <div class="phead"><h1>零花钱</h1><p>按天查看自主、私聊和群聊的 API 美元估值。当前页面每 15 秒检查更新。</p></div>
+  <div class="phead"><h1>零花钱</h1><p>按天查看自主、私聊和群聊的 API 费用，人民币为参考折算。当前页面每 15 秒检查更新。</p></div>
+  <p class="note" id="moneyFxNote">本批核对的本地成本配置参考值：1 USD = 7.2 元。固定参考，非实时汇率、非结算金额；美元底账与计价单位保持 USD，不会自动同步后续汇率配置。</p>
   <div class="stats">
     <div class="stat"><div class="k">当前预算门控</div><div class="v" id="mState" style="font-size:20px">—</div><div class="s" id="mStateSub">正在读取当前账本</div></div>
     <div class="stat"><div class="k">今日日期</div><div class="v" id="mDate" style="font-size:20px">—</div><div class="s" id="mCoverage">按北京时间每日统计</div></div>
-    <div class="stat"><div class="k">今日已计合计</div><div class="v" style="font-size:23px"><span id="mDailyTotal">—</span><small>USD</small></div><div class="s">当前绑定范围的 API 估值</div></div>
+    <div class="stat"><div class="k">今日已计合计</div><div class="v" style="font-size:23px"><span id="mDailyTotal">—</span><small>CNY</small></div><div class="s" id="mDailyTotalUsd">当前绑定范围的 API 估值</div></div>
   </div>
   <div class="card"><h3>今日花销 <span class="setting-state" id="mDailyAvailability">正在读取</span></h3><div class="policy-grid" id="dailyTodayBuckets"></div><p class="note" id="mAccounting">正在核对计费覆盖范围。</p></div>
   <div class="card" id="dailySpending">
-    <h3>每日花销 <span class="setting-state">USD</span></h3>
+    <h3>每日花销 <span class="setting-state">人民币参考值</span></h3>
     <div class="spend-toolbar">
       <label for="spendRange">显示范围 <select id="spendRange" onchange="renderDailySpending()"><option value="14">最近 14 天</option><option value="30">最近 30 天</option></select></label>
       <label for="spendSelectedDate">查看日期 <select id="spendSelectedDate" onchange="selectSpendingDate(this.value)" disabled></select></label>
     </div>
     <div class="spend-legend" aria-label="图例"><span>自主</span><span class="private">私聊</span><span class="group">群聊</span></div>
-    <div class="spend-chart" id="spendChart" role="group" aria-label="每日 API 花销柱状图，单位美元"><div class="empty">正在读取每日花销…</div></div>
+    <div class="spend-chart" id="spendChart" role="group" aria-label="每日 API 花销柱状图，人民币参考值，原始美元金额见各日说明" aria-describedby="moneyFxNote"><div class="empty">正在读取每日花销…</div></div>
     <div class="spend-detail" id="spendDetail" aria-live="polite"></div>
     <p class="spend-state" id="spendHistoryNote" role="status">正在核对按日记录。</p>
-    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，金额单位 USD；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
+    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，人民币参考值与原始 USD 对照；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
   </div>
   <div class="card"><h3>预算执行用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mGateAccounting">预算预留与剩余额度单独核对。</p></div>
   <div class="card">
     <h3>当前执行额度</h3>
-    <p class="note">单位 USD。0 表示不限。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
+    <p class="note">输入单位人民币，按上述固定参考值保存为 USD。仅前三项的 0 表示不限；每轮预留必须大于 0。修改金额向下取到 0.000001 USD，过小的正额度不会保存为不限。未修改字段保留原始美元精度。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
     <div class="grid2">
-      <div class="field"><label for="bAutonomy">每天自主活动额度（USD）</label><input type="number" min="0" step="0.01" id="bAutonomy" disabled></div>
-      <div class="field"><label for="bPrivate">每天私聊额度（USD）</label><input type="number" min="0" step="0.01" id="bPrivate" disabled></div>
-      <div class="field"><label for="bGroup">每天群聊额度（USD）</label><input type="number" min="0" step="0.01" id="bGroup" disabled></div>
-      <div class="field"><label for="bReserve">每轮预留（USD）</label><input type="number" min="0.000001" step="0.01" id="bReserve" disabled></div>
+      <div class="field"><label for="bAutonomy">每天自主活动额度（人民币）</label><input type="number" min="0" step="any" id="bAutonomy" aria-describedby="bAutonomyUsd moneyFxNote" disabled><p class="note" id="bAutonomyUsd">美元原值待确认</p></div>
+      <div class="field"><label for="bPrivate">每天私聊额度（人民币）</label><input type="number" min="0" step="any" id="bPrivate" aria-describedby="bPrivateUsd moneyFxNote" disabled><p class="note" id="bPrivateUsd">美元原值待确认</p></div>
+      <div class="field"><label for="bGroup">每天群聊额度（人民币）</label><input type="number" min="0" step="any" id="bGroup" aria-describedby="bGroupUsd moneyFxNote" disabled><p class="note" id="bGroupUsd">美元原值待确认</p></div>
+      <div class="field"><label for="bReserve">每轮预留（人民币）</label><input type="number" min="0.0000072" step="any" id="bReserve" aria-describedby="bReserveUsd moneyFxNote" disabled><p class="note" id="bReserveUsd">美元原值待确认</p></div>
     </div>
     <div class="btnrow"><button class="pri" id="budgetSave" onclick="saveBudget()" disabled>保存额度</button><button onclick="reloadCurrentSettings('money')">放弃修改并重读</button></div>
     <div class="out" id="moneyOut"></div>
@@ -1556,9 +1557,48 @@ async function saveAutonomySettings(){
 
 let budgetSettingsRevision = null;
 let budgetSettingsEpoch = 0, budgetSettingsSaving = false;
+const CNY_PER_USD = 7.2;
 
-function budgetAmount(value){
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? '$' + value.toFixed(4) : '待核算';
+function budgetAmount(value, withUsd = true){
+  if(typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '待核算';
+  const yuan = value * CNY_PER_USD;
+  const amount = yuan > 0 && yuan < 0.0001 ? '¥<0.0001' : '¥' + yuan.toFixed(4);
+  return amount + (withUsd ? '（USD ' + String(value) + '）' : '');
+}
+
+function budgetDecimal(value){
+  const text = String(value).trim(), match = /^(\d*\.?\d+)(?:e([+-]?\d+))?$/i.exec(text);
+  if(!match || text.length > 100 || !Number.isFinite(Number(text))) throw new Error('请输入有效的非负人民币金额');
+  const parts = match[1].split('.'), exponent = Number(match[2] || 0);
+  let scale = (parts[1] || '').length - exponent, units = BigInt(parts.join(''));
+  if(!Number.isSafeInteger(scale) || Math.abs(scale) > 320) throw new Error('人民币金额超出可用精度');
+  if(scale < 0){ units *= 10n ** BigInt(-scale); scale = 0; }
+  return {units, scale};
+}
+
+function renderBudgetInput(id, usd){
+  const input = $(id);
+  if(typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0){
+    input.value = ''; delete input.dataset.originalUsd; delete input.dataset.renderedCny;
+    setText(id + 'Usd', '美元原值待确认'); return;
+  }
+  const source = budgetDecimal(usd), rate = budgetDecimal(CNY_PER_USD), scale = source.scale + rate.scale;
+  const digits = String(source.units * rate.units).padStart(scale + 1, '0');
+  const exact = scale ? (digits.slice(0, -scale) + '.' + digits.slice(-scale)).replace(/\.?0+$/, '') : digits;
+  input.value = Number(exact) >= 0.0001 ? Number(exact).toFixed(4).replace(/\.?0+$/, '') : exact;
+  input.dataset.originalUsd = String(usd); input.dataset.renderedCny = String(input.value);
+  input.dataset.budgetRevision = budgetSettingsRevision;
+  setText(id + 'Usd', '载入的美元原值：USD ' + String(usd));
+}
+
+function budgetInputUsd(id){
+  const input = $(id), text = String(input.value).trim(), value = budgetDecimal(text);
+  if(input.dataset.budgetRevision === budgetSettingsRevision && text === input.dataset.renderedCny && input.dataset.originalUsd !== undefined) return Number(input.dataset.originalUsd);
+  const rate = budgetDecimal(CNY_PER_USD);
+  const micros = value.units * 10n ** BigInt(rate.scale + 6) / (rate.units * 10n ** BigInt(value.scale));
+  if(value.units > 0n && micros < 1n) throw new Error('正金额至少须折合 0.000001 USD；请增加人民币金额');
+  if(micros > 1000000000000n) throw new Error('人民币金额超过可用额度范围');
+  return Number(micros) / 1000000;
 }
 
 function renderBudgetSummary(budget){
@@ -1568,6 +1608,7 @@ function renderBudgetSummary(budget){
   setText('sMoney', label); setText('liveMoney', label);
   const detail = available ? '今日已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : budget.availability === 'not_started' ? '等待首条计费回执，当前费用未确认' : '账本暂不可用，不能按零费用判断';
   setText('sMoneySub', detail); setText('liveMoneySub', detail);
+  for(const id of ['sMoneySub','liveMoneySub']) $(id).title = '人民币为固定参考折算：1 USD = ' + CNY_PER_USD + ' 元，本批核对的本地成本配置参考值；非实时汇率、非结算金额，不自动同步后续配置。';
 }
 
 function renderBudget(budget, background, revision){
@@ -1578,8 +1619,8 @@ function renderBudget(budget, background, revision){
   const editing = dirtyPages.has('money') || (pageEdits.get('money') || 0) !== revision;
   if(!background && !editing){
     budgetSettingsRevision = budget.revision;
-    [['bAutonomy','autonomy'],['bPrivate','private'],['bGroup','group']].forEach(([id,key]) => { $(id).value = limits[key] ?? ''; });
-    $('bReserve').value = effective.reserve_usd ?? '';
+    [['bAutonomy','autonomy'],['bPrivate','private'],['bGroup','group']].forEach(([id,key]) => renderBudgetInput(id, limits[key]));
+    renderBudgetInput('bReserve', effective.reserve_usd);
   }
   ['bAutonomy','bPrivate','bGroup','bReserve'].forEach(id => { $(id).disabled = !available; });
   $('budgetSave').disabled = !available || !budgetSettingsRevision;
@@ -1630,7 +1671,7 @@ function spendingDayState(day){
 }
 
 function spendingAmount(value){
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? '$' + value.toFixed(4) : '待核算';
+  return budgetAmount(value);
 }
 
 function nativeSpendingReady(data){
@@ -1642,16 +1683,17 @@ function renderTodaySpending(history){
   const row = ready ? history.days.find(day => day.date === today) : null;
   const available = row && row.status !== 'unknown';
   setText('mDate', today || '—');
-  setText('mDailyTotal', available ? spendingAmount(row.total) : '待核算');
+  setText('mDailyTotal', available ? budgetAmount(row.total, false) : '待核算');
+  setText('mDailyTotalUsd', available && typeof row.total === 'number' && Number.isFinite(row.total) && row.total >= 0 ? '原始 API 估值：USD ' + String(row.total) : '原始 USD 费用待核算');
   setText('mDailyAvailability', !ready ? '来源未确认' : !available ? '费用待核算' : spendingDayState(row));
   const coverage = ready ? history.coverage : {};
   setText('mCoverage', Number.isInteger(coverage.owner_verified_scopes) && Number.isInteger(coverage.configured_scopes) ? '按北京时间归日 · 已核验 ' + coverage.owner_verified_scopes + '/' + coverage.configured_scopes + ' 个绑定范围' : '等待核验当前费用来源');
-  setText('mAccounting', '按当前绑定范围的原生模型轮次统计 API 美元估值，自主触发单独归类。未覆盖记录不能当作零费用；缺少计价或归类回执的轮次保留待核算。');
+  setText('mAccounting', '按当前绑定范围的原生模型轮次统计 API 美元估值，以人民币参考值显示并保留 USD 对照，自主触发单独归类。未覆盖记录不能当作零费用；缺少计价或归类回执的轮次保留待核算。');
   const box = $('dailyTodayBuckets'); box.innerHTML = '';
   for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
     const card = document.createElement('div'); card.className = 'policy-item';
     const title = document.createElement('b'); title.textContent = name; card.appendChild(title);
-    const amount = document.createElement('p'); amount.textContent = '今日已计 ' + spendingAmount(available ? row[key] : null) + ' USD'; card.appendChild(amount);
+    const amount = document.createElement('p'); amount.textContent = '今日已计 ' + spendingAmount(available ? row[key] : null); card.appendChild(amount);
     const bucket = available ? row.buckets?.[key] : null;
     const state = document.createElement('p'); state.textContent = !available ? '缺少可核验的当天费用' : bucket?.unknown_count ? bucket.unknown_count + ' 轮待核算，已计金额为已知小计' : bucket?.pending_count ? bucket.pending_count + ' 轮计费中' : '来自实际模型轮次计价记录'; card.appendChild(state);
     box.appendChild(card);
@@ -1693,7 +1735,7 @@ function renderDailySpending(data){
     button.setAttribute('aria-pressed', String(day.date === selected.date));
     const description = day.date + '，已计合计 ' + spendingAmount(day.total) + '，' + keys.map(([key,name]) => name + ' ' + spendingAmount(day[key])).join('，') + '，' + spendingDayState(day);
     button.setAttribute('aria-label', description); button.title = description; button.onclick = () => selectSpendingDate(day.date);
-    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? spendingAmount(day.total) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
+    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? budgetAmount(day.total, false) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
     const stack = document.createElement('span'); stack.className = 'spend-stack'; stack.setAttribute('aria-hidden','true');
     stack.dataset.state = keys.every(([key]) => !known(day[key])) ? 'unknown' : 'measured';
     keys.forEach(([key]) => { const piece = document.createElement('i'); piece.className = key; piece.style.height = (known(day[key]) ? day[key] / ceiling * 140 : 0) + 'px'; stack.appendChild(piece); });
@@ -1742,7 +1784,9 @@ async function loadActivityBudget(){
 async function saveBudget(){
   if(!budgetSettingsRevision){ show('moneyOut','先读取当前额度。'); return; }
   if(budgetSettingsSaving) return;
-  const values = ['bAutonomy','bPrivate','bGroup','bReserve'].map(id => $(id).value.trim() ? Number($(id).value) : NaN);
+  let values;
+  try{ values = ['bAutonomy','bPrivate','bGroup','bReserve'].map(budgetInputUsd); }
+  catch(error){ show('moneyOut', error.message); return; }
   if(values.some(value => !Number.isFinite(value) || value < 0) || values[3] <= 0){ show('moneyOut','额度应为非负数，每轮预留必须大于 0。'); return; }
   budgetSettingsSaving = true; budgetSettingsEpoch++;
   const revision = pageEdits.get('money') || 0;

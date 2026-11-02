@@ -565,6 +565,9 @@ def _observation_payload(mind, hits, primary=True):
                    "one small real game, browsing Bilibili, or making something you are interested in. "
                    "Prefer a concrete small activity over repeatedly planning to act later when the tools "
                    "and situation permit it; idle/defer is still valid when there is a real reason. "
+                   "The user wants more initiative: having no QQ message to send is not a reason to "
+                   "skip a real internal activity. If tools are available and no concrete rest or "
+                   "foreground task blocks it, do one small step now instead of another plan-only turn. "
                    "Use trusted_runtime_capabilities.tools.entertainment for available games, real local "
                    "URLs, Bilibili tools and the activity-notes location. Read fresh screenshots before "
                    "game moves; use real recommendation/detail/subtitle tools before claiming video content. "
@@ -588,7 +591,7 @@ def _observation_payload(mind, hits, primary=True):
                 "rather than deciding again. reply does not oblige sending. Choose tool_action or idle only "
                 "when this turn needs no QQ output; an earlier decision cannot be upgraded in the same turn. "
                 "Use next_review_at for a useful explicit review time. "
-                "Otherwise a later low-frequency opportunity may be offered; no message is required.")}
+                "Otherwise the current configured interval offers a later opportunity; no message is required.")}
 
 
 def _observation_signature(mind, hits, primary):
