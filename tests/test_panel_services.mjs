@@ -6,8 +6,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
 import { createPanelServiceSupervisor, panelServiceConfig, panelProcessPattern,
-  inspectPanelService, decoratePanelServices, componentAction } from '../plugin/lib/index.js'
+  inspectPanelService, requestPanelHealth, decoratePanelServices, componentAction } from '../plugin/lib/index.js'
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-service-'))
@@ -162,4 +163,54 @@ test('Works button delegates to the shared supervisor and refuses stop in both m
     await assert.rejects(componentAction(runtime, { target: 'works', op: 'stop' }, deps), /不停止/)
   }
   assert.equal(calls, 2)
+})
+
+async function localHealthServer(t, handler) {
+  const server = createServer(handler)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }))
+  return { port: server.address().port, url: 'http://127.0.0.1:' + server.address().port + '/api/service-health' }
+}
+
+test('real local health probes work without host fetch and still verify exact process and source', async t => {
+  let health
+  const server = await localHealthServer(t, (request, response) => {
+    assert.equal(request.url, '/api/service-health')
+    response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(health))
+  })
+  const previous = globalThis.fetch
+  globalThis.fetch = undefined
+  t.after(() => { globalThis.fetch = previous })
+  health = { ok: true, service: 'lanya-panel', version: 1, pid: 101, port: server.port,
+    role: 'works', script_sha256: 'a'.repeat(64) }
+  const inspect = () => inspectPanelService({ works: server.port }, 'works', one(server.port), { sourceHash: 'a'.repeat(64) })
+  assert.equal((await inspect()).healthy, true)
+  health.pid = 102; assert.equal((await inspect()).healthy, false)
+  health.pid = 101; health.script_sha256 = 'b'.repeat(64); assert.equal((await inspect()).healthy, false)
+})
+
+test('real health transport does not follow redirects or accept oversized responses', async t => {
+  let mode = 'redirect', requests = 0
+  const server = await localHealthServer(t, (request, response) => {
+    requests++
+    if (mode === 'redirect') { response.writeHead(302, { location: '/elsewhere' }); response.end(); return }
+    response.writeHead(200); response.end('x'.repeat(4097))
+  })
+  assert.equal((await requestPanelHealth(server.url)).ok, false); assert.equal(requests, 1)
+  mode = 'large'; await assert.rejects(requestPanelHealth(server.url), /too large|interrupted/)
+})
+
+test('health deadline covers an unfinished response body', async t => {
+  const server = await localHealthServer(t, (request, response) => {
+    response.writeHead(200); response.write('{')
+  })
+  await assert.rejects(requestPanelHealth(server.url, { timeoutMs: 40 }), /timed out|interrupted/)
+})
+
+test('health transport rejects nonlocal and nonhealth targets before networking', () => {
+  for (const url of ['http://example.invalid:1234/api/service-health', 'https://127.0.0.1:1234/api/service-health',
+    'http://user:pass@127.0.0.1:1234/api/service-health', 'http://127.0.0.1:1234/other',
+    'http://127.0.0.1:1234/api/service-health?next=1']) {
+    assert.throws(() => requestPanelHealth(url), /Invalid local/)
+  }
 })

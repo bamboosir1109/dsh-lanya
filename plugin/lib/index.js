@@ -18,6 +18,7 @@ import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
 import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
 import { createReminderObserver } from './reminder-observer.js'
 
@@ -197,7 +198,51 @@ async function readPanelRuntime(settings) {
   return value
 }
 
-export async function inspectPanelService(settings, role, snapshot, { fetchImpl = globalThis.fetch, sourceHash } = {}) {
+export function requestPanelHealth(value, { timeoutMs = 2000 } = {}) {
+  const url = new URL(value)
+  const port = Number(url.port || 80)
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password ||
+      url.pathname !== '/api/service-health' || url.search || url.hash ||
+      !Number.isInteger(port) || port < 1 || port > 65535 ||
+      !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2000) {
+    throw new Error('Invalid local panel health target')
+  }
+  // Electron's plugin host need not expose the browser/Node global fetch.
+  // Use a direct loopback-only request, with no proxy, redirect or shared pool.
+  return new Promise((resolve, reject) => {
+    let finished = false, deadline
+    const finish = (error, value) => {
+      if (finished) return
+      finished = true; clearTimeout(deadline)
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const request = httpRequest(url, { method: 'GET', agent: false,
+      headers: { accept: 'application/json', connection: 'close' } }, response => {
+      const chunks = []; let bytes = 0
+      response.on('data', chunk => {
+        bytes += chunk.length
+        if (bytes > 4096) {
+          const error = new Error('Panel health response too large')
+          finish(error); response.destroy(error); request.destroy(error); return
+        }
+        chunks.push(chunk)
+      })
+      response.on('error', error => finish(error))
+      response.on('aborted', () => finish(new Error('Panel health response interrupted')))
+      response.on('end', () => finish(null, { ok: response.statusCode === 200,
+        text: async () => Buffer.concat(chunks).toString('utf8') }))
+    })
+    deadline = setTimeout(() => {
+      const error = new Error('Panel health request timed out')
+      finish(error); request.destroy(error)
+    }, timeoutMs)
+    request.on('error', error => finish(error))
+    request.end()
+  })
+}
+
+export async function inspectPanelService(settings, role, snapshot, { fetchImpl = requestPanelHealth, sourceHash } = {}) {
   const port = settings[role]
   const rows = snapshot.processes.filter(row => row.port === port)
   const listeners = snapshot.listeners.filter(row => row.port === port)
@@ -208,7 +253,7 @@ export async function inspectPanelService(settings, role, snapshot, { fetchImpl 
   if (rows.length !== 1 || listeners.length !== 1 || rows[0].pid !== listeners[0].pid) return out
   out.status = 'unhealthy'
   try {
-    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/service-health', { cache: 'no-store', signal: AbortSignal.timeout(2000), redirect: 'error' })
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/service-health', { cache: 'no-store', redirect: 'error' })
     if (!response.ok) return out
     const raw = await response.text()
     if (raw.length > 4096) return out

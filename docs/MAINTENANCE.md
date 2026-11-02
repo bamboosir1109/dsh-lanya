@@ -18,6 +18,25 @@ pythonw -B ABSOLUTE_INSTALLED_MAIN_AGENT_WATCH --config ABSOLUTE_PRIVATE_WATCH_C
 
 登录待命可通过当前用户 Startup 中的独立快捷方式调用同一命令，明确绑定 Python、已部署脚本及私有配置；先核实已有入口，不能覆盖不明启动项。操作性维护前将私有配置 `enabled` 设为 `false`，核对暂停状态后再停宿主，维护完成后恢复 `true`。这是停机维护的抑制开关，不是清空队列。DSH 程序或启动 profile 改变后先重新核验绑定；阻塞或未知状态要核对原因，不能删除状态、抢租约或关掉校验来强行变绿。
 
+## QQ 群消息队列升级
+
+收到消息不等于已经开始处理。宿主每轮只取一条 `next-turn`；群消息连续到达时，过期输入可能逐条消耗模型轮次，而新版策略已经按更新输入递增 revision。此时 `stale_revision` 必须保留，不能通过放宽票或关闭静默校验来让旧回答发出。
+
+`scripts/patch_onebot_live_inbox.py` 在已安装 policy 层的 OneBot 0.8.1 bridge 上构建独立增量，保留 replay、egress 等现有修改。它只生成新文件，不改安装目录、不证明停机、不启动宿主。先明确实际 bridge 与全新暂存目录，从仓库根目录运行：
+
+```powershell
+python -B scripts/patch_onebot_live_inbox.py --bridge ABSOLUTE_INSTALLED_BRIDGE --build-dir NEW_PRIVATE_BUILD_DIRECTORY
+python -B scripts/patch_onebot_live_inbox.py --bridge ABSOLUTE_INSTALLED_BRIDGE --build-dir NEW_PRIVATE_BUILD_DIRECTORY --expected-fingerprint FRESH_PREVIEW_FINGERPRINT
+```
+
+第一次只读返回输入、生成模块和整体指纹，第二次才独占创建暂存目录。输入变动、重复标记、歧义锚点或已存在的输出应拒绝；不要删除已有输出后盲重跑。暂存内的 bridge、别名 adapter 与恢复 helper 必须作为同一批受控部署，并更新本项目包内的 adapter／helper，保留每项真实 before、完整权限与私有恢复原件。安装器复制脚本不会自动更新外部 OneBot 插件，生成完文件也不表示当前宿主已经加载。
+
+运行模式按 `agent/inbox/claimed` 的实际消息 ID 与完整内容绑定权限，不再将一个独立 FIFO 当作真实消费。只有同一 bridge 实例、agent、范围、owner 与角色下仍未开始处理的真实 QQ 输入可以合并；不同来源、观察、外部输入、权限变化或未知条目保持边界。被替换的原输入仍留在原生队列变更历史，较早内容仅作为上下文，不借当前管理员的权限执行旧指令。活动轮次的旧票仍可能过期，持续不断的新输入也不能保证立即回复；合并减少待处理积压，不承诺固定延迟或强制开口。
+
+新模式仅在真实 claimed 后、宿主进入模型前，通过 awaited pre-step 完成本轮预算准入。尚未开始的合并输入不逐条创建预留，不借用活动轮预算。原账、历史未知项及升级前已有预留保留；权限冲突或未知 claim 不进入模型和发送，不能从消息正文重建信任。
+
+已有积压必须单独维护。本机可信 adapter 配置可显式设置 `inboxRecovery` 的 `planFile` 与 `planSha256`；没有这项配置时恢复 helper 无效果。一次性私有计划须精确绑定实际群、会话、workspace／preset、原定 pending ID 和完整消息哈希，在受限目录先保存完整队列原件与意图，再由原宿主的同步 inbox API 逐项验证并归档。它不建立旧输入的回复票、不重放旧请求、不改预算、不触活动轮或观察。失败或部分执行保留证据，不在下一条消息上自动重试；完成后移除本机临时配置并保留恢复记录，不把这些私有计划提交源码仓库。
+
 ## 本地无决策收尾升级
 
 最新自主链同时依赖 `decision-policy.js`、`observation-queue.js`、`onebot-policy-adapter.js` 与 Python `decision_events.py`、`mind.py`。OneBot 安装副本中的三个对应模块也必须同步；仅替换 adapter 会缺少本地收尾方法。面板服务和 HTML 同步更新，才能识别 `no_decision` 并显示等待下次机会。
