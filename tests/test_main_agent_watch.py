@@ -19,7 +19,8 @@ spec.loader.exec_module(watch)
 
 def evidence(hosts=0, unknown=False, ports=None, fresh=False):
     return {'host_count': hosts, 'unverifiable_host': unknown,
-            'ports': [False, False] if ports is None else ports, 'scheduler_fresh': fresh}
+            'ports': [False, False] if ports is None else ports, 'scheduler_fresh': fresh,
+            'ports_confirmed_absent': [value is False for value in ([False, False] if ports is None else ports)]}
 
 
 class WatchTests(unittest.TestCase):
@@ -106,7 +107,8 @@ class WatchTests(unittest.TestCase):
         marker = Path(self.config['scheduler_file'])
         owner = {'pid': 100, 'birth': str(116_444_736_000_000_000 + 999_000 * 10_000), 'image': str(self.exe)}
         with mock.patch.object(watch, 'host_processes', return_value=([owner], False)), \
-                mock.patch.object(watch, 'port_open', return_value=True):
+                mock.patch.object(watch, 'port_open', return_value=True), \
+                mock.patch.object(watch, 'listener_table', return_value=set()):
             for jobs, expected in [('mind', False), (None, False), (['mind', 1], False), (['mind'], True)]:
                 marker.write_text(json.dumps({'version': 2, 'pid': 100, 'at': 1000000, 'jobs': jobs}), encoding='utf-8')
                 self.assertEqual(watch.snapshot(self.config, now=1000)['scheduler_fresh'], expected)

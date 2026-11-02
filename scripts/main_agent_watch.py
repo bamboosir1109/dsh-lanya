@@ -204,10 +204,127 @@ def port_open(port):
         return None
 
 
+# These DWORD fields are always 32 bits, including a 64-bit Python process.
+class TcpRow(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint32) for name in
+                ('state', 'local_address', 'local_port', 'remote_address', 'remote_port', 'pid')]
+
+
+class Tcp6Row(ctypes.Structure):
+    _fields_ = [('local_address', ctypes.c_ubyte * 16), ('local_scope', ctypes.c_uint32),
+                ('local_port', ctypes.c_uint32), ('remote_address', ctypes.c_ubyte * 16),
+                ('remote_scope', ctypes.c_uint32), ('remote_port', ctypes.c_uint32),
+                ('state', ctypes.c_uint32), ('pid', ctypes.c_uint32)]
+
+
+class TcpTable(ctypes.Structure):
+    _fields_ = [('count', ctypes.c_uint32), ('table', TcpRow * 1)]
+
+
+class Tcp6Table(ctypes.Structure):
+    _fields_ = [('count', ctypes.c_uint32), ('table', Tcp6Row * 1)]
+
+
+TCP_TABLE_MAX_BYTES = 16 * 1024 * 1024
+TCP_TABLE_FETCH_ATTEMPTS = 3
+
+
+def _tcp_table_api():
+    if os.name != 'nt':
+        raise OSError('windows_required')
+    library = ctypes.WinDLL('iphlpapi', use_last_error=True)
+    api = library.GetExtendedTcpTable
+    api.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
+                    ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    api.restype = ctypes.c_uint32
+    return api
+
+
+def decode_listener_table(raw, family):
+    """Decode only complete owner-PID listener tables; other states are unknown."""
+    layouts = {2: (TcpTable, TcpRow), 23: (Tcp6Table, Tcp6Row)}
+    if family not in layouts or not 4 <= len(raw) <= TCP_TABLE_MAX_BYTES:
+        raise ValueError('listener_table_invalid')
+    table, row = layouts[family]
+    count = ctypes.c_uint32.from_buffer_copy(raw[:4]).value
+    offset, stride = table.table.offset, ctypes.sizeof(row)
+    if offset + count * stride > len(raw):
+        raise ValueError('listener_table_incomplete')
+    ports = set()
+    for index in range(count):
+        start = offset + index * stride
+        item = row.from_buffer_copy(raw[start:start + stride])
+        if item.state != 2:
+            raise ValueError('listener_table_not_listener')
+        port = socket.ntohs(item.local_port & 0xffff)
+        if not port:
+            raise ValueError('listener_table_invalid_port')
+        ports.add(port)
+    return ports
+
+
+def listener_table(family, api=None):
+    """None means unknown, including unsupported families or incomplete fetches."""
+    if family not in (2, 23):
+        return None
+    try:
+        api = _tcp_table_api() if api is None else api
+        size = ctypes.c_uint32()
+        result = api(None, ctypes.byref(size), False, family, 3, 0)
+        if result not in (0, 122):
+            return None
+        for _ in range(TCP_TABLE_FETCH_ATTEMPTS):
+            capacity = size.value
+            if not 4 <= capacity <= TCP_TABLE_MAX_BYTES:
+                return None
+            buffer = ctypes.create_string_buffer(capacity)
+            result = api(buffer, ctypes.byref(size), False, family, 3, 0)
+            if result == 122:
+                if size.value <= capacity:
+                    return None
+                continue
+            if result != 0 or not 4 <= size.value <= capacity:
+                return None
+            return decode_listener_table(buffer.raw[:size.value], family)
+    except (OSError, ValueError, OverflowError, AttributeError):
+        pass
+    return None
+
+
+def listener_observation(core_ports):
+    tables = [listener_table(family) for family in (2, 23)]
+    present = [True if any(table is not None and port in table for table in tables)
+               else False if all(table is not None for table in tables) else None
+               for port in core_ports]
+    # Expose only the configured ports, not other local services or their owners.
+    return {'ipv4_complete': tables[0] is not None, 'ipv6_complete': tables[1] is not None,
+            'ports_present': present}
+
+
+def confirmed_port_absence(connect, before, after):
+    if connect is True or before is True or after is True:
+        return False
+    if (connect is False or connect is None) and before is False and after is False:
+        return True
+    return None
+
+
+def restart_ports_absent(evidence):
+    ports, absent = evidence.get('ports'), evidence.get('ports_confirmed_absent')
+    return (isinstance(ports, list) and len(ports) == 2
+            and all(port is False or port is None for port in ports)
+            and isinstance(absent, list) and len(absent) == 2
+            and all(value is True for value in absent))
+
+
 def snapshot(config, now=None):
     now = time.time() if now is None else now
     rows, unknown = host_processes(config['host_executable'])
+    before = listener_observation(config['core_ports'])
     ports = [port_open(port) for port in config['core_ports']]
+    after = listener_observation(config['core_ports'])
+    absent = [confirmed_port_absence(connect, first, last) for connect, first, last in
+              zip(ports, before['ports_present'], after['ports_present'])]
     fresh, owner_present = False, False
     try:
         marker = document(config['scheduler_file'])
@@ -224,6 +341,7 @@ def snapshot(config, now=None):
     except (OSError, ValueError, TypeError):
         pass
     return {'host_count': len(rows), 'unverifiable_host': unknown, 'ports': ports,
+            'ports_confirmed_absent': absent, 'listener_evidence': {'before': before, 'after': after},
             'scheduler_fresh': fresh, 'scheduler_owner_present': owner_present,
             'host_identity_digest': hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()}
 
@@ -329,7 +447,7 @@ class Watch:
         if current['scheduler_fresh'] and all(p is True for p in current['ports']):
             self.empty_checks = 0; self.attempts = 0
             return {'state': 'healthy', 'reason': 'scheduler_and_core_verified'}
-        if current['host_count'] or current['unverifiable_host'] or any(p is not False for p in current['ports']):
+        if current['host_count'] or current['unverifiable_host'] or not restart_ports_absent(current):
             self.empty_checks = 0
             return {'state': 'blocked' if current['unverifiable_host'] else 'waiting',
                     'reason': 'existing_or_unverifiable_owner_no_duplicate'}
@@ -343,7 +461,7 @@ class Watch:
         # Re-read ownership after hashing, immediately before starting. Never
         # restart a living owner just because a heartbeat is old.
         fresh = self.probe(config, self.now())
-        if fresh['host_count'] or fresh['unverifiable_host'] or any(p is not False for p in fresh['ports']):
+        if fresh['host_count'] or fresh['unverifiable_host'] or not restart_ports_absent(fresh):
             self.empty_checks = 0
             return {'state': 'blocked', 'reason': 'owner_changed_before_start'}
         if file_hash(config['host_executable']) != config['host_sha256'] or any(file_hash(row['path']) != row['sha256'] for row in config['startup_bindings']):
