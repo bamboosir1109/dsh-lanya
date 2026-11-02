@@ -17,6 +17,7 @@ from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "memory_plastic.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SCHEMA = """
 CREATE TABLE entries (
  id TEXT PRIMARY KEY, track TEXT NOT NULL, scope TEXT NOT NULL,
@@ -120,6 +121,31 @@ class MemoryPlasticTests(unittest.TestCase):
     def test_configured_data_path(self):
         self.assertEqual(Path(self.mod.WORK), self.root)
         self.assertEqual(Path(self.mod.DIARY), self.root / "custom-data" / "diary")
+
+    def test_annotation_history_survives_capsule_and_exact_restore_without_inventing_event_time(self):
+        import memory_metadata as metadata
+        merge = self.bili_group()
+        originals = self.entries()
+        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for row in originals:
+                metadata.write_metadata(connection, row, dict(title="Synthetic topic " + row["id"],
+                    kind="event", occurred_at="2025-01-01"))
+        self.mod.apply_merges([merge], dry=False)
+        summary = self.entries()[0]
+        with contextlib.closing(sqlite3.connect(self.db)) as connection:
+            annotation = metadata.read_metadata(connection, summary)
+            self.assertIsNone(annotation["occurred_at"])
+            self.assertIsNone(annotation["confidence"])
+            self.assertEqual({link["entry_id"] for link in annotation["links"]}, {row["id"] for row in originals})
+            for original in originals:
+                self.assertEqual(metadata.read_metadata(connection, original)["occurred_at"], "2025-01-01")
+        self.mod.restore_batch(self.batch_id(), dry=False)
+        self.assertEqual(self.entries(), originals)
+        with contextlib.closing(sqlite3.connect(self.db)) as connection:
+            for original in originals:
+                self.assertEqual(metadata.read_metadata(connection, original)["kind"], "event")
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM memory_metadata_revisions").fetchone()[0], len(originals) + 1)
 
     def capsule_facts(self, row):
         stream = io.BytesIO(row["text"].encode("utf-8"))

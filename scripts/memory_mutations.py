@@ -16,6 +16,7 @@ import time
 import uuid
 
 from memory_context import maintenance_selection
+from memory_metadata import read_metadata, normalize_metadata, write_metadata, MemoryMetadataError
 
 
 DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
@@ -160,6 +161,14 @@ def mutate(operation, body, *, db_path=None, apply=False):
     expected = _version(body.get("expected_version")) if operation != "add" else None
     entry_id = _identifier(body.get("id"), "id") if operation != "add" else "memory-" + uuid.uuid4().hex
     text = _text(body.get("text")) if operation != "delete" else None
+    if operation == "delete" and "metadata" in body:
+        raise MemoryMutationError("Delete cannot rewrite annotations")
+    requested_metadata = body.get("metadata")
+    if "metadata" in body:
+        try:
+            normalize_metadata(requested_metadata)
+        except MemoryMetadataError as error:
+            raise MemoryMutationError(str(error)) from error
     if operation == "add" and selection["scope"] == "workspace" and not selection["workspace_key"]:
         raise MemoryMutationError("New workspace memories require a nonempty explicit workspace_key")
     with _connection(db_path, apply) as connection:
@@ -171,6 +180,7 @@ def mutate(operation, body, *, db_path=None, apply=False):
         elif before is not None:
             raise MemoryMutationConflict("Generated memory ID is occupied")
         now = int(time.time() * 1000)
+        previous_metadata = read_metadata(connection, before) if before is not None else None
         if operation == "add":
             after = dict(id=entry_id, **selection, text=text, source="memory_mutations",
                          created_at=now, updated_at=now, session_id=None, tags="[]", version=1)
@@ -180,6 +190,12 @@ def mutate(operation, body, *, db_path=None, apply=False):
             version = expected + 1
         else:
             after, version = None, expected + 1
+        annotation = None
+        if after is not None and (requested_metadata is not None or previous_metadata is not None):
+            annotation = normalize_metadata(requested_metadata or {}, previous_metadata)
+            if before is not None:
+                annotation["links"] = [link for link in annotation["links"] if link["relation"] != "updates"] + [
+                    dict(entry_id=before["id"], version=before["version"], relation="updates")]
         change_id = None
         if apply:
             _ensure_archive(connection)
@@ -201,10 +217,16 @@ def mutate(operation, body, *, db_path=None, apply=False):
                     raise MemoryMutationConflict("Memory changed during the transaction")
             # Read complete stored rows, including defaults and counters, before sealing.
             after = _entry(connection, entry_id)
+            if annotation is not None:
+                try:
+                    annotation = write_metadata(connection, after, annotation, previous=previous_metadata,
+                        targets=[before] if before is not None else [])
+                except MemoryMetadataError as error:
+                    raise MemoryMutationConflict(str(error)) from error
             record = _archive(connection, operation, selection, before, after, version)
             change_id = record["change_id"]
         return dict(ok=True, applied=apply, view="maintenance", operation=operation,
-                    selection=selection, id=entry_id, version=version, entry=after, change_id=change_id)
+                    selection=selection, id=entry_id, version=version, entry=after, metadata=annotation, change_id=change_id)
 
 
 def _read_change(connection, change_id, selection):

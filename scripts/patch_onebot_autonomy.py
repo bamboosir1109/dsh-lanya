@@ -41,13 +41,13 @@ def private_path(value, plugin, source=None):
     return path
 
 
-def base_adapter(raw, helper_raw=None):
+def base_adapter(raw, helper_raw=None, diary_raw=None):
     text = replace_once(raw.decode('utf-8'), "from './decision-policy.js'", "from './lanya-decision-policy.js'")
-    return policy.bundle_intent_helper(replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode('utf-8'), helper_raw)
+    return policy.bundle_intent_helper(replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode('utf-8'), helper_raw, diary_raw)
 
 
-def compile_adapter(raw, helper_raw=None):
-    return egress.transform(TARGET, base_adapter(raw, helper_raw))
+def compile_adapter(raw, helper_raw=None, diary_raw=None):
+    return egress.transform(TARGET, base_adapter(raw, helper_raw, diary_raw))
 
 
 def installed_root(value):

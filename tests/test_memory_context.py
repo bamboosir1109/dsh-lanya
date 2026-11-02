@@ -36,7 +36,7 @@ class MemoryContextTests(unittest.TestCase):
         self.db = self.root / "fixture.db"
         with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
             connection.executescript(SCHEMA)
-        keys = ("memory_context", "memory_index", "memory_plastic", "project_conf", "seen_cap")
+        keys = ("memory_context", "memory_index", "memory_plastic", "memory_metadata", "project_conf", "seen_cap")
         missing = object()
         saved = {key: sys.modules.get(key, missing) for key in keys}
         def restore_modules():
@@ -50,6 +50,7 @@ class MemoryContextTests(unittest.TestCase):
             data_dir=lambda: str(self.root / "data"), work_dir=lambda: str(self.root),
             get=lambda key, default=None: "configured-fixture" if key == "decisions.agentPreset" else default)
         sys.modules["seen_cap"] = types.SimpleNamespace(load_seen_capped=mock.Mock(return_value=[]))
+        self.metadata = self.load('memory_metadata')
         self.context = self.load("memory_context")
         self.index = self.load("memory_index")
         self.plastic = self.load("memory_plastic")
@@ -129,7 +130,11 @@ class MemoryContextTests(unittest.TestCase):
         expected = {"current", "shared-agent", "global-current", "global-shared"}
         index = self.index.Index.for_model(self.cwd, self.preset)
         self.assertEqual({row["id"] for row in index.entries}, expected)
-        self.assertEqual({row["id"] for row in index.search("needle", limit=50)}, expected)
+        # Identical visible facts collapse only after owner filtering; a
+        # duplicate cannot crowd out other topics or expose a foreign owner.
+        hits = index.search('needle', limit=50)
+        self.assertEqual(len(hits), 1)
+        self.assertIn(hits[0]['id'], expected)
         self.assertIn(index.search("needle", limit=1)[0]["id"], expected)
         self.assertEqual(index.search("needle", limit=0), [])
         self.assertEqual(index.n, 4)
@@ -386,7 +391,7 @@ class MemoryContextTests(unittest.TestCase):
     def test_cli_shared_owner_and_current_chat_only(self):
         self.insert("shared", workspace_key="", agent_key="")
         self.insert("foreign")
-        event = dict(id="current", text="fixture message", source="trusted-queue", role="user",
+        event = dict(id="current", text="fixture needle message", source="trusted-queue", role="user",
                      workspace_key="", agent_key="", conversation_key="private:fixture")
         status, output, error = self.cli(dict(cwd="", agent_preset="", query="needle",
             conversation_key="private:fixture", recent_events=[event,

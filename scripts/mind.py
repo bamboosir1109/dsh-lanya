@@ -574,10 +574,29 @@ def _journal_cycle():
         log("local facts journal skipped (%s)" % (code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", code) else "JournalError"))
 
 
+def _diary_hint(primary):
+    """Private metadata in the existing opportunity, never another LLM job."""
+    if not primary:
+        return None
+    try:
+        from decision_events import project_scopes
+        from narrative_diary import pending_diary
+        scopes = project_scopes()
+        if not scopes or not scopes[0].startswith('private:'):
+            return None
+        value = pending_diary(workspace=WORK, agent_preset=get('decisions.agentPreset', ''),
+                              data_directory=DATA, conversation_key=scopes[0])
+        return value if value.get('status') in ('due', 'unknown_read_existing') else None
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+
+
 def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None):
+    diary = _diary_hint(primary)
     return {"legacy_plan_reference": mind.get("plan") if primary else None,
             "mood": mind.get("mood") if primary else None, "interrupts": hits,
             "activity_role": "internal_leisure" if primary else "conversation_social",
+            **({'memory': {'diary': diary}} if diary is not None else {}),
             **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
             "instruction": (
                 "This is an optional autonomous opportunity for this conversation, not a request to speak. "

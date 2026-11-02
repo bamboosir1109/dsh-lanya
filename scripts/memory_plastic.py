@@ -38,6 +38,7 @@ import time
 import uuid
 
 from project_conf import data_dir, work_dir
+from memory_metadata import read_metadata, write_metadata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = work_dir()
@@ -516,12 +517,20 @@ def _apply_plan(merges, victims, dry=True, operation="consolidate"):
         # Every original and its lineage is durable in this same transaction
         # before any entry is removed. Exceptions roll the entire batch back.
         for merge, output in zip(merges, outputs):
+            annotated = any(read_metadata(c, row) is not None for row in merge["_rows"])
             removed = set(merge["merged_ids"])
             for row in merge["_rows"]:
                 if row["id"] in removed:
                     _delete_archived(c, batch_id, row)
                     _audit(c, batch_id, "plastic-merge", row)
             _insert_entry(c, output)
+            if annotated:
+                # A container's maintenance date is not an event date. Keep
+                # original annotations bound to their original full rows and
+                # only record exact lineage on this new derived container.
+                write_metadata(c, output, dict(kind="uncertain", links=[
+                    dict(entry_id=row["id"], version=row["version"], relation="consolidates")
+                    for row in merge["_rows"]]), targets=merge["_rows"])
             _audit(c, batch_id, "plastic-derived", output)
         c.commit()
         return len(merges), batch_id

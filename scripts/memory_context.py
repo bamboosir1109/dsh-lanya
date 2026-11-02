@@ -12,10 +12,17 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import datetime
+import re
+
+from memory_metadata import read_metadata
 
 
 DB = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-memento", "memory.db")
 OWNER_FIELDS = ("track", "scope", "workspace_key", "agent_key")
+CANDIDATE_LIMIT = 512
+CONTEXT_CHAR_LIMIT = 10000
+EVENT_LIMIT = 64
 
 
 def workspace_key_of(cwd, platform=None):
@@ -88,6 +95,54 @@ def _visible_rows(connection, owner):
         (owner["agent_key"], owner["workspace_key"]))]
 
 
+def _candidates(connection, owner, query):
+    """RO lexical candidate window; no persistent index or full corpus packet."""
+    from memory_index import query_terms
+    where = ("e.track IN ('user','agent') AND typeof(e.workspace_key)='text' AND typeof(e.agent_key)='text' "
+             "AND (e.agent_key='' OR e.agent_key=?) "
+             "AND (e.scope='user-global' OR (e.scope='workspace' AND e.workspace_key=?))")
+    params = [owner['agent_key'], owner['workspace_key']]
+    total = connection.execute('SELECT COUNT(*) FROM entries e WHERE ' + where, params).fetchone()[0]
+    terms = list(query_terms(query))[:32]
+    clauses = ['CASE WHEN instr(lower(e.text),?)>0 OR instr(lower(e.tags),?)>0 THEN 1 ELSE 0 END' for _ in terms]
+    rank_params = [part for term in terms for part in (term, term)]
+    for date in list(dict.fromkeys(re.findall(r'\d{4}-\d{2}-\d{2}', query)))[:2]:
+        try: datetime.date.fromisoformat(date)
+        except ValueError: continue
+        clauses.append("CASE WHEN strftime('%Y-%m-%d',e.created_at/1000,'unixepoch','localtime')=? OR strftime('%Y-%m-%d',e.updated_at/1000,'unixepoch','localtime')=? THEN 1 ELSE 0 END")
+        rank_params.extend((date, date))
+    rank = ' + '.join(clauses) if clauses else '0'
+    found = [dict(row) for row in connection.execute('SELECT e.*, (' + rank + ') AS candidate_score FROM entries e WHERE ' + where +
+        ' ORDER BY candidate_score DESC, e.updated_at DESC, e.id LIMIT ?', rank_params + params + [CANDIDATE_LIMIT + 1])]
+    truncated = len(found) > CANDIDATE_LIMIT
+    found = found[:CANDIDATE_LIMIT]
+    # A title can add useful vocabulary absent from an old fact body. The
+    # version/owner join only selects candidates; read_metadata verifies each
+    # fact and metadata hash before title/status/date affect ranking.
+    has_metadata = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_metadata_revisions'").fetchone()
+    extras = []
+    if has_metadata and terms:
+        match = ' OR '.join('instr(lower(m.metadata_json),?)>0' for _ in terms)
+        sql = ('SELECT e.* FROM entries e JOIN memory_metadata_revisions m ON m.entry_id=e.id AND m.version=e.version '
+               'AND m.track=e.track AND m.scope=e.scope AND m.workspace_key=e.workspace_key AND m.agent_key=e.agent_key WHERE ' + where +
+               ' AND (' + match + ') ORDER BY e.updated_at DESC,e.id LIMIT 129')
+        extras = [dict(row) for row in connection.execute(sql, params + terms)]
+    supplements = {}
+    for row in extras[:128]:
+        metadata = read_metadata(connection, row)
+        declared = ' '.join(str(metadata.get(key) or '') for key in ('title', 'occurred_at', 'valid_from', 'valid_until')) if metadata else ''
+        if metadata and any(term in declared.casefold() for term in terms):
+            row['_metadata'] = metadata
+            supplements[row['id']] = row
+    rows = [row for row in found if row['id'] not in supplements][:CANDIDATE_LIMIT - len(supplements)] + list(supplements.values())
+    for row in rows:
+        if '_metadata' not in row: row['_metadata'] = read_metadata(connection, row)
+    return rows, dict(candidate_limit=CANDIDATE_LIMIT, candidates=len(rows), total_visible=total,
+                      truncated=truncated or total > len(rows) or len(extras) > 128,
+                      coverage='bounded_candidates' if total > len(rows) else 'all_visible',
+                      method='read_only_local_lexical', persistent_index=False)
+
+
 def list_owners(db_path=None):
     if not os.path.isfile(db_path or DB):
         return []
@@ -116,6 +171,15 @@ def _record(row):
     record = {key: row.get(key) for key in fields}
     record.update(tags=tags, kind="derived" if row.get("source") in ("merged", "memory_plastic:derived")
                   or "derived" in tags else "raw")
+    metadata = row.get('_metadata')
+    record['presentation'] = metadata or None
+    record['fact_time_range'] = row.get('_fact_times')
+    for field in ('created_at', 'updated_at'):
+        value = row.get(field)
+        try:
+            record[field + '_iso'] = datetime.datetime.fromtimestamp(value / 1000.0, datetime.timezone.utc).isoformat().replace('+00:00', 'Z') if type(value) in (int, float) and value >= 0 else None
+        except (ValueError, OverflowError, OSError):
+            record[field + '_iso'] = None
     return record
 
 
@@ -156,6 +220,7 @@ def _lineage(connection, memories, owner, limit):
                 memory["lineage"].append(ref)
                 identity = (ref["batch_id"], ref["entry_id"])
                 if identity not in seen and len(originals) < limit:
+                    row['_metadata'] = read_metadata(connection, row)
                     originals.append(dict(_record(row), batch_id=batch["batch_id"], sha256=ref["sha256"]))
                     seen.add(identity)
     return originals
@@ -172,6 +237,10 @@ def build_context(cwd, agent_preset, query="", recent_events=(), *, conversation
     owner = session_owner(cwd, agent_preset)
     if not isinstance(query, str) or not isinstance(recent_events, (list, tuple)):
         raise ValueError("query must be text and recent_events must be a list")
+    if len(recent_events) > EVENT_LIMIT:
+        raise ValueError('Recent event window exceeds bound')
+    query_truncated = len(query) > 2048
+    query = query[:2048]
     if conversation_key is not None and not isinstance(conversation_key, str):
         raise ValueError("conversation_key must be a string")
     if any(type(value) is not int or value < 0 or value > 50
@@ -180,7 +249,8 @@ def build_context(cwd, agent_preset, query="", recent_events=(), *, conversation
     if recent_events and (not isinstance(conversation_key, str) or not conversation_key):
         raise ValueError("Recent events require the current conversation_key")
     recent = []
-    for event in recent_events:
+    seen_recent = set()
+    for event in reversed(recent_events):
         if not isinstance(event, dict) or any(event.get(key) != owner[key] for key in owner):
             continue
         if event.get("conversation_key") != conversation_key:
@@ -189,31 +259,74 @@ def build_context(cwd, agent_preset, query="", recent_events=(), *, conversation
             continue
         if event.get("role") not in ("user", "assistant", "tool", "observation"):
             continue
+        # Duplicate IDs/bodies add no evidence. Preserve the latest original
+        # timestamp and role, without claiming an assistant report was sent.
+        key = (event['role'], event['text'].strip())
+        if event['id'] in seen_recent or key in seen_recent: continue
+        seen_recent.update((event['id'], key))
         fields = ("id", "source", "text", "role", "created_at", "conversation_key", "workspace_key", "agent_key")
-        recent.append({key: event.get(key) for key in fields})
-    recent = recent[-max(0, int(recent_limit)):] if recent_limit > 0 else []
+        item = {key: event.get(key) for key in fields}
+        item['text'] = item['text'][:2000]
+        item['text_truncated'] = len(event['text']) > 2000 or event.get('text_truncated') is True
+        recent.append(item)
+    recent.reverse()
     from memory_index import Index
     connection = connect_readonly(db_path) if os.path.isfile(db_path or DB) else None
     try:
         if connection is not None:
             connection.execute("BEGIN")
-        rows = _visible_rows(connection, owner) if connection is not None else []
+        rows, coverage = _candidates(connection, owner, query) if connection is not None else ([], dict(candidate_limit=CANDIDATE_LIMIT, candidates=0, total_visible=0, truncated=False, coverage='store_unavailable', method='read_only_local_lexical', persistent_index=False))
         index = Index.for_model(cwd, agent_preset, entries=rows)
-        if query:
-            ids = [hit["id"] for hit in index.search(query, limit=max(0, int(limit)))]
-            by_id = {row["id"]: row for row in index.entries}
-            selected = [by_id[eid] for eid in ids]
-        else:
-            selected = sorted(index.entries, key=lambda row: (row.get("created_at") or 0, row["id"]),
-                              reverse=True)[:max(0, int(limit))]
+        hits = index.search(query, limit=limit, recent=not query.strip())
+        query_mode = 'current_query' if query.strip() else 'recent_memory'
+        # A short follow-up can refer to a real previous topic. This fallback
+        # uses only the caller's same-owner/same-chat user surface, never tools,
+        # a global conversation scan, or the memory that was injected last turn.
+        topic = '\n'.join(event['text'][-768:] for event in [event for event in recent if event['role'] == 'user'][-2:])
+        effective_query = query
+        follow_up = query.strip().strip('？！?！。，,. ').casefold() in ('继续', '然后呢', '后来呢', '那件事呢', '那后来呢', '那个呢', '这个呢', '还记得吗', '好的', '好', '嗯', 'go on', 'what happened next')
+        if not hits and topic and query.strip() and follow_up:
+            effective_query = topic[:2048]
+            rows, coverage = _candidates(connection, owner, effective_query) if connection is not None else ([], coverage)
+            index = Index.for_model(cwd, agent_preset, entries=rows)
+            hits = index.search(effective_query, limit=limit)
+            query_mode = 'same_conversation_topic_fallback'
+        by_id = {row['id']: row for row in index.entries}
+        selected = [by_id[hit['id']] for hit in hits]
         memories = [_record(row) for row in selected]
+        for memory, hit in zip(memories, hits): memory['retrieval'] = hit['retrieval']
         originals = (_lineage(connection, memories, owner, max(0, int(original_limit)))
                      if connection is not None and memories else [])
     finally:
         if connection is not None:
             connection.close()
+    if recent_limit and recent:
+        history_rows = [dict(event, track='agent', scope='workspace', tags='[]') for event in recent]
+        history_index = Index.for_model(cwd, agent_preset, entries=history_rows)
+        ranked = history_index.search(effective_query, limit=recent_limit, recent=not effective_query.strip())
+        by_id = {event['id']: event for event in recent}
+        recent = [dict(by_id[hit['id']], relevance=hit['score'], evidence='assistant_report_not_delivery' if by_id[hit['id']]['role'] == 'assistant' else 'conversation_surface') for hit in ranked]
+    else:
+        recent = []
+    # Shared budget across all text surfaces, keeping a verifiable hash of
+    # clipped originals. Truncation never changes the store or source facts.
+    remaining = CONTEXT_CHAR_LIMIT
+    context_clipped = False
+    for collection in (memories, recent, originals):
+        for record in collection:
+            text = record.get('text') or ''
+            cap = min(2000, remaining)
+            record['text_sha256'] = _digest(text)
+            record['text_truncated'] = record.get('text_truncated') is True or len(text) > cap
+            context_clipped = context_clipped or record['text_truncated']
+            record['text'] = text[:cap]
+            remaining -= len(record['text'])
+        collection[:] = [record for record in collection if record['text']]
+    coverage.update(query_mode=query_mode, query_truncated=query_truncated, text_char_limit=CONTEXT_CHAR_LIMIT,
+                    text_chars_used=CONTEXT_CHAR_LIMIT - remaining, context_truncated=context_clipped)
     return dict(schema="dsh-memento-context/v1", owner=owner, conversation_key=conversation_key,
-                recent_events=recent, memories=memories, originals=originals, read_only=True)
+                recent_events=recent, memories=memories, originals=originals, read_only=True, retrieval=coverage,
+                authority='historical_evidence_not_current_runtime_configuration')
 
 
 def main(argv=None, stdin=None, stdout=None, stderr=None):

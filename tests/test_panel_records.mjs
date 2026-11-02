@@ -126,6 +126,54 @@ test('voice status separates demand-based synthesis, process evidence and delive
   assert.equal(h.node('voiceEngine').textContent, '待确认')
 })
 
+test('memory rows show a concrete topic and distinguish stored time from event time without HTML', () => {
+  const h = harness({functions:['memoryDisplayTime','appendMemoryRecord']})
+  const entry = {id:'fixture-memory',version:2,track:'agent',text:'<img src=x onerror=unexpected()> full original',
+    presentation:{schema:'memory-presentation/v1',title:'星图里的那条路线',recorded_at:'2026-11-01T08:00:00Z',
+      occurred_at:null,kind:'reflection',status:'uncertain',importance:60,confidence:null}}
+  const row = h.context.appendMemoryRecord(h.node('fixture-list'), entry)
+  const main = row.children[0]
+  assert.equal(main.children[0].textContent,'星图里的那条路线')
+  assert.match(main.children[1].textContent,/记录于/)
+  assert.match(main.children[1].textContent,/发生时间未标注/)
+  assert.match(main.children[1].textContent,/内容待核对/)
+  assert.equal(main.children[2].textContent,entry.text)
+  assert.equal(main.children[2].innerHTML,'')
+  assert.notEqual(main.children[0].textContent,'我自己的')
+  assert.equal(h.context.memoryDisplayTime(null),'未记录')
+})
+
+test('memory date search uses read-only parameters and ignores an older response', async () => {
+  const one=deferred(),two=deferred(),requests=[]
+  const h=harness({extra:{memorySearchGeneration:0,filterMem(){},api:async url=>{
+    requests.push(url);return requests.length===1?one.promise:two.promise}},
+    functions:['memoryDisplayTime','appendMemoryRecord','memSmartSearch']})
+  h.node('memSearch').value='earlier topic';h.node('memDateStart').value='2026-11-01'
+  const first=h.context.memSmartSearch()
+  h.node('memSearch').value='current topic';const second=h.context.memSmartSearch()
+  two.resolve({ok:true,hits:[{text:'current topic',track:'agent'}]});await second
+  const rendered=h.node('memHits').children[1]
+  one.resolve({ok:true,hits:[{text:'earlier topic',track:'agent'}]});await first
+  assert.equal(h.node('memHits').children[1],rendered)
+  assert.match(requests[1],/start=2026-11-01/)
+  assert.ok(requests.every(url=>url.startsWith('/memory/search?')))
+  assert.equal(h.node('memPropList').style.display,'none')
+})
+
+test('diary page keeps factual drafts distinct from an unwritten personal diary and only reads', async () => {
+  const requests=[]
+  const h=harness({extra:{memoryDiaryReadGeneration:0,noteRecord(){},api:async(...args)=>{
+    requests.push(args);return{ok:true,diary:{schema:'narrative-diary/v1',status:'empty',private:true,read_only:true,
+      days:[],selected:null,new_facts_available:true,submission:'none',
+      facts:{day:'2026-11-01',status:'available',items:[{summary:'实际读取了地图资料。'}]}}}}},
+    functions:['memoryDisplayTime','filterMemoryDiaryDays','loadMemoryDiary']})
+  await h.context.loadMemoryDiary()
+  assert.match(h.node('memoryDiaryBody').textContent,/尚无新版日记/)
+  assert.match(h.node('memoryDiaryState').textContent,/等待主 Agent/)
+  assert.equal(h.node('memoryDiaryFacts').children[0].textContent,'实际读取了地图资料。')
+  assert.deepEqual(requests,[['/memory/diary']])
+})
+
 test('voice status never renders untrusted service claims or HTML as readiness', () => {
   const h = harness({ functions: ['renderVoiceStatus'] })
   h.context.renderVoiceStatus({schema:'dsh-voice-status/v1', mode:'unified', read_only:true,
@@ -255,7 +303,7 @@ test('edits made while a save is waiting remain dirty after its old response', a
 })
 
 const LOADERS = ['refreshOverview', 'loadBili', 'loadLive', 'loadAutonomySettings', 'loadActivityBudget', 'loadBudget', 'loadTools',
-  'loadMemes', 'loadMemoryOverview', 'loadFiles', 'loadWorks', 'loadSchedule', 'loadConversationPolicy',
+  'loadMemes', 'loadMemoryOverview', 'loadMemoryDiary', 'loadFiles', 'loadWorks', 'loadSchedule', 'loadConversationPolicy',
   'loadNapcat', 'loadPersona', 'loadConfig', 'loadBrand', 'loadSystem', 'loadMemeConfig', 'loadBiliCred']
 function refreshHarness(extra = {}) {
   const counts = new Map(), args = new Map()
@@ -774,7 +822,7 @@ test('daily range and actual date button select details without editing settings
   assert.equal(h.calls.length, 0)
 })
 
-test('actual input and change listeners exclude chart navigation while retaining real settings edits on every page', () => {
+test('actual input and change listeners exclude read filters while retaining real settings edits on every page', () => {
   const h = harness({ functions: ['renderRecordSync'] })
   for (const event of ['input', 'change']) {
     const start = h.source.indexOf("document.addEventListener('" + event + "',")
@@ -785,6 +833,8 @@ test('actual input and change listeners exclude chart navigation while retaining
     assert.equal(typeof listener, 'function')
     for (const [id, tag, page, shouldEdit] of [
       ['spendRange', 'select', 'money', false], ['spendSelectedDate', 'select', 'money', false], ['activityJournalDate', 'select', 'activity', false],
+      ['memSearch', 'input', 'memory', false], ['memDateStart', 'input', 'memory', false], ['memDateEnd', 'input', 'memory', false],
+      ['memKind', 'select', 'memory', false], ['memoryDiaryDay', 'input', 'memory', false], ['memoryDiaryQuery', 'input', 'memory', false],
       ['bAutonomy', 'input', 'money', true], ['bReserve', 'input', 'money', true],
       ['syntheticBudgetOption', 'select', 'money', true], ['activityInterval', 'input', 'activity', true],
       ['memOwner', 'select', 'memory', true], ['persona', 'textarea', 'persona', true]

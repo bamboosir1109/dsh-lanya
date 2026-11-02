@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -81,7 +82,30 @@ def replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
-def bundle_intent_helper(raw, helper_raw=None):
+def bundle_diary_helper(raw, diary_raw=None):
+    """A conditional closed helper; old adapters do not read new source files."""
+    text = raw.decode('utf-8')
+    anchor = "import { NarrativeDiary } from './narrative-diary.js'"
+    if anchor not in text:
+        if 'narrative-diary.js' in text:
+            raise PatchError('Unknown diary helper import')
+        return raw
+    if text.count(anchor) != 1:
+        raise PatchError('Ambiguous diary helper import')
+    if diary_raw is None:
+        diary_raw, _ = read_regular(REPO / 'plugin/lib/narrative-diary.js')
+    helper = diary_raw.decode('utf-8').replace('\r\n', '\n')
+    for dependency in ["import path from 'node:path'", "import { createHash } from 'node:crypto'"]:
+        helper = replace_once(helper, dependency + '\n', '')
+    helper = replace_once(helper, 'export class NarrativeDiary', 'class NarrativeDiary')
+    if re.search(r'(?m)^\s*(?:import|export)\s', helper):
+        raise PatchError('Unreviewed diary helper dependency or export')
+    bundled = '// LANYA_DIARY_BUNDLE_V1 ' + sha256(diary_raw) + '\n' + \
+        'const { NarrativeDiary } = (() => {\n' + helper + '\nreturn { NarrativeDiary }\n})()'
+    return replace_once(text, anchor, bundled).encode('utf-8')
+
+
+def bundle_intent_helper(raw, helper_raw=None, diary_raw=None):
     """Current aliases are self-contained; legacy adapters stay byte-identical.
 
     The reviewed helper has a closed lexical scope. Its only extra native
@@ -93,7 +117,7 @@ def bundle_intent_helper(raw, helper_raw=None):
     if anchor not in text:
         if 'autonomy-intents.js' in text:
             raise PatchError('Unknown intent helper import')
-        return raw
+        return bundle_diary_helper(raw, diary_raw)
     if text.count(anchor) != 1:
         raise PatchError('Ambiguous intent helper import')
     if helper_raw is None:
@@ -116,7 +140,7 @@ def bundle_intent_helper(raw, helper_raw=None):
         '// LANYA_INTENT_BUNDLE_V1 ' + sha256(helper_raw) + '\n' + \
         'const { AutonomyPlanner } = (() => {\nconst DatabaseSync = IntentDatabaseSync\n' + helper + \
         '\nreturn { AutonomyPlanner }\n})()'
-    return replace_once(text, anchor, bundled).encode('utf-8')
+    return bundle_diary_helper(replace_once(text, anchor, bundled).encode('utf-8'), diary_raw)
 
 
 DECIDE_TOOL = """    register(defineTool({

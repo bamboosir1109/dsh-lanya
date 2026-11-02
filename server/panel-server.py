@@ -921,6 +921,9 @@ def list_dir_files(key, with_preview=False, limit=0):
         rows = rows[:limit]
     for f, p, st in rows:
         row = {"name": f, "size": st.st_size, "mtime": int(st.st_mtime)}
+        if key in ("diary", "notes", "people"):
+            from memory_presentation import file_title
+            row.update(file_title(p))
         if with_preview:
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as fh:
@@ -1004,6 +1007,19 @@ def panel_activity_journal(day=None, limit=90):
     except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
         return {"schema": "activity-journal/v1", "status": "error", "generated_at": int(time.time() * 1000),
                 "read_only": True, "private": True, "days": [], "selected": None, "selected_status": "unavailable"}
+
+
+def panel_narrative_diary(day=None, limit=90):
+    """Local console reads the configured primary's diary, without generating."""
+    try:
+        from narrative_diary import narrative_snapshot
+        from decision_events import project_scope
+        options = _panel_native_record_options()
+        return narrative_snapshot(workspace=options["workspace"], agent_preset=options["agent_preset"],
+            data_directory=DATA, conversation_key=project_scope(), day=day, limit=limit)
+    except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
+        return {"schema": "narrative-diary/v1", "status": "error", "read_only": True,
+                "private": True, "days": [], "selected": None, "error": "DiaryReadUnavailable"}
 
 
 def _bili_cached_covers(bvids):
@@ -1367,6 +1383,42 @@ def memory_maintenance(operation, body):
     return dict(result, selection=selection, view="maintenance")
 
 
+def memory_records(query=None, limit=200, start=None, end=None, kind=None):
+    """Administrator projection; never called to construct model context."""
+    from memory_context import connect_readonly
+    from memory_presentation import (project_entries, parse_date_range,
+                                     in_recorded_range, KINDS)
+    first, last = parse_date_range(start, end)
+    if kind and kind not in KINDS and kind != "unspecified":
+        raise ValueError("InvalidMemoryKind")
+    if query is not None and (not isinstance(query, str) or len(query) > 2000):
+        raise ValueError("InvalidMemoryQuery")
+    con = connect_readonly(MEMENTO_DB)
+    try:
+        con.execute("BEGIN")
+        total = con.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        rows = [dict(row) for row in con.execute(
+            "SELECT * FROM entries ORDER BY created_at DESC, id LIMIT 10000")]
+        scoped = [row for row in rows if in_recorded_range(row, first, last)]
+        projected = project_entries(con, scoped)
+        if kind:
+            projected = [row for row in projected if row["presentation"]["kind"] == kind]
+        selected = projected
+        if query:
+            from memory_index import Index
+            by_id = {row["id"]: row for row in projected}
+            ranked = Index(entries=projected, management=True).search(query, limit=limit)
+            selected = [dict(by_id[hit["id"]], score=hit.get("score"),
+                             matched_terms=hit.get("matched_terms", [])) for hit in ranked]
+        else:
+            selected = selected[:limit]
+        return {"entries": selected, "total": total, "filtered_candidates": len(projected),
+                "candidate_limit": 10000, "truncated": total > len(rows),
+                "time_basis": "recorded_at", "view": "management", "read_only": True}
+    finally:
+        con.close()
+
+
 def memory_overview():
     # 过滤掉 snapshot：它们每轮都写一条、内容全是同一句话，341 条把真正
     # 有价值的记忆操作淹没了。只在实在没有其它记录时才退回显示它们。
@@ -1386,14 +1438,14 @@ def memory_overview():
         props = memento_rows(
             "SELECT id, kind, track, scope, text, status, created_at FROM proposals "
             "ORDER BY created_at DESC LIMIT 30", strict=True)
-        entries = memento_rows(
-            "SELECT id, track, scope, workspace_key, agent_key, text, source, tags, version, "
-            "created_at, updated_at, recall_count "
-            "FROM entries ORDER BY created_at DESC LIMIT 200", strict=True)
+        record_view = memory_records(limit=200)
+        entries = record_view["entries"]
         totals = {key: memento_rows("SELECT COUNT(*) AS n FROM " + table, strict=True)[0]["n"]
                   for key, table in (("active", "entries"), ("audit", "audit"), ("proposals", "proposals"))}
-        availability = {"status": "available", "counts_complete": True}
-    except (ValueError, IndexError, KeyError, TypeError):
+        availability = {"status": "available", "counts_complete": True,
+                        "listed_entries": len(entries), "entry_limit": 200,
+                        "entries_complete": len(entries) == totals["active"]}
+    except (ValueError, IndexError, KeyError, TypeError, OSError, sqlite3.Error):
         audit, props, entries = [], [], []
         totals = {key: None for key in ("active", "audit", "proposals")}
         availability = {"status": "error", "counts_complete": False, "error": "MemoryReadUnavailable"}
@@ -2040,6 +2092,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
+        if path == "/api/memory/diary":
+            q = parse_qs(urlparse(self.path).query)
+            day = (q.get("day") or [None])[0]
+            if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                return self._json(400, {"ok": False, "error": "InvalidDiaryDate"})
+            view = panel_narrative_diary(day)
+            return self._json(200 if view["status"] != "error" else 503,
+                              dict(ok=view["status"] != "error", diary=view))
+
         if path == "/api/memory/search":
             # 关键词 / 相似度检索（BM25 + 中文 bigram），不是子串过滤。
             q = parse_qs(urlparse(self.path).query)
@@ -2050,14 +2111,16 @@ class Handler(SimpleHTTPRequestHandler):
                 lim = 8
             lim = max(1, min(50, lim))
             try:
-                import memory_index as _mi
-                idx = _mi.Index.management()
-                hits = idx.search(kw, limit=lim) if kw else []
+                view = memory_records(query=kw, limit=lim,
+                    start=(q.get("start") or [None])[0],
+                    end=(q.get("end") or [None])[0],
+                    kind=(q.get("kind") or [None])[0])
                 return self._json(200, {"ok": True, "view": "management", "q": kw,
-                                        "total": idx.n, "hits": hits})
+                                        **{key: val for key, val in view.items() if key != "entries"},
+                                        "hits": view["entries"]})
             except Exception as e:
                 return self._json(200, {"ok": False, "hits": [],
-                                        "error": str(e)[:200]})
+                                        "error": "MemorySearchUnavailable"})
 
         if path == "/api/memory/graph":
             try:

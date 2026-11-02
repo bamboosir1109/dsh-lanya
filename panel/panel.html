@@ -615,7 +615,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 <div class="page" id="page-memory">
   <div class="phead">
     <h1>记忆</h1>
-    <p>她记的人和事，都在这里。点一下就能看。</p>
+    <p>按主题、记录时间和内容找回她记的人和事。事实、感受与日记分别保留。</p>
   </div>
 
   <div class="stats">
@@ -627,7 +627,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="stat" style="cursor:pointer" onclick="switchFileTab('diary')">
       <div class="k">日记</div>
       <div class="v" id="memDiary">—</div>
-      <div class="s">她每天写的</div>
+      <div class="s">原有日记文件，保持原样</div>
     </div>
     <div class="stat" style="cursor:pointer" onclick="switchFileTab('notes')">
       <div class="k">随笔</div>
@@ -636,7 +636,23 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     </div>
   </div>
 
+  <div class="card" id="memoryDiaryCard">
+    <h3>她的日记</h3>
+    <p class="note">由同一主 Agent 根据当天真实记录写下。经历附来源，感受作为她自己的表达；刷新页面不会代写。</p>
+    <div class="spend-toolbar">
+      <label>日期 <input type="date" id="memoryDiaryDay" onchange="loadMemoryDiary()"></label>
+      <label>找主题 <input type="search" id="memoryDiaryQuery" placeholder="日期或主题关键词" oninput="filterMemoryDiaryDays()"></label>
+      <button onclick="loadMemoryDiary()">刷新日记</button>
+    </div>
+    <p class="note" id="memoryDiaryState" role="status">正在读取日记。</p>
+    <div id="memoryDiaryDays"></div>
+    <h3 id="memoryDiaryTitle">当天日记</h3>
+    <pre class="record-excerpt" id="memoryDiaryBody" style="max-height:560px;white-space:pre-wrap">正在读取…</pre>
+    <details><summary>事实底稿与来源</summary><p class="note" id="memoryDiaryCoverage"></p><div id="memoryDiaryFacts"></div></details>
+  </div>
+
   <div class="card">
+    <h3>日记与随手记录原件</h3>
     <div style="display:flex;gap:9px;margin-bottom:14px">
       <input type="text" id="fileSearch" placeholder="搜关键词…（在日记 / 随笔 / 人物档案里找）"
              style="flex:1" onkeydown="if(event.key==='Enter') doSearch()">
@@ -678,7 +694,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     </div>
     <p class="note">先在上方选择记忆范围，再添加；修改和移除按条目原范围及版本校验。</p>
     <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
-      <input type="text" id="memSearch" placeholder="搜记忆…（关键词/相似度）" style="flex:1;min-width:160px"
+      <input type="text" id="memSearch" placeholder="搜话题、人、作品或一件事…" style="flex:1;min-width:160px"
              onkeydown="if(event.key==='Enter') memSmartSearch()">
       <button class="pri" onclick="memSmartSearch()">搜</button>
       <div class="tabs" id="memFilter" style="margin:0">
@@ -687,14 +703,20 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
         <div class="tab" data-t="agent">我自己的</div>
       </div>
     </div>
+    <div class="spend-toolbar" style="margin:10px 0">
+      <label>记录起日 <input type="date" id="memDateStart" onchange="memSmartSearch()"></label>
+      <label>记录止日 <input type="date" id="memDateEnd" onchange="memSmartSearch()"></label>
+      <label>内容类型 <select id="memKind" onchange="memSmartSearch()"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="event">经历</option><option value="rule">规则</option><option value="reflection">感想</option><option value="uncertain">待核对</option><option value="unspecified">尚未分类</option></select></label>
+    </div>
+    <p class="note">记录时间表示何时存入，发生时间只显示明确标注的日期。没有独立主题的条目使用正文摘录作标题，原文保留。</p>
     <div class="out" id="memOut"></div>
+    <div class="out" id="memHits" aria-live="polite"></div>
     <div class="filelist" id="memPropList"></div>
     <div style="margin-top:10px;display:flex;gap:8px">
       <button onclick="memGraph()">看关系图</button>
       <span class="dsc" id="memGraphSub" style="align-self:center"></span>
     </div>
     <div id="memGraphBox" style="display:none;margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:10px;overflow:auto;max-height:420px"></div>
-    <div class="out" id="memHits"></div>
 
   <div class="card" style="margin-top:14px">
     <h3>记忆整理</h3>
@@ -1077,10 +1099,10 @@ function renderRecordSync(){
   if(button) button.disabled = refreshingPages.has(currentPage);
 }
 document.addEventListener('input', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#memSearch,#memDateStart,#memDateEnd,#memKind,#memoryDiaryDay,#memoryDiaryQuery,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 document.addEventListener('change', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#memSearch,#memDateStart,#memDateEnd,#memKind,#memoryDiaryDay,#memoryDiaryQuery,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 
 async function refreshCurrentPage(manual){
@@ -1094,7 +1116,7 @@ async function refreshCurrentPage(manual){
       activity:async () => { await loadLive(); await loadAutonomySettings(editing); },
       money:() => loadBudget(true), tools:loadTools,
       memes:() => editing ? null : loadMemes(true),
-      memory:async () => { if(!editing) { await loadMemoryOverview(true); if(!searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open')) await loadFiles(currentDir, true); } },
+      memory:async () => { if(!editing) { await loadMemoryOverview(true); await loadMemoryDiary(); if(!searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open')) await loadFiles(currentDir, true); } },
       works:() => editing || Object.keys(workSel).length || $('worksViewer')?.classList.contains('on') ? null : loadWorks(true),
       schedule:() => editing ? null : loadSchedule(),
       talk:loadConversationPolicy,
@@ -1119,7 +1141,7 @@ function goto(page){
                     memory:() => loadFiles(currentDir), works:loadWorks,
                     persona:loadPersona, identity:loadConfig };
   if(loaders[page] && (!dirtyPages.has(page) || page === 'bili' || page === 'activity')) loaders[page]();
-  if(page === 'memory' && !dirtyPages.has(page)) loadMemoryOverview();
+  if(page === 'memory' && !dirtyPages.has(page)){ loadMemoryOverview(); loadMemoryDiary(); }
   if(page === 'memes' && !dirtyPages.has(page)) loadMemeConfig();
   if(page === 'bili') loadBiliCred();
   document.querySelector('main').scrollTop = 0;
@@ -2753,6 +2775,65 @@ async function deleteMeme(source, tag, file){
   finally{ memeMutationPending = false; updateMemeSelection(); }
 }
 
+let memoryDiaryReadGeneration = 0;
+function selectMemoryDiaryDay(day){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+  $('memoryDiaryDay').value = day; loadMemoryDiary();
+}
+
+function filterMemoryDiaryDays(){
+  const query = ($('memoryDiaryQuery')?.value || '').trim().toLowerCase();
+  $('memoryDiaryDays')?.querySelectorAll('button').forEach(row => {
+    row.style.display = !query || row.dataset.searchText.includes(query) ? '' : 'none';
+  });
+}
+
+async function loadMemoryDiary(){
+  const generation = ++memoryDiaryReadGeneration, day = $('memoryDiaryDay')?.value || '';
+  try{
+    const value = await api('/memory/diary' + (day ? '?day=' + encodeURIComponent(day) : ''));
+    if(generation !== memoryDiaryReadGeneration) return;
+    const view = value.diary;
+    if(!value.ok || view?.schema !== 'narrative-diary/v1' || view.read_only !== true || view.private !== true
+      || !['ok','empty'].includes(view.status) || !Array.isArray(view.days)) throw new Error('DiaryReadUnavailable');
+    const list = $('memoryDiaryDays'); list.innerHTML = '';
+    view.days.forEach(item => {
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(item.day) || typeof item.title !== 'string') return;
+      const button = document.createElement('button'); button.className = 'sm'; button.style.margin = '3px';
+      button.textContent = item.day + ' · ' + item.title; button.dataset.searchText = button.textContent.toLowerCase();
+      button.onclick = () => selectMemoryDiaryDay(item.day); list.appendChild(button);
+    });
+    filterMemoryDiaryDays();
+    if(!day && /^\d{4}-\d{2}-\d{2}$/.test(view.facts?.day)) $('memoryDiaryDay').value = view.facts.day;
+    const selected = view.selected, body = $('memoryDiaryBody');
+    if(selected && typeof selected.markdown === 'string' && selected.day === $('memoryDiaryDay').value){
+      setText('memoryDiaryTitle', selected.day + ' · ' + selected.title);
+      body.textContent = selected.markdown.slice(0,30000); body.dataset.loaded = '1';
+      setText('memoryDiaryState', '更新于 ' + memoryDisplayTime(new Date(selected.updated_at).toISOString())
+        + ' · 第 ' + selected.revision + ' 版'
+        + (view.new_facts_available ? ' · 还有新经历待她补写。' : ' · 感受是她的自述。'));
+    }else{
+      setText('memoryDiaryTitle', ($('memoryDiaryDay').value || '当天') + ' · 等她写下今天');
+      body.textContent = '这一天尚无新版日记。已有日记文件在下方保留，事实底稿可在这里展开查看。'; delete body.dataset.loaded;
+      setText('memoryDiaryState', view.new_facts_available ? '已有新的事实底稿，等待主 Agent 在合适的活动轮写下日记。' : '当天还没有可据以成文的新记录。');
+    }
+    if(view.submission === 'unknown_read_existing') setText('memoryDiaryState','上次写入结果待确认，保留现有日记，不自动重复提交。');
+    setText('memoryDiaryCoverage', '只覆盖当前可信来源，不能代表完整一天。'
+      + (selected?.source_evidence?.length ? '下方保留本篇写作时引用的来源。' : view.facts?.status === 'available' ? '已保存事实底稿。' : '事实底稿暂不可用。')
+      + (view.facts?.excerpt_truncated ? '本次来源摘要有截取，未读部分不作经历。' : ''));
+    const facts = $('memoryDiaryFacts'); facts.innerHTML = '';
+    for(const item of (selected?.source_evidence || view.facts?.items || []).slice(0,24)){
+      const text = document.createElement('pre'); text.className = 'record-excerpt';
+      text.textContent = String(item.summary || '') + (item.excerpt_truncated ? '\n此来源为节选。' : ''); facts.appendChild(text);
+    }
+    noteRecord('/memory/diary', 'live');
+  }catch(error){
+    if(generation !== memoryDiaryReadGeneration) return;
+    setText('memoryDiaryState', '日记暂时读取失败，保留上次显示内容；这不表示当天没有日记。');
+    noteRecord('/memory/diary', 'error');
+  }
+}
+
 let currentDir = 'diary';
 $('fileTabs').addEventListener('click', (e) => {
   const t = e.target.closest('.tab');
@@ -2815,14 +2896,15 @@ async function saveMemoryEdit(entry, text){
 // 记忆搜索/筛选：纯前端过滤已有的行，不改渲染逻辑。
 // 每行记着自己的 track 和文本，过滤时直接看这两个。
 function filterMem(){
-  const kw = (($('memSearch') || {}).value || '').trim().toLowerCase();
+  const searching = $('memHits')?.style.display === 'block';
+  const kw = searching ? '' : (($('memSearch') || {}).value || '').trim().toLowerCase();
   const ft = window.__memFilter || 'all';
-  const box = $('memPropList');
+  const box = searching ? $('memHits') : $('memPropList');
   if(!box) return;
   let shown = 0;
   box.querySelectorAll('.frow').forEach(function(row){
     const t = row.dataset.track || '';
-    const txt = (row.innerText || '').toLowerCase();
+    const txt = row.dataset.searchText || (row.innerText || '').toLowerCase();
     const okT = (ft === 'all') || (t === ft);
     const okK = !kw || txt.indexOf(kw) >= 0;
     const show = okT && okK;
@@ -2974,33 +3056,80 @@ async function memCompress(dry){
   }catch(e){ if(out) out.textContent = '不行：' + e.message; }
 }
 
+function memoryDisplayTime(value){
+  if(typeof value !== 'string' || !value) return '未记录';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '未记录' : date.toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', hour12:false});
+}
+
+function appendMemoryRecord(container, entry){
+  const p = entry.presentation?.schema === 'memory-presentation/v1' ? entry.presentation : {};
+  const row = document.createElement('div'); row.className = 'frow'; row.style.cursor = 'default';
+  row.dataset.track = entry.track || 'agent';
+  row.dataset.searchText = [p.title, entry.text, ...(Array.isArray(entry.tags) ? entry.tags : [])].join(' ').toLowerCase();
+  const main = document.createElement('div'); main.className = 'fmain';
+  const title = document.createElement('span'); title.className = 'fname';
+  title.textContent = p.title || String(entry.text || '').split(/[。！？\n]/)[0].slice(0,48) || '尚无主题的记忆';
+  main.appendChild(title);
+  const kinds = {fact:'事实', preference:'偏好', event:'经历', rule:'规则', reflection:'感想', uncertain:'待核对', unspecified:'尚未分类'};
+  const meta = document.createElement('span'); meta.className = 'fmeta'; meta.style.display = 'block';
+  const labels = [entry.track === 'user' ? '用户相关' : '她的记忆', kinds[p.kind] || '尚未分类',
+    '记录于 ' + memoryDisplayTime(p.recorded_at),
+    p.occurred_at ? '发生于 ' + memoryDisplayTime(p.occurred_at) : '发生时间未标注'];
+  if(p.updated_at && p.updated_at !== p.recorded_at) labels.push('更新于 ' + memoryDisplayTime(p.updated_at));
+  if(p.status === 'superseded') labels.push('已有后续更正');
+  if(p.status === 'uncertain') labels.push('内容待核对');
+  meta.textContent = labels.join(' · '); main.appendChild(meta);
+  const text = document.createElement('span'); text.className = 'fprev';
+  text.style.whiteSpace = 'pre-wrap'; text.style.overflow = 'visible'; text.textContent = p.display_text ?? entry.text ?? '';
+  main.appendChild(text);
+  if(p.importance != null || p.confidence != null || p.valid_from || p.valid_until || p.links?.length){
+    const details = document.createElement('details'), summary = document.createElement('summary');
+    summary.textContent = '可塑信息'; details.appendChild(summary);
+    const info = document.createElement('p'); info.className = 'note';
+    info.textContent = [p.importance == null ? null : '重要性自评 ' + p.importance,
+      p.confidence == null ? null : '可信度自评 ' + p.confidence,
+      p.valid_from ? '起效 ' + p.valid_from : null, p.valid_until ? '有效至 ' + p.valid_until : null,
+      p.links?.length ? '来源与更正关联 ' + p.links.length + ' 条' : null].filter(Boolean).join(' · ') + '。自评不等于外部事实核验。';
+    details.appendChild(info); main.appendChild(details);
+  }
+  row.appendChild(main);
+  const edit = document.createElement('button'); edit.className = 'sm'; edit.textContent = '改';
+  edit.onclick = event => {event.stopPropagation(); startEditMemory(row, entry)}; row.appendChild(edit);
+  const remove = document.createElement('button'); remove.className = 'fdel'; remove.title = '忘掉这条'; remove.textContent = '×';
+  remove.onclick = event => {event.stopPropagation(); deleteMemory(entry)}; row.appendChild(remove);
+  container.appendChild(row); return row;
+}
+
+let memorySearchGeneration = 0;
 async function memSmartSearch(){
+  const generation = ++memorySearchGeneration;
   const box = $('memHits');
-  const kw = ($('memSearch') || {}).value || '';
-  if(!kw.trim()){ if(box) box.textContent = ''; return; }
-  if(box) box.textContent = '搜中…';
+  const kw = (($('memSearch') || {}).value || '').trim();
+  const start = $('memDateStart')?.value || '', end = $('memDateEnd')?.value || '', kind = $('memKind')?.value || '';
+  const active = !!(kw || start || end || kind);
+  if($('memPropList')) $('memPropList').style.display = active ? 'none' : '';
+  if(box){ box.style.display = active ? 'block' : 'none'; box.textContent = ''; }
+  if(!active) return;
+  if(start && end && end < start){ if(box) box.textContent = '止日不能早于起日。'; return; }
+  if(box) box.textContent = '正在检索…';
   try{
-    const j = await api('/memory/search?q=' + encodeURIComponent(kw) + '&limit=12',
+    const j = await api('/memory/search?q=' + encodeURIComponent(kw) + '&limit=50'
+      + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&kind=' + encodeURIComponent(kind),
                         null, true);
+    if(generation !== memorySearchGeneration) return;
     if(!j.ok){ if(box) box.textContent = '搜不了：' + (j.error || ''); return; }
     if(!j.hits.length){
-      if(box) box.textContent = '没搜到「' + kw + '」（库里有 ' + j.total + ' 条）';
+      if(box) box.textContent = '当前条件没有匹配记忆。日期按存入时间筛选，未标时间不会猜成今天。';
       return;
     }
     if(box) box.innerHTML = '';
-    j.hits.forEach(function(h){
-      const d = document.createElement('div');
-      d.className = 'frow';
-      d.style.cursor = 'default';
-      d.innerHTML = '<div class="fmain">'
-        + '<span class="fname">' + (h.text || '')
-          .replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0, 120) + '</span>'
-        + '<span class="fprev">分数 ' + h.score
-        + '　' + (h.source || '') + '　' + ((h.tags || []).join(' ') || '') + '</span>'
-        + '</div>';
-      box.appendChild(d);
-    });
-  }catch(e){ if(box) box.textContent = '搜不了：' + e.message; }
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = '匹配 ' + j.hits.length + ' 条' + (j.hits.length >= 50 ? '，本次最多显示 50 条，可缩小条件' : '')
+      + (j.truncated ? '；候选读取已达上限，结果不代表全部记忆' : '');
+    box.appendChild(note); j.hits.forEach(entry => appendMemoryRecord(box, entry)); filterMem();
+  }catch(e){ if(generation === memorySearchGeneration && box) box.textContent = '检索暂时失败，请稍后再试。'; }
 }
 
 // 关系图：记忆 ↔ 实体（人 / 书名 / BV / 标签），用 SVG 画个二部图。
@@ -3107,30 +3236,11 @@ async function loadMemoryOverview(background){
           n.textContent = '另外有 ' + np + ' 条待审会话摘要，需要核对来源和内容。';
           pl.appendChild(n);
         }
-        ents.forEach(function(e){
-          const d = document.createElement('div');
-          d.className = 'frow';
-          d.style.cursor = 'default';
-          d.dataset.track = e.track || 'agent';
-          const who = e.track === 'user' ? '关于爸爸' : '我自己的';
-          // 不再截断：记忆本来就是一两句话，全显示出来
-          d.innerHTML = '<div class="fmain">'
-            + '<span class="fname">' + who + '</span>'
-            + '<span class="fprev" style="white-space:normal;overflow:visible">'
-            + (e.text || '').replace(/</g, '&lt;') + '</span>'
-            + '</div>'
-            + '<button class="sm" style="margin-left:6px">改</button>'
-            + '<button class="fdel" title="忘掉这条">×</button>';
-          d.querySelector('.sm').onclick = function(ev){
-            ev.stopPropagation();
-            startEditMemory(d, e);
-          };
-          d.querySelector('.fdel').onclick = function(ev){
-            ev.stopPropagation();
-            deleteMemory(e);
-          };
-          pl.appendChild(d);
-        });
+        ents.forEach(entry => appendMemoryRecord(pl, entry));
+        if(m.availability?.entries_complete === false){
+          const limited = document.createElement('p'); limited.className = 'note';
+          limited.textContent = '当前列出最近 ' + ents.length + ' 条，共 ' + c.active + ' 条；可按主题或日期检索。'; pl.appendChild(limited);
+        }
       }else{
         const n = document.createElement('div');
         n.className = 'empty';
@@ -3210,7 +3320,7 @@ function appendFileRows(dir){
         group.head.classList.remove('closed'); group.head.setAttribute('aria-expanded','true'); group.wrap.style.display = '';
       }
       group.shown++; group.head.style.display = ''; group.count.textContent = group.shown + ' 个';
-      const d = appendPlainRow(group.wrap, f.name, f.preview || '');
+      const d = appendPlainRow(group.wrap, f.title || f.name, [f.document_date, f.title ? f.name : '', f.preview].filter(Boolean).join(' · '));
       const check = document.createElement('input'); check.type = 'checkbox'; check.className = 'fchk'; check.dataset.name = f.name; check.checked = !!selected[f.name]; d.insertBefore(check, d.firstChild);
       for(const text of [fmtSize(f.size), fmtTime(f.mtime)]){ const meta = document.createElement('span'); meta.className = 'fmeta'; meta.textContent = text; d.appendChild(meta); }
       const remove = document.createElement('button'); remove.className = 'fdel'; remove.title = '删除'; remove.textContent = '×'; d.appendChild(remove);

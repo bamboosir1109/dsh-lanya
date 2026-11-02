@@ -89,6 +89,21 @@ class MindScheduleTests(unittest.TestCase):
         self.ask.assert_not_called()
         self.deliver.assert_not_called()
 
+    def test_diary_pending_is_only_a_primary_metadata_hint_without_new_model_or_group_copy(self):
+        import decision_events
+        import narrative_diary
+        pending = {'schema': 'narrative-diary/v1', 'status': 'due', 'day': '2026-11-03',
+                   'fact_revision': 'a' * 64, 'narrative_revision': 0, 'write_requested': False}
+        with mock.patch.object(decision_events, 'project_scopes', return_value=['private:42', 'group:84']), \
+             mock.patch.object(narrative_diary, 'pending_diary', return_value=pending) as provider:
+            primary = self.mind._observation_payload({}, [], primary=True)
+            self.assertEqual(primary['memory']['diary'], pending)
+            self.assertEqual(provider.call_count, 1)
+            group = self.mind._observation_payload({}, [], primary=False)
+            self.assertNotIn('memory', group)
+            self.assertEqual(provider.call_count, 1)
+        self.ask.assert_not_called(); self.deliver.assert_not_called()
+
     def test_eta_gates_repeated_ticks_until_due(self):
         self.assertEqual(self.mind.one_cycle(), 0)
         self.assertEqual(self.state()["next_check_ts"], 1720)

@@ -34,6 +34,11 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         paths = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
         required = {
+            "scripts/memory_metadata.py", "scripts/memory_presentation.py", "scripts/narrative_diary.py",
+            "scripts/patch_memento_metadata.py", "plugin/lib/memento-metadata.mjs", "plugin/lib/narrative-diary.js",
+            "tests/test_memory_metadata.py", "tests/test_memory_presentation.py", "tests/test_memory_retrieval.py",
+            "tests/test_narrative_diary.py", "tests/test_narrative_diary.mjs", "tests/test_scoped_memory_events.mjs",
+            "tests/test_patch_memento_metadata.py", "tests/test_memento_metadata.mjs", "tests/test_diary_bundle.py",
             "scripts/voice_status.py", "tests/test_voice_status.py",
             "scripts/bili_social_backend.py", "scripts/bili_video_content.py", "scripts/patch_bili_content.py",
             "tests/fixtures/bili_video_content/observed.json",
