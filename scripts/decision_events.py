@@ -120,7 +120,8 @@ def _validated_completion(result, event, raw):
                 not ((result.get("reason") == "model_completed_without_decision" and result.get("native_turn_completed") is True) or
                      (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False)) or
                 type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
-                event["kind"] != "activity.opportunity" or event["producer"] not in ("mind", "main-review")):
+                not ((event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")) or
+                     (event["kind"] == "social.opportunity" and event["producer"] == "social-planner"))):
             raise ObservationError("Invalid native no-decision completion")
         identity = "no-decision\0" + event["scope"] + "\0" + event["event_id"] + "\0" + str(revision)
         if result.get("local_outcome_id") != hashlib.sha256(identity.encode("utf-8")).hexdigest():

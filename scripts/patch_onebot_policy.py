@@ -81,6 +81,44 @@ def replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
+def bundle_intent_helper(raw, helper_raw=None):
+    """Current aliases are self-contained; legacy adapters stay byte-identical.
+
+    The reviewed helper has a closed lexical scope. Its only extra native
+    dependency is the same node:sqlite already used by the observation queue.
+    No historical parent manifest or module filename is expanded.
+    """
+    text = raw.decode('utf-8')
+    anchor = "import { AutonomyPlanner } from './autonomy-intents.js'"
+    if anchor not in text:
+        if 'autonomy-intents.js' in text:
+            raise PatchError('Unknown intent helper import')
+        return raw
+    if text.count(anchor) != 1:
+        raise PatchError('Ambiguous intent helper import')
+    if helper_raw is None:
+        helper_raw, _ = read_regular(REPO / 'plugin/lib/autonomy-intents.js')
+    helper = helper_raw.decode('utf-8').replace('\r\n', '\n')
+    for dependency in ["import fs from 'node:fs'", "import path from 'node:path'",
+                       "import { createHash, randomUUID } from 'node:crypto'",
+                       "import { DatabaseSync } from 'node:sqlite'"]:
+        helper = replace_once(helper, dependency + '\n', '')
+    if '\nimport ' in helper or helper.startswith('import '):
+        raise PatchError('Unreviewed intent helper dependency')
+    exports = ['const INTENT_SCHEMA', 'const INTENT_ACTIVE_LIMIT', 'function intentOwnerScopeKey',
+               'class IntentConflictError', 'function createIntentStore', 'function publishIntentObservation',
+               'function readIntentReceipts', 'class AutonomyPlanner']
+    for declaration in exports:
+        helper = replace_once(helper, 'export ' + declaration, declaration)
+    if '\nexport ' in helper:
+        raise PatchError('Unreviewed intent helper export')
+    bundled = "import { DatabaseSync as IntentDatabaseSync } from 'node:sqlite'\n" + \
+        '// LANYA_INTENT_BUNDLE_V1 ' + sha256(helper_raw) + '\n' + \
+        'const { AutonomyPlanner } = (() => {\nconst DatabaseSync = IntentDatabaseSync\n' + helper + \
+        '\nreturn { AutonomyPlanner }\n})()'
+    return replace_once(text, anchor, bundled).encode('utf-8')
+
+
 DECIDE_TOOL = """    register(defineTool({
         name: 'qq_decide',
         description: 'Decide this bound QQ turn before speaking. No scope or authority may be supplied by the model.',
@@ -172,6 +210,8 @@ def transform(name, raw):
         ]:
             text = replace_once(text, before, after)
     elif name == "tools.js":
+        text = replace_once(text, '    const disposers = [];',
+                            '    const disposers = [];\n    disposers.push(...bridge.lanyaPolicy.registerIntentTools(ctx, defineTool));')
         text = replace_once(text, "        disposers.push(ctx.tools.register(tool));",
                             "        const execute = tool.execute;\n        disposers.push(ctx.tools.register({ ...tool, execute: (args, exec) => bridge.lanyaPolicy.runTool(tool.name, args, exec, () => execute.call(tool, args, exec)) }));")
         text = replace_once(text, "    register(defineTool({\n        name: 'qq_send_image',", DECIDE_TOOL + "    register(defineTool({\n        name: 'qq_send_image',")
@@ -193,7 +233,7 @@ def module_outputs(config):
             text = raw.decode("utf-8")
             text = replace_once(text, "from './decision-policy.js'", "from './lanya-decision-policy.js'")
             text = replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'")
-            raw = text.encode("utf-8")
+            raw = bundle_intent_helper(text.encode("utf-8"))
         outputs[target] = raw
     outputs["lanya-policy.config.json"] = (json.dumps(config, ensure_ascii=True, indent=2) + "\n").encode()
     return outputs

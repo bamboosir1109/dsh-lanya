@@ -74,6 +74,21 @@ class MindScheduleTests(unittest.TestCase):
         self.ask.assert_not_called()
         self.deliver.assert_not_called()
 
+    def test_intentions_and_cross_recipient_proposals_are_explicit_without_reusing_send_authority(self):
+        primary = self.mind._observation_payload({}, [], primary=True)["instruction"]
+        group = self.mind._observation_payload({}, [], primary=False)["instruction"]
+        for value in (primary, group):
+            for field in ("qq_intent", "action=list", "expected_revision", "agent_summary", "blocked_unknown"):
+                self.assertIn(field, value)
+        for boundary in ("qq_social_candidates", "qq_social_propose", "can_propose=true", "live appearance",
+                         "recipient's own one-off review", "user-only", "without retry or group fallback"):
+            self.assertIn(boundary, primary)
+        self.assertNotIn("qq_social_propose", group)
+        self.assertIn("not a sent message", primary)
+        self.assertIn("group search and applying to join are unavailable", primary)
+        self.ask.assert_not_called()
+        self.deliver.assert_not_called()
+
     def test_eta_gates_repeated_ticks_until_due(self):
         self.assertEqual(self.mind.one_cycle(), 0)
         self.assertEqual(self.state()["next_check_ts"], 1720)

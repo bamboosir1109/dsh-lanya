@@ -62,6 +62,38 @@ test('native ordinary final, caption and raw terminal all share content shaping'
   assert.equal(sent[1].params.message.filter((s) => s.type === 'image').length, 1)
 })
 
+test('actual native final caption forward and raw API strip compound narration while keeping real content', async (t) => {
+  const h = await setup(t)
+  await h.receive('聊聊天'); h.start(); await h.decide()
+  await h.send('我听着（尾巴在身后轻轻地摇来摇去，耳朵微微抖了抖）继续说')
+  await h.tools.get('qq_send_image').execute({ sources: ['https://example.invalid/synthetic.png'],
+    caption: '给你看（牙已经咬上去了，就是没使劲）' }, h.exec())
+  await h.raw('send_msg', { user_id: 101, message: '再改（歪头，timeout 要改成 30）' })
+  await h.raw('send_private_forward_msg', { user_id: 101, messages: [{ type: 'node', data: { name: 'fixture', uin: 999,
+    content: [{ type: 'text', data: { text: '前（歪头\n抬起头\n叹了一口气）后' } }],
+  } }] })
+  await h.tools.get('qq_napcat_api').execute({ action: 'send_group_ai_record',
+    params: { user_id: 101, text: '行【旁白：她没有开口，只是在等下一句话】', character: 'synthetic' } }, h.exec())
+  const sends = h.calls.filter(c => c.action === 'send_msg')
+  assert.deepEqual(sends.map(c => c.params.message.filter(s => s.type === 'text').map(s => s.data.text).join('')),
+    ['我听着继续说', '给你看', '再改（timeout 要改成 30）'])
+  assert.equal(sends.flatMap(c => c.params.message).filter(s => s.type === 'image').length, 1)
+  assert.equal(h.calls.find(c => /forward/.test(c.action)).params.messages.flatMap(n => n.data.content).map(s => s.data.text).join(''), '前后')
+  assert.equal(h.calls.find(c => c.action === 'send_group_ai_record').params.text, '行')
+  const snapshot = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
+  assert.equal(new Set(snapshot.deliveries.map(d => d.ticketId)).size, 1)
+})
+
+test('actual native sliced quotations and ordinary empty-call parentheses retain their literal content', async (t) => {
+  const h = await setup(t)
+  await h.receive('聊聊天'); h.start(); await h.decide()
+  const quote = '“' + '这一段只是引用原话。'.repeat(6) + '（歪头）”'
+  await h.send(quote)
+  assert.equal(h.calls.filter(c => c.action === 'send_msg').flatMap(c => c.params.message).map(s => s.data.text).join(''), quote)
+  await h.send('调用 ready() 和 call( )；价格（含税）')
+  assert.equal(h.calls.at(-1).params.message[0].data.text, '调用 ready() 和 call( )；价格（含税）')
+})
+
 test('native balanced image links leave no path fragments in final caption or raw text', async (t) => {
   const h = await setup(t)
   await h.receive('聊聊天'); h.start(); await h.decide()

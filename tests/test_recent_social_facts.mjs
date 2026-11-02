@@ -150,7 +150,8 @@ test('fresh context reads only the own bounded native range, excluding inherited
   assert.equal(result.facts.window.events_examined, 3000)
   assert.equal(result.facts.status, 'unknown')
   assert.match(result.value, /no user request or major achievement is required/)
-  assert.match(result.value, /no count threshold or image quota/)
+  assert.match(result.value, /no required image frequency/)
+  assert.match(result.value, /At most one actual meme/)
   assert.doesNotMatch(JSON.stringify(result.facts), /synthetic-session|private:101|group:202/)
   const capped = await context({ id: 'bounded', seq: 20000, inheritedEventCount: 0, snapshotEvents(from, to) {
     assert.equal(from, 15904); assert.equal(to, 20000)

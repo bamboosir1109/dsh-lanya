@@ -103,7 +103,35 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertIn("does not grant QQ", guide["meme_delivery"])
                 for boundary in ("silence", "scope", "revision", "budget", "deduplication", "unknown"):
                     self.assertIn(boundary, guide["limits"])
+                self.assertIn("at most one real meme per turn", guide["limits"])
+                self.assertIn("separate QQ image message", guide["limits"])
+                self.assertNotIn("No fixed meme quota", guide["limits"])
         self.assertEqual(self.snapshot(), before)
+
+    def test_intent_protocol_preserves_real_candidates_and_recipient_authority_without_io(self):
+        before = self.snapshot()
+        primary = self.context()["tools"]["qq_autonomy"]
+        group = self.module.build_context(str(self.root), "fixture", "group:202",
+            process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]["qq_autonomy"]
+        self.assertEqual(primary["social_planning_scope"], "configured_primary_only")
+        self.assertEqual(group["social_planning_scope"], "unavailable_in_this_conversation")
+        self.assertIn("actual_tool_list", primary["registration"])
+        for field in ("intent_id", "expected_revision", "agent_summary", "blocked_unknown"):
+            self.assertIn(field, primary["intent"])
+        for required in ("qq_social_candidates", "can_propose=true", "live appearance", "1 to 12", "group_ref"):
+            self.assertIn(required, primary["candidates"])
+        for boundary in ("qq_social_propose", "sent=false", "scope-bound qq_decide", "silence", "budget", "private notes"):
+            self.assertIn(boundary, primary["proposal"])
+        for boundary in ("private_user_only", "no group_id", "unverified", "unknown", "without automatic retry"):
+            self.assertIn(boundary, primary["transport"])
+        self.assertIn("unsupported", primary["group_discovery"])
+        self.assertIn("not an application", primary["group_discovery"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_malformed_primary_identity_does_not_advertise_social_planner_authority(self):
+        self.identity.write_text(json.dumps({"adminQQ": True}), encoding="utf-8")
+        self.assertEqual(self.context()["tools"]["qq_autonomy"]["social_planning_scope"],
+                         "unavailable_in_this_conversation")
 
     def test_prompt_defaults_to_concise_but_keeps_complete_detail_and_no_total_cap(self):
         prompt = (SCRIPTS.parent / "prompts" / "lifeloop.prompt.txt").read_text(encoding="utf-8")

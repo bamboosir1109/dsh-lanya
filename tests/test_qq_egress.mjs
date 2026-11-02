@@ -22,6 +22,42 @@ test('ordinary inline actions/placeholders disappear, ordinary parentheses remai
   assert.equal(cleanText('给你看![图](x.png)'), '给你看')
 })
 
+test('compound body actions, long and multiline narration disappear without a fixed length limit', () => {
+  const direction = '歪头，尾巴轻轻晃起来，耳朵微微抖了抖，嘴角慢慢扬起来，深呼吸，抬起头，轻轻点了点头'
+  assert.ok(direction.length > 40)
+  assert.equal(cleanText('我听着（' + direction + '）继续说'), '我听着继续说')
+  assert.equal(cleanText('你说(牙已经咬上去了，就是没使劲)我听着'), '你说我听着')
+  assert.equal(cleanText('好（尾巴在身后轻轻地摇来摇去，耳朵微微抖了抖）呀'), '好呀')
+  assert.equal(cleanText('前（歪头\n抬起头\n叹了一口气）后'), '前后')
+  assert.equal(cleanText('前*slowly tilts her head***叹气**【旁白：她没有开口，只是在等下一句话】后'), '前后')
+  assert.equal(cleanText('前（心想：“这句话还要不要说”）后'), '前后')
+})
+
+test('normal explanations, literal quotations and mixed necessary content are preserved', () => {
+  for (const value of ['价格（含税）函数 f(x) 和 ready() 与 call( )', '图片（尾巴颜色是灰色）（耳朵颜色是黑色）',
+    '这是（尾巴摇起来的原理）', '我会晚点回（今天事情有点多）',
+    '原句是“（歪头）”，不能再这样写', '原句「*叹气*」要保留为引用',
+    '> （歪头）\n这是引用', '数学 a*(b+c) 和命令 f(x)', 'JSON {"action":"（歪头）"}']) {
+    assert.equal(cleanText(value), value)
+  }
+  assert.equal(cleanText('先改（歪头，配置里的 timeout 要改成 30）再重试'), '先改（配置里的 timeout 要改成 30）再重试')
+  assert.equal(cleanText('前（补充说明（歪头））后'), '前（补充说明）后')
+  assert.equal(cleanText('前(歪头）后'), '前(歪头）后')
+  const quote = '原句是“（歪头）”'
+  assert.deepEqual(textParts(quote), [{ text: quote, verbatim: false }])
+})
+
+test('explicit live RP and literal technical material keep extended action text intact', () => {
+  const value = '（尾巴在身后轻轻地摇来摇去，耳朵微微抖了抖）'
+  assert.equal(cleanText(value, styleFromInbound(live('我们来角色扮演，进入剧情'))), value)
+  assert.equal(cleanText('`' + value + '`'), '`' + value + '`')
+  const code = '```text\n' + value + '\n```'
+  assert.equal(cleanText(code), code)
+  const data = JSON.stringify({ action: value })
+  assert.equal(cleanText(data, styleFromInbound(live('请给我完整配置'))), data)
+  assert.equal(cleanText('前' + '('.repeat(1000)), '前' + '('.repeat(1000))
+})
+
 test('complete inline images consume balanced or escaped destinations and optional titles only', () => {
   const images = [
     '![图](https://example.invalid/a_(b).png)',
@@ -183,4 +219,20 @@ test('prepared replies keep every bubble and freeze only trusted per-bubble code
   } }
   assert.equal((await prepareAndSendReply(pipeline, 'private:101', '哈'.repeat(105), {})).length, 3)
   assert.deepEqual(sent.map((p) => p.body.length), [40, 40, 25])
+})
+
+test('a quotation split into prepared bubbles is not reinterpreted by the terminal gate', async () => {
+  const quoted = '“' + '这一段只是引用原话。'.repeat(6) + '（歪头）”'
+  const sent = []
+  const pipeline = { sendToChat: async (_scope, body, options) => {
+    const params = { user_id: 101, message: body }
+    rememberParameters(params, options)
+    sent.push(...planEgress('send_msg', params).flatMap(part => part.params.message.map(segment => segment.data.text)))
+    return ['fixture']
+  } }
+  await prepareAndSendReply(pipeline, 'private:101', quoted, {})
+  assert.equal(sent.join(''), quoted)
+  const forged = { user_id: 101, message: '（歪头）', sanitized: true }
+  rememberParameters(forged, { sanitized: true })
+  assert.equal(planEgress('send_msg', forged).length, 0)
 })

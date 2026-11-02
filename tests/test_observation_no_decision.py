@@ -157,9 +157,25 @@ class NoDecisionEvidenceTests(unittest.TestCase):
                 with self.assertRaises(events.ObservationError):
                     self.completion()
 
-    def test_only_mind_opportunities_and_main_reviews_accept_this_terminal(self):
+    def test_exact_social_planner_local_terminal_is_not_a_verdict_or_recurring_review(self):
+        event = dict(self.event, kind="social.opportunity", producer="social-planner", event_id="social-intent:synthetic")
+        for reason, native_completed in (("model_completed_without_decision", True), ("native_admission_refused", False)):
+            with self.subTest(reason=reason):
+                pending, done, marker, raw = self.write(event)
+                marker.update(reason=reason, native_turn_completed=native_completed)
+                done.write_text(json.dumps(marker), encoding="utf-8")
+                self.assertEqual(self.completion(event), marker)
+                chain = events.observation_review_chain(event["scope"], event["event_id"], directory=self.root)
+                self.assertFalse(chain["waiting_review"])
+                self.assertNotIn("decision_id", marker)
+                self.assertNotIn("next_review_at", marker)
+                self.assertEqual(pending.read_bytes(), raw)
+
+    def test_only_exact_trusted_opportunity_producer_pairs_accept_this_terminal(self):
         for change in ({"kind": "reminder.due"}, {"producer": "other-observer"},
-                       {"kind": "activity_due"}, {"kind": "quiet"}):
+                       {"kind": "activity_due"}, {"kind": "quiet"}, {"kind": "social.opportunity"},
+                       {"kind": "social.opportunity", "producer": "main-review"},
+                       {"producer": "social-planner"}):
             with self.subTest(change=change):
                 event = dict(self.event, **change)
                 self.write(event)

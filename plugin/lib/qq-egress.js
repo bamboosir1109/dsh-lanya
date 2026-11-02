@@ -140,6 +140,91 @@ function structuredData(text) {
 
 const obviousAction = /^(?:(?:轻轻|微微|慢慢|忽然|偷偷|用力|小声|默默|忍不住|笑着|有点|稍微)\s*)?(?:歪头|叹气|摇头|点头|撇嘴|眨眼|小声|偷笑|坏笑|蹭蹭|蹭你|炸毛|叉腰|扶额|摊手|抱住你|咬你|尾巴(?:摇|摇了摇|晃|晃了晃|甩|翘|垂下来)|耳朵(?:抖|抖了抖|竖起来|耷拉下来|动了动)|低下头|抬起头|凑近|笑出声)(?:了|一下|一声|起来|着|中)?[。！!~～]?$/
 
+// Recognize whole stage-direction clauses, never a keyword anywhere inside an
+// explanation. In particular, anatomy descriptions and ordinary parenthetical
+// speech are not actions. There is no forty-character or single-line shortcut.
+const directionAdverb = '(?:(?:轻轻(?:地)?|微微|慢慢(?:地)?|悄悄(?:地)?|偷偷|默默|用力|小心(?:地)?|忽然|突然|忍不住|有点|稍微|缓缓|已经|又|再|先|然后|终于|不由得|下意识(?:地)?|很快|还|正|在)[ \\t]*){0,6}'
+const directionEnding = '(?:(?:了|着|中|一下|两下|一声|一口|一点点|起来|下来|过去|回去|不停|的样子)[ \\t]*){0,5}'
+const directionGesture = '(?:歪(?:了歪)?头|叹(?:了)?(?:一口)?气|摇(?:了摇)?头|点(?:了点)?头|眨(?:了眨)?眼|撇(?:了撇)?嘴|抿(?:了抿)?嘴|嘟嘴|偷笑|坏笑|笑出声|笑了笑|炸毛|叉腰|扶额|摊手|深呼吸|低下头|抬起头|垂下头|抬头|低头|偏头|侧头|回头|凑近(?:你)?|抱(?:住|紧|着)你|咬(?:住|上去|着|了)?(?:你|衣角)?|蹭(?:了蹭|蹭|着)?(?:你|手心)?|伸(?:出|了伸)(?:手|爪子)|收(?:住|回|起)(?:手|爪子|尾巴)?|缩(?:回|了缩)(?:手|爪子|脑袋)?|看(?:向|着)(?:你|对方|屏幕)|闭上眼|睁开眼)'
+const directionBody = '(?:尾巴(?:尖)?|耳朵|耳尖|嘴角|脑袋|肩膀|眼睛|眉头|牙|爪子|手指)'
+const directionMotion = '(?:摇(?:了摇|来摇去|晃)?|晃(?:了晃|来晃去)?|甩(?:了甩)?|翘|垂|抖(?:了抖)?|竖|耷拉|动(?:了动)?|弯|扬|咬(?:上去|住|紧)?|蜷|缩|颤(?:了颤)?|抬|垂下|竖起|耷拉下)'
+const gestureClause = new RegExp('^(?:我|本狼)?' + directionAdverb + directionGesture + directionEnding + '$', 'u')
+const bodyClause = new RegExp('^' + directionBody + '(?:在(?:身后|身侧|头顶|手里|桌上))?' + directionAdverb + directionMotion + directionEnding + '$', 'u')
+const inheritedDirection = /^(?:(?:又|再|然后|但|只是|就是|不过|还|没|没有|不|很快|轻轻地|慢慢地)\s*)*(?:使劲|用力|收住|停住|松开|忍住|晃了晃|摇了摇|抖了抖|笑了笑)(?:了|着|一下|两下)?$/u
+const englishDirection = /^(?:(?:softly|quietly|slowly|gently)\s+)?(?:sighs?|nods?|shrugs?|blinks?|smiles?|chuckles?|tilts? (?:my |her |his )?head)(?:\s+(?:softly|quietly|slowly|gently))?[.!]?$/iu
+
+function isDirectionClause(value, inherited = false) {
+  const clause = value.trim().replace(/[。.!！?？~～]+$/u, '').trim()
+  return Boolean(clause) && (obviousAction.test(clause) || gestureClause.test(clause) || bodyClause.test(clause) ||
+    englishDirection.test(clause) || inherited && inheritedDirection.test(clause))
+}
+
+function cleanDirectionBody(body) {
+  // These explicit labels announce narration rather than conversational notes.
+  if (/^(?:动作(?:描写)?|旁白|神态|心理(?:活动|描写)?|内心(?:独白)?|心想)\s*[:：]/u.test(body.trim())) return ''
+  const clauses = body.match(/[^，,；;。！？!?\r\n]+[，,；;。！？!?\r\n]*/gu) || []
+  if (!clauses.length) return body
+  let hadDirection = false
+  const kept = clauses.filter(clause => {
+    const bare = clause.replace(/[，,；;。！？!?\r\n]+$/u, '')
+    if (!isDirectionClause(bare, hadDirection)) return true
+    hadDirection = true
+    return false
+  })
+  if (!hadDirection) return body
+  return kept.join('').replace(/^[\s，,；;。！？!?]+|[\s，,；;]+$/gu, '')
+}
+
+function literalQuotations(text) {
+  return [...text.matchAll(/“[^“”]*”|「[^「」]*」|『[^『』]*』|"[^"\r\n]*"|'[^'\r\n]*'|^[ \t]*>[^\r\n]*$/gmu)]
+}
+
+function cleanAsteriskDirections(text) {
+  const clean = value => value.replace(/(\*{1,2})([^*]+)\1/gu, (whole, marker, body) => {
+    const cleaned = cleanDirectionBody(body)
+    return cleaned === body ? whole : cleaned.trim() ? marker + cleaned + marker : ''
+  })
+  let result = '', from = 0
+  for (const match of literalQuotations(text)) {
+    result += clean(text.slice(from, match.index)) + match[0]
+    from = match.index + match[0].length
+  }
+  return result + clean(text.slice(from))
+}
+
+function cleanDirectionWrappers(text, depth = 0) {
+  if (depth > 16) return text // Deep data syntax is never guessed to be prose.
+  const closing = { '(': ')', '（': '）', '【': '】' }
+  const quotes = new Map(literalQuotations(text).map(match => [match.index, match.index + match[0].length]))
+  let result = '', from = 0
+  for (let at = 0; at < text.length; at++) {
+    if (quotes.has(at)) { at = quotes.get(at) - 1; continue }
+    if (!closing[text[at]]) continue
+    const start = at, stack = [closing[text[at]]]
+    for (at++; at < text.length && stack.length; at++) {
+      if (quotes.has(at)) { at = quotes.get(at) - 1; continue }
+      if (closing[text[at]]) stack.push(closing[text[at]])
+      else if ([')', '）', '】'].includes(text[at])) {
+        if (text[at] !== stack.at(-1)) break
+        stack.pop()
+      }
+    }
+    if (stack.length) return cleanAsteriskDirections(result + text.slice(from))
+    const end = at, originalBody = text.slice(start + 1, end - 1)
+    const inside = cleanDirectionWrappers(originalBody, depth + 1)
+    const body = cleanDirectionBody(inside)
+    result += text.slice(from, start) + (body.trim() || !originalBody.trim() ? text[start] + body + text[end - 1] : '')
+    from = end; at = end - 1
+  }
+  return cleanAsteriskDirections(result + text.slice(from))
+}
+
+function withoutNarration(text) {
+  // Literal quotations and blockquotes are evidence/examples. Keep them out of
+  // the action matcher without turning them into separate verbatim QQ bubbles.
+  return cleanDirectionWrappers(text)
+}
+
 // Return the end of a complete, single-line Markdown image. A destination may
 // contain balanced/escaped parentheses; its optional title has its own closing
 // delimiter. Incomplete syntax is left alone rather than eating later prose.
@@ -302,9 +387,7 @@ function withoutActivityReferences(text, style) {
 function cleanProse(text, style) {
   let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
-    result = result.replace(/[（(]([^（）()\n]{1,40})[）)]/g, (whole, action) => obviousAction.test(action.trim()) ? '' : whole)
-      .replace(/\*([^*\n]{1,40})\*/g, (whole, action) => obviousAction.test(action.trim()) ? '' : whole)
-      .replace(/【([^【】\n]{1,40})】/g, (whole, action) => obviousAction.test(action.trim()) ? '' : whole)
+    result = withoutNarration(result)
   }
   // Recognizable leaked control/reasoning is not normal speech. Literal examples
   // remain protected by code spans; ordinary prose is never shortened for length.
@@ -378,7 +461,7 @@ export async function prepareAndSendReply(pipeline, scope, text, options, style 
   const ids = []
   for (const part of textParts(text, style)) {
     const next = { ...options, split: false }
-    prepared.set(next, Object.freeze({ verbatim: part.verbatim, forward: part.forward === true }))
+    prepared.set(next, Object.freeze({ verbatim: part.verbatim, forward: part.forward === true, sanitized: part.forward !== true }))
     try {
       const result = await pipeline.sendToChat(scope, part.text, next)
       ids.push(...(Array.isArray(result) ? result : []))
@@ -433,7 +516,10 @@ export function planEgress(action, params, style = NORMAL_STYLE, { isMemeSegment
       if (/\[CQ:/i.test(message)) throw new TypeError('Use real OneBot segments instead of raw CQ markup')
       message = [{ type: 'text', data: { text: message } }]
     }
-    return splitSegments(message, style, hint?.verbatim === true, isMemeSegment).map((packet) => ({ action,
+    // Prepared ordinary bubbles have already passed this content gate before
+    // splitting. Re-cleaning a fragment could mistake a sliced quotation for
+    // unquoted narration. Only our WeakMap provenance can carry this fact.
+    return splitSegments(message, style, hint?.verbatim === true || hint?.sanitized === true, isMemeSegment).map((packet) => ({ action,
       params: { ...copy, message: packet }, ...(memePackets.has(packet) ? { meme: true } : {}) }))
   }
   if (['send_forward_msg', 'send_private_forward_msg', 'send_group_forward_msg'].includes(action) && Array.isArray(copy.messages)) {

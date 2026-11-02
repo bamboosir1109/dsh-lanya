@@ -952,6 +952,19 @@ def panel_main_activity():
                 "recentActivity": dict(base, schema="panel-native-tools/v1")}
 
 
+def panel_autonomy_plans():
+    """Read existing intent reports using the local owner's fixed scopes."""
+    try:
+        from autonomy_intents_panel import intent_snapshot
+        options = _panel_native_record_options()
+        return intent_snapshot(workspace=options["workspace"], agent_preset=options["agent_preset"],
+            identity_file=options["identity_file"], data_directory=DATA,
+            group_fallback=options["group_fallback"])
+    except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
+        return {"schema": "dsh-autonomy-plans-panel/v1", "status": "unavailable", "read_only": True,
+                "private": True, "plans": [], "summary_is_agent_report": True}
+
+
 def panel_activity_journal(day=None, limit=90):
     """Only the configured local owner's managed fact diaries; never generates."""
     try:
@@ -2228,6 +2241,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/live":
             # 她现在在做什么：lifeloop 的日志 + 最后一条分享
             out = {"log": [], "last": "", "lastAt": "", "nextIn": ""}
+            out["plans"] = panel_autonomy_plans()
             autonomy = autonomy_snapshot()
             if autonomy["mode"] != "legacy":
                 # Old Life logs are not evidence of current main-agent activity.

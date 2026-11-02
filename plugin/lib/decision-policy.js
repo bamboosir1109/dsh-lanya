@@ -541,6 +541,21 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       return transaction((state) => clone(scopeState(state, scope) || null))
     },
 
+    /** Local plan/proposal publication only. Hold the existing revision lock
+     * through a synchronous host callback; no verdict or send permit is issued. */
+    async runCurrentRevision({ scope, expectedRevision, requireOpen = false, check } = {}, run) {
+      canonicalScope(scope)
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || typeof requireOpen !== 'boolean' ||
+          typeof check !== 'function' || typeof run !== 'function' || run.constructor?.name === 'AsyncFunction') throw new PolicyStateError('Synchronous revision-bound local publication required')
+      return transaction(state => {
+        const current = scopeState(state, scope)
+        if (!current?.current || current.revision !== expectedRevision || requireOpen && current.mode === 'silent' || check() !== true) throw new PolicyStateError('Stale or silent source revision')
+        const value = run()
+        if (value && typeof value.then === 'function') throw new PolicyStateError('Local publication must not return a promise')
+        return value
+      })
+    },
+
     /** One operation/slice identity is reusable only to suppress a duplicate.
      * On transport failure the outcome is UNKNOWN, not safe-to-retry: OneBot
      * does not provide an idempotency key and a timeout may have been delivered.
@@ -549,11 +564,11 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * The adapter must normalize protocol ACKs: a resolved OneBot object with
      * status=failed or nonzero retcode must REJECT, not count as a delivery.
      */
-    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0', meme } = {}, transmit) {
+    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0', meme, socialOneOff = false } = {}, transmit) {
       if (!identifier(operationId) || !identifier(String(sliceId)) || typeof transmit !== 'function') {
         throw new PolicyStateError('An operationId, sliceId and transport callback are required')
       }
-      if ((meme !== undefined && typeof meme !== 'boolean') ||
+      if (typeof socialOneOff !== 'boolean' || (meme !== undefined && typeof meme !== 'boolean') ||
           (meme === true && !['media', 'forward', 'api'].includes(kind))) throw new PolicyStateError('Invalid trusted meme delivery metadata')
       let acknowledgement
       const reservation = await transaction((state, commit) => {
@@ -563,6 +578,8 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         const key = createHash('sha256').update([ticket.id, operationId, String(sliceId)].join('\0')).digest('hex')
         const prior = current.deliveries.find((entry) => entry.key === key)
         if (prior) return { sent: false, status: 'duplicate', previousStatus: prior.status }
+        if (socialOneOff && current.deliveries.some(entry => entry.status === 'unknown' ||
+            entry.status === 'reserved' && entry.ticketId !== ticket.id)) return { sent: false, status: 'suppressed', reason: 'recipient_unresolved_delivery' }
         if (meme === true && current.deliveries.some(entry => entry.ticketId === ticket.id && entry.meme === true)) {
           return { sent: false, status: 'suppressed', reason: 'meme_turn_limit' }
         }

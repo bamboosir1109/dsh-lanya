@@ -69,6 +69,7 @@ const { registerTools } = await import('data:text/javascript;base64,' + Buffer.f
 const tools = new Map(), calls = [];
 const ctx = { tools: { register(tool) { tools.set(tool.name, tool); return () => {}; } } };
 const bridge = { lanyaPolicy: {
+  registerIntentTools: () => [], // Independent planner registration has its own factory/CAS tests.
   runTool: (_name, _args, _exec, run) => run(),
   decide: args => { calls.push(structuredClone(args)); return { accepted: true }; },
 } };

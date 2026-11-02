@@ -180,7 +180,7 @@ def canonical_modules():
         raw, _ = read_regular(REPO / "plugin/lib" / source)
         if source == "onebot-policy-adapter.js":
             text = replace_once(raw.decode(), "from './decision-policy.js'", "from './lanya-decision-policy.js'")
-            raw = replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode()
+            raw = policy.bundle_intent_helper(replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode())
         result[target] = sha256(raw)
     return result
 

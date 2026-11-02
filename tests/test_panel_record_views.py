@@ -55,6 +55,22 @@ class PanelRecordViewTests(unittest.TestCase):
         self.assertEqual(value['mainAgent']['status'], 'unavailable')
         self.assertEqual(value['mainAgent']['records'], [])
 
+    def test_plan_route_uses_local_configuration_and_ignores_url_owner_selection(self):
+        import autonomy_intents_panel
+        expected = {'schema':'dsh-autonomy-plans-panel/v1','status':'empty','plans':[],
+                    'read_only':True,'private':True,'summary_is_agent_report':True}
+        options = {'workspace':str(self.base.root),'agent_preset':'Fixture',
+                   'identity_file':str(self.base.root / 'identity.json'),'group_fallback':'',
+                   'dsh_home':str(self.base.root / 'home'),'mapping_file':None}
+        with mock.patch.object(self.panel, '_panel_native_record_options', return_value=options), \
+                mock.patch.object(autonomy_intents_panel, 'intent_snapshot', return_value=expected) as read, \
+                mock.patch.object(self.panel, 'autonomy_snapshot', return_value={'mode':'unified'}):
+            code, result = self.get('/api/live?workspace=foreign&recipient=303&database=foreign')
+        self.assertEqual(code, 200)
+        self.assertEqual(result['live']['plans'], expected)
+        read.assert_called_once_with(workspace=options['workspace'], agent_preset='Fixture',
+            identity_file=options['identity_file'], data_directory=self.panel.DATA, group_fallback='')
+
     def test_notes_limit_selects_newest_metadata_before_reading_preview(self):
         notes = Path(self.panel.FILE_DIRS['notes']); notes.mkdir()
         for index in range(65):

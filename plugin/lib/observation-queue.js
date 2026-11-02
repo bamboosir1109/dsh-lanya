@@ -33,7 +33,8 @@ function validateCompletion(marker, event, sha256, raw) {
     if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
         !((marker.reason === 'model_completed_without_decision' && marker.native_turn_completed === true) ||
           (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false)) ||
-        event.kind !== 'activity.opportunity' || !['mind', 'main-review'].includes(event.producer) ||
+        !((event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)) ||
+          (event.kind === 'social.opportunity' && event.producer === 'social-planner')) ||
         marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
         !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||
         !Number.isSafeInteger(marker.completed_at) || marker.completed_at < event.created_at ||

@@ -37,7 +37,9 @@ def outputs(source):
         raise PatchError("Explicit dsh-lanya source is required")
     adapter, _ = read_regular(source / "plugin/lib/onebot-policy-adapter.js")
     queue, _ = read_regular(source / "plugin/lib/observation-queue.js")
-    return {TARGETS[0]: autonomy.compile_adapter(adapter), TARGETS[1]: queue}
+    helper = (read_regular(source / "plugin/lib/autonomy-intents.js")[0]
+              if b"from './autonomy-intents.js'" in adapter else None)
+    return {TARGETS[0]: autonomy.compile_adapter(adapter, helper), TARGETS[1]: queue}
 
 
 def private_manifest(value, plugin, source=None):

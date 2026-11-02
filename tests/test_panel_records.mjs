@@ -396,9 +396,22 @@ test('first memory status render uses the real top-level selection initializatio
 
 const RECORD_HELPERS = ['recordOpenDetails', 'recordDetails', 'recordText', 'recordState', 'recordContent', 'recordReply', 'biliRecordTime', 'biliVideoLink']
 const BILI_RENDERERS = [...RECORD_HELPERS, 'renderMainBili']
-const ACTIVITY_RENDERERS = [...RECORD_HELPERS, 'renderActivityHistory']
+const ACTIVITY_RENDERERS = [...RECORD_HELPERS, 'renderActivityHistory', 'renderAutonomyPlans']
 const JOURNAL_READERS = ['biliRecordTime', 'activityJournalStatus', 'loadActivityJournal']
 const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
+
+test('autonomy plans are plain agent reports and unavailable refresh cannot keep stale plans', () => {
+  const h = harness({ functions: ['renderAutonomyPlans'] })
+  h.context.renderAutonomyPlans({schema:'dsh-autonomy-plans-panel/v1',read_only:true,private:true,
+    summary_is_agent_report:true,status:'ok',plans:[{role:'primary',status:'active',goal:'<img src=x onerror=bad()>',
+      reason:'想看看',next_step:'读取真实资料',agent_summary:'尚未完成',updated_at:1800000000000}]})
+  assert.match(treeText(h.node('autonomyPlansList')), /<img src=x onerror=bad\(\)>/)
+  assert.doesNotMatch(h.node('autonomyPlansList').innerHTML, /<img/)
+  assert.match(h.node('autonomyPlansNote').textContent, /不代表事情已经完成/)
+  h.context.renderAutonomyPlans(null)
+  assert.equal(h.node('autonomyPlansList').children.length, 0)
+  assert.match(h.node('autonomyPlansNote').textContent, /读取失败/)
+})
 
 test('activity displays a local no-decision outcome without inventing an LLM verdict or hiding uncertain scheduling', async () => {
   for (const count of [0, 1, '1', -1]) {
