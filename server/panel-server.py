@@ -504,7 +504,7 @@ def unified_budget_snapshot():
         return value
     except Exception:
         # A missing/unreadable ledger is unavailable, never a fresh zero balance.
-        return {"schema": "unified-budget/v1", "availability": "error", "status": "unavailable",
+        return {"schema": "unified-budget/v2", "availability": "error", "status": "unavailable",
                 "revision": None, "effective": None, "usage": None,
                 "enforcement": {"before_turn": False, "before_action": False, "provider_hard_cap": False}}
 

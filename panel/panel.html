@@ -506,35 +506,35 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-money">
-  <div class="phead"><h1>零花钱</h1><p>按天查看自主、私聊和群聊的 API 费用，人民币为参考折算。当前页面每 15 秒检查更新。</p></div>
-  <p class="note" id="moneyFxNote">本批核对的本地成本配置参考值：1 USD = 7.2 元。固定参考，非实时汇率、非结算金额；美元底账与计价单位保持 USD，不会自动同步后续汇率配置。</p>
+  <div class="phead"><h1>零花钱</h1><p>按天查看自主、私聊和群聊的本机费用估算，单位人民币元。当前页面每 15 秒检查更新。</p></div>
+  <p class="note" id="moneyUnitNote">按你确认的人民币口径记账，直接显示和保存元，不作汇率换算。费用为本机估算，未核对服务商实扣；历史金额数字保留，待核算项仍为未知。</p>
   <div class="stats">
     <div class="stat"><div class="k">当前预算门控</div><div class="v" id="mState" style="font-size:20px">—</div><div class="s" id="mStateSub">正在读取当前账本</div></div>
     <div class="stat"><div class="k">今日日期</div><div class="v" id="mDate" style="font-size:20px">—</div><div class="s" id="mCoverage">按北京时间每日统计</div></div>
-    <div class="stat"><div class="k">今日已计合计</div><div class="v" style="font-size:23px"><span id="mDailyTotal">—</span><small>CNY</small></div><div class="s" id="mDailyTotalUsd">当前绑定范围的 API 估值</div></div>
+    <div class="stat"><div class="k">今日已计合计</div><div class="v" style="font-size:23px"><span id="mDailyTotal">—</span><small>CNY</small></div><div class="s" id="mDailyTotalNote">当前绑定范围的本机估算</div></div>
   </div>
   <div class="card"><h3>今日花销 <span class="setting-state" id="mDailyAvailability">正在读取</span></h3><div class="policy-grid" id="dailyTodayBuckets"></div><p class="note" id="mAccounting">正在核对计费覆盖范围。</p></div>
   <div class="card" id="dailySpending">
-    <h3>每日花销 <span class="setting-state">人民币参考值</span></h3>
+    <h3>每日花销 <span class="setting-state">人民币元</span></h3>
     <div class="spend-toolbar">
       <label for="spendRange">显示范围 <select id="spendRange" onchange="renderDailySpending()"><option value="14">最近 14 天</option><option value="30">最近 30 天</option></select></label>
       <label for="spendSelectedDate">查看日期 <select id="spendSelectedDate" onchange="selectSpendingDate(this.value)" disabled></select></label>
     </div>
     <div class="spend-legend" aria-label="图例"><span>自主</span><span class="private">私聊</span><span class="group">群聊</span></div>
-    <div class="spend-chart" id="spendChart" role="group" aria-label="每日 API 花销柱状图，人民币参考值，原始美元金额见各日说明" aria-describedby="moneyFxNote"><div class="empty">正在读取每日花销…</div></div>
+    <div class="spend-chart" id="spendChart" role="group" aria-label="每日花销柱状图，单位人民币元，本机估算" aria-describedby="moneyUnitNote"><div class="empty">正在读取每日花销…</div></div>
     <div class="spend-detail" id="spendDetail" aria-live="polite"></div>
     <p class="spend-state" id="spendHistoryNote" role="status">正在核对按日记录。</p>
-    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，人民币参考值与原始 USD 对照；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
+    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，单位人民币元，费用为本机估算；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
   </div>
   <div class="card"><h3>预算执行用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mGateAccounting">预算预留与剩余额度单独核对。</p></div>
   <div class="card">
     <h3>当前执行额度</h3>
-    <p class="note">输入单位人民币，按上述固定参考值保存为 USD。仅前三项的 0 表示不限；每轮预留必须大于 0。修改金额向下取到 0.000001 USD，过小的正额度不会保存为不限。未修改字段保留原始美元精度。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
+    <p class="note">输入和保存单位均为人民币元。仅前三项的 0 表示不限；每轮预留必须大于 0。修改金额向下取到 0.000001 元，过小的正额度不会保存为不限。未修改字段保留载入的金额精度。额度在新决策轮次和动作执行前核对；单次模型调用仍可能超过预留额，不是服务商账户硬限额。</p>
     <div class="grid2">
-      <div class="field"><label for="bAutonomy">每天自主活动额度（人民币）</label><input type="number" min="0" step="any" id="bAutonomy" aria-describedby="bAutonomyUsd moneyFxNote" disabled><p class="note" id="bAutonomyUsd">美元原值待确认</p></div>
-      <div class="field"><label for="bPrivate">每天私聊额度（人民币）</label><input type="number" min="0" step="any" id="bPrivate" aria-describedby="bPrivateUsd moneyFxNote" disabled><p class="note" id="bPrivateUsd">美元原值待确认</p></div>
-      <div class="field"><label for="bGroup">每天群聊额度（人民币）</label><input type="number" min="0" step="any" id="bGroup" aria-describedby="bGroupUsd moneyFxNote" disabled><p class="note" id="bGroupUsd">美元原值待确认</p></div>
-      <div class="field"><label for="bReserve">每轮预留（人民币）</label><input type="number" min="0.0000072" step="any" id="bReserve" aria-describedby="bReserveUsd moneyFxNote" disabled><p class="note" id="bReserveUsd">美元原值待确认</p></div>
+      <div class="field"><label for="bAutonomy">每天自主活动额度（人民币）</label><input type="number" min="0" step="any" id="bAutonomy" aria-describedby="bAutonomyNote moneyUnitNote" disabled><p class="note" id="bAutonomyNote">载入金额待确认</p></div>
+      <div class="field"><label for="bPrivate">每天私聊额度（人民币）</label><input type="number" min="0" step="any" id="bPrivate" aria-describedby="bPrivateNote moneyUnitNote" disabled><p class="note" id="bPrivateNote">载入金额待确认</p></div>
+      <div class="field"><label for="bGroup">每天群聊额度（人民币）</label><input type="number" min="0" step="any" id="bGroup" aria-describedby="bGroupNote moneyUnitNote" disabled><p class="note" id="bGroupNote">载入金额待确认</p></div>
+      <div class="field"><label for="bReserve">每轮预留（人民币）</label><input type="number" min="0.000001" step="any" id="bReserve" aria-describedby="bReserveNote moneyUnitNote" disabled><p class="note" id="bReserveNote">载入金额待确认</p></div>
     </div>
     <div class="btnrow"><button class="pri" id="budgetSave" onclick="saveBudget()" disabled>保存额度</button><button onclick="reloadCurrentSettings('money')">放弃修改并重读</button></div>
     <div class="out" id="moneyOut"></div>
@@ -1580,13 +1580,16 @@ async function saveAutonomySettings(){
 
 let budgetSettingsRevision = null;
 let budgetSettingsEpoch = 0, budgetSettingsSaving = false;
-const CNY_PER_USD = 7.2;
 
-function budgetAmount(value, withUsd = true){
+function budgetAmount(value){
   if(typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '待核算';
-  const yuan = value * CNY_PER_USD;
-  const amount = yuan > 0 && yuan < 0.0001 ? '¥<0.0001' : '¥' + yuan.toFixed(4);
-  return amount + (withUsd ? '（USD ' + String(value) + '）' : '');
+  return value > 0 && value < 0.0001 ? '¥<0.0001' : '¥' + value.toFixed(4);
+}
+
+function requireCnyBudget(budget){
+  if(budget?.schema === 'unified-budget/v2' && budget.currency === 'CNY' && budget.basis === 'owner_confirmed_numeric_cny_estimate' && budget.numeric_scale === 1 && budget.effective?.currency === 'CNY' && budget.effective?.basis === budget.basis && budget.effective?.numeric_scale === 1) return;
+  const error = new Error('预算单位接口不匹配，保留当前人民币记录，请更新本机服务后重读');
+  error.code = 'budget_currency_mismatch'; throw error;
 }
 
 function budgetDecimal(value){
@@ -1599,43 +1602,40 @@ function budgetDecimal(value){
   return {units, scale};
 }
 
-function renderBudgetInput(id, usd){
+function renderBudgetInput(id, cny){
   const input = $(id);
-  if(typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0){
-    input.value = ''; delete input.dataset.originalUsd; delete input.dataset.renderedCny;
-    setText(id + 'Usd', '美元原值待确认'); return;
+  if(typeof cny !== 'number' || !Number.isFinite(cny) || cny < 0){
+    input.value = ''; delete input.dataset.originalCny; delete input.dataset.renderedCny;
+    setText(id + 'Note', '载入金额待确认'); return;
   }
-  const source = budgetDecimal(usd), rate = budgetDecimal(CNY_PER_USD), scale = source.scale + rate.scale;
-  const digits = String(source.units * rate.units).padStart(scale + 1, '0');
-  const exact = scale ? (digits.slice(0, -scale) + '.' + digits.slice(-scale)).replace(/\.?0+$/, '') : digits;
-  input.value = Number(exact) >= 0.0001 ? Number(exact).toFixed(4).replace(/\.?0+$/, '') : exact;
-  input.dataset.originalUsd = String(usd); input.dataset.renderedCny = String(input.value);
+  input.value = cny >= 0.0001 ? cny.toFixed(4).replace(/\.?0+$/, '') : String(cny);
+  input.dataset.originalCny = String(cny); input.dataset.renderedCny = String(input.value);
   input.dataset.budgetRevision = budgetSettingsRevision;
-  setText(id + 'Usd', '载入的美元原值：USD ' + String(usd));
+  setText(id + 'Note', '载入金额：' + String(cny) + ' 元');
 }
 
-function budgetInputUsd(id){
+function budgetInputCny(id){
   const input = $(id), text = String(input.value).trim(), value = budgetDecimal(text);
-  if(input.dataset.budgetRevision === budgetSettingsRevision && text === input.dataset.renderedCny && input.dataset.originalUsd !== undefined) return Number(input.dataset.originalUsd);
-  const rate = budgetDecimal(CNY_PER_USD);
-  const micros = value.units * 10n ** BigInt(rate.scale + 6) / (rate.units * 10n ** BigInt(value.scale));
-  if(value.units > 0n && micros < 1n) throw new Error('正金额至少须折合 0.000001 USD；请增加人民币金额');
+  if(input.dataset.budgetRevision === budgetSettingsRevision && text === input.dataset.renderedCny && input.dataset.originalCny !== undefined) return Number(input.dataset.originalCny);
+  const micros = value.units * 1000000n / 10n ** BigInt(value.scale);
+  if(value.units > 0n && micros < 1n) throw new Error('正金额至少为 0.000001 元；请增加人民币金额');
   if(micros > 1000000000000n) throw new Error('人民币金额超过可用额度范围');
   return Number(micros) / 1000000;
 }
 
 function renderBudgetSummary(budget){
-  const bucket = (budget.gate_usage || budget.usage)?.buckets?.autonomy, available = budget.availability === 'available' && bucket && typeof bucket.spent_usd === 'number' && Number.isFinite(bucket.spent_usd) && bucket.spent_usd >= 0;
+  requireCnyBudget(budget);
+  const bucket = (budget.gate_usage || budget.usage)?.buckets?.autonomy, available = budget.availability === 'available' && bucket && typeof bucket.spent_cny === 'number' && Number.isFinite(bucket.spent_cny) && bucket.spent_cny >= 0;
   const bound = budget.enforcement?.runtime_gate_bound === true;
   const label = !bound ? '预算门控未确认' : budget.availability === 'not_started' ? '等待首轮计费' : !available ? '费用待确认' : bucket.exhausted ? '自主额度已用完' : bucket.can_start_new_turn === false ? '新轮次预留不足' : bucket.unknown_count ? '部分费用待确认' : '自主额度可用';
   setText('sMoney', label); setText('liveMoney', label);
-  const detail = available ? '今日已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : budget.availability === 'not_started' ? '等待首条计费回执，当前费用未确认' : '账本暂不可用，不能按零费用判断';
+  const detail = available ? '今日已计 ' + budgetAmount(bucket.spent_cny) + ' · 预留 ' + budgetAmount(bucket.reserved_cny) : budget.availability === 'not_started' ? '等待首条计费回执，当前费用未确认' : '账本暂不可用，不能按零费用判断';
   setText('sMoneySub', detail); setText('liveMoneySub', detail);
-  for(const id of ['sMoneySub','liveMoneySub']) $(id).title = '人民币为固定参考折算：1 USD = ' + CNY_PER_USD + ' 元，本批核对的本地成本配置参考值；非实时汇率、非结算金额，不自动同步后续配置。';
+  for(const id of ['sMoneySub','liveMoneySub']) $(id).title = '按你确认的人民币口径记账，费用为本机估算，未核对服务商实扣；不作汇率换算。';
 }
 
 function renderBudget(budget, background, revision){
-  if(!budget || budget.schema !== 'unified-budget/v1') throw new Error('当前预算接口暂不可用');
+  requireCnyBudget(budget);
   renderBudgetSummary(budget);
   const available = ['available','not_started'].includes(budget.availability), tracking = budget.availability === 'available';
   const effective = budget.effective || {}, limits = effective.limits || {}, usage = budget.gate_usage || budget.usage || {};
@@ -1643,7 +1643,7 @@ function renderBudget(budget, background, revision){
   if(!background && !editing){
     budgetSettingsRevision = budget.revision;
     [['bAutonomy','autonomy'],['bPrivate','private'],['bGroup','group']].forEach(([id,key]) => renderBudgetInput(id, limits[key]));
-    renderBudgetInput('bReserve', effective.reserve_usd);
+    renderBudgetInput('bReserve', effective.reserve_cny);
   }
   ['bAutonomy','bPrivate','bGroup','bReserve'].forEach(id => { $(id).disabled = !available; });
   $('budgetSave').disabled = !available || !budgetSettingsRevision;
@@ -1658,16 +1658,16 @@ function renderBudget(budget, background, revision){
     const bucket = usage.buckets?.[key] || {}, limit = limits[key];
     const card = document.createElement('div'); card.className = 'policy-item';
     const head = document.createElement('b'); head.textContent = name; card.appendChild(head);
-    const amount = document.createElement('p'); amount.textContent = tracking ? '执行已计 ' + budgetAmount(bucket.spent_usd) + ' · 预留 ' + budgetAmount(bucket.reserved_usd) : '等待计费回执，费用未确认'; card.appendChild(amount);
+    const amount = document.createElement('p'); amount.textContent = tracking ? '执行已计 ' + budgetAmount(bucket.spent_cny) + ' · 预留 ' + budgetAmount(bucket.reserved_cny) : '等待计费回执，费用未确认'; card.appendChild(amount);
     const meter = document.createElement('div'); meter.className = 'budget-meter'; meter.setAttribute('role','progressbar'); meter.setAttribute('aria-label',name + '预算使用');
-    const used = bucket.spent_usd + bucket.reserved_usd, costKnown = tracking && typeof bucket.spent_usd === 'number' && bucket.spent_usd >= 0 && typeof bucket.reserved_usd === 'number' && bucket.reserved_usd >= 0 && Number.isFinite(used);
+    const used = bucket.spent_cny + bucket.reserved_cny, costKnown = tracking && typeof bucket.spent_cny === 'number' && bucket.spent_cny >= 0 && typeof bucket.reserved_cny === 'number' && bucket.reserved_cny >= 0 && Number.isFinite(used);
     const measurable = costKnown && typeof limit === 'number' && limit > 0;
     const percent = measurable ? Math.max(0, Math.min(100, used / limit * 100)) : 0;
     meter.dataset.state = !costKnown || bucket.unknown_count ? 'unknown' : bucket.exhausted ? 'blocked' : 'available';
     if(measurable){ meter.setAttribute('aria-valuenow', String(Math.round(percent))); meter.setAttribute('aria-valuemin','0'); meter.setAttribute('aria-valuemax','100'); }
     meter.setAttribute('aria-valuetext', !tracking ? '尚未起算' : !costKnown ? '费用待核算' : limit === 0 ? '不限额' : '已使用和预留 ' + percent.toFixed(1) + '%');
     const fill = document.createElement('i'); fill.style.width = percent + '%'; meter.appendChild(fill); card.appendChild(meter);
-    const detail = document.createElement('p'); detail.textContent = !available ? '费用未确认' : limit === 0 ? '每日不限额' : '每日 ' + budgetAmount(limit) + ' · ' + (tracking ? '记录内剩余 ' + budgetAmount(bucket.remaining_usd) : '等待起算'); card.appendChild(detail);
+    const detail = document.createElement('p'); detail.textContent = !available ? '费用未确认' : limit === 0 ? '每日不限额' : '每日 ' + budgetAmount(limit) + ' · ' + (tracking ? '记录内剩余 ' + budgetAmount(bucket.remaining_cny) : '等待起算'); card.appendChild(detail);
     if(bucket.unknown_count){ const unknown = document.createElement('p'); unknown.textContent = bucket.unknown_count + ' 轮费用待确认'; card.appendChild(unknown); }
     if(bucket.exhausted){ const blocked = document.createElement('p'); blocked.textContent = '额度已用完，限制新动作和发送'; card.appendChild(blocked); }
     else if(bucket.can_start_new_turn === false){ const blocked = document.createElement('p'); blocked.textContent = '余额不足以预留下一轮，保留必要的控制判断'; card.appendChild(blocked); }
@@ -1698,7 +1698,7 @@ function spendingAmount(value){
 }
 
 function nativeSpendingReady(data){
-  return data?.schema === 'daily-spending/v1' && data.currency === 'USD' && data.timezone === 'Asia/Shanghai' && data.availability !== 'unavailable' && data.coverage?.scope === 'current_mapped_main_agent_native_turns' && Array.isArray(data.days);
+  return data?.schema === 'daily-spending/v2' && data.currency === 'CNY' && data.basis === 'owner_confirmed_numeric_cny_estimate' && data.numeric_scale === 1 && data.timezone === 'Asia/Shanghai' && data.availability !== 'unavailable' && data.coverage?.scope === 'current_mapped_main_agent_native_turns' && Array.isArray(data.days);
 }
 
 function renderTodaySpending(history){
@@ -1706,12 +1706,12 @@ function renderTodaySpending(history){
   const row = ready ? history.days.find(day => day.date === today) : null;
   const available = row && row.status !== 'unknown';
   setText('mDate', today || '—');
-  setText('mDailyTotal', available ? budgetAmount(row.total, false) : '待核算');
-  setText('mDailyTotalUsd', available && typeof row.total === 'number' && Number.isFinite(row.total) && row.total >= 0 ? '原始 API 估值：USD ' + String(row.total) : '原始 USD 费用待核算');
+  setText('mDailyTotal', available ? budgetAmount(row.total) : '待核算');
+  setText('mDailyTotalNote', available && typeof row.total === 'number' && Number.isFinite(row.total) && row.total >= 0 ? '本机估算：' + String(row.total) + ' 元，未核对服务商实扣' : '人民币费用待核算');
   setText('mDailyAvailability', !ready ? '来源未确认' : !available ? '费用待核算' : spendingDayState(row));
   const coverage = ready ? history.coverage : {};
   setText('mCoverage', Number.isInteger(coverage.owner_verified_scopes) && Number.isInteger(coverage.configured_scopes) ? '按北京时间归日 · 已核验 ' + coverage.owner_verified_scopes + '/' + coverage.configured_scopes + ' 个绑定范围' : '等待核验当前费用来源');
-  setText('mAccounting', '按当前绑定范围的原生模型轮次统计 API 美元估值，以人民币参考值显示并保留 USD 对照，自主触发单独归类。未覆盖记录不能当作零费用；缺少计价或归类回执的轮次保留待核算。');
+  setText('mAccounting', '按你确认的人民币口径，归集当前绑定范围内原生模型轮次的本机费用估算，自主触发单独归类；未核对服务商实扣。未覆盖记录不能当作零费用；缺少计价或归类回执的轮次保留待核算。');
   const box = $('dailyTodayBuckets'); box.innerHTML = '';
   for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
     const card = document.createElement('div'); card.className = 'policy-item';
@@ -1732,6 +1732,9 @@ function selectSpendingDate(date){
 
 function renderDailySpending(data){
   const root = $('dailySpending'); if(!root) return;
+  if(arguments.length && data && nativeSpendingReady(root.spendingData) && (data.schema !== 'daily-spending/v2' || data.currency !== 'CNY' || data.basis !== 'owner_confirmed_numeric_cny_estimate' || data.numeric_scale !== 1)){
+    const note = $('spendHistoryNote'); note.dataset.state = 'error'; note.textContent = '每日花销单位接口不匹配，保留上次人民币记录，请更新本机服务后重读。'; return;
+  }
   if(arguments.length) root.spendingData = data;
   const history = root.spendingData;
   renderTodaySpending(history);
@@ -1758,7 +1761,7 @@ function renderDailySpending(data){
     button.setAttribute('aria-pressed', String(day.date === selected.date));
     const description = day.date + '，已计合计 ' + spendingAmount(day.total) + '，' + keys.map(([key,name]) => name + ' ' + spendingAmount(day[key])).join('，') + '，' + spendingDayState(day);
     button.setAttribute('aria-label', description); button.title = description; button.onclick = () => selectSpendingDate(day.date);
-    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? budgetAmount(day.total, false) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
+    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? budgetAmount(day.total) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
     const stack = document.createElement('span'); stack.className = 'spend-stack'; stack.setAttribute('aria-hidden','true');
     stack.dataset.state = keys.every(([key]) => !known(day[key])) ? 'unknown' : 'measured';
     keys.forEach(([key]) => { const piece = document.createElement('i'); piece.className = key; piece.style.height = (known(day[key]) ? day[key] / ceiling * 140 : 0) + 'px'; stack.appendChild(piece); });
@@ -1772,7 +1775,7 @@ function renderDailySpending(data){
   keys.forEach(([key,name]) => { const item = document.createElement('span'); item.textContent = name + ' '; const amount = document.createElement('b'); amount.textContent = spendingAmount(selected[key]); item.appendChild(amount); detail.appendChild(item); });
   const status = document.createElement('span'); status.textContent = spendingDayState(selected); detail.appendChild(status);
   note.dataset.state = visible.some(day => day.status !== 'complete' || day.pending_count || day.unknown_count) ? 'partial' : 'live';
-  note.textContent = '按北京时间每日归集，展示当前绑定范围内原生模型轮次的 API 估值；+ ? 表示另有计费中或待核算轮次。未覆盖记录不能当作零费用，预算预留不计入此图。';
+  note.textContent = '按北京时间每日归集，单位人民币元，费用为当前绑定范围内的本机估算，未核对服务商实扣；+ ? 表示另有计费中或待核算轮次。未覆盖记录不能当作零费用，预算预留不计入此图。';
 }
 
 async function loadBudget(background){
@@ -1788,7 +1791,7 @@ async function loadBudget(background){
     if(epoch !== budgetSettingsEpoch) return;
     setText('mAvailability','刷新失败，保留上次记录'); setText('mState','预算状态未确认');
     ['bAutonomy','bPrivate','bGroup','bReserve','budgetSave'].forEach(id => { $(id).disabled = true; });
-    renderDailySpending(null);
+    if(error.code !== 'budget_currency_mismatch') renderDailySpending(null);
     show('moneyOut','读取失败：' + error.message);
   }
 }
@@ -1799,24 +1802,25 @@ async function loadActivityBudget(){
   try{
     const result = await api('/budget', null, true);
     if(epoch !== budgetSettingsEpoch) return;
-    if(!result.ok || result.budget?.schema !== 'unified-budget/v1') throw new Error('预算暂不可用');
+    if(!result.ok) throw new Error('预算暂不可用');
     renderBudgetSummary(result.budget);
-  }catch(error){ if(epoch === budgetSettingsEpoch){ setText('liveMoney','预算状态未确认'); setText('liveMoneySub','读取失败，不能按零费用判断'); } }
+  }catch(error){ if(epoch === budgetSettingsEpoch){ if(error.code === 'budget_currency_mismatch'){ setText('liveMoney','预算单位未确认'); $('liveMoneySub').title = error.message; return; } setText('liveMoney','预算状态未确认'); setText('liveMoneySub','读取失败，不能按零费用判断'); } }
 }
 
 async function saveBudget(){
   if(!budgetSettingsRevision){ show('moneyOut','先读取当前额度。'); return; }
   if(budgetSettingsSaving) return;
   let values;
-  try{ values = ['bAutonomy','bPrivate','bGroup','bReserve'].map(budgetInputUsd); }
+  try{ values = ['bAutonomy','bPrivate','bGroup','bReserve'].map(budgetInputCny); }
   catch(error){ show('moneyOut', error.message); return; }
   if(values.some(value => !Number.isFinite(value) || value < 0) || values[3] <= 0){ show('moneyOut','额度应为非负数，每轮预留必须大于 0。'); return; }
   budgetSettingsSaving = true; budgetSettingsEpoch++;
   const revision = pageEdits.get('money') || 0;
   $('budgetSave').disabled = true; show('moneyOut','保存中…');
   try{
-    const result = await api('/budget', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({revision:budgetSettingsRevision,settings:{limits:{autonomy:values[0],private:values[1],group:values[2]},reserve_usd:values[3]}})});
+    const result = await api('/budget', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({revision:budgetSettingsRevision,settings:{limits:{autonomy:values[0],private:values[1],group:values[2]},reserve_cny:values[3]}})});
     if(!result.ok) throw new Error(result.error || '保存失败');
+    requireCnyBudget(result.budget);
     if((pageEdits.get('money') || 0) === revision){ dirtyPages.delete('money'); renderBudget(result.budget,false,revision); show('moneyOut','已保存。后续决策和动作将读取当前额度。'); }
     else show('moneyOut','先前额度已保存；当前还有未保存的修改。');
   }catch(error){ show('moneyOut','保存失败：' + error.message + '。请重新读取后再保存。'); }

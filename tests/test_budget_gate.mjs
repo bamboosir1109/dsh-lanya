@@ -73,7 +73,7 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'state.json')}
     if (request.operation === 'heartbeat') return { bound: true }
     const category = request.origin === 'observation' ? 'autonomy' : request.conversation_key.startsWith('group:') ? 'group' : 'private'
     if (request.operation === 'reserve') return { allowed: !blocked || decisionOnly, category, limited: true,
-      decision_only: decisionOnly, reason: blocked ? 'budget_exhausted' : 'reserved', state: {spent_usd:0,reserved_usd:0.05,remaining_usd:0.95,exhausted:false,unknown_count:1} }
+      decision_only: decisionOnly, reason: blocked ? 'budget_exhausted' : 'reserved', state: {spent_cny:0,reserved_cny:0.05,remaining_cny:0.95,exhausted:false,unknown_count:1} }
     if (request.operation === 'check') return { allowed: !blocked && !decisionOnly, reason: blocked || decisionOnly ? 'budget_exhausted' : 'within_reservation' }
     return { settled: request.operation === 'settle', status: request.operation === 'settle' ? 'settled' : 'unknown' }
   }
@@ -121,7 +121,15 @@ test('native dispatch reserves by trusted live origin and settles exact native s
   await h.end()
   assert.deepEqual(h.meterCalls, [['synthetic-session', 100, 141]])
   assert.equal(h.requests.filter(r => r.operation === 'settle').length, 1)
-  assert.equal(h.requests.find(r => r.operation === 'settle').receipt.api_cost_usd, 0.023)
+  assert.equal(h.requests.find(r => r.operation === 'settle').receipt.api_cost_cny, 0.023)
+  const settled = h.requests.find(r => r.operation === 'settle')
+  assert.equal(settled.budget_contract.currency, 'CNY')
+  assert.equal(settled.receipt.budget_contract.numeric_scale, 1)
+  assert.equal(settled.receipt.budget_contract.basis, 'owner_confirmed_numeric_cny_estimate')
+  assert.equal('api_cost_usd' in settled.receipt, false)
+  const trustedPrompt = h.followups[0].content[0].text.split('<trusted_turn_budget>')[1].split('</trusted_turn_budget>')[0]
+  assert.equal(JSON.parse(trustedPrompt).currency, 'CNY')
+  assert.equal(JSON.parse(trustedPrompt).source_estimate_currency, 'USD')
   assert.equal(sent(h).length, 0)
 })
 

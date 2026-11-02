@@ -14,6 +14,11 @@ import { createObservationPump, validateObservation } from './observation-queue.
 // Freeze the on-disk bytes at ESM evaluation, including for new bridge
 // instances created from this cached module after a later deployment.
 const LOADED_ADAPTER_SHA256 = createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex')
+// Project-local owner-confirmed amount convention. This is not a claim about
+// the supplier's settlement currency; native numeric estimates use scale one.
+const BUDGET_CONTRACT = Object.freeze({ schema: 'unified-budget/v2', currency: 'CNY',
+  basis: 'owner_confirmed_numeric_cny_estimate', source_estimate_currency: 'USD',
+  source_estimate_basis: 'cost_meter_default_price_estimate', numeric_scale: 1 })
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const identity = (...parts) => createHash('sha256').update(parts.map(String).join('\0')).digest('hex')
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
@@ -216,7 +221,7 @@ export class OneBotDecisionAdapter {
 
   async budgetHeartbeat() {
     const value = await this.budgetProvider({ operation: 'heartbeat', instance_id: this.budgetInstance, pid: process.pid,
-      adapter_source_sha256: this.budgetSourceHash })
+      adapter_source_sha256: this.budgetSourceHash, budget_contract: BUDGET_CONTRACT })
     if (value?.bound !== true) throw new Error('Budget gate heartbeat refused')
   }
 
@@ -268,7 +273,7 @@ export class OneBotDecisionAdapter {
     if (binding.budget) return binding.budget
     const request = Object.freeze({ cwd: owner.cwd, agent_preset: owner.preset, conversation_key: scope,
       origin: binding.origin, turn_key: identity(owner.workspace_key, owner.agent_key, scope, binding.origin, binding.messageId),
-      instance_id: this.budgetInstance })
+      instance_id: this.budgetInstance, budget_contract: BUDGET_CONTRACT })
     let result
     try { result = await this.budgetProvider({ ...request, operation: 'reserve', meter_available: Boolean(this.costMeter(chat.agent)) }) }
     catch (error) {
@@ -283,7 +288,7 @@ export class OneBotDecisionAdapter {
     if (result.category !== category || typeof result.limited !== 'boolean' || typeof result.decision_only !== 'boolean') throw new Error('Invalid budget reservation receipt')
     const budget = Object.freeze({ request, category: result.category, limited: result.limited === true,
       decisionOnly: result.decision_only === true, state: result.state && Object.freeze(Object.fromEntries(
-        ['spent_usd', 'reserved_usd', 'remaining_usd', 'exhausted', 'unknown_count'].map(key => [key, result.state[key]]))) })
+        ['spent_cny', 'reserved_cny', 'remaining_cny', 'exhausted', 'unknown_count'].map(key => [key, result.state[key]]))) })
     if (context.binding !== binding) throw new Error('Budget binding changed during reservation')
     context.binding = Object.freeze({ ...binding, budget })
     return budget
@@ -314,7 +319,8 @@ export class OneBotDecisionAdapter {
         await unknown(); return
       }
       await this.budgetProvider({ ...budget.request, operation: 'settle', receipt: {
-        api_cost_usd: cost.apiCost, start_seq: start, end_seq: end, calls: cost.calls.length, priced: true } })
+        api_cost_cny: cost.apiCost, budget_contract: BUDGET_CONTRACT,
+        start_seq: start, end_seq: end, calls: cost.calls.length, priced: true } })
     } catch { await unknown() }
   }
 
@@ -600,10 +606,10 @@ export class OneBotDecisionAdapter {
     }
     let enriched = text
     const budget = await this.reserveBudget(scope, owner)
-    if (budget) enriched += '\n<trusted_turn_budget>\n' + JSON.stringify({ currency: 'USD', basis: 'meter_api_usd_estimate',
+    if (budget) enriched += '\n<trusted_turn_budget>\n' + JSON.stringify({ ...BUDGET_CONTRACT,
       category: budget.category, limited: budget.limited, decision_only: budget.decisionOnly,
       state: budget.state || null,
-      note: 'A finite reservation gates this turn and tools; it is not an account balance or entertainment-only cost. Idle/defer and authorized silence/resume remain possible. Read/view is a local context exception. Unknown/unpriced costs retain their reservation; do not reset or edit budget state.' }) + '\n</trusted_turn_budget>\n'
+      note: 'Amounts are yuan under the owner-confirmed numeric estimate convention (scale 1), not verified supplier charges. A finite reservation gates this turn and tools; it is not an account balance or entertainment-only cost. Idle/defer and authorized silence/resume remain possible. Read/view is a local context exception. Unknown/unpriced costs retain their reservation; do not reset or edit budget state.' }) + '\n</trusted_turn_budget>\n'
     try {
       const context = await this.memoryContext(scope, text, owner)
       if (context) enriched += '\n<scoped_memory_context>\n' + JSON.stringify(context) + '\n</scoped_memory_context>\n'

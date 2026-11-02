@@ -39,7 +39,7 @@ class SnapshotPublishing(unittest.TestCase):
         self.panel.memory_overview = lambda: {"entries": []}
         self.panel.bili_snapshot = lambda: {"records": []}
         self.panel.unified_budget_snapshot = lambda: {
-            "schema": "unified-budget/v1", "availability": "not_started",
+            "schema": "unified-budget/v2", "availability": "not_started",
             "usage": {"coverage_start": None, "counts_complete": False},
             "effective": {"currency": "USD"}}
         self.panel.list_dir_files = lambda *args, **kwargs: []
@@ -131,7 +131,7 @@ class SnapshotPublishing(unittest.TestCase):
             self.module.main()
         result = json.loads((self.made / "lanya-budget.json").read_bytes())
         self.assertTrue(result["ok"])
-        self.assertEqual(result["budget"]["schema"], "unified-budget/v1")
+        self.assertEqual(result["budget"]["schema"], "unified-budget/v2")
         self.assertEqual(result["budget"]["availability"], "not_started")
         self.assertIsNone(result["budget"]["usage"]["coverage_start"])
         self.assertFalse(result["budget"]["usage"]["counts_complete"])

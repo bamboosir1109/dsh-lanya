@@ -15,6 +15,9 @@ test('call date governs cross-midnight spending',()=>{
   const report=buildNativeDaily(fixture(),priced);
   assert.equal(report.days[0].total,0); assert.equal(report.days[1].autonomy,0.0123);
   assert.equal(report.days[0].turn_count,1);
+  assert.equal(report.schema,'daily-spending/v2');assert.equal(report.currency,'CNY');
+  assert.equal(report.basis,'owner_confirmed_numeric_cny_estimate');assert.equal(report.numeric_scale,1);
+  assert.equal(report.source_estimate_currency,'USD');
 });
 test('overlapping turn lifecycle is refused',()=>{
   const value=fixture();value.sessions[0].records.splice(1,0,{seq:1,time:now-300000,type:'turn/start',data:{turn:1}});
@@ -53,13 +56,13 @@ test('cross-midnight unpriced calls affect their actual charge day',()=>{
   const report=buildNativeDaily(value,cost),[first,second]=report.days;
   assert.equal(first.autonomy,0.01);assert.equal(first.unknown_count,0);
   assert.equal(second.autonomy,null);assert.equal(second.total,null);assert.equal(second.unknown_count,1);
-  assert.equal(second.buckets.autonomy.known_spent_usd,0);
+  assert.equal(second.buckets.autonomy.known_spent_cny,0);
 });
 test('known costs survive beside unknown costs without becoming a confirmed total',()=>{
   const value=fixture();value.sessions[0].expected_days['2026-11-02']=0.0123;
   const report=buildNativeDaily(value,()=>({found:true,calls:[{atMs:now-2000,priced:true,apiCost:0.0123},
     {atMs:now-1500,priced:false,apiCost:0}]}));
-  assert.equal(report.days[1].autonomy,null);assert.equal(report.days[1].known_total_usd,0.0123);
+  assert.equal(report.days[1].autonomy,null);assert.equal(report.days[1].known_total_cny,0.0123);
   assert.equal(report.days[1].unknown_count,1);
 });
 test('no-cost cross-midnight turn remains unknown on both days',()=>{

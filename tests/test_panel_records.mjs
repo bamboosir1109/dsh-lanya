@@ -63,7 +63,7 @@ function element(tag = 'div') {
   return node
 }
 
-function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}, functions = [], currencyDeclaration = true } = {}) {
+function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}, functions = [] } = {}) {
   const source = readFileSync(PANEL, 'utf8').replaceAll('\r\n', '\n')
   const nodes = new Map(), calls = [], intervals = [], timeouts = [], events = new Map()
   const node = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id) }
@@ -98,7 +98,6 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
       if (!mockFetch) throw new Error('Unexpected fixture fetch')
       return mockFetch(String(url), options, calls.length)
     }, ...extra })
-  if(currencyDeclaration) vm.runInContext(source.match(/^const CNY_PER_USD = .*;$/m)[0], context)
   for (const name of functions) vm.runInContext(panelFunction(source, name), context)
   return { source, context, nodes, node, calls, intervals, timeouts, events,
     setNow(value) { now = value },
@@ -309,7 +308,7 @@ test('background budget refresh updates read-only totals without resetting an ed
   h.node('bAutonomy').value = 'unsaved fixture limit'
   await h.context.loadBudget(true)
   assert.equal(h.node('bAutonomy').value, 'unsaved fixture limit')
-  assert.match(treeText(h.node('budgetBuckets')), /已计 ¥0\.0000（USD 0） · 预留 ¥0\.3600（USD 0\.05）/)
+  assert.match(treeText(h.node('budgetBuckets')), /已计 ¥0\.0000 · 预留 ¥0\.0500/)
 })
 
 test('background memory read leaves the explicitly selected owner control alone', async () => {
@@ -622,16 +621,16 @@ test('a previous journal date cannot overwrite the selected date refresh indicat
   assert.equal(h.context.recordStates.size, 1)
 })
 
-const MONEY_FORMATTERS = ['budgetAmount', 'budgetDecimal', 'renderBudgetInput', 'budgetInputUsd']
+const MONEY_FORMATTERS = ['requireCnyBudget', 'budgetAmount', 'budgetDecimal', 'renderBudgetInput', 'budgetInputCny']
 const DAILY_RENDERERS = [...MONEY_FORMATTERS, 'spendingDayState', 'spendingAmount', 'nativeSpendingReady', 'renderTodaySpending', 'selectSpendingDate', 'renderDailySpending']
 const BUDGET_RENDERERS = ['appendPolicyRow', 'renderBudgetSummary', ...DAILY_RENDERERS, 'renderBudget']
 const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']
-const budgetData = overrides => ({ schema: 'unified-budget/v1', availability: 'available', revision: 'a'.repeat(64),
-  effective: { currency: 'USD', basis: 'meter_api_usd_estimate', limits: { autonomy: 1, private: 0, group: 0 }, reserve_usd: 0.05 },
+const budgetData = overrides => ({ schema: 'unified-budget/v2', currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, availability: 'available', revision: 'a'.repeat(64),
+  effective: { currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, limits: { autonomy: 1, private: 0, group: 0 }, reserve_cny: 0.05 },
   usage: { date: '2026-11-01', coverage_start: 1793520000000, buckets: {
-    autonomy: { spent_usd: 0, reserved_usd: 0.05, remaining_usd: 0.95, unknown_count: 0, exhausted: false },
-    private: { spent_usd: 0.12, reserved_usd: 0, remaining_usd: null, unknown_count: 0, exhausted: false },
-    group: { spent_usd: 0.25, reserved_usd: 0, remaining_usd: null, unknown_count: 0, exhausted: false } } },
+    autonomy: { spent_cny: 0, reserved_cny: 0.05, remaining_cny: 0.95, unknown_count: 0, exhausted: false },
+    private: { spent_cny: 0.12, reserved_cny: 0, remaining_cny: null, unknown_count: 0, exhausted: false },
+    group: { spent_cny: 0.25, reserved_cny: 0, remaining_cny: null, unknown_count: 0, exhausted: false } } },
   enforcement: { before_turn: true, before_action: true, runtime_gate_bound: true, provider_hard_cap: false }, ...overrides })
 const autonomyData = overrides => ({ schema: 'dsh-panel-autonomy-settings/v1', availability: 'available',
   mode: 'unified', revision: 'b'.repeat(64), writable_fields: ['opportunity_minutes'],
@@ -642,20 +641,20 @@ const biliData = overrides => ({ status: 'ok', coverage: { owner_verified_scopes
   records: [], recent_videos: [], replies: [], ...overrides })
 const spendingDay = (date, overrides = {}) => ({ date, autonomy: 0.12, private: 0.34, group: 0.56, total: 1.02,
   status: 'partial', turn_count: 3, settled_count: 3, pending_count: 0, unknown_count: 0, ...overrides })
-const spendingData = days => ({ schema: 'daily-spending/v1', currency: 'USD', timezone: 'Asia/Shanghai',
+const spendingData = days => ({ schema: 'daily-spending/v2', currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, timezone: 'Asia/Shanghai',
   today: days.at(-1)?.date, days, coverage: { complete_days: false, scope: 'current_mapped_main_agent_native_turns',
     owner_verified_scopes: 2, configured_scopes: 2 } })
 
-test('daily spending converts actual USD buckets to yuan and retains the same original values in its accessible table', () => {
+test('daily spending shows the confirmed CNY numbers unchanged in cards chart and accessible table', () => {
   const h = harness({ functions: DAILY_RENDERERS })
   h.context.renderDailySpending(spendingData([spendingDay('2026-11-01')]))
   const bar = h.node('spendChart').children[0]
-  assert.match(bar['aria-label'], /2026-11-01.*合计 ¥7\.3440（USD 1\.02）.*自主 ¥0\.8640（USD 0\.12）.*私聊 ¥2\.4480（USD 0\.34）.*群聊 ¥4\.0320（USD 0\.56）/)
+  assert.match(bar['aria-label'], /2026-11-01.*合计 ¥1\.0200.*自主 ¥0\.1200.*私聊 ¥0\.3400.*群聊 ¥0\.5600/)
   const pieces = descendants(bar).filter(node => ['autonomy', 'private', 'group'].includes(node.className))
   assert.equal(pieces.length, 3)
   assert.ok(parseFloat(pieces[0].style.height) > 0)
   assert.ok(parseFloat(pieces[2].style.height) > parseFloat(pieces[0].style.height))
-  assert.match(treeText(h.node('spendTable')), /2026-11-01.*¥0\.8640（USD 0\.12）.*¥2\.4480（USD 0\.34）.*¥4\.0320（USD 0\.56）.*¥7\.3440（USD 1\.02）/)
+  assert.match(treeText(h.node('spendTable')), /2026-11-01.*¥0\.1200.*¥0\.3400.*¥0\.5600.*¥1\.0200/)
   assert.equal(bar['aria-pressed'], 'true')
   assert.equal(h.node('spendSelectedDate').value, '2026-11-01')
 })
@@ -664,18 +663,18 @@ test('whole-day spending and the budget gate use independent sources without add
   const h = harness({ functions: BUDGET_RENDERERS })
   const budget = budgetData({ daily_spending: spendingData([spendingDay('2026-11-01', { autonomy: 1.2, total: 2.1 })]) })
   budget.gate_usage = structuredClone(budget.usage)
-  budget.gate_usage.buckets.autonomy.spent_usd = 0.07
-  budget.usage.buckets.autonomy.spent_usd = 9
+  budget.gate_usage.buckets.autonomy.spent_cny = 0.07
+  budget.usage.buckets.autonomy.spent_cny = 9
   h.context.renderBudget(budget, false, 0)
-  assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*今日已计 ¥8\.6400（USD 1\.2）/)
-  assert.doesNotMatch(treeText(h.node('dailyTodayBuckets')), /USD 0\.07|USD 9）/)
-  assert.match(treeText(h.node('budgetBuckets')), /执行已计 ¥0\.5040（USD 0\.07）/)
-  assert.equal(h.node('mDailyTotal').textContent, '¥15.1200')
-  assert.equal(h.node('mDailyTotalUsd').textContent, '原始 API 估值：USD 2.1')
+  assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*今日已计 ¥1\.2000/)
+  assert.doesNotMatch(treeText(h.node('dailyTodayBuckets')), /¥0\.0700|¥9\.0000/)
+  assert.match(treeText(h.node('budgetBuckets')), /执行已计 ¥0\.0700/)
+  assert.equal(h.node('mDailyTotal').textContent, '¥2.1000')
+  assert.equal(h.node('mDailyTotalNote').textContent, '本机估算：2.1 元，未核对服务商实扣')
   assert.equal(h.node('mDate').textContent, '2026-11-01')
   assert.match(h.node('mCoverage').textContent, /已核验 2\/2 个绑定范围/)
   assert.match(h.node('mGateAccounting').textContent, /不与上方每日花销相加/)
-  assert.match(h.node('sMoneySub').textContent, /¥0\.5040（USD 0\.07）/)
+  assert.match(h.node('sMoneySub').textContent, /¥0\.0700/)
 })
 
 test('a partial gate ledger is never a substitute for missing native whole-day costs', () => {
@@ -688,7 +687,7 @@ test('a partial gate ledger is never a substitute for missing native whole-day c
     assert.doesNotMatch(treeText(h.node('dailyTodayBuckets')), /\$0\.0000|\$0\.1200/)
     assert.match(treeText(h.node('spendChart')), /暂不可用/)
     assert.equal(h.node('spendTable').children.length, 0)
-    assert.match(treeText(h.node('budgetBuckets')), /执行已计 ¥0\.8640（USD 0\.12）/)
+    assert.match(treeText(h.node('budgetBuckets')), /执行已计 ¥0\.1200/)
   }
 })
 
@@ -708,9 +707,9 @@ test('missing daily coverage renders unknown instead of a zero-height zero-cost 
     spendingDay('2026-10-31', { autonomy: null, private: null, group: null, total: null, status: 'unknown' }),
     spendingDay('2026-11-01', { autonomy: 0, total: 0.9, pending_count: 1, unknown_count: 2 })]))
   const [missing, pending] = h.node('spendChart').children
-  assert.doesNotMatch(treeText(missing), /¥0\.0000|USD 0）/)
+  assert.doesNotMatch(treeText(missing), /¥0\.0000/)
   assert.equal(descendants(missing).find(node => node.className === 'spend-stack').dataset.state, 'unknown')
-  assert.match(treeText(pending), /¥6\.4800 \+ \?/)
+  assert.match(treeText(pending), /¥0\.9000 \+ \?/)
   assert.match(treeText(h.node('spendTable')), /未覆盖.*1 轮计费中.*2 轮待核算/)
   assert.match(h.node('spendHistoryNote').textContent, /未覆盖记录不能当作零费用/)
   assert.match(treeText(h.node('spendDetail')), /1 轮计费中.*2 轮待核算/)
@@ -725,7 +724,7 @@ test('daily range and actual date button select details without editing settings
   assert.equal(h.node('spendChart').children.length, 30)
   h.node('spendChart').children[3].onclick()
   assert.equal(h.node('spendSelectedDate').value, '2026-10-04')
-  assert.match(treeText(h.node('spendDetail')), /2026-10-04.*¥28\.8000（USD 4）/)
+  assert.match(treeText(h.node('spendDetail')), /2026-10-04.*¥4\.0000/)
   assert.equal(h.node('spendChart').children[3]['aria-pressed'], 'true')
   assert.equal(h.node('spendTable').children[3]['aria-current'], 'date')
   assert.equal(h.context.budgetSettingsRevision, null)
@@ -769,7 +768,7 @@ test('daily history follows a new Beijing day by default but preserves an explic
 })
 
 test('daily history failure and empty history clear previous bars without claiming zero spending', () => {
-  for (const bad of [null, spendingData([]), { schema: 'other', days: [] }]) {
+  for (const bad of [null, spendingData([]), { ...spendingData([]), availability: 'unavailable' }]) {
     const h = harness({ functions: DAILY_RENDERERS })
     h.context.renderDailySpending(spendingData([spendingDay('2026-11-01')]))
     h.context.renderDailySpending(bad)
@@ -784,7 +783,7 @@ test('daily history failure and empty history clear previous bars without claimi
 test('missing current bucket values never produce a measured zero progressbar', () => {
   const h = harness({ functions: BUDGET_RENDERERS })
   const budget = budgetData()
-  budget.usage.buckets.autonomy.spent_usd = null
+  budget.usage.buckets.autonomy.spent_cny = null
   h.context.renderBudget(budget, false, 0)
   const meter = descendants(h.node('budgetBuckets')).find(node => node.role === 'progressbar')
   assert.equal(meter['aria-valuenow'], undefined)
@@ -794,23 +793,23 @@ test('missing current bucket values never produce a measured zero progressbar', 
   assert.match(treeText(h.node('budgetBuckets')), /执行已计 待核算/)
 })
 
-test('yuan budget view keeps original USD, reservation and unknown costs separate without promising a provider hard cap', () => {
+test('CNY budget view keeps estimation reservation and unknown costs separate without promising a provider hard cap', () => {
   const data = budgetData()
-  data.usage.buckets.autonomy = { spent_usd: 0.2, reserved_usd: 0.3, remaining_usd: 0.5, unknown_count: 2, exhausted: false }
+  data.usage.buckets.autonomy = { spent_cny: 0.2, reserved_cny: 0.3, remaining_cny: 0.5, unknown_count: 2, exhausted: false }
   const h = harness({ functions: BUDGET_RENDERERS })
   h.context.renderBudget(data, false, 0)
   const text = treeText(h.node('budgetBuckets')) + treeText(h.node('budgetEnforcement'))
-  assert.match(text, /已计 ¥1\.4400（USD 0\.2） · 预留 ¥2\.1600（USD 0\.3）/)
+  assert.match(text, /已计 ¥0\.2000 · 预留 ¥0\.3000/)
   assert.match(text, /2 轮费用待确认/)
   assert.match(text, /未知费用保留预留，不自动重试或伪造退款/)
-  assert.match(h.node('mAccounting').textContent, /原生模型轮次.*API.*估值/)
+  assert.match(h.node('mAccounting').textContent, /原生模型轮次.*本机费用估算/)
   assert.match(h.node('mAccounting').textContent, /未覆盖记录不能当作零费用/)
   assert.equal(h.node('sMoney').textContent, '部分费用待确认')
   const meter = descendants(h.node('budgetBuckets')).find(node => node.role === 'progressbar')
   assert.equal(meter['aria-valuenow'], '50')
   assert.equal(meter.dataset.state, 'unknown')
-  assert.equal(h.node('bAutonomy').value, '7.2')
-  assert.equal(h.node('bReserve').value, '0.36')
+  assert.equal(h.node('bAutonomy').value, '1')
+  assert.equal(h.node('bReserve').value, '0.05')
   assert.doesNotMatch(text, /免费|账户硬限额已生效/)
 })
 
@@ -824,7 +823,7 @@ test('configured budget without a fresh runtime gate is never shown as an active
 
 test('remaining balance below a new reservation is not labeled available or fully exhausted', () => {
   const data = budgetData()
-  data.usage.buckets.autonomy = { spent_usd: 0.98, reserved_usd: 0, remaining_usd: 0.02,
+  data.usage.buckets.autonomy = { spent_cny: 0.98, reserved_cny: 0, remaining_cny: 0.02,
     unknown_count: 0, exhausted: false, can_start_new_turn: false, blocked_reason: 'insufficient_reserve' }
   const h = harness({ functions: BUDGET_RENDERERS })
   h.context.renderBudget(data, false, 0)
@@ -840,7 +839,7 @@ test('not-started budget permits current settings without displaying fabricated 
   h.context.renderBudget(data, false, 0)
   assert.equal(h.node('bAutonomy').disabled, false)
   assert.equal(h.node('budgetSave').disabled, false)
-  assert.equal(h.node('bAutonomy').value, '7.2')
+  assert.equal(h.node('bAutonomy').value, '1')
   assert.match(h.node('mAvailability').textContent, /等待首条计费回执/)
   assert.match(treeText(h.node('budgetBuckets')), /等待计费回执，费用未确认/)
   assert.doesNotMatch(treeText(h.node('budgetBuckets')), /执行已计 ¥0|记录内剩余 ¥|已使用和预留 0/)
@@ -882,17 +881,17 @@ test('a budget save sends only new bucket settings and its exact revision', asyn
     requests.push(args); return { ok: true, budget: budgetData({ revision: 'c'.repeat(64) }) }
   } } })
   h.context.budgetSettingsRevision = 'a'.repeat(64)
-  for (const [id, value] of Object.entries({ bAutonomy: '5.76', bPrivate: '0', bGroup: '14.4', bReserve: '0.504' })) h.node(id).value = value
+  for (const [id, value] of Object.entries({ bAutonomy: '0.8', bPrivate: '0', bGroup: '2', bReserve: '0.07' })) h.node(id).value = value
   await h.context.saveBudget()
   assert.equal(requests.length, 1)
   assert.equal(requests[0][0], '/budget')
   assert.equal(requests[0][1].method, 'POST')
   assert.deepEqual(JSON.parse(requests[0][1].body), { revision: 'a'.repeat(64), settings: {
-    limits: { autonomy: 0.8, private: 0, group: 2 }, reserve_usd: 0.07 } })
+    limits: { autonomy: 0.8, private: 0, group: 2 }, reserve_cny: 0.07 } })
   assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
 })
 
-test('actual budget renders and repeated refreshes convert once without mutating the USD source or baseline', async () => {
+test('actual CNY budget renders and repeated refreshes preserve source numbers and baseline', async () => {
   const data = budgetData({ daily_spending: spendingData([spendingDay('2026-11-01')]) })
   const before = structuredClone(data)
   const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget'), extra: {
@@ -901,58 +900,58 @@ test('actual budget renders and repeated refreshes convert once without mutating
   const expected = treeText(h.node('dailyTodayBuckets'))
   for(let i = 0; i < 3; i++) await h.context.loadBudget(true)
   h.context.renderDailySpending()
-  assert.equal(h.node('bAutonomy').value, '7.2')
-  assert.equal(h.node('bReserve').value, '0.36')
-  assert.equal(h.node('bReserve').dataset.originalUsd, '0.05')
+  assert.equal(h.node('bAutonomy').value, '1')
+  assert.equal(h.node('bReserve').value, '0.05')
+  assert.equal(h.node('bReserve').dataset.originalCny, '0.05')
   assert.equal(treeText(h.node('dailyTodayBuckets')), expected)
-  assert.match(expected, /¥0\.8640（USD 0\.12）/)
-  assert.equal(h.node('mDailyTotal').textContent, '¥7.3440')
+  assert.match(expected, /¥0\.1200/)
+  assert.equal(h.node('mDailyTotal').textContent, '¥1.0200')
   assert.equal(h.node('sMoneySub').textContent, h.node('liveMoneySub').textContent)
-  assert.match(h.node('sMoneySub').textContent, /预留 ¥0\.3600（USD 0\.05）/)
-  assert.match(h.node('liveMoneySub').title, /1 USD = 7\.2 元.*非实时汇率、非结算金额/)
+  assert.match(h.node('sMoneySub').textContent, /预留 ¥0\.0500/)
+  assert.match(h.node('liveMoneySub').title, /人民币口径.*本机估算.*未核对服务商实扣/)
   assert.deepEqual(data, before)
 })
 
-test('editing only the actual yuan autonomy input sends 3 yuan downward to micro-USD and preserves every untouched precise USD value', async () => {
-  const original = budgetData({ effective: { currency: 'USD', basis: 'meter_api_usd_estimate',
-    limits: { autonomy: 0.987_654_321_098_7, private: 0.123_456_789_012_3, group: 0 }, reserve_usd: 0.050_000_123_456_7 } })
+test('editing only the actual CNY autonomy input sends 3 directly and preserves every untouched precise CNY value', async () => {
+  const original = budgetData({ effective: { currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1,
+    limits: { autonomy: 0.987_654_321_098_7, private: 0.123_456_789_012_3, group: 0 }, reserve_cny: 0.050_000_123_456_7 } })
   const writes = []
   const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (_route, options) => {
     const request = JSON.parse(options.body); writes.push(request)
-    return { ok: true, budget: { ...original, revision: 'c'.repeat(64), effective: { currency: 'USD', ...request.settings } } }
+    return { ok: true, budget: { ...original, revision: 'c'.repeat(64), effective: { ...original.effective, ...request.settings } } }
   } } })
   h.context.renderBudget(original, false, 0)
-  assert.equal(h.node('bPrivate').value, '0.8889')
-  assert.equal(h.node('bReserve').value, '0.36')
-  assert.equal(h.node('bPrivateUsd').textContent, '载入的美元原值：USD 0.123' + '456' + '789' + '0123')
+  assert.equal(h.node('bPrivate').value, '0.1235')
+  assert.equal(h.node('bReserve').value, '0.05')
+  assert.equal(h.node('bPrivateNote').textContent, '载入金额：0.123' + '456' + '789' + '0123 元')
   h.node('bAutonomy').value = '3.0'
   h.context.dirtyPages.add('money'); h.context.pageEdits.set('money', 1)
   await h.context.saveBudget()
   assert.deepEqual(writes, [{ revision: 'a'.repeat(64), settings: {
-    limits: { autonomy: 0.416_666, private: original.effective.limits.private, group: 0 },
-    reserve_usd: original.effective.reserve_usd } }])
+    limits: { autonomy: 3, private: original.effective.limits.private, group: 0 },
+    reserve_cny: original.effective.reserve_cny } }])
   assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
   assert.equal(h.node('bAutonomy').value, '3')
   assert.equal(h.context.dirtyPages.has('money'), false)
 })
 
-test('an untouched precision budget round-trips exact original USD and zero remains unlimited', async () => {
-  const original = budgetData({ effective: { currency: 'USD', basis: 'meter_api_usd_estimate',
-    limits: { autonomy: 0.100_000_123_456_7, private: 0, group: 0.000_001 }, reserve_usd: 0.05 } })
+test('an untouched precision budget round-trips exact original CNY and zero remains unlimited', async () => {
+  const original = budgetData({ effective: { currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1,
+    limits: { autonomy: 0.100_000_123_456_7, private: 0, group: 0.000_001 }, reserve_cny: 0.05 } })
   let request
   const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (_route, options) => {
     request = JSON.parse(options.body); return { ok: true, budget: original }
   } } })
   h.context.renderBudget(original, false, 0)
   assert.equal(h.node('bPrivate').value, '0')
-  assert.equal(h.node('bGroup').value, '0.000' + '0072')
+  assert.equal(h.node('bGroup').value, '0.000' + '001')
   await h.context.saveBudget()
-  assert.deepEqual(request.settings, { limits: original.effective.limits, reserve_usd: 0.05 })
+  assert.deepEqual(request.settings, { limits: original.effective.limits, reserve_cny: 0.05 })
   assert.match(treeText(h.node('budgetBuckets')), /每日不限额/)
 })
 
-test('edited decimal and exponent reserve inputs use exact arithmetic at the micro-USD boundary', async () => {
-  for(const [text, expected] of [['0.3600', 0.05], ['3.6e-1', 0.05], ['.36', 0.05], ['0.000' + '0072', 0.000_001], ['7.2e-6', 0.000_001]]){
+test('edited decimal and exponent reserve inputs use exact arithmetic at the micro-CNY boundary', async () => {
+  for(const [text, expected] of [['0.0500', 0.05], ['5e-2', 0.05], ['.05', 0.05], ['0.000' + '001', 0.000_001], ['1e-6', 0.000_001]]){
     let request
     const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (_route, options) => {
       request = JSON.parse(options.body); return { ok: true, budget: budgetData() }
@@ -960,13 +959,13 @@ test('edited decimal and exponent reserve inputs use exact arithmetic at the mic
     h.context.renderBudget(budgetData(), false, 0)
     h.node('bReserve').value = text
     await h.context.saveBudget()
-    assert.equal(request.settings.reserve_usd, expected, text)
+    assert.equal(request.settings.reserve_cny, expected, text)
     assert.deepEqual(request.settings.limits, { autonomy: 1, private: 0, group: 0 }, text)
   }
 })
 
 test('too-small positive yuan limits or reserves are rejected before mutation and never silently become unlimited', async () => {
-  for(const [id, text] of [['bAutonomy', '0.000' + '001'], ['bPrivate', '1e-7'], ['bGroup', '0.000' + '0071' + '999' + '99'], ['bReserve', '0.000' + '0071' + '999' + '99'], ['bReserve', '0']]){
+  for(const [id, text] of [['bAutonomy', '0.000' + '0001'], ['bPrivate', '1e-7'], ['bGroup', '9.99e-7'], ['bReserve', '9.99e-7'], ['bReserve', '0']]){
     let writes = 0
     const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: {
       api: async () => { writes++; throw new Error('unexpected mutation') } } })
@@ -976,11 +975,11 @@ test('too-small positive yuan limits or reserves are rejected before mutation an
     await h.context.saveBudget()
     assert.equal(writes, 0, id + ': ' + text)
     assert.equal(h.context.dirtyPages.has('money'), true)
-    assert.match(h.node('moneyOut').textContent, /至少须折合|每轮预留必须大于/)
+    assert.match(h.node('moneyOut').textContent, /正金额至少为|每轮预留必须大于/)
   }
 })
 
-test('yuan edits and original USD baselines survive a newer background snapshot and a completed in-flight save', async () => {
+test('yuan edits and original CNY baselines survive a newer background snapshot and a completed in-flight save', async () => {
   const waiting = deferred(), original = budgetData()
   let request
   const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (_route, options) => {
@@ -991,46 +990,150 @@ test('yuan edits and original USD baselines survive a newer background snapshot 
   h.context.pageEdits.set('money', 1); h.context.dirtyPages.add('money')
   const save = h.context.saveBudget()
   h.node('bAutonomy').value = '4.5'; h.context.pageEdits.set('money', 2)
-  const newer = budgetData({ revision: 'c'.repeat(64), effective: { currency: 'USD',
-    limits: { autonomy: 0.416_666, private: 0, group: 0 }, reserve_usd: 0.07 } })
+  const newer = budgetData({ revision: 'c'.repeat(64), effective: { currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1,
+    limits: { autonomy: 3, private: 0, group: 0 }, reserve_cny: 0.07 } })
   h.context.renderBudget(newer, true, 2)
   waiting.resolve({ ok: true, budget: newer }); await save
-  assert.equal(request.settings.limits.autonomy, 0.416_666)
-  assert.equal(request.settings.reserve_usd, 0.05)
+  assert.equal(request.settings.limits.autonomy, 3)
+  assert.equal(request.settings.reserve_cny, 0.05)
   assert.equal(h.node('bAutonomy').value, '4.5')
-  assert.equal(h.node('bReserve').value, '0.36')
-  assert.equal(h.node('bReserve').dataset.originalUsd, '0.05')
+  assert.equal(h.node('bReserve').value, '0.05')
+  assert.equal(h.node('bReserve').dataset.originalCny, '0.05')
   assert.equal(h.context.budgetSettingsRevision, 'a'.repeat(64))
   assert.equal(h.context.dirtyPages.has('money'), true)
   assert.match(h.node('moneyOut').textContent, /还有未保存/)
 })
 
-test('actual currency labels and accessible USD references agree with the fixed local display rate', () => {
+test('actual CNY labels and accessible amounts describe direct estimates without currency conversion', () => {
   const h = harness({ functions: BUDGET_RENDERERS })
   h.context.renderBudget(budgetData({ daily_spending: spendingData([spendingDay('2026-11-01')]) }), false, 0)
   const view = h.source.split('<div class="page" id="page-money">')[1].split('<div class="page"')[0]
-  const displayedRate = Number(view.match(/1 USD = ([\d.]+) 元/)[1])
-  assert.equal(displayedRate, h.run('CNY_PER_USD'))
-  assert.equal(displayedRate, 7.2)
-  assert.match(view, /非实时汇率、非结算金额/)
-  assert.match(view, /不会自动同步后续汇率配置/)
-  assert.match(view, /人民币参考值与原始 USD 对照/)
+  assert.match(view, /按你确认的人民币口径记账/)
+  assert.match(view, /费用为本机估算，未核对服务商实扣/)
+  assert.match(view, /不作汇率换算/)
+  assert.match(view, /单位人民币元/)
+  assert.doesNotMatch(view, /USD|7\.2|美元/)
   for(const id of ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve']){
     assert.match(view, new RegExp('for="' + id + '">[^<]*（人民币）'))
-    assert.match(view, new RegExp('id="' + id + '" aria-describedby="' + id + 'Usd moneyFxNote"'))
-    assert.match(h.node(id + 'Usd').textContent, /USD/)
+    assert.match(view, new RegExp('id="' + id + '" aria-describedby="' + id + 'Note moneyUnitNote"'))
+    assert.match(h.node(id + 'Note').textContent, /载入金额：.* 元/)
   }
-  assert.match(h.node('spendChart').children[0]['aria-label'], /¥7\.3440（USD 1\.02）/)
-  assert.match(treeText(h.node('spendDetail')), /¥7\.3440（USD 1\.02）/)
+  assert.match(h.node('spendChart').children[0]['aria-label'], /¥1\.0200/)
+  assert.match(treeText(h.node('spendDetail')), /¥1\.0200/)
 })
 
-for(const [yuan, usd] of [['3.0', 0.416_666], ['5.0', 0.694_444]]) test('the complete actual budget script keeps its revision and original USD over two saves of ' + yuan + ' yuan', async () => {
+test('budget reads reject incompatible units before replacing current CNY amounts inputs or history', async () => {
+  for(const mismatch of [
+    { schema: 'unified-budget/v1' },
+    { currency: 'USD' }, { numeric_scale: 7.2 },
+    { effective: { currency: 'USD', basis: 'owner_confirmed_numeric_cny_estimate' } },
+    { effective: { currency: 'CNY', basis: 'meter_api_usd_estimate' } },
+    { effective: { basis: 'owner_confirmed_numeric_cny_estimate' } }
+  ]){
+    const initial = budgetData({ daily_spending: spendingData([spendingDay('2026-11-01')]) })
+    const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget'), extra: {
+      api: async () => ({ ok: true, budget: { ...initial, ...mismatch, revision: 'f'.repeat(64) } }) } })
+    h.context.renderBudget(initial, false, 0)
+    const cards = treeText(h.node('budgetBuckets')), daily = treeText(h.node('dailyTodayBuckets'))
+    const chart = h.node('spendChart').children[0]
+    h.node('bAutonomy').value = '5'; h.context.dirtyPages.add('money'); h.context.pageEdits.set('money', 1)
+    await h.context.loadBudget(true)
+    assert.equal(treeText(h.node('budgetBuckets')), cards)
+    assert.equal(treeText(h.node('dailyTodayBuckets')), daily)
+    assert.equal(h.node('spendChart').children[0], chart)
+    assert.equal(h.node('bAutonomy').value, '5')
+    assert.equal(h.node('bReserve').value, '0.05')
+    assert.equal(h.context.budgetSettingsRevision, initial.revision)
+    assert.equal(h.context.dirtyPages.has('money'), true)
+    assert.equal(h.node('budgetSave').disabled, true)
+    assert.match(h.node('moneyOut').textContent, /单位接口不匹配/)
+  }
+})
+
+test('incompatible daily unit responses cannot replace selected CNY bars table or summary', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  const initial = spendingData([spendingDay('2026-10-31'), spendingDay('2026-11-01')])
+  h.context.renderDailySpending(initial); h.context.selectSpendingDate('2026-10-31')
+  const chart = h.node('spendChart').children[0], table = treeText(h.node('spendTable'))
+  const summary = h.node('mDailyTotal').textContent
+  for(const mismatch of [{schema:'daily-spending/v1'}, {currency:'USD'}, {numeric_scale:7.2}, {basis:'native_turn_api_usd_estimate'}]){
+    h.context.renderDailySpending({ ...initial, ...mismatch, days: [spendingDay('2026-11-02', {total:99})] })
+    assert.equal(h.node('spendChart').children[0], chart)
+    assert.equal(treeText(h.node('spendTable')), table)
+    assert.equal(h.node('spendSelectedDate').value, '2026-10-31')
+    assert.equal(h.node('mDailyTotal').textContent, summary)
+    assert.match(h.node('spendHistoryNote').textContent, /单位接口不匹配/)
+  }
+  const empty = harness({ functions: DAILY_RENDERERS })
+  empty.context.renderDailySpending({ ...initial, currency: 'USD' })
+  assert.equal(empty.node('mDailyTotal').textContent, '待核算')
+  assert.equal(empty.node('spendTable').children.length, 0)
+})
+
+test('an incompatible save acknowledgement retains the CNY revision and unsaved input', async () => {
+  const initial = budgetData(), writes = []
+  const h = harness({ functions: BUDGET_RENDERERS.concat('saveBudget'), extra: { api: async (_route, options) => {
+    writes.push(JSON.parse(options.body))
+    return { ok: true, budget: budgetData({ schema: 'unified-budget/v1', revision: 'f'.repeat(64) }) }
+  } } })
+  h.context.renderBudget(initial, false, 0)
+  h.node('bAutonomy').value = '5'; h.context.dirtyPages.add('money'); h.context.pageEdits.set('money', 1)
+  await h.context.saveBudget()
+  assert.deepEqual(writes, [{ revision: initial.revision, settings: { limits: {autonomy:5, private:0, group:0}, reserve_cny:0.05 } }])
+  assert.equal(h.context.budgetSettingsRevision, initial.revision)
+  assert.equal(h.node('bAutonomy').value, '5')
+  assert.equal(h.context.dirtyPages.has('money'), true)
+  assert.match(h.node('moneyOut').textContent, /单位接口不匹配/)
+})
+
+test('activity budget summary rejects an incompatible unit without replacing the latest CNY values', async () => {
+  const initial = budgetData()
+  initial.usage.buckets.autonomy.spent_cny = 0.9
+  const h = harness({ functions: ['requireCnyBudget','budgetAmount','renderBudgetSummary','loadActivityBudget'], extra: {
+    api: async () => ({ok:true, budget:budgetData({schema:'unified-budget/v1'})}) } })
+  h.context.renderBudgetSummary(initial)
+  const amount = h.node('liveMoneySub').textContent
+  await h.context.loadActivityBudget()
+  assert.match(amount, /¥0\.9000/)
+  assert.equal(h.node('liveMoneySub').textContent, amount)
+  assert.equal(h.node('sMoneySub').textContent, amount)
+  assert.equal(h.node('liveMoney').textContent, '预算单位未确认')
+  assert.match(h.node('liveMoneySub').title, /单位接口不匹配/)
+})
+
+test('a delayed v1 USD read cannot replace or disable a completed CNY save', async () => {
+  const waiting = deferred(), initial = budgetData(), writes = []
+  const current = budgetData({ revision: 'c'.repeat(64), effective: { ...initial.effective,
+    limits: {autonomy:5, private:0, group:0} } })
+  const h = harness({ functions: BUDGET_RENDERERS.concat('loadBudget','saveBudget'), extra: {
+    api: async (_route, options) => {
+      if(!options) return waiting.promise
+      writes.push(JSON.parse(options.body)); return {ok:true, budget:current}
+    } } })
+  h.context.renderBudget(initial, false, 0)
+  const previousRead = h.context.loadBudget(true)
+  h.node('bAutonomy').value = '5'; h.context.dirtyPages.add('money'); h.context.pageEdits.set('money', 1)
+  await h.context.saveBudget()
+  waiting.resolve({ok:true, budget:{...initial, schema:'unified-budget/v1', currency:'USD'}})
+  await previousRead
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].settings.limits.autonomy, 5)
+  assert.equal(writes[0].settings.reserve_cny, 0.05)
+  assert.equal(h.context.budgetSettingsRevision, current.revision)
+  assert.equal(h.node('bAutonomy').value, '5')
+  assert.equal(h.node('bReserve').value, '0.05')
+  assert.equal(h.node('budgetSave').disabled, false)
+  assert.match(h.node('moneyOut').textContent, /已保存/)
+  assert.doesNotMatch(h.node('moneyOut').textContent, /单位接口不匹配/)
+})
+
+for(const [yuan, cny] of [['3.0', 3], ['5.0', 5]]) test('the complete actual budget script keeps its revision and original CNY over two saves of ' + yuan + ' yuan', async () => {
   const requests = [], initial = budgetData()
-  const h = harness({ currencyDeclaration: false, functions: ['appendPolicyRow'], extra: {
+  const h = harness({ functions: ['appendPolicyRow'], extra: {
     api: async (_route, options) => {
       const request = JSON.parse(options.body); requests.push(request)
       return { ok: true, budget: { ...initial, revision: String(requests.length + 1).repeat(64),
-        effective: { currency: 'USD', ...request.settings } } }
+        effective: { ...initial.effective, ...request.settings } } }
     }
   } })
   const start = h.source.indexOf('let budgetSettingsRevision = null;')
@@ -1044,15 +1147,15 @@ for(const [yuan, usd] of [['3.0', 0.416_666], ['5.0', 0.694_444]]) test('the com
   await h.run('saveBudget()')
   assert.equal(h.run('budgetSettingsRevision'), '2'.repeat(64))
   assert.equal(h.node('bAutonomy').value, String(Number(yuan)))
-  assert.equal(h.node('bAutonomy').dataset.originalUsd, String(usd))
+  assert.equal(h.node('bAutonomy').dataset.originalCny, String(cny))
   await h.run('saveBudget()')
   assert.deepEqual(requests.map(row => row.settings), [
-    { limits: { autonomy: usd, private: 0, group: 0 }, reserve_usd: 0.05 },
-    { limits: { autonomy: usd, private: 0, group: 0 }, reserve_usd: 0.05 }
+    { limits: { autonomy: cny, private: 0, group: 0 }, reserve_cny: 0.05 },
+    { limits: { autonomy: cny, private: 0, group: 0 }, reserve_cny: 0.05 }
   ])
   assert.deepEqual(requests.map(row => row.revision), ['a'.repeat(64), '2'.repeat(64)])
   assert.equal(h.run('budgetSettingsRevision'), '3'.repeat(64))
-  assert.equal(h.node('bReserve').value, '0.36')
+  assert.equal(h.node('bReserve').value, '0.05')
 })
 
 test('new edits during a budget save remain dirty and are not replaced by the saved response', async () => {
@@ -1076,13 +1179,13 @@ test('a budget read started before a completed save cannot roll the saved revisi
     api: async (_path, options) => options?.method === 'POST' ? { ok: true, budget: saved } : oldRead.promise } })
   h.context.budgetSettingsRevision = 'a'.repeat(64)
   const read = h.context.loadBudget(false)
-  for (const [id, value] of Object.entries({ bAutonomy: '5.76', bPrivate: '0', bGroup: '0', bReserve: '0.36' })) h.node(id).value = value
+  for (const [id, value] of Object.entries({ bAutonomy: '0.8', bPrivate: '0', bGroup: '0', bReserve: '0.05' })) h.node(id).value = value
   await h.context.saveBudget()
   oldRead.resolve({ ok: true, budget: budgetData({ daily_spending: spendingData([spendingDay('2026-11-01')]) }) }); await read
   assert.equal(h.context.budgetSettingsRevision, 'c'.repeat(64))
-  assert.equal(h.node('bAutonomy').value, '5.76')
-  assert.match(treeText(h.node('spendChart')), /¥5\.7600/)
-  assert.doesNotMatch(treeText(h.node('spendChart')), /¥7\.3440/)
+  assert.equal(h.node('bAutonomy').value, '0.8')
+  assert.match(treeText(h.node('spendChart')), /¥0\.8000/)
+  assert.doesNotMatch(treeText(h.node('spendChart')), /¥1\.0200/)
 })
 
 test('budget mutation transport failure is not retried and never writes the legacy topup route', async () => {
@@ -1183,7 +1286,7 @@ test('explicit discard-and-reload recovers a stale revision while background rea
     await h.run(handler)
     assert.equal(h.context.dirtyPages.has(page), false)
     assert.equal(h.context[revisionKey], newRevision)
-    assert.equal(h.node(input).value, money ? '7.2' : 4)
+    assert.equal(h.node(input).value, money ? '1' : 4)
     for (const id of money ? ['bAutonomy', 'bPrivate', 'bGroup', 'bReserve'] : ['activityInterval']) h.node(id).value = money ? '0.1' : '5'
     h.context.dirtyPages.add(page); await h.context[save]()
     const writes = calls.filter(([, options]) => options?.method === 'POST')
@@ -1234,7 +1337,7 @@ test('current budget and autonomy views expose no legacy frequency, activity tog
   const source = readFileSync(PANEL, 'utf8')
   assert.doesNotMatch(source, /function (?:saveTunables|saveActivities|topup|addActivity|deleteActivity)\(/)
   assert.doesNotMatch(source, /api\(['"]\/(?:activities(?:\/|['"])|tunables['"]|budget\/topup)/)
-  assert.match(source, /输入单位人民币/)
+  assert.match(source, /输入和保存单位均为人民币元/)
   assert.match(source, /不是服务商账户硬限额/)
 })
 

@@ -4,13 +4,15 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const categories = ['autonomy', 'private', 'group'];
+const amountConvention = Object.freeze({currency:'CNY', basis:'owner_confirmed_numeric_cny_estimate',
+  source_estimate_currency:'USD', source_estimate_basis:'cost_meter_default_price_estimate', numeric_scale:1});
 // Native host context projections are not additional user/observation inputs.
 const hostContextKinds = new Set(['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint']);
 const safeInteger = n => Number.isSafeInteger(n) && n >= 0;
 const amount = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const dayOf = stamp => new Date(stamp + 8 * 3600_000).toISOString().slice(0, 10);
 const dayStart = date => Date.parse(date + 'T00:00:00+08:00');
-const emptyBucket = () => ({ spent_usd: null, reserved_usd: 0, turn_count: 0,
+const emptyBucket = () => ({ spent_cny: null, reserved_cny: 0, turn_count: 0,
   settled_count: 0, pending_count: 0, unknown_count: 0 });
 const requireValue = value => { if (!value) throw new Error('invalid_native_cost_source'); };
 
@@ -24,7 +26,7 @@ export function buildNativeDaily(payload, turnCost) {
       Number.isFinite(dayStart(date)) && !days.has(date));
     days.set(date, { date, autonomy: null, private: null, group: null, total: null,
       status: 'unknown', turn_count: 0, settled_count: 0, pending_count: 0, unknown_count: 0,
-      reserved_usd: 0, unclassified_count: 0, reconciled: false,
+      reserved_cny: 0, unclassified_count: 0, reconciled: false,
       buckets: Object.fromEntries(categories.map(key => [key, emptyBucket()])) });
   }
   const sourceStarts = [], seenRoles = new Set(), mismatchDays = new Set();
@@ -124,25 +126,27 @@ export function buildNativeDaily(payload, turnCost) {
     const covered = coverageStart < dayStart(date) + 86400_000;
     const reconciled = covered && !mismatchDays.has(date) && row.unclassified_count === 0;
     row.reconciled = reconciled && !row.pending_count && !row.unknown_count;
-    row.known_total_usd = 0;
+    row.known_total_cny = 0;
     for (const category of categories) {
       const bucket = row.buckets[category], known = bucket._spent ?? 0; delete bucket._spent;
-      bucket.known_spent_usd = Math.round(known * 1e9) / 1e9;
-      row.known_total_usd += bucket.known_spent_usd;
+      bucket.known_spent_cny = Math.round(known * 1e9) / 1e9;
+      row.known_total_cny += bucket.known_spent_cny;
       if (reconciled && !bucket.unknown_count && !bucket.pending_count)
-        row[category] = bucket.spent_usd = bucket.known_spent_usd;
+        row[category] = bucket.spent_cny = bucket.known_spent_cny;
     }
-    row.known_total_usd = Math.round(row.known_total_usd * 1e9) / 1e9;
+    row.known_total_cny = Math.round(row.known_total_cny * 1e9) / 1e9;
     if (row.reconciled) {
       reconciledDays++;
       row.total = Math.round(categories.reduce((sum, key) => sum + row[key], 0) * 1e9) / 1e9;
       row.status = date < today && dayStart(date) >= coverageStart && !row.pending_count && !row.unknown_count ? 'complete' : 'partial';
     } else if (covered) row.status = 'partial';
   }
-  return { schema: 'daily-spending/v1', availability: 'available', currency: 'USD',
+  // Preserve native numeric values for reconciliation. No FX multiplication and
+  // no rewrite of the account-wide cost-meter ledger occurs in this projection.
+  return { schema: 'daily-spending/v2', availability: 'available', ...amountConvention,
     timezone: 'Asia/Shanghai', today, generated_at: payload.now, days: [...days.values()],
     coverage: { start_at: coverageStart, scope: 'current_mapped_main_agent_native_turns',
-      basis: 'native_turn_api_usd_estimate', owner_verified: true,
+      basis: 'owner_confirmed_numeric_cny_estimate', owner_verified: true,
       owner_verified_scopes: payload.sessions.length, configured_scopes: payload.sessions.length,
       current_mapped_sessions_only: true, historical_backfill: false, complete_days: false,
       reconciled_days: reconciledDays, native_calls: nativeCalls, unpriced_calls: unpricedCalls,

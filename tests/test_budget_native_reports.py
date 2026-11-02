@@ -89,6 +89,10 @@ class NativeDailyReportTests(unittest.TestCase):
     def test_real_subprocess_rebuilds_three_categories_not_session_names(self):
         result = self.report()
         self.assertEqual(result['availability'], 'available')
+        self.assertEqual(result['schema'], 'daily-spending/v2')
+        self.assertEqual(result['currency'], 'CNY')
+        self.assertEqual(result['basis'], reports.budget.BASIS)
+        self.assertEqual(result['numeric_scale'], 1)
         today = result['days'][-1]
         self.assertEqual((today['autonomy'], today['private'], today['group'], today['total']), (0.01, 0, 0.02, 0.03))
         self.assertEqual(today['buckets']['autonomy']['settled_count'], 1)
@@ -198,6 +202,22 @@ class NativeDailyReportTests(unittest.TestCase):
         after = {str(path): (path.read_bytes(), path.stat().st_mtime_ns)
                  for path in self.root.rglob('*') if path.is_file()}
         self.assertEqual(before, after)
+
+    def test_bridge_response_must_preserve_the_complete_nominal_currency_contract(self):
+        original = reports.subprocess.run
+        for patch in ({'currency': 'USD'}, {'basis': 'unknown'}, {'numeric_scale': True},
+                      {'source_estimate_currency': 'CNY'}, {'source_estimate_basis': 'actual_supplier_charge'}):
+            reports._NATIVE_CACHE.clear()
+            def corrupt(*args, **kwargs):
+                answer = original(*args, **kwargs)
+                payload = json.loads(answer.stdout)
+                payload['report'].update(patch)
+                return subprocess.CompletedProcess(answer.args, answer.returncode,
+                                                  json.dumps(payload).encode('utf-8'), answer.stderr)
+            with mock.patch.object(reports.subprocess, 'run', side_effect=corrupt):
+                value = self.report()
+            self.assertEqual(value['availability'], 'unavailable')
+            self.assertTrue(all(row['total'] is None for row in value['days']))
 
     def test_untracked_external_dependency_is_refused(self):
         (self.meter / 'outside.js').write_text('export const outside = 1;', encoding='utf-8')

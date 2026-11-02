@@ -69,7 +69,7 @@ class SecurityNoopTests(unittest.TestCase):
             budget = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(budget)
         first = budget.get_snapshot()
-        desired = {"limits": {"autonomy": 1, "private": 0, "group": 0}, "reserve_usd": 0.05}
+        desired = {"limits": {"autonomy": 1, "private": 0, "group": 0}, "reserve_cny": 0.05}
         first = budget.save_config(desired, first["revision"])
         path, _ = budget._paths()
         before, _ = settings._record(path)

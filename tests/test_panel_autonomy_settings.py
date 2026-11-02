@@ -25,13 +25,13 @@ class AutonomySettingsTests(unittest.TestCase):
                       "mind": {"opportunityMin": 3, "unrelated": "must remain"},
                       "daemon": {"pollSeconds": 60}, "private_marker": "DO NOT EXPORT"}
         self.base.write(self.base.config, self.value)
-        self.budget = {"schema": "unified-budget/v1", "availability": "available", "revision": "a"*64,
-                       "effective": {"limits": {"autonomy": 1, "private": 0, "group": 0}, "reserve_usd": 0.05},
+        self.budget = {"schema": "unified-budget/v2", "availability": "available", "revision": "a"*64,
+                       "effective": {"limits": {"autonomy": 1, "private": 0, "group": 0}, "reserve_cny": 0.05},
                        "usage": {"date": "synthetic", "buckets": {}},
                        "enforcement": {"runtime_gate_bound": False, "runtime_owner_verified": False}}
         self.save_budget = mock.Mock(return_value=self.budget)
         self.get_budget = mock.Mock(return_value=self.budget)
-        self.daily = {"schema": "daily-spending/v1", "today": "synthetic", "days": [],
+        self.daily = {"schema": "daily-spending/v2", "today": "synthetic", "days": [],
                       "coverage": {"scope": "current_mapped_main_agent_native_turns"}}
         self.get_daily = mock.Mock(return_value=self.daily)
         patch = mock.patch.dict(sys.modules, {
@@ -133,7 +133,7 @@ class AutonomySettingsTests(unittest.TestCase):
         self.assertEqual(self.base.route("/api/budget")[1]["budget"], expected)
         live = self.base.route("/api/live")[1]["live"]
         self.assertEqual(live["budget"], expected); self.assertNotIn("money", live)
-        request = {"revision": "a"*64, "settings": {"limits": {"autonomy": 2, "private": 0, "group": 0}, "reserve_usd": 0.05}}
+        request = {"revision": "a"*64, "settings": {"limits": {"autonomy": 2, "private": 0, "group": 0}, "reserve_cny": 0.05}}
         code, result = self.base.route("/api/budget", request)
         self.assertEqual(code, 200); self.assertEqual(result["budget"], expected)
         self.save_budget.assert_called_once_with(request["settings"], request["revision"])
@@ -153,7 +153,7 @@ class AutonomySettingsTests(unittest.TestCase):
         self.base.write(self.base.config, self.value)
         self.daily["days"] = [{"date": "synthetic", "autonomy": 1.25, "private": 0.1,
                               "group": 0.2, "total": 1.55}]
-        self.budget["usage"] = {"date": "synthetic", "buckets": {"autonomy": {"spent_usd": 0.03}}}
+        self.budget["usage"] = {"date": "synthetic", "buckets": {"autonomy": {"spent_cny": 0.03}}}
         before = json.loads(json.dumps(self.budget))
         result = self.base.route("/api/budget?workspace=foreign&agentPreset=foreign")[1]["budget"]
         self.assertEqual(result["daily_spending"]["days"][0]["autonomy"], 1.25)
@@ -228,7 +228,7 @@ class AutonomySettingsTests(unittest.TestCase):
             snapshot = self.base.route("/api/budget")[1]["budget"]
             self.assertFalse(path.exists()); self.assertFalse(config.exists())
             self.assertFalse(snapshot["enforcement"]["runtime_gate_bound"])
-            settings = {"limits": {"autonomy": 2.5, "private": 0, "group": 0}, "reserve_usd": 0.03}
+            settings = {"limits": {"autonomy": 2.5, "private": 0, "group": 0}, "reserve_cny": 0.03}
             code, result = self.base.route("/api/budget", {"revision": snapshot["revision"], "settings": settings})
             self.assertEqual(code, 200, result)
             self.assertEqual(result["budget"]["effective"]["limits"], settings["limits"])

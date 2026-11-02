@@ -37,14 +37,14 @@ class DailySpendingTests(unittest.TestCase):
 
     def record(self, at, category='autonomy', amount=0.01, status='settled', finish=None):
         self.index += 1
-        request = {'cwd': str(self.root), 'agent_preset': 'fixture',
+        request = {'budget_contract': budget.CONTRACT, 'cwd': str(self.root), 'agent_preset': 'fixture',
                    'conversation_key': 'group:101' if category == 'group' else 'private:101',
                    'origin': 'observation' if category == 'autonomy' else 'live',
                    'turn_key': hashlib.sha256(str(self.index).encode()).hexdigest(),
                    'instance_id': 'b' * 64, 'meter_available': True, 'operation': 'reserve'}
         self.assertTrue(budget.operate(request, at)['allowed'])
         if status == 'settled':
-            receipt = {'api_cost_usd': amount, 'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True}
+            receipt = {'budget_contract': budget.CONTRACT, 'api_cost_cny': amount, 'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True}
             budget.operate(dict(request, operation='settle', receipt=receipt), finish or at)
         elif status == 'unknown':
             budget.operate(dict(request, operation='unknown'), finish or at)
@@ -81,7 +81,7 @@ class DailySpendingTests(unittest.TestCase):
         self.record(self.now - 10000, status='reserved')
         value = self.snapshot(days=1)['days'][0]
         self.assertEqual(value['total'], 0)
-        self.assertEqual((value['unknown_count'], value['pending_count'], value['reserved_usd']), (1, 1, 0.1))
+        self.assertEqual((value['unknown_count'], value['pending_count'], value['reserved_cny']), (1, 1, 0.1))
         self.assertEqual(value['status'], 'partial')
         self.assertEqual(value['buckets']['autonomy']['turn_count'], 2)
 
@@ -139,7 +139,7 @@ class DailySpendingTests(unittest.TestCase):
 
     def test_repeated_receipt_stays_one_turn(self):
         request = self.record(self.now - 1000, amount=0.123456)
-        receipt = {'api_cost_usd': 0.123456, 'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True}
+        receipt = {'budget_contract': budget.CONTRACT, 'api_cost_cny': 0.123456, 'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True}
         budget.operate(dict(request, operation='settle', receipt=receipt), self.now)
         row = self.snapshot(days=1)['days'][0]
         self.assertEqual((row['total'], row['settled_count']), (0.123456, 1))

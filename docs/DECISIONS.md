@@ -62,7 +62,9 @@ OneBot adapter 实际启动一个 `observation-queue.js` consumer。SQLite 租�
 
 `GET /api/autonomy/settings` 读取实际项目配置，面板只允许用新 revision 保存 `opportunity_minutes`，对应 `mind.opportunityMin`。保存采用跨进程锁与文件身份校验，不覆盖同时发生的修改；只影响后续新机会及新的主管理员复查，既有复查、观察证据和持久静默保持原语义。群观察的 quiet/poll 仅展示启动配置，不冒充已经核实的运行值。
 
-`GET /api/budget` 返回 `unified-budget/v1`。角色目录中的 `autonomy-budget.json` 保存自主、私聊、群聊三个 USD 日限额及 `reserve_usd`，`0` 表示该类不限额；`autonomy-budget.sqlite` 保存可信轮次的预留与 API 费用估值。分类来自可信 origin 与会话元数据，不采用模型参数或会话名猜测。保存额度同样要求当前 revision，不再用“加零花钱”改旧统计。
+`GET /api/budget` 返回 `unified-budget/v2`。角色目录中的 `autonomy-budget.json` 保存自主、私聊、群聊三个 CNY 日限额及 `reserve_cny`，`0` 表示该类不限额；`autonomy-budget.sqlite` 保存可信轮次的预留与费用估值。金额按所有者确认的人民币口径直接记账，`basis=owner_confirmed_numeric_cny_estimate`，不作汇率换算。成本插件给出的默认报价估算保留为来源，不冒充服务商实际扣款。分类来自可信 origin 与会话元数据，不采用模型参数或会话名猜测。保存额度同样要求当前 revision，不再用“加零花钱”改旧统计。
+
+版本迁移是一次明确的记账口径修正：逐轮金额数值、归属、状态、回执与未知预留保留，自主限额明确设为每天 5 元。原始配置和账本保留恢复原件，全账号成本插件不改价、不重算。缺少迁移依据、版本冲突或未知回执均拒绝继续，不能只改页面币种或通过清账解除限制。
 
 适配器在模型轮次前预留、动作前重验，原生轮次结束后按可核实的计价回执结算；未知费用保留预留，不自动重试或伪造退款。账本未起算、缺失和损坏分别显示状态，启用前的费用不猜补为零。运行门控另需当前适配器证据，文件存在不表示已加载。轮次内可能连续调用多次模型并超过预留，动作前核对账本与配置不等于逐个 provider 请求实时截断；有限额的真人会话仍可作静默/恢复控制判断，因此它不是服务商账户硬限额，也不覆盖所有外部程序消费。
 

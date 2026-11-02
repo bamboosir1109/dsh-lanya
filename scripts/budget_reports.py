@@ -19,7 +19,7 @@ import time
 
 import budget_runtime as budget
 
-SCHEMA = 'daily-spending/v1'
+SCHEMA = 'daily-spending/v2'
 TIMEZONE = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
 SAFE_INTEGER = 9007199254740991
 _NATIVE_CACHE = {}
@@ -44,7 +44,7 @@ def _start(day):
 
 
 def _empty_bucket():
-    return {'spent_usd': None, 'reserved_usd': 0, 'turn_count': 0,
+    return {'spent_cny': None, 'reserved_cny': 0, 'turn_count': 0,
             'settled_count': 0, 'pending_count': 0, 'unknown_count': 0}
 
 
@@ -66,7 +66,7 @@ def daily_spending(now=None, days=30):
         result.append({'date': day.isoformat(), 'autonomy': None, 'private': None,
                        'group': None, 'total': None, 'status': 'unknown',
                        'turn_count': 0, 'settled_count': 0, 'pending_count': 0,
-                       'unknown_count': 0, 'reserved_usd': 0,
+                       'unknown_count': 0, 'reserved_cny': 0,
                        'buckets': {key: _empty_bucket() for key in budget.BUCKETS}})
     by_day = {row['date']: row for row in result}
     coverage_start = None
@@ -117,24 +117,24 @@ def daily_spending(now=None, days=30):
         covered = coverage_start is not None and coverage_start < _start(day + dt.timedelta(days=1))
         for key, bucket in row['buckets'].items():
             micros = bucket.pop('_micros', 0)
-            bucket['reserved_usd'] = bucket.pop('_reserved', 0) / 1000000
+            bucket['reserved_cny'] = bucket.pop('_reserved', 0) / 1000000
             if covered:
-                bucket['spent_usd'] = micros / 1000000
-                row[key] = bucket['spent_usd']
+                bucket['spent_cny'] = micros / 1000000
+                row[key] = bucket['spent_cny']
             for field in ('turn_count', 'settled_count', 'pending_count', 'unknown_count'):
                 row[field] += bucket[field]
-            row['reserved_usd'] += bucket['reserved_usd']
+            row['reserved_cny'] += bucket['reserved_cny']
         if covered:
             row['total'] = round(sum(row[key] for key in budget.BUCKETS), 6)
             row['status'] = ('complete' if coverage_start <= _start(day) and day < today
                              and not row['pending_count'] and not row['unknown_count'] else 'partial')
-        row['reserved_usd'] = round(row['reserved_usd'], 6)
-    return {'schema': SCHEMA, 'currency': 'USD', 'timezone': 'Asia/Shanghai',
+        row['reserved_cny'] = round(row['reserved_cny'], 6)
+    return {'schema': SCHEMA, **{k: v for k, v in budget.CONTRACT.items() if k != 'schema'}, 'timezone': 'Asia/Shanghai',
             'today': today.isoformat(), 'generated_at': now, 'days': result,
             'coverage': {'start_at': coverage_start, 'scope': 'trusted_main_agent_turns',
                          'owner_verified': owner_verified, 'historical_backfill': False,
                          'complete_days': False,
-                         'basis': 'priced_native_turn_receipts',
+                         'basis': budget.BASIS,
                          'reasons': (['tracking_not_started'] if coverage_start is None else
                                      ['tracking_started_within_window'] if coverage_start > _start(first) else [])}}
 
@@ -228,13 +228,14 @@ def native_daily_spending(*, workspace, agent_preset, identity_file, dsh_home,
     _require(_integer(sampled) and type(days) is int and 1 <= days <= 90)
     today = _date(sampled)
     dates = [(today - dt.timedelta(days=days - 1 - index)).isoformat() for index in range(days)]
-    base = {'schema': SCHEMA, 'availability': 'unavailable', 'currency': 'USD', 'timezone': 'Asia/Shanghai',
+    base = {'schema': SCHEMA, 'availability': 'unavailable',
+            **{k: v for k, v in budget.CONTRACT.items() if k != 'schema'}, 'timezone': 'Asia/Shanghai',
             'today': today.isoformat(), 'generated_at': sampled,
             'days': [dict(date=date, autonomy=None, private=None, group=None, total=None, status='unknown',
-                          turn_count=0, settled_count=0, pending_count=0, unknown_count=0, reserved_usd=0,
+                          turn_count=0, settled_count=0, pending_count=0, unknown_count=0, reserved_cny=0,
                           buckets={key: _empty_bucket() for key in budget.BUCKETS}) for date in dates],
             'coverage': {'scope': 'current_mapped_main_agent_native_turns',
-                         'basis': 'native_turn_api_usd_estimate', 'owner_verified': False,
+                         'basis': 'owner_confirmed_numeric_cny_estimate', 'owner_verified': False,
                          'owner_verified_scopes': 0, 'configured_scopes': 0,
                          'current_mapped_sessions_only': True, 'historical_backfill': False,
                          'reconciled_days': 0, 'reasons': []}}
@@ -317,7 +318,10 @@ def native_daily_spending(*, workspace, agent_preset, identity_file, dsh_home,
                 raise activity.ActivityUnavailable(code if code in ('node_runtime_unsupported', 'native_dependency_used',
                     'native_dependency_unavailable', 'invalid_native_cost_source', 'native_cost_unavailable') else 'native_cost_unavailable')
             report = response.get('report')
-            activity._require(isinstance(report, dict) and report.get('schema') == SCHEMA and report.get('today') == today.isoformat()
+            activity._require(isinstance(report, dict) and report.get('schema') == SCHEMA and
+                              type(report.get('numeric_scale')) is int and
+                              all(report.get(k) == v for k, v in budget.CONTRACT.items() if k != 'schema') and
+                              report.get('today') == today.isoformat()
                               and report.get('generated_at') == sampled and isinstance(report.get('days'), list)
                               and [row.get('date') for row in report['days']] == dates, 'malformed_source')
             activity._require(_source_signature(paths) == before, 'source_changing')

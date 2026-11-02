@@ -31,7 +31,7 @@ class BudgetRuntimeTests(unittest.TestCase):
                                              get=lambda key, default=None: 'fixture' if key == 'decisions.agentPreset' else default)
         self.addCleanup(setattr, budget, 'project_conf', self.original)
         self.now = int(dt.datetime(2026, 11, 1, 12).astimezone().timestamp() * 1000)
-        self.request = {'cwd': str(self.root), 'agent_preset': 'fixture', 'conversation_key': 'private:101',
+        self.request = {'budget_contract': budget.CONTRACT, 'cwd': str(self.root), 'agent_preset': 'fixture', 'conversation_key': 'private:101',
                         'origin': 'observation', 'turn_key': 'a' * 64, 'instance_id': 'b' * 64,
                         'meter_available': True, 'operation': 'reserve'}
 
@@ -39,28 +39,69 @@ class BudgetRuntimeTests(unittest.TestCase):
         return budget.operate(dict(self.request, **change), self.now)
 
     def configure(self, autonomy=1, private=0, group=0, reserve=0.05):
-        return budget.save_config({'limits': {'autonomy': autonomy, 'private': private, 'group': group}, 'reserve_usd': reserve},
+        return budget.save_config({'limits': {'autonomy': autonomy, 'private': private, 'group': group}, 'reserve_cny': reserve},
                                   budget.get_snapshot(self.now)['revision'])
 
     def test_snapshot_missing_is_read_only_and_not_historical_zero(self):
         value = budget.get_snapshot(self.now)
-        self.assertEqual(value['schema'], 'unified-budget/v1')
+        self.assertEqual(value['schema'], 'unified-budget/v2')
         self.assertEqual(value['availability'], 'not_started')
         self.assertIsNone(value['usage']['coverage_start'])
         self.assertFalse(value['usage']['counts_complete'])
         self.assertFalse(value['enforcement']['runtime_gate_bound'])
         self.assertFalse(self.data.exists())
 
-    def test_usd_default_never_reads_legacy_or_guesses_session_prefix(self):
+    def test_nominal_yuan_is_scale_one_and_source_currency_is_only_provenance(self):
+        self.run_op()
+        self.run_op(operation='settle', receipt={'budget_contract': budget.CONTRACT, 'api_cost_cny': 0.9,
+                    'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True})
+        value = budget.get_snapshot(self.now)
+        self.assertEqual(value['currency'], 'CNY')
+        self.assertEqual(value['basis'], 'owner_confirmed_numeric_cny_estimate')
+        self.assertEqual(value['source_estimate_currency'], 'USD')
+        self.assertEqual(value['numeric_scale'], 1)
+        self.assertEqual(value['usage']['buckets']['autonomy']['spent_cny'], 0.9)
+        self.assertEqual(value['usage']['buckets']['autonomy']['remaining_cny'], 4.1)
+
+    def test_positive_sub_micro_cap_is_not_silently_unlimited_but_tiny_cost_can_round(self):
+        for amount in (0.00000001, 0.00000049, 0.0000005, 0.00000051, 0.00000099):
+            with self.assertRaises(budget.BudgetError):
+                self.configure(autonomy=amount)
+        self.assertFalse(self.data.exists())
+        with self.assertRaises(budget.BudgetError):
+            self.configure(reserve=0.00000099)
+        current = self.configure(autonomy=0.000001)
+        self.assertFalse(current['usage']['buckets']['autonomy']['can_start_new_turn'])
+        self.configure(autonomy=5)
+        self.run_op()
+        self.run_op(operation='settle', receipt={'budget_contract': budget.CONTRACT, 'api_cost_cny': 0.0000001,
+                    'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True})
+        self.assertEqual(budget.get_snapshot(self.now)['usage']['buckets']['autonomy']['spent_cny'], 0)
+
+    def test_old_adapter_contract_and_old_usd_receipt_are_refused_without_mutation(self):
+        old = dict(self.request); old.pop('budget_contract')
+        with self.assertRaisesRegex(budget.BudgetError, 'contract_required'):
+            budget.operate(old, self.now)
+        self.assertFalse(self.data.exists())
+        self.run_op()
+        old_receipt = {'api_cost_usd': 0.9, 'start_seq': 1, 'end_seq': 2, 'calls': 1, 'priced': True}
+        before = budget.get_snapshot(self.now)['usage']
+        with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_cost_receipt'):
+            self.run_op(operation='settle', receipt=old_receipt)
+        with self.assertRaisesRegex(budget.BudgetError, 'contract_required'):
+            self.run_op(budget_contract=dict(budget.CONTRACT, numeric_scale=True))
+        self.assertEqual(budget.get_snapshot(self.now)['usage'], before)
+
+    def test_cny_default_never_reads_legacy_or_guesses_session_prefix(self):
         self.data.mkdir()
         old = self.data / 'budget.json'; old.write_text('{"limit":2.5,"spent":900,"groupMuted":true}')
         before = old.read_bytes()
         self.assertTrue(self.run_op()['allowed'])
         value = budget.get_snapshot(self.now)
-        self.assertEqual(value['effective']['currency'], 'USD')
-        self.assertEqual(value['effective']['limits']['autonomy'], 1)
-        self.assertEqual(value['usage']['buckets']['autonomy']['reserved_usd'], 0.05)
-        self.assertEqual(value['usage']['buckets']['private']['reserved_usd'], 0)
+        self.assertEqual(value['effective']['currency'], 'CNY')
+        self.assertEqual(value['effective']['limits']['autonomy'], 5)
+        self.assertEqual(value['usage']['buckets']['autonomy']['reserved_cny'], 0.05)
+        self.assertEqual(value['usage']['buckets']['private']['reserved_cny'], 0)
         self.assertEqual(old.read_bytes(), before)
 
     def test_concurrent_reservations_cannot_borrow_one_allocation(self):
@@ -69,27 +110,27 @@ class BudgetRuntimeTests(unittest.TestCase):
             answers = list(pool.map(lambda n: self.run_op(turn_key=hashlib.sha256(str(n).encode()).hexdigest()), range(4)))
         self.assertEqual(sum(row['allowed'] for row in answers), 2)
         state = budget.get_snapshot(self.now)['usage']['buckets']['autonomy']
-        self.assertEqual(state['reserved_usd'], 0.1)
+        self.assertEqual(state['reserved_cny'], 0.1)
         self.assertTrue(state['exhausted'])
 
     def test_actual_turn_receipt_settles_once_and_conflicting_receipt_refused(self):
         self.run_op()
-        receipt = {'api_cost_usd': 0.031, 'start_seq': 100, 'end_seq': 131, 'calls': 2, 'priced': True}
+        receipt = {'budget_contract': budget.CONTRACT, 'api_cost_cny': 0.031, 'start_seq': 100, 'end_seq': 131, 'calls': 2, 'priced': True}
         self.assertTrue(self.run_op(operation='settle', receipt=receipt)['settled'])
         self.assertTrue(self.run_op(operation='settle', receipt=receipt)['duplicate'])
         with self.assertRaises(budget.BudgetError):
-            self.run_op(operation='settle', receipt=dict(receipt, api_cost_usd=0.04))
+            self.run_op(operation='settle', receipt=dict(receipt, api_cost_cny=0.04))
         state = budget.get_snapshot(self.now)['usage']['buckets']['autonomy']
-        self.assertEqual(state['spent_usd'], 0.031)
-        self.assertEqual(state['reserved_usd'], 0)
+        self.assertEqual(state['spent_cny'], 0.031)
+        self.assertEqual(state['reserved_cny'], 0)
         self.assertTrue(self.run_op(operation='check')['allowed'])
 
     def test_remaining_smaller_than_reserve_is_explicitly_not_startable(self):
         self.configure(autonomy=0.05)
         self.run_op()
-        self.run_op(operation='settle', receipt={'api_cost_usd':0.02,'start_seq':1,'end_seq':2,'calls':1,'priced':True})
+        self.run_op(operation='settle', receipt={'budget_contract': budget.CONTRACT, 'api_cost_cny':0.02,'start_seq':1,'end_seq':2,'calls':1,'priced':True})
         state = budget.get_snapshot(self.now)['usage']['buckets']['autonomy']
-        self.assertEqual(state['remaining_usd'], 0.03)
+        self.assertEqual(state['remaining_cny'], 0.03)
         self.assertFalse(state['exhausted'])
         self.assertFalse(state['can_start_new_turn'])
         self.assertEqual(state['blocked_reason'], 'insufficient_reserve')
@@ -101,7 +142,7 @@ class BudgetRuntimeTests(unittest.TestCase):
         self.assertFalse(self.run_op(instance_id='c' * 64)['allowed'])
         self.assertFalse(self.run_op()['allowed'])
         state = budget.get_snapshot(self.now)['usage']['buckets']['autonomy']
-        self.assertEqual(state['reserved_usd'], 0.05)
+        self.assertEqual(state['reserved_cny'], 0.05)
         self.assertEqual(state['unknown_count'], 1)
 
     def test_origin_category_and_owner_are_not_taken_from_names(self):
@@ -120,8 +161,8 @@ class BudgetRuntimeTests(unittest.TestCase):
         decision = self.run_op(origin='live', meter_available=False)
         self.assertTrue(decision['allowed']); self.assertTrue(decision['decision_only'])
         self.assertFalse(self.run_op(origin='live', operation='check')['allowed'])
-        self.run_op(origin='live', operation='settle', receipt={'api_cost_usd':0.001,'start_seq':1,'end_seq':2,'calls':1,'priced':True})
-        self.assertLess(budget.get_snapshot(self.now)['usage']['buckets']['private']['spent_usd'], 0.01)
+        self.run_op(origin='live', operation='settle', receipt={'budget_contract': budget.CONTRACT, 'api_cost_cny':0.001,'start_seq':1,'end_seq':2,'calls':1,'priced':True})
+        self.assertLess(budget.get_snapshot(self.now)['usage']['buckets']['private']['spent_cny'], 0.01)
         self.assertFalse(self.run_op(origin='live', operation='check')['allowed'])
 
     def test_own_last_slot_is_usable_but_midnight_cannot_reuse_old_day_slot(self):
@@ -140,24 +181,24 @@ class BudgetRuntimeTests(unittest.TestCase):
         acl = _security(config)
         current = self.configure(autonomy=2)
         self.assertEqual(_security(config), acl)
-        with self.assertRaises(budget.BudgetError): budget.save_config({'limits': {'autonomy': 3, 'private': 0, 'group': 0}, 'reserve_usd': 0.05}, first['revision'])
-        with self.assertRaises(budget.BudgetError): budget.save_config({'spent_usd': 0}, current['revision'])
+        with self.assertRaises(budget.BudgetError): budget.save_config({'limits': {'autonomy': 3, 'private': 0, 'group': 0}, 'reserve_cny': 0.05}, first['revision'])
+        with self.assertRaises(budget.BudgetError): budget.save_config({'spent_cny': 0}, current['revision'])
         self.assertEqual(budget.get_snapshot(self.now)['effective']['limits']['autonomy'], 2)
 
     def test_invalid_json_amounts_and_database_fail_closed(self):
         self.data.mkdir()
         config = self.data / 'autonomy-budget.json'
-        for raw in ('{"schema":1,"schema":2}', '{"reserve_usd":NaN}'):
+        for raw in ('{"schema":1,"schema":2}', '{"reserve_cny":NaN}'):
             config.write_text(raw)
             with self.assertRaises(budget.BudgetError): budget.get_snapshot(self.now)
         config.unlink()
-        for bad in (True, -1, float('inf'), '1'):
+        for bad in (True, False, -1, float('inf'), '1'):
             with self.assertRaises(budget.BudgetError): self.configure(autonomy=bad)
         (self.data / 'autonomy-budget.sqlite').write_bytes(b'not a SQLite budget')
         with self.assertRaises(Exception): budget.get_snapshot(self.now)
 
     def test_heartbeat_is_real_fresh_metadata_not_a_balance(self):
-        budget.operate({'operation': 'heartbeat', 'instance_id': 'b' * 64, 'pid': os.getpid(), 'adapter_source_sha256':'c'*64}, self.now)
+        budget.operate({'budget_contract': budget.CONTRACT, 'operation': 'heartbeat', 'instance_id': 'b' * 64, 'pid': os.getpid(), 'adapter_source_sha256':'c'*64}, self.now)
         self.assertTrue(budget.get_snapshot(self.now)['enforcement']['runtime_gate_bound'])
         self.assertFalse(budget.get_snapshot(self.now + 90001)['enforcement']['runtime_gate_bound'])
         self.assertFalse(budget.get_snapshot(self.now - 1)['enforcement']['runtime_gate_bound'])
@@ -180,7 +221,7 @@ class BudgetRuntimeTests(unittest.TestCase):
         before = old.read_bytes()
         result = subprocess.run([shutil.which('powershell.exe'),'-NoProfile','-File',str(scripts/'budget.ps1'),'-Notify'], env=env, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
-        self.assertEqual(json.loads(result.stdout.decode('utf-8-sig'))['schema'], 'unified-budget/v1')
+        self.assertEqual(json.loads(result.stdout.decode('utf-8-sig'))['schema'], 'unified-budget/v2')
         self.assertEqual(old.read_bytes(), before)
         self.assertFalse((self.data/'decision-inbox').exists())
         self.assertFalse((self.data/'autonomy-budget.sqlite').exists())
