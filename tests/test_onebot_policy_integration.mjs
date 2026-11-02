@@ -585,10 +585,12 @@ test('memory CLI receives trusted scope/cwd/preset and never falls back to raw c
   assert.match(chat.messages[0].content[0].text, /fixture-preset/)
   fs.writeFileSync(script, `import sys,json\nv=json.load(sys.stdin)\nprint(json.dumps({'schema':'dsh-memento-context/v1','read_only':True,'conversation_key':v['conversation_key'],'owner':{'workspace_key':'foreign-workspace','agent_key':'foreign-agent'},'memories':[{'text':'foreign fixture must never be injected'}]}))\n`)
   await h.receive({ text: 'same scope wrong owner' })
-  assert.equal(chat.messages[1].content[0].text, 'same scope wrong owner')
+  assert.match(chat.messages[1].content[0].text, /^same scope wrong owner\n<trusted_recent_social_facts>/)
+  assert.doesNotMatch(chat.messages[1].content[0].text, /foreign fixture must never be injected/)
   h.bridge.lanyaPolicy.memoryContext = async () => { throw new Error('fixture helper failure') }
   await h.receive({ text: 'plain safe fallback' })
-  assert.equal(chat.messages[2].content[0].text, 'plain safe fallback')
+  assert.match(chat.messages[2].content[0].text, /^plain safe fallback\n<trusted_recent_social_facts>/)
+  assert.match(chat.messages[2].content[0].text, /"status":"unknown"/)
   assert.equal(h.logs.some(item => item.message === 'scoped_memory_context_unavailable:Error'), true)
 })
 

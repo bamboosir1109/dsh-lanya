@@ -28,6 +28,180 @@ const identity = (...parts) => createHash('sha256').update(parts.map(String).joi
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
 const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
   'cost_meter_unavailable', 'budget_unavailable'])
+const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
+const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
+const SOCIAL_VERDICTS = ['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action']
+const SOCIAL_EXPRESSIONS = ['text', 'meme', 'text_meme', 'unspecified']
+const socialInteger = value => Number.isSafeInteger(value) && value >= 0
+const unknownSocialFacts = () => ({ schema: 'dsh-recent-social-facts/v1', status: 'unknown',
+  window: { events_examined: 0, complete_turns: 0, incomplete_turns: 0, older_context: 'unknown' }, turns: [],
+  counts: { accepted_decisions: null, picker_selected: null, image_successes: null },
+  trailing_tool_action_decisions: { count: null, boundary: 'unknown' },
+  image_intent: 'undetermined', text_delivery: 'not_measured' })
+
+function socialJson(value) {
+  if (typeof value !== 'string' || value.length > 65536) return null
+  try { const parsed = JSON.parse(value); return plain(parsed) ? parsed : null } catch { return null }
+}
+
+function socialResultText(message) {
+  if (!Array.isArray(message?.content) || message.content.length > 16) return null
+  let text = ''
+  for (const block of message.content) {
+    if (block?.type !== 'text' || typeof block.text !== 'string' || text.length + block.text.length > 65536) return null
+    text += block.text
+  }
+  return text
+}
+
+/** Bounded native metadata only. Counts describe receipts, never human display
+ * or whether a picture was requested/self-chosen. No message bodies escape. */
+export function reduceRecentSocialFacts(events, { fromSeq = 0, truncated = false } = {}) {
+  const facts = unknownSocialFacts()
+  if (!Array.isArray(events) || events.length > SOCIAL_EVENT_LIMIT || !socialInteger(fromSeq) || typeof truncated !== 'boolean') return facts
+  facts.window.events_examined = events.length
+  facts.window.older_context = truncated ? 'truncated' : 'complete'
+  let active = null, incomplete = 0, damaged = false
+  const complete = []
+  try {
+    for (let index = 0; index < events.length; index++) {
+      const event = events[index], data = event?.data
+      if (!plain(event) || event.seq !== fromSeq + index || !plain(data)) {
+        damaged = true
+        if (active) active.partial = true
+        continue
+      }
+      if (['agent-preset/selected', 'session/end-seed'].includes(event.type)) {
+        complete.length = 0; active = null; incomplete = 0
+        facts.window.older_context = 'owner_boundary'
+        continue
+      }
+      if (event.type === 'turn/start') {
+        if (active) incomplete++
+        active = socialInteger(data.turn) ? { turn: data.turn, started: event.time, origins: [], calls: new Map(), partial: !socialInteger(event.time) } : null
+        if (!active) { incomplete++; damaged = true }
+        continue
+      }
+      if (!active) {
+        if (event.type === 'turn/end') incomplete++
+        continue
+      }
+      // The SDK materializes only already claimed/admitted native Message
+      // metadata here (firstAttempt). Its content is deliberately never read.
+      if (event.type === 'user/message') {
+        if (['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint'].includes(data.source?.kind)) continue
+        active.origins.push(data.source?.kind === 'plugin:dsh-onebot' ? 'live'
+          : data.source?.kind === 'plugin:dsh-lanya-observation' ? 'observation' : 'unknown')
+        continue
+      }
+      if (event.type === 'tool/call') {
+        if (data.turn !== active.turn || !socialInteger(data.step) || data.step < 1 || typeof data.callId !== 'string' || !data.callId.length || data.callId.length > 512) {
+          active.partial = true; continue
+        }
+        const prior = active.calls.get(data.callId)
+        if (prior) { prior.invalid = true; active.partial = true; continue }
+        const name = SOCIAL_TOOLS.has(data.name) ? data.name : 'other'
+        const args = name === 'qq_decide' ? (plain(data.arguments) ? data.arguments : socialJson(data.arguments)) : null
+        active.calls.set(data.callId, { name, seq: event.seq, step: data.step,
+          verdict: SOCIAL_VERDICTS.includes(args?.verdict) ? args.verdict : 'unknown', result: 'missing' })
+        continue
+      }
+      if (event.type === 'tool/result') {
+        const message = data.message, callId = message?.source?.callId
+        const call = typeof callId === 'string' ? active.calls.get(callId) : null
+        if (!call) { active.partial = true; continue }
+        if (call.name === 'other') continue
+        if (data.turn !== active.turn || data.step !== call.step || message?.role !== 'tool' ||
+            message.source?.kind !== 'tool' || message.toolCallId !== callId) { call.invalid = true; continue }
+        if (call.result !== 'missing') {
+          // Native compaction may replace a result, but is not another action.
+          const op = event.surfaceOp, sources = event.sourceEventSeqs
+          if (plain(op) && op.op === 'replace' && op.startSeq === call.resultSeq && op.endSeq === call.resultSeq &&
+              Array.isArray(sources) && sources.includes(call.resultSeq)) { call.resultSeq = event.seq; continue }
+          call.invalid = true; continue
+        }
+        if (event.surfaceOp !== 'append' || !Array.isArray(event.sourceEventSeqs) ||
+            event.sourceEventSeqs.length !== 1 || event.sourceEventSeqs[0] !== call.seq) { call.invalid = true; continue }
+        call.resultSeq = event.seq
+        if (message.isError === true || data.error != null) { call.result = 'failed'; continue }
+        const text = socialResultText(message), value = socialJson(text)
+        if (call.name === 'qq_decide') {
+          if (typeof value?.accepted !== 'boolean' || call.verdict === 'unknown') call.result = 'unknown'
+          else {
+            call.result = value.accepted ? 'accepted' : 'rejected'
+            call.expression = call.verdict !== 'reply' ? 'not_applicable'
+              : SOCIAL_EXPRESSIONS.includes(value.expression_plan?.choice) ? value.expression_plan.choice : 'unknown'
+          }
+        } else if (call.name === 'send_meme') {
+          call.result = value?.mode === 'qq_selection' && value.delivered === false && typeof value.selected === 'boolean' &&
+            typeof value.ok === 'boolean' && Array.isArray(value.candidates)
+            ? (value.ok && value.selected && value.candidates.length > 0 ? 'selected' : !value.selected && !value.candidates.length ? 'empty' : 'unknown') : 'unknown'
+        } else call.result = typeof text === 'string' && /^已发送(?:（message_id=[^\r\n（）]{1,128}）)?$/.test(text) ? 'success' : 'unknown'
+        continue
+      }
+      if (event.type !== 'turn/end') continue
+      if (data.turn !== active.turn || !socialInteger(event.time) || !socialInteger(active.started) || event.time < active.started) {
+        incomplete++; active = null; damaged = true; continue
+      }
+      if (!['completed', 'blocked', 'aborted', 'failed'].includes(data.reason?.kind)) active.partial = true
+      const decisions = [], counts = { picker_selected: 0, image_successes: 0 }
+      let decisionUnknown = active.partial
+      for (const call of active.calls.values()) {
+        if (call.name === 'other') continue
+        const unknown = active.partial || call.invalid || ['missing', 'unknown'].includes(call.result)
+        if (call.name === 'qq_decide') {
+          if (unknown) decisionUnknown = true
+          else if (call.result === 'accepted') decisions.push(call)
+        } else {
+          const metric = call.name === 'send_meme' ? 'picker_selected' : 'image_successes'
+          if (unknown) counts[metric] = null
+          else if (counts[metric] !== null && ['selected', 'success'].includes(call.result)) counts[metric]++
+        }
+      }
+      if (active.partial) counts.picker_selected = counts.image_successes = null
+      const decision = !decisionUnknown && decisions.length <= 1 ? decisions[0] : null
+      complete.push({ ended_at: event.time, origin: active.origins.length === 1 ? active.origins[0] : 'unknown',
+        end: ['completed', 'blocked', 'aborted', 'failed'].includes(data.reason?.kind) ? data.reason.kind : 'unknown',
+        decision: decision?.verdict || (decisionUnknown || decisions.length > 1 ? 'unknown' : 'none'),
+        expression: decision?.expression || (decisionUnknown || decisions.length > 1 ? 'unknown' : 'not_applicable'), ...counts })
+      if (complete.length > SOCIAL_TURN_LIMIT) complete.shift()
+      active = null
+    }
+    if (active) incomplete++
+    facts.turns = complete
+    facts.window.complete_turns = complete.length
+    facts.window.incomplete_turns = incomplete
+    const uncertain = complete.some(turn => turn.decision === 'unknown' || turn.picker_selected === null || turn.image_successes === null)
+    facts.status = complete.length ? (damaged || incomplete || truncated || uncertain ? 'partial' : 'available') : 'unknown'
+    if (!complete.length) return facts
+    for (const key of ['picker_selected', 'image_successes']) facts.counts[key] = complete.some(turn => turn[key] === null) ? null : complete.reduce((sum, turn) => sum + turn[key], 0)
+    facts.counts.accepted_decisions = complete.some(turn => turn.decision === 'unknown') ? null : complete.filter(turn => turn.decision !== 'none').length
+    let count = 0, boundary = truncated || complete.length === SOCIAL_TURN_LIMIT || facts.window.older_context === 'owner_boundary' ? 'window_limit' : 'history_start'
+    if (active) boundary = 'unknown'
+    else for (let index = complete.length - 1; index >= 0; index--) {
+      const verdict = complete[index].decision
+      if (verdict === 'unknown') { boundary = 'unknown'; break }
+      if (verdict === 'none') continue
+      if (verdict !== 'tool_action') { boundary = 'other_decision'; break }
+      count++
+    }
+    facts.trailing_tool_action_decisions = { count: count || (boundary === 'other_decision' ? 0 : null), boundary }
+    return facts
+  } catch { return unknownSocialFacts() }
+}
+
+function readRecentSocialFacts(session) {
+  try {
+    const total = session?.seq, inherited = session?.inheritedEventCount
+    if (!socialInteger(total) || !socialInteger(inherited) || inherited > total || typeof session.snapshotEvents !== 'function') return unknownSocialFacts()
+    // Current SDK compatibility read: request a bounded range, never snapshot
+    // the entire session and slice/serialize its private messages afterwards.
+    const fromSeq = Math.max(inherited, total - SOCIAL_EVENT_LIMIT)
+    const events = session.snapshotEvents(fromSeq, total)
+    if (!Array.isArray(events) || events.length !== total - fromSeq) return unknownSocialFacts()
+    return reduceRecentSocialFacts(events, { fromSeq, truncated: fromSeq > 0 })
+  } catch { return unknownSocialFacts() }
+}
 
 export class PolicyDeliveryError extends Error {
   constructor(status, reason) {
@@ -862,6 +1036,17 @@ export class OneBotDecisionAdapter {
       this.log('warn', 'runtime_capabilities_unavailable:' + error.name)
       enriched += '\nTrusted runtime capability status is unavailable. Do not assume browser, Android or voice workers are running, or treat cached media as a fresh observation.'
     }
+    const chat = this.bridge.chats.get(canonicalScope(scope)), session = chat?.agent?.session
+    let socialFacts = unknownSocialFacts()
+    try {
+      if (session?.id !== undefined && this.bridge.chatForSession(String(session.id)) === canonicalScope(scope)) {
+        socialFacts = readRecentSocialFacts(session)
+      }
+    } catch { /* Local history is optional and never blocks a real input. */ }
+    enriched += '\n<trusted_recent_social_facts>\n' + JSON.stringify(socialFacts) + '\n</trusted_recent_social_facts>\n'
+      + 'These bounded facts describe only this conversation\'s recorded decisions and tool receipts, not human display or whether an image was requested or self-chosen. '
+      + 'The user prefers self-chosen real memes and more initiative. On a personal autonomous opportunity, explicitly consider a natural chat or fitting real meme alongside internal activity; no user request or major achievement is required. '
+      + 'Consider recent contact, unanswered messages and persistent silence. There is no count threshold or image quota and no automatic sending. Keep one qq_decide decision and reuse its current reply ticket; all scope, budget and delivery guards still apply.'
     return enriched
   }
 
