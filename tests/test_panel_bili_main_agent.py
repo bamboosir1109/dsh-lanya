@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -148,6 +149,45 @@ class PanelBiliMainAgentTests(unittest.TestCase):
         self.assertEqual(popen.call_args_list[0].args[0], [str(cli), '--profile', 'headless', '-'])
         self.assertEqual(popen.call_args_list[1].args[0][-2:], ['--no-comment', '--mention'])
         self.assertEqual(self.events(), [])
+
+    def test_verify_forwards_exact_large_reply_identity_without_numeric_conversion(self):
+        reply_id = '1234567890' * 3 + '12'
+        for suffix, expected in (('', None), ('&rpid=' + reply_id, reply_id)):
+            handler = object.__new__(self.panel.Handler)
+            handler.path = '/api/bili/verify?bv=BV1234567890&text=exact' + suffix
+            handler._json = lambda code, value: (code, value)
+            with mock.patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='{"state":"unknown"}')) as run:
+                code, result = handler.do_GET()
+            self.assertEqual(code, 200); self.assertEqual(result['result']['state'], 'unknown')
+            args = run.call_args.args[0]
+            if expected:
+                self.assertEqual(args[-2:], ['--rpid', expected])
+            else:
+                self.assertNotIn('--rpid', args)
+
+    def test_verify_rejects_invalid_or_ambiguous_identity_before_any_subprocess(self):
+        cases = ['bv=bad', 'bv=BV1234567890&bv=BVABCDEFGHIJ', 'bv=BV1234567890&rpid=1&rpid=2']
+        cases += ['bv=BV1234567890&rpid=' + value for value in ('', '0', '01', '-1', '1e3', 'true', '1'*33)]
+        for query in cases:
+            handler = object.__new__(self.panel.Handler); handler.path = '/api/bili/verify?' + query
+            handler._json = lambda code, value: (code, value)
+            with mock.patch('subprocess.run') as run:
+                self.assertEqual(handler.do_GET()[0], 400)
+            run.assert_not_called()
+
+    def test_verify_timeout_never_returns_encoded_text_process_paths_or_exception_output(self):
+        handler = object.__new__(self.panel.Handler)
+        handler.path = '/api/bili/verify?bv=BV1234567890&rpid=123&text=fixture'
+        handler._json = lambda code, value: (code, value)
+        private_command = [str(self.root/'private-fixture-runtime'), '--text-b64', 'PRIVATE_ENCODED_FIXTURE']
+        error = subprocess.TimeoutExpired(private_command, 120, output='PRIVATE_PROCESS_OUTPUT', stderr='PRIVATE_PROCESS_ERROR')
+        with mock.patch('subprocess.run', side_effect=error):
+            code, result = handler.do_GET()
+        self.assertEqual((code, result['code']), (503, 'comment_verification_unavailable'))
+        self.assertEqual(result['result']['state'], 'unknown')
+        output = json.dumps(result)
+        for private in (str(self.root), '--text-b64', 'PRIVATE_ENCODED_FIXTURE', 'PRIVATE_PROCESS_OUTPUT', 'PRIVATE_PROCESS_ERROR'):
+            self.assertNotIn(private, output)
 
 
 if __name__ == '__main__':

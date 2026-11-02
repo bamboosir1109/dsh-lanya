@@ -174,6 +174,34 @@ test('diary page keeps factual drafts distinct from an unwritten personal diary 
   assert.deepEqual(requests,[['/memory/diary']])
 })
 
+test('diary follows the server current day but preserves explicit history and clearing returns to today', async () => {
+  let today = '2026-11-01'
+  const requests = []
+  const h = harness({extra:{memoryDiaryReadGeneration:0,noteRecord(){},api:async url=>{
+    requests.push(url)
+    const day = new URL('http://fixture.invalid'+url).searchParams.get('day') || today
+    return {ok:true,diary:{schema:'narrative-diary/v1',status:'ok',private:true,read_only:true,days:[],
+      facts:{day,status:'available',items:[]},selected:{day,title:'当天记录',markdown:day+' 的记录',
+        updated_at:Date.UTC(2026,10,1,12),revision:1,source_evidence:[]}}}
+  }},functions:['memoryDisplayTime','filterMemoryDiaryDays','loadMemoryDiary','selectMemoryDiaryDay']})
+  await h.context.loadMemoryDiary()
+  assert.equal(h.node('memoryDiaryDay').value,'2026-11-01')
+  today = '2026-11-02'
+  await h.context.loadMemoryDiary()
+  assert.equal(h.node('memoryDiaryDay').value,'2026-11-02')
+  assert.equal(h.node('memoryDiaryBody').textContent,'2026-11-02 的记录')
+  await h.context.selectMemoryDiaryDay('2026-11-01')
+  today = '2026-11-03'
+  await h.context.loadMemoryDiary()
+  assert.equal(h.node('memoryDiaryDay').value,'2026-11-01')
+  assert.equal(h.node('memoryDiaryBody').textContent,'2026-11-01 的记录')
+  h.node('memoryDiaryDay').value = ''
+  await h.context.loadMemoryDiary(true)
+  assert.equal(h.node('memoryDiaryDay').value,'2026-11-03')
+  assert.deepEqual(requests,['/memory/diary','/memory/diary','/memory/diary?day=2026-11-01',
+    '/memory/diary?day=2026-11-01','/memory/diary'])
+})
+
 test('voice status never renders untrusted service claims or HTML as readiness', () => {
   const h = harness({ functions: ['renderVoiceStatus'] })
   h.context.renderVoiceStatus({schema:'dsh-voice-status/v1', mode:'unified', read_only:true,

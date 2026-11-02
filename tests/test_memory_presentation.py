@@ -1,4 +1,5 @@
 """Real read-only projections and panel routes against synthetic private data."""
+from contextlib import closing
 import datetime
 from pathlib import Path
 import sqlite3
@@ -73,7 +74,7 @@ class PanelMemoryProjectionTests(unittest.TestCase):
 
     def database(self):
         path = self.root / 'synthetic-memory.db'
-        with sqlite3.connect(path) as con:
+        with closing(sqlite3.connect(path)) as con, con:
             con.execute('CREATE TABLE entries (id TEXT, track TEXT, scope TEXT, workspace_key TEXT, agent_key TEXT, text TEXT, source TEXT, tags TEXT, version INTEGER, created_at INTEGER, updated_at INTEGER, session_id TEXT, recall_count INTEGER, last_recalled INTEGER)')
             for eid, text, at in [('first','喜欢登山和看地图。',1793520000000), ('second','周二去找观星手册。',1793606400000)]:
                 con.execute('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',

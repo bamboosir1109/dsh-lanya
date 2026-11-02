@@ -1309,6 +1309,9 @@ export class OneBotDecisionAdapter {
     // File-edit authority belongs only to the configured administrator's
     // personal autonomous activity, never to payload text or a previous turn.
     // Recheck here as well: this method must not be an internal owner bypass.
+    // Direct callers need the same immutable input boundary as the outer pump;
+    // an owner lookup must not validate one object and later pin another.
+    try { event = structuredClone(event) } catch { throw new Error('Invalid observation snapshot') }
     validateObservation(event)
     const trustedSocial = event.kind === 'social.opportunity' ? this.intentPlanner.validateObservation(event) : null
     const owner = await this.trustedOwner(event.scope)

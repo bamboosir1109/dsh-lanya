@@ -119,7 +119,11 @@ CREATE TABLE audit(seq INTEGER,ts INTEGER,action TEXT,track TEXT,scope TEXT,text
         self.assertEqual(result['counts']['proposals'], 251)
         self.assertEqual(len(result['audit']), 60)
         self.assertEqual(len(result['proposals']), 30)
-        self.assertEqual(result['availability'], {'status': 'available', 'counts_complete': True})
+        self.assertEqual(result['availability']['status'], 'available')
+        self.assertTrue(result['availability']['counts_complete'])
+        self.assertEqual(result['availability']['listed_entries'], 0)
+        self.assertEqual(result['availability']['entry_limit'], 200)
+        self.assertTrue(result['availability']['entries_complete'])
         self.assertEqual(hashlib.sha256(file.read_bytes()).hexdigest(), before)
 
     def test_unreadable_memory_is_unknown_instead_of_successful_zero(self):

@@ -29,6 +29,7 @@ CONTRACT = {'schema': SCHEMA, 'currency': 'CNY', 'basis': BASIS,
             'source_estimate_basis': 'cost_meter_default_price_estimate',
             'numeric_scale': 1}
 BUCKETS = ('autonomy', 'private', 'group')
+TIMEZONE = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
 DEFAULT = dict(CONTRACT, schema=CONFIG_SCHEMA,
                limits={'autonomy': 5.0, 'private': 0.0, 'group': 0.0}, reserve_cny=0.05)
 LEGACY_SCHEMA = 'unified-budget/v1'
@@ -145,7 +146,7 @@ def _clock(now=None):
     now = int(time.time() * 1000) if now is None else now
     if type(now) is not int or not 0 <= now <= 2**53 - 1:
         raise BudgetError('invalid_budget_clock')
-    return now, dt.datetime.fromtimestamp(now / 1000).astimezone().date().isoformat()
+    return now, dt.datetime.fromtimestamp(now / 1000, TIMEZONE).date().isoformat()
 
 
 def _connect(write=False):
@@ -203,13 +204,21 @@ def _summary(connection, config, now):
     _, day = _clock(now)
     buckets = {}
     coverage = None
+    owner = _configured_owner_hash()
     if connection is not None:
         row = connection.execute("SELECT value FROM budget_meta WHERE key='coverage_start'").fetchone()
         coverage = int(row[0]) if row else None
+        first_owned = connection.execute('SELECT MIN(created_at) FROM budget_turns WHERE owner_hash=?', (owner,)).fetchone()[0]
+        if first_owned is None:
+            coverage = None
+        elif type(first_owned) is not int or first_owned < 0 or coverage is None or first_owned < coverage:
+            raise BudgetError('invalid_budget_database')
+        else:
+            coverage = first_owned
     for category in BUCKETS:
         spent = reserved = unknown = turns = 0
         if connection is not None:
-            for row in connection.execute('SELECT status,reserve_micros,spent_micros FROM budget_turns WHERE day=? AND category=? AND owner_hash=?', (day, category, _configured_owner_hash())):
+            for row in connection.execute('SELECT status,reserve_micros,spent_micros FROM budget_turns WHERE day=? AND category=? AND owner_hash=?', (day, category, owner)):
                 if row['status'] not in ('reserved', 'settled', 'unknown') or type(row['reserve_micros']) is not int or row['reserve_micros'] < 0:
                     raise BudgetError('invalid_budget_database')
                 turns += 1

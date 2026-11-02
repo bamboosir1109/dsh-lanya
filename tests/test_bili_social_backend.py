@@ -146,6 +146,21 @@ class SocialBackendTests(unittest.TestCase):
         self.assertEqual(value["errors"], [{"kind": "reply", "error_class": "TimeoutError"}])
         self.assertEqual(self.writes, [])
 
+    def test_missing_notification_list_is_unknown_but_an_explicit_empty_list_is_valid(self):
+        for malformed in ({}, {"code": 0}, {"data": {"items": None}}, {"items": [{}]}):
+            with self.subTest(value=malformed):
+                self.ns["session"].get_replies.return_value = malformed
+                value = self.run_async(self.backend.inbox())
+                self.assertFalse(value["ok"])
+                self.assertTrue(value["partial"])
+                self.assertEqual(value["errors"], [{"kind": "reply", "error_class": "ValueError"}])
+        self.ns["session"].get_replies.return_value = {"data": {"items": []}}
+        value = self.run_async(self.backend.inbox())
+        self.assertTrue(value["ok"])
+        self.assertEqual(value["items"], [])
+        self.assertEqual(value["errors"], [])
+        self.assertEqual(self.writes, [])
+
     def test_inbox_same_page_duplicates_and_incomplete_cursor_are_explicit(self):
         row = {"id": 44, "user": {"mid": 808}, "item": {"title": "fixture title", "source_content": "fixture reply", "source_id": 102}}
         self.ns["session"].get_replies.return_value = {"cursor": {"is_end": False}, "items": [row, row]}

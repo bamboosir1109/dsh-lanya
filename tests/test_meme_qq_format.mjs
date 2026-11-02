@@ -16,14 +16,8 @@ after(() => {
   assert.ok(path.basename(root).startsWith('lanya-expression-media-'))
   fs.rmSync(root, { recursive: true, force: true })
 })
-// Keep the actual native bridge/tools/outbound and its existing inert host.
-// Replace only its media stub with the unmodified real containment/read exports.
-const baseHost = fs.readFileSync(path.join(here, '../onebot_egress/native-host.mjs'), 'utf8')
-const stub = "else if (key.endsWith('/media.js')) exports = { fileToBase64: async () => 'base64://synthetic', isUrl: (s) => /^https?:/.test(s), extForInboundName: () => '.png' }"
-assert.equal(baseHost.split(stub).length, 2)
-const hostSource = `import * as expressionMedia from ${JSON.stringify(pathToFileURL(path.join(here, 'fence.js')).href)}\n` +
-  baseHost.replace(stub, "else if (key.endsWith('/media.js')) exports = { fileToBase64: async (...args) => { await deps.onMediaRead?.(); return expressionMedia.fileToBase64(...args) }, isUrl: expressionMedia.isUrl, extForInboundName: () => '.png' }")
-const { nativeHost } = await import('data:text/javascript;base64,' + Buffer.from(hostSource).toString('base64'))
+// Keep the native host's supported media seam and use the unmodified real fence.
+import { nativeHost } from './fixtures/onebot_egress/native-host.mjs'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jFqkAAAAASUVORK5CYII=', 'base64')
 const digest = value => createHash('sha256').update(value).digest('hex')
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return { promise, resolve } }
@@ -53,7 +47,11 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'synthetic-pol
 `
   const run = spawnSync('python', ['-B', '-c', prepare, repo, plugin], { encoding: 'utf8', windowsHide: true, timeout: 20000 })
   assert.equal(run.status, 0, run.stderr)
-  const h = await nativeHost(plugin, directory)
+  let h
+  h = await nativeHost(plugin, directory, { nativeMedia: { fileToBase64: async (...args) => {
+    await h.deps.onMediaRead?.()
+    return fileToBase64(...args)
+  } } })
   fs.mkdirSync(h.deps.config.mediaDir, { recursive: true })
   t.after(() => h.close())
   const staged = path.join(h.deps.config.mediaDir, 'synthetic.png')

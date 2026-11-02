@@ -351,7 +351,7 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(panel.DSH_CLI, str(install / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"))
         self.assertEqual(panel.DSH_HOME, str(self.work / ".dsh"))
 
-    def test_credential_and_activity_routes_use_bili_duty_then_legacy(self):
+    def test_credentials_keep_fallback_while_activity_route_hides_archived_controls(self):
         self.config(self.repo, {"dataDirName": "fixture-role"})
         panel = self.panel()
         duty = self.work / ".dsh" / "bili-duty" / "bili_credential.json"
@@ -369,7 +369,17 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertNotIn("sessdata", status)
         self.assertNotIn("bili_jct", status)
         handler.path = "/api/activities"
-        self.assertTrue(handler.do_GET()[1]["data"]["activities"][0]["ready"])
+        # This compatibility route projects current settings; the archived
+        # activities file must not restore independent-loop controls.
+        settings = {"availability": "available", "runtime": {"decisionMode": "unified"}}
+        with patch.object(panel, "autonomy_settings_snapshot", return_value=settings), \
+                patch.object(panel, "panel_main_activity", return_value={"recentActivity": []}):
+            code, current = handler.do_GET()
+        self.assertEqual(code, 200)
+        self.assertTrue(current["ok"])
+        self.assertEqual(current["data"]["activities"], [])
+        self.assertTrue(current["data"]["retired_controls"])
+        self.assertEqual(current["data"]["managed_by"], "main_agent")
         duty.write_text("{broken", encoding="utf-8")
         legacy = duty.parent.parent / duty.name
         legacy.write_text(json.dumps(fixture), encoding="utf-8")

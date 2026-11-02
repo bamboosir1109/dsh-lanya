@@ -39,8 +39,16 @@ export function isStagedMemeImage(segment, mediaDirectory) {
     let file = source
     try { if (file.startsWith('file:')) file = fileURLToPath(file) } catch { return false }
     if (!path.isAbsolute(file)) return false
-    expectedPath = path.resolve(file)
-    if (!samePath(path.dirname(expectedPath), root)) return false
+    const requestedPath = path.resolve(file)
+    if (!samePath(path.dirname(requestedPath), root)) return false
+    // Windows accepts case aliases (and short basenames) for this same file.
+    // Classify its real stored name, so a raw path cannot lose the meme slot
+    // merely by changing spelling. No file outside the media fence is read.
+    try { expectedPath = fs.realpathSync.native(requestedPath) } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false
+      throw error
+    }
+    if (!samePath(path.dirname(expectedPath), fs.realpathSync.native(root))) return false
     const match = /^media_meme_([a-f0-9]{64})\.(png|jpg|gif|webp)$/.exec(path.basename(expectedPath))
     if (!match) return false
     expectedDigest = match[1]

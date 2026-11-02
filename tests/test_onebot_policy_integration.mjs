@@ -517,14 +517,14 @@ test('foreign observation workspace/preset is rejected before pin or dispatch; a
   assert.equal(h.calls.length, 0)
 })
 
-test('observation snapshot survives caller mutation while async preset resolution is pending', async t => {
+for (const entrypoint of ['dispatchObservation', 'dispatchObservationOnce']) test(entrypoint + ' snapshot survives caller mutation while async preset resolution is pending', async t => {
   const h = await setup(t), preset = deferred(), resolving = deferred()
   h.bridge.resolvePresetId = () => { resolving.resolve(); return preset.promise }
   const scope = 'private:101', eventId = 'obs:snapshot'
   const event = { version: 1, event_id: eventId, scope, kind: 'quiet', producer: 'fixture',
     created_at: Date.now(), payload: { text: 'original detached evidence' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
-  const completion = h.bridge.dispatchObservation(event)
+  const completion = h.bridge.lanyaPolicy[entrypoint](event)
   await resolving.promise
   Object.assign(event, { scope: 'group:202', event_id: 'obs:mutated', workspace_key: 'foreign-workspace',
     agent_key: 'foreign-preset' })

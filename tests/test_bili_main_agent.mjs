@@ -315,7 +315,48 @@ test('partial notification results preserve the successful feed without claiming
     text: 'read-only evidence', bvid: 'BV1234567890', resource_type: 'video', replyable: true }] })
   const result = await f.tool('bili_social_inbox').execute({}, execution())
   assert.equal(result.items.length, 1); assert.equal(result.partial, true)
+  assert.equal(result.status, 'partial'); assert.equal(result.read_complete, false)
   assert.equal(result.items[0].author_uid, null); assert.equal(result.items[0].replyable, false)
+})
+
+test('failed or malformed notification reads never become a successful empty inbox', async t => {
+  const f = fixture(t), tool = f.tool('bili_social_inbox')
+  for (const value of [
+    { ok: false, partial: true, items: [], errors: [{ kind: 'reply', error_class: 'TimeoutError' }, { kind: 'at', error_class: 'TimeoutError' }] },
+    { ok: true, items: null },
+    { ok: true, items: [{ kind: 'unsupported' }] },
+    { ok: false, partial: true, items: [{ kind: 'unsupported' }] },
+  ]) {
+    f.answer = () => packet(value)
+    const result = await tool.execute({}, execution())
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 'unavailable')
+  }
+  f.answer = () => packet({ ok: true, items: [] })
+  const empty = await tool.execute({}, execution())
+  assert.equal(empty.ok, true)
+  assert.equal(empty.status, 'observed')
+  assert.equal(empty.read_complete, true)
+})
+
+test('partial inbox evidence keeps feed failure metadata visible without echoing error bodies', async t => {
+  const f = fixture(t), tool = f.tool('bili_social_inbox')
+  f.answer = () => packet({ ok: false, partial: true, items: [{ notification_id: '401', kind: 'at', text: 'source evidence' }],
+    errors: [{ kind: 'reply', error_class: 'TimeoutError', message: 'must not be exposed' }] })
+  const result = await tool.execute({}, execution())
+  assert.equal(result.ok, true)
+  assert.equal(result.status, 'partial')
+  assert.equal(result.read_complete, false)
+  assert.deepEqual(result.errors, [{ kind: 'reply', error_class: 'TimeoutError' }])
+  const visible = JSON.parse(tool.output.render({}, result)[0].text)
+  assert.equal(visible.items.length, 1)
+  assert.deepEqual(visible.errors, result.errors)
+  assert.equal(JSON.stringify(visible).includes('must not be exposed'), false)
+  f.answer = () => packet({ ok: true, items: [{ kind: 'unsupported' }, { notification_id: '402', kind: 'at', text: 'readable evidence' }] })
+  const filtered = await tool.execute({}, execution())
+  assert.equal(filtered.items.length, 1)
+  assert.equal(filtered.status, 'partial')
+  assert.equal(filtered.read_complete, false)
 })
 
 test('truncated backend observations retain partial and requested frame range when no subtitles are available', async t => {

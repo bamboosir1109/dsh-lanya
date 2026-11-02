@@ -156,6 +156,73 @@ class BiliPathsTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "fake ffmpeg failure")
 
+    def test_comment_verification_requires_an_exact_receipt_before_any_platform_read(self):
+        onerun = self.load("bili_onerun")
+        with mock.patch.object(onerun, "BiliMCP") as client:
+            for rpid in (None, "", "0", "01", "bad", True, 1.5):
+                with self.subTest(rpid=rpid):
+                    self.assertEqual(onerun.verify_comment("BV1234567890", "fixture", rpid=rpid)["state"], "unknown")
+            self.assertEqual(onerun.verify_comment("not-a-video", "fixture", rpid="101")["state"], "unknown")
+        client.assert_not_called()
+
+    def test_comment_visibility_uses_the_full_text_and_exact_large_receipt_not_a_prefix_or_nickname(self):
+        onerun = self.load("bili_onerun")
+        target = "18446744073709551611"
+        message = "the same first twenty characters, expected ending"
+        client = mock.MagicMock(); client.__enter__.return_value = client
+        with mock.patch.object(onerun, "BiliMCP", return_value=client), \
+                mock.patch.object(onerun, "_cfg", return_value={"biliUserName": "fixture-self"}):
+            client.call_json.return_value = {"comments": [{"rpid": "102", "content": message[:20] + " different", "user": "fixture-self"}]}
+            self.assertEqual(onerun.verify_comment("BV1234567890", message, rpid=target)["state"], "unknown")
+            client.call_json.return_value = {"comments": [{"rpid": target, "content": message[:20] + " different", "user": "fixture-self"}]}
+            self.assertEqual(onerun.verify_comment("BV1234567890", message, rpid=target)["state"], "unknown")
+            client.call_json.return_value = {"bvid": "BV1234567890", "comments": [{"rpid_str": target, "content": message, "user": "fixture-self"}]}
+            value = onerun.verify_comment("BV1234567890", message, rpid=target)
+            self.assertEqual(value["state"], "public")
+            self.assertEqual(value["rpid"], target)
+            self.assertEqual(value["evidence"], "sampled_public_comments")
+            client.call_json.assert_called_with("bili_comments", {"bvid": "BV1234567890", "num": 50})
+
+    def test_comment_visibility_errors_and_unseen_targets_stay_unknown_without_private_error_text(self):
+        onerun = self.load("bili_onerun")
+        client = mock.MagicMock(); client.__enter__.return_value = client
+        with mock.patch.object(onerun, "BiliMCP", return_value=client):
+            for value in ({"comments": []}, {"comments": "malformed"}, {"ok": False, "comments": []},
+                          {"bvid": "BV0000000000", "comments": [{"rpid": "101", "content": "fixture"}]},
+                          {"comments": [{"rpid": "101", "rpid_str": "102", "content": "fixture"}]}):
+                client.call_json.return_value = value
+                self.assertEqual(onerun.verify_comment("BV1234567890", "fixture", rpid="101")["state"], "unknown")
+            client.call_json.side_effect = RuntimeError("private-read-error-must-not-escape")
+            value = onerun.verify_comment("BV1234567890", "fixture", rpid="101")
+            self.assertEqual(value["state"], "unknown")
+            self.assertNotIn("private-read-error", json.dumps(value))
+
+    def test_comment_verification_cli_preserves_large_ids_and_never_treats_flags_as_text(self):
+        import base64
+        onerun = self.load("bili_onerun")
+        target = "18446744073709551611"
+        with mock.patch.object(onerun, "verify_comment", return_value={"state": "unknown"}) as verify:
+            onerun.verify_cli(["--verify", "BV1234567890", "--rpid", target])
+            verify.assert_called_once_with("BV1234567890", "", rpid=target)
+            verify.reset_mock()
+            text = "完整的离线合成正文"
+            encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+            onerun.verify_cli(["--verify", "BV1234567890", "--text-b64", encoded, "--rpid", target])
+            verify.assert_called_once_with("BV1234567890", text, rpid=target)
+            verify.reset_mock()
+            self.assertEqual(onerun.verify_cli(["--verify", "BV1234567890", "--text-b64", "bad-base64", "--rpid", target])["state"], "unknown")
+            verify.assert_not_called()
+
+    def test_comment_not_seen_in_the_bounded_sample_is_not_reported_as_moderation_or_public(self):
+        onerun = self.load("bili_onerun")
+        client = mock.MagicMock(); client.__enter__.return_value = client
+        client.call_json.return_value = {"comments": [{"rpid": "102", "content": "fixture"}] * 50 + [{"rpid": "101", "content": "fixture"}]}
+        with mock.patch.object(onerun, "BiliMCP", return_value=client):
+            value = onerun.verify_comment("BV1234567890", "fixture", rpid="101")
+        self.assertEqual(value["state"], "unknown")
+        self.assertEqual(value["code"], "comment_not_in_sample")
+        self.assertEqual(value["sample_limit"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()

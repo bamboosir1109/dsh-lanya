@@ -190,7 +190,10 @@ class WatchTests(unittest.TestCase):
         second = watch.native_process(os.getpid())
         self.assertEqual(first, second)
         self.assertEqual(first['pid'], os.getpid())
-        self.assertEqual(os.path.normcase(first['image']), os.path.normcase(sys.executable))
+        # Windows venv's python.exe is a redirector; the running native image
+        # is its base interpreter. Still require one exact expected image.
+        executable = getattr(sys, '_base_executable', None) or sys.executable
+        self.assertEqual(os.path.normcase(first['image']), os.path.normcase(executable))
         self.assertGreater(int(first['birth']), 0)
 
 

@@ -36,16 +36,16 @@ def bounded(value, maximum):
 
 def items_of(value, keys=("items", "replies", "list", "data")):
     if not isinstance(value, dict):
-        return []
+        return None
     for key in keys:
         child = value.get(key)
         if isinstance(child, list):
             return child
         if isinstance(child, dict):
             found = items_of(child)
-            if found:
+            if found is not None:
                 return found
-    return []
+    return None
 
 
 def has_more(value):
@@ -165,13 +165,19 @@ class BiliSocialBackend:
                 if not isinstance(raw, dict) or raw.get("error") or raw.get("code", 0) != 0:
                     raise ValueError("Notification read was rejected")
                 raw_items = items_of(raw)
+                if raw_items is None:
+                    raise ValueError("Notification list is unavailable")
                 partial |= len(raw_items) > 100 or has_more(raw)
+                invalid = False
                 for item in raw_items[:100]:
                     row = normalize_notification(item, kind)
+                    invalid |= row is None
                     key = (kind, row["notification_id"]) if row else None
                     if row and key not in seen:
                         seen.add(key)
                         rows.append(row)
+                if invalid:
+                    raise ValueError("Notification entries are unreadable")
             except Exception as error:
                 errors.append({"kind": kind, "error_class": type(error).__name__})
         # Interleave the two queues so replies cannot permanently starve @s.

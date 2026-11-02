@@ -17,7 +17,7 @@ test.after(() => { assert.ok(path.basename(root).startsWith('lanya-intentions-')
 const lib = path.join(root, 'lib')
 fs.mkdirSync(lib)
 fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}')
-for (const name of ['autonomy-intents.js', 'onebot-policy-adapter.js', 'decision-policy.js', 'observation-queue.js']) {
+for (const name of ['autonomy-intents.js', 'narrative-diary.js', 'onebot-policy-adapter.js', 'decision-policy.js', 'observation-queue.js']) {
   fs.copyFileSync(path.join(repo, 'plugin/lib', name), path.join(lib, name))
 }
 const { createIntentStore, intentOwnerScopeKey, AutonomyPlanner, readIntentReceipts } = await import(pathToFileURL(path.join(lib, 'autonomy-intents.js')).href)

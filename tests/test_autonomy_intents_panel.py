@@ -1,4 +1,5 @@
 """Temporary intent DBs only; projection never starts agents or creates DBs."""
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -45,7 +46,7 @@ class IntentPanelTests(unittest.TestCase):
         if mutate:
             mutate(record)
         key = hashlib.sha256(('\0'.join((workspace, self.preset, scope))).encode()).hexdigest()
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('PRAGMA user_version=1')
             connection.execute('CREATE TABLE IF NOT EXISTS intent_heads(owner_scope_key TEXT,intent_id TEXT,revision INTEGER,status TEXT,updated_at INTEGER,record_json TEXT,PRIMARY KEY(owner_scope_key,intent_id))')
             connection.execute('INSERT INTO intent_heads VALUES(?,?,?,?,?,?)',
@@ -91,7 +92,7 @@ class IntentPanelTests(unittest.TestCase):
 
     def test_unknown_schema_and_database_version_are_unavailable(self):
         self.insert()
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('PRAGMA user_version=2')
         self.assertEqual(self.snapshot()['status'], 'unavailable')
 

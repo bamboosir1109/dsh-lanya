@@ -195,6 +195,7 @@ TASKS = {
 
 
 _AUTONOMY_REQUEST_LOCK = threading.Lock()
+_SOURCE_UPDATE_LOCK = threading.Lock()
 _AUTONOMY_REQUEST = {"at": 0.0, "process": None}
 _RETIRED_UNIFIED = frozenset(("lifeloop", "voicedaemon", "supervisor", "tick"))
 
@@ -643,6 +644,67 @@ def control_action(body):
     if result is not None:
         return result
     return {"ok": True, "pid": run_script(target)}
+
+
+def update_source_repository():
+    """Pull this checkout's upstream once; never deploy or reload programs."""
+    if not _SOURCE_UPDATE_LOCK.acquire(blocking=False):
+        return 409, {"ok": False, "code": "source_update_busy", "error": "A source update is already running"}
+    try:
+        repo = os.environ.get("LANYA_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
+
+        def git(*args, timeout=20):
+            return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=timeout,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+        before = git("rev-parse", "--verify", "HEAD")
+        branch = git("symbolic-ref", "--quiet", "HEAD")
+        if before.returncode or re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", before.stdout.strip()) is None:
+            return 409, {"ok": False, "code": "source_head_unavailable", "error": "A valid repository HEAD is required"}
+        upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        tracked = git("rev-parse", "--verify", "@{upstream}^{commit}") if upstream.returncode == 0 else None
+        if (branch.returncode or not branch.stdout.strip() or upstream.returncode or not upstream.stdout.strip() or tracked is None or tracked.returncode or
+                re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", tracked.stdout.strip()) is None):
+            return 409, {"ok": False, "code": "source_upstream_unavailable", "error": "The current branch needs a valid tracking upstream"}
+        status = git("status", "--porcelain", "--untracked-files=normal")
+        if status.returncode:
+            return 503, {"ok": False, "code": "source_status_unavailable", "error": "Cannot verify a clean working tree"}
+        if status.stdout.strip():
+            return 409, {"ok": False, "code": "source_worktree_dirty", "error": "Commit or preserve local changes before updating source"}
+        fetched = git("fetch", timeout=180)
+        if fetched.returncode:
+            return 502, {"ok": False, "code": "source_fetch_failed", "error": "Source fetch failed; no merge or deployment was requested"}
+        current_head, current_branch = git("rev-parse", "--verify", "HEAD"), git("symbolic-ref", "--quiet", "HEAD")
+        current_upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        target = git("rev-parse", "--verify", "@{upstream}^{commit}")
+        status = git("status", "--porcelain", "--untracked-files=normal")
+        if (current_head.returncode or current_branch.returncode or current_upstream.returncode or target.returncode or status.returncode or
+                current_head.stdout.strip() != before.stdout.strip() or current_branch.stdout.strip() != branch.stdout.strip() or
+                current_upstream.stdout.strip() != upstream.stdout.strip() or status.stdout.strip() or
+                re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", target.stdout.strip()) is None):
+            return 409, {"ok": False, "code": "source_changed_during_fetch", "error": "Source checkout changed during fetch; merge refused"}
+        merged = git("merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", "--", target.stdout.strip(), timeout=180)
+        if merged.returncode:
+            return 502, {"ok": False, "code": "source_merge_failed", "error": "Fast-forward source merge refused; local files were not intentionally overwritten"}
+        after = git("rev-parse", "--verify", "HEAD")
+        if after.returncode or re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", after.stdout.strip()) is None:
+            return 503, {"ok": False, "code": "source_readback_unavailable", "error": "Pull finished but its source HEAD could not be verified"}
+        first, last = before.stdout.strip(), after.stdout.strip()
+        changed = []
+        if first != last:
+            history = git("log", "--oneline", "-20", first + ".." + last)
+            if history.returncode:
+                return 503, {"ok": False, "code": "source_readback_unavailable", "error": "Source changed but its commit summary could not be verified"}
+            changed = [line[:300] for line in history.stdout.splitlines() if line.strip()]
+        return 200, {"ok": True, "changed": changed, "before": first, "after": last,
+                     "source_only": True, "deployment_performed": False, "runtime_loading": "not_verified",
+                     "message": "源码已拉取新提交；本接口不执行部署或重载。" if first != last else
+                                "源码没有新提交；本接口不执行部署或重载。"}
+    except (OSError, subprocess.SubprocessError):
+        return 503, {"ok": False, "code": "source_update_unavailable", "error": "Source update could not be verified; no automatic retry"}
+    finally:
+        _SOURCE_UPDATE_LOCK.release()
 
 
 
@@ -2135,11 +2197,13 @@ class Handler(SimpleHTTPRequestHandler):
             # Ask Bilibili whether a comment we recorded is actually public yet.
             try:
                 import subprocess as _spv
-                q = parse_qs(urlparse(self.path).query)
+                q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                 bv = (q.get("bv") or [""])[0].strip()
                 txt = (q.get("text") or [""])[0]
-                if not bv:
-                    return self._json(400, {"ok": False, "error": "missing bv"})
+                rpid = (q.get("rpid") or [""])[0]
+                if (re.fullmatch(r"BV[A-Za-z0-9]{10}", bv) is None or len(q.get("bv", [])) != 1 or
+                        len(q.get("rpid", [])) > 1 or ("rpid" in q and re.fullmatch(r"[1-9][0-9]{0,31}", rpid) is None)):
+                    return self._json(400, {"ok": False, "error": "Expected a video BV id and optional exact positive decimal rpid"})
                 script = os.path.join(NAPCAT, "bili_onerun.py")
                 _venv = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty",
                                      ".venv", "Scripts", "python.exe")
@@ -2151,7 +2215,10 @@ class Handler(SimpleHTTPRequestHandler):
                 _tb = _b64v.b64encode(txt.encode("utf-8")).decode("ascii")
                 # text=True 会用系统编码（中文 Windows 是 GBK）解码子进程输出，
                 # 而子进程按 PYTHONUTF8 写的是 UTF-8 —— 解出来是空的。
-                r = _spv.run([_py, script, "--verify", bv, "--text-b64", _tb],
+                args = [_py, script, "--verify", bv, "--text-b64", _tb]
+                if rpid:
+                    args.extend(["--rpid", rpid])
+                r = _spv.run(args,
                              capture_output=True, text=True, encoding="utf-8",
                              errors="replace", timeout=120,
                              cwd=NAPCAT, env=_env,
@@ -2160,8 +2227,9 @@ class Handler(SimpleHTTPRequestHandler):
                 st = out.find("{")
                 data = json.loads(out[st:]) if st >= 0 else {"state": "unknown"}
                 return self._json(200, {"ok": True, "result": data})
-            except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:200]})
+            except Exception:
+                return self._json(503, {"ok": False, "code": "comment_verification_unavailable",
+                    "error": "Comment verification could not be completed", "result": {"state": "unknown"}})
 
         if path == "/api/bili/cover":
             # B站的图床要 Referer，浏览器从本地页面直接 img 会被挡（403）。
@@ -3201,31 +3269,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": str(e)[:200]})
 
         if path == "/api/update":
-            # 从 GitHub 拉最新代码。--ff-only：有本地改动就失败，不会把东西搅乱。
-            import subprocess as _sp3
-            repo = os.environ.get("LANYA_REPO") or os.path.join(os.path.dirname(NAPCAT), "dsh-lanya")
-            try:
-                before = _sp3.run(["git", "-C", repo, "rev-parse", "HEAD"],
-                                  capture_output=True, text=True, timeout=20).stdout.strip()
-                pull = _sp3.run(["git", "-C", repo, "pull", "--ff-only"],
-                                capture_output=True, text=True, timeout=180)
-                if pull.returncode != 0:
-                    msg = (pull.stderr or pull.stdout or "").strip()[:400]
-                    return self._json(200, {"ok": False,
-                                            "error": msg or "git pull failed"})
-                after = _sp3.run(["git", "-C", repo, "rev-parse", "HEAD"],
-                                 capture_output=True, text=True, timeout=20).stdout.strip()
-                if before == after:
-                    return self._json(200, {"ok": True, "changed": [],
-                                            "message": "已经是最新，没有新提交。"})
-                log = _sp3.run(["git", "-C", repo, "log", "--oneline",
-                                before + ".." + after],
-                               capture_output=True, text=True, timeout=20).stdout
-                changed = [ln.strip() for ln in log.splitlines() if ln.strip()][:20]
-                return self._json(200, {"ok": True, "changed": changed,
-                                        "message": "拉下来 %d 个新提交。" % len(changed)})
-            except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:300]})
+            code, result = update_source_repository()
+            return self._json(code, result)
 
         if path == "/api/memory/edit":
             try:
@@ -3278,14 +3323,15 @@ class Handler(SimpleHTTPRequestHandler):
                 # wiped adminIdentity / novelTitle / penNames and reset the
                 # group and bot QQ numbers to whatever the client had baked in.
                 cur = {}
-                if os.path.isfile(CONFIG):
+                if os.path.lexists(CONFIG):
                     try:
                         with open(CONFIG, "r", encoding="utf-8-sig") as fh:
                             cur = json.load(fh)
                         if not isinstance(cur, dict):
-                            cur = {}
+                            raise ValueError("Existing configuration is not an object")
                     except Exception:
-                        cur = {}
+                        return self._json(409, {"ok": False, "code": "existing_config_unavailable",
+                            "error": "Existing configuration cannot be safely merged; original file preserved"})
                 merged = dict(cur)
                 for k, v in cfg.items():
                     # An explicit null means "remove this key".

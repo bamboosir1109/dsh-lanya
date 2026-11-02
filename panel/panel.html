@@ -776,7 +776,7 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
     <h3>她的日记</h3>
     <p class="note">由同一主 Agent 根据当天真实记录写下。经历附来源，感受作为她自己的表达；刷新页面不会代写。</p>
     <div class="spend-toolbar diary-toolbar">
-      <label>日期 <input type="date" id="memoryDiaryDay" onchange="loadMemoryDiary()"></label>
+      <label>日期 <input type="date" id="memoryDiaryDay" onchange="loadMemoryDiary(true)"></label>
       <label>找主题 <input type="search" id="memoryDiaryQuery" placeholder="日期或主题关键词" oninput="filterMemoryDiaryDays()"></label>
       <button onclick="loadMemoryDiary()">刷新日记</button>
     </div>
@@ -2916,7 +2916,7 @@ async function deleteMeme(source, tag, file){
 let memoryDiaryReadGeneration = 0;
 function selectMemoryDiaryDay(day){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
-  $('memoryDiaryDay').value = day; loadMemoryDiary();
+  $('memoryDiaryDay').value = day; return loadMemoryDiary(true);
 }
 
 function filterMemoryDiaryDays(){
@@ -2926,8 +2926,13 @@ function filterMemoryDiaryDays(){
   });
 }
 
-async function loadMemoryDiary(){
-  const generation = ++memoryDiaryReadGeneration, day = $('memoryDiaryDay')?.value || '';
+async function loadMemoryDiary(explicitSelection){
+  const picker = $('memoryDiaryDay');
+  if(explicitSelection){
+    if(picker.value) picker.dataset.explicitDay = picker.value;
+    else delete picker.dataset.explicitDay;
+  }
+  const generation = ++memoryDiaryReadGeneration, day = picker?.dataset.explicitDay || '';
   try{
     const value = await api('/memory/diary' + (day ? '?day=' + encodeURIComponent(day) : ''));
     if(generation !== memoryDiaryReadGeneration) return;
@@ -2951,7 +2956,7 @@ async function loadMemoryDiary(){
         + ' · 第 ' + selected.revision + ' 版'
         + (view.new_facts_available ? ' · 还有新经历待她补写。' : ' · 感受是她的自述。'));
     }else{
-      setText('memoryDiaryTitle', ($('memoryDiaryDay').value || '当天') + ' · 等她写下今天');
+      setText('memoryDiaryTitle', ($('memoryDiaryDay').value || '当天') + ' · 等她写下这一天');
       body.textContent = '这一天尚无新版日记。已有日记文件在下方保留，事实底稿可在这里展开查看。'; delete body.dataset.loaded;
       setText('memoryDiaryState', view.new_facts_available ? '已有新的事实底稿，等待主 Agent 在合适的活动轮写下日记。' : '当天还没有可据以成文的新记录。');
     }

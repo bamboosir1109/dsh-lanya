@@ -12,6 +12,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
@@ -155,6 +156,24 @@ class BudgetRuntimeTests(unittest.TestCase):
             with self.assertRaises(budget.BudgetError): self.run_op(turn_key='e' * 64, **change)
         with self.assertRaises(budget.BudgetError): self.run_op(origin='live')
 
+    def test_foreign_owner_coverage_cannot_claim_current_owner_tracking_or_rewrite_old_reservations(self):
+        self.run_op()
+        with budget._transaction() as connection:
+            original = tuple(connection.execute('SELECT * FROM budget_turns WHERE turn_key=?', ('a' * 64,)).fetchone())
+        with patch.object(budget, 'project_conf', SimpleNamespace(data_dir=lambda: str(self.data),
+                work_dir=lambda: str(self.root), get=lambda key, default=None: 'other' if key == 'decisions.agentPreset' else default)):
+            value = budget.get_snapshot(self.now)
+            self.assertEqual(value['availability'], 'not_started')
+            self.assertIsNone(value['usage']['coverage_start'])
+            self.assertFalse(value['usage']['counts_complete'])
+            later = self.now + 1000
+            self.assertTrue(budget.operate(dict(self.request, agent_preset='other', turn_key='e' * 64), later)['allowed'])
+            self.assertEqual(budget.get_snapshot(later)['usage']['coverage_start'], later)
+            self.assertEqual(budget.get_snapshot(later)['usage']['buckets']['autonomy']['reserved_cny'], 0.05)
+        with budget._transaction() as connection:
+            retained = tuple(connection.execute('SELECT * FROM budget_turns WHERE turn_key=?', ('a' * 64,)).fetchone())
+        self.assertEqual(retained, original)
+
     def test_meter_missing_blocks_finite_autonomy_but_human_control_still_possible(self):
         self.assertFalse(self.run_op(meter_available=False)['allowed'])
         self.configure(private=0.01)
@@ -173,6 +192,31 @@ class BudgetRuntimeTests(unittest.TestCase):
         result = budget.operate(dict(self.request, operation='check'), tomorrow)
         self.assertFalse(result['allowed']); self.assertEqual(result['reason'], 'reservation_day_changed')
         self.assertTrue(budget.operate(dict(self.request, turn_key='d' * 64), tomorrow)['allowed'])
+
+    def test_daily_cap_rolls_over_at_shanghai_midnight_on_a_utc_host(self):
+        class UtcHostDateTime(dt.datetime):
+            @classmethod
+            def fromtimestamp(cls, stamp, tz=None):
+                return super().fromtimestamp(stamp, tz or dt.timezone.utc)
+
+        # The simulated host remains on Nov 1 while the configured reporting
+        # day changes to Nov 2. Do not alter the machine's timezone or old rows.
+        before = int(dt.datetime(2026, 11, 1, 15, 59, 59, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        after = before + 2000
+        with patch.object(budget, 'dt', SimpleNamespace(datetime=UtcHostDateTime)):
+            self.now = before
+            self.configure(autonomy=0.05)
+            self.assertTrue(self.run_op()['allowed'])
+            self.assertEqual(budget.get_snapshot(before)['usage']['date'], '2026-11-01')
+            self.assertEqual(budget.get_snapshot(after)['usage']['date'], '2026-11-02')
+            expired = budget.operate(dict(self.request, operation='check'), after)
+            self.assertFalse(expired['allowed'])
+            self.assertEqual(expired['reason'], 'reservation_day_changed')
+            self.assertTrue(budget.operate(dict(self.request, turn_key='d' * 64), after)['allowed'])
+        with budget._transaction() as connection:
+            rows = list(connection.execute('SELECT day,status,reserve_micros FROM budget_turns ORDER BY created_at'))
+        self.assertEqual([row['day'] for row in rows], ['2026-11-01', '2026-11-02'])
+        self.assertTrue(all(row['status'] == 'reserved' and row['reserve_micros'] == 50000 for row in rows))
 
     def test_revision_cas_preserves_acl_and_rejects_arbitrary_spending_edits(self):
         first = self.configure()

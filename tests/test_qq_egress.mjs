@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { NORMAL_STYLE, styleFromInbound, cleanText, textParts, planEgress, dispatchEgress,
-  prepareAndSendReply, isPreparedReply, isVerbatimReply, rememberParameters } from '../plugin/lib/qq-egress.js'
+  prepareAndSendReply, isPreparedReply, isVerbatimReply, rememberParameters, isStagedMemeImage } from '../plugin/lib/qq-egress.js'
 import { createDecisionPolicy } from '../plugin/lib/decision-policy.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-egress-'))
@@ -12,6 +13,33 @@ after(() => { assert.ok(path.basename(root).startsWith('lanya-egress-')); fs.rmS
 const live = (text, extra = {}) => ({ origin: 'live', text, ...extra })
 const text = (value) => ({ type: 'text', data: { text: value } })
 const chars = (value) => [...new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(value)].length
+
+test('Windows path casing cannot bypass a staged meme ticket slot', { skip: process.platform !== 'win32' }, async () => {
+  const media = fs.mkdtempSync(path.join(root, 'case-alias-'))
+  const bytes = Buffer.from('synthetic image bytes'), sha = createHash('sha256').update(bytes).digest('hex')
+  const file = path.join(media, 'media_meme_' + sha + '.png')
+  fs.writeFileSync(file, bytes)
+  const alias = path.join(media, path.basename(file).toUpperCase())
+  assert.equal(fs.realpathSync.native(alias), fs.realpathSync.native(file))
+  const policy = createDecisionPolicy({ stateFile: path.join(media, 'policy.json') })
+  const observed = await policy.recordInbound({ scope: 'private:101', messageId: 'meme-case', sender: '101', controlAllowed: true, origin: 'live' })
+  const { ticket } = await policy.decide({ scope: 'private:101', messageId: observed.messageId, expectedRevision: observed.revision, verdict: 'reply' })
+  let calls = 0, operation = 0
+  const send = source => dispatchEgress('send_msg', { user_id: '101', message: [{ type: 'image', data: { file: source } }] }, NORMAL_STYLE,
+    async (_action, _params, part) => {
+      const result = await policy.runGuarded(ticket, { scope: ticket.scope, kind: 'media', operationId: 'case-' + ++operation, meme: part?.meme === true },
+        () => { calls++; return { message_id: 'synthetic-' + calls } })
+      if (result.status !== 'sent') throw Object.assign(new Error('Guarded fixture refusal'), { name: 'PolicyDeliveryError', status: result.status, reason: result.reason })
+      return result.value
+    }, { isMemeSegment: segment => isStagedMemeImage(segment, media) })
+  await send(file)
+  await assert.rejects(() => send(alias), error => error.reason === 'meme_turn_limit')
+  assert.equal(calls, 1)
+  const ordinary = path.join(media, 'ordinary-attachment.png')
+  fs.writeFileSync(ordinary, Buffer.from('different ordinary attachment'))
+  await send(ordinary)
+  assert.equal(calls, 2)
+})
 
 test('ordinary inline actions/placeholders disappear, ordinary parentheses remain', () => {
   assert.equal(cleanText('我来啦（歪头）*叹气*【小声】好呀[表情: 笑]'), '我来啦好呀')

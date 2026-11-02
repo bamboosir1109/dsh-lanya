@@ -1,4 +1,5 @@
 """Panel control fixtures: temporary metadata, inert subprocesses, no models/network."""
+from contextlib import closing
 import hashlib
 import importlib.util
 import io
@@ -51,7 +52,7 @@ class PanelAutonomyTests(unittest.TestCase):
         inbox = self.data / "decision-inbox"
         inbox.mkdir()
         self.lease = inbox / "consumer.sqlite"
-        with sqlite3.connect(str(self.lease)) as db:
+        with closing(sqlite3.connect(str(self.lease))) as db, db:
             db.executescript("CREATE TABLE consumer(id INTEGER PRIMARY KEY, pid INTEGER, nonce TEXT); PRAGMA user_version=1;")
             db.execute("INSERT INTO consumer VALUES(1,42,'fixture-only')")
         self.mind = {"decision_observers_version": 2, "decision_scopes": {
@@ -115,7 +116,7 @@ class PanelAutonomyTests(unittest.TestCase):
             self.assertEqual(self.module.autonomy_snapshot()["status"], expected)
             self.assertFalse(self.module.request_autonomy_check()["ok"])
         self.owner_mock.return_value = True
-        with sqlite3.connect(str(self.lease)) as db: db.execute("UPDATE consumer SET pid=43")
+        with closing(sqlite3.connect(str(self.lease))) as db, db: db.execute("UPDATE consumer SET pid=43")
         self.assertEqual(self.module.autonomy_snapshot()["reason"], "consumer_owner_unverified")
         self.assertFalse(self.module.request_autonomy_check()["ok"])
 

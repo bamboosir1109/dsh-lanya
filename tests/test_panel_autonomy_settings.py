@@ -1,4 +1,5 @@
 """Real temporary config CAS and inert panel APIs; no model/platform requests."""
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -213,7 +214,7 @@ class AutonomySettingsTests(unittest.TestCase):
         self.assertFalse(self.base.route("/api/budget")[1]["budget"]["enforcement"]["runtime_gate_bound"])
         self.base.owner_mock.return_value = True
         import sqlite3
-        with sqlite3.connect(str(self.base.lease)) as db:
+        with contextlib.closing(sqlite3.connect(str(self.base.lease))) as db, db:
             db.execute("UPDATE consumer SET pid=43")
         self.assertFalse(self.base.route("/api/budget")[1]["budget"]["enforcement"]["runtime_gate_bound"])
 

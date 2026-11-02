@@ -39,7 +39,9 @@ def outputs(source):
     queue, _ = read_regular(source / "plugin/lib/observation-queue.js")
     helper = (read_regular(source / "plugin/lib/autonomy-intents.js")[0]
               if b"from './autonomy-intents.js'" in adapter else None)
-    return {TARGETS[0]: autonomy.compile_adapter(adapter, helper), TARGETS[1]: queue}
+    diary = (read_regular(source / "plugin/lib/narrative-diary.js")[0]
+             if b"from './narrative-diary.js'" in adapter else None)
+    return {TARGETS[0]: autonomy.compile_adapter(adapter, helper, diary), TARGETS[1]: queue}
 
 
 def private_manifest(value, plugin, source=None):

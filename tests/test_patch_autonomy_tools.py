@@ -13,6 +13,7 @@ import patch_onebot_policy as policy
 import patch_onebot_autonomy as autonomy
 import patch_onebot_egress as egress
 import patch_autonomy_tools as tools
+import patch_autonomy_continuity as continuity
 
 
 class AutonomyToolBuildTests(unittest.TestCase):
@@ -34,14 +35,41 @@ class AutonomyToolBuildTests(unittest.TestCase):
             autonomy.compile_adapter(source, helper + b"\nimport unknown from 'unreviewed'\n")
 
     def test_legacy_adapter_without_import_does_not_read_or_bundle_a_new_helper(self):
-        result = subprocess.run(['git', 'show', 'HEAD:plugin/lib/onebot-policy-adapter.js'], cwd=REPO, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        old = result.stdout
+        # A moving HEAD is no longer the pre-intention adapter. Reuse the
+        # unchanged public historical source and verify its existing provenance.
+        fixture = REPO / 'tests/fixtures/onebot_autonomy/adapter-c684991.js'
+        old = fixture.read_bytes()
+        provenance = json.loads(fixture.with_name('provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(hashlib.sha256(old).hexdigest(), provenance['sha256'])
         self.assertNotIn(b'autonomy-intents.js', old)
         base = old.replace(b"from './decision-policy.js'", b"from './lanya-decision-policy.js'").replace(b"from './observation-queue.js'", b"from './lanya-observation-queue.js'")
         expected = egress.transform(autonomy.TARGET, base)
         self.assertEqual(autonomy.compile_adapter(old, b'not a helper; must never be read'), expected)
         self.assertEqual(policy.bundle_intent_helper(old, b'invalid'), old)
+
+    def test_continuity_bundles_only_its_explicit_source_diary_and_requires_it_when_imported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            lib = source / 'plugin/lib'; lib.mkdir(parents=True)
+            (source / 'package.json').write_text('{"name":"dsh-lanya","type":"module"}', encoding='utf-8')
+            for name in ['onebot-policy-adapter.js', 'observation-queue.js', 'autonomy-intents.js']:
+                (lib / name).write_bytes((REPO / 'plugin/lib' / name).read_bytes())
+            diary = (REPO / 'plugin/lib/narrative-diary.js').read_bytes() + b'\n// Explicit reviewed source fixture.\n'
+            diary_file = lib / 'narrative-diary.js'; diary_file.write_bytes(diary)
+            compiled = continuity.outputs(source)[continuity.TARGETS[0]]
+            self.assertIn(b'LANYA_DIARY_BUNDLE_V1 ' + hashlib.sha256(diary).hexdigest().encode(), compiled)
+            expected = autonomy.compile_adapter((lib / 'onebot-policy-adapter.js').read_bytes(),
+                                                (lib / 'autonomy-intents.js').read_bytes(), diary)
+            self.assertEqual(compiled, expected)
+            diary_file.unlink()
+            with self.assertRaises(OSError):
+                continuity.outputs(source)
+            # A historical source without either import must not need newer
+            # helpers, including when they do not exist in the supplied tree.
+            (lib / 'onebot-policy-adapter.js').write_bytes((REPO / 'tests/fixtures/onebot_autonomy/adapter-c684991.js').read_bytes())
+            (lib / 'autonomy-intents.js').unlink()
+            self.assertEqual(continuity.outputs(source)[continuity.TARGETS[0]],
+                             autonomy.compile_adapter((lib / 'onebot-policy-adapter.js').read_bytes(), b'unused', b'unused'))
 
     def before(self):
         raw = (REPO / 'tests/fixtures/onebot_egress/lib/tools.js').read_bytes()
