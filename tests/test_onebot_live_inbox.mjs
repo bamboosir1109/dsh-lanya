@@ -36,7 +36,7 @@ fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }",
 const { nativeHost } = await import(pathToFileURL(hostPath).href)
 let serial = 0
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-async function fixture(t) {
+async function fixture(t, { admission = true } = {}) {
   const root = path.join(temporary, 'case-' + ++serial), plugin = path.join(root, 'plugin')
   fs.mkdirSync(root)
   const prepare = String.raw`
@@ -53,14 +53,18 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  if name=='bridge.js':raw=q.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
-f.write_bytes(q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8')))
+raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
+if sys.argv[3]=='1':
+ import patch_onebot_inbound_admission as admission
+ raw=admission.transform(raw)
+f.write_bytes(raw)
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
  (out/'lib'/name).write_bytes(raw)
 (out/e.GENERATED).write_bytes((repo/'plugin/lib/qq-egress.js').read_bytes())
 (out/'lib/qq-inbox-recovery.js').write_bytes((repo/'plugin/lib/qq-inbox-recovery.js').read_bytes())
 `
-  const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin], { encoding: 'utf8', windowsHide: true })
+  const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin, admission ? '1' : '0'], { encoding: 'utf8', windowsHide: true })
   assert.equal(built.status, 0, built.stderr)
   fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py') }))
   const h = await nativeHost(plugin, root)
@@ -110,6 +114,79 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   }
   return { ...h, pending, history, requests, start, preStep, end, emitClaim, plugin }
 }
+
+test('legacy early admission reproduces rate-drop revoking the only queued answer', async t => {
+  const h = await fixture(t, { admission: false })
+  h.deps.config.rateLimitPerMinute = 1
+  await h.receive('synthetic first question')
+  h.start(); await h.preStep()
+  const revision = (await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)).revision
+  await h.receive('synthetic rate-dropped followup')
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)).revision, revision + 1)
+  assert.equal((await h.decide()).reason, 'stale_revision')
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+for (const dropped of ['rate', 'empty', 'command']) {
+  test('rejected ' + dropped + ' input cannot revoke the valid active answer', async t => {
+    const h = await fixture(t)
+    h.deps.config.rateLimitPerMinute = dropped === 'rate' ? 1 : 0
+    await h.receive('synthetic first question')
+    h.start(); await h.preStep()
+    const policy = h.bridge.lanyaPolicy.policy, before = await policy.snapshot(h.chat.chatId)
+    if (dropped === 'command') h.bridge.inbound.ctx.tryHandleCommand = async () => true
+    await h.receive(dropped === 'empty' ? '  ' : dropped === 'command' ? '/synthetic-command' : 'synthetic followup')
+    const after = await policy.snapshot(h.chat.chatId)
+    assert.equal(after.revision, before.revision)
+    assert.equal(after.mode, before.mode)
+    assert.equal(h.pending.length, 0)
+    const decision = await h.decide()
+    assert.equal(decision.accepted, true)
+    assert.equal(decision.can_send, true)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  })
+}
+
+test('a filtered newer arrival does not prevent an older valid media input from admission', async t => {
+  const h = await fixture(t), gate = defer(), entered = defer()
+  const original = h.bridge.inbound.ctx.buildBody
+  h.bridge.inbound.ctx.buildBody = async (...args) => {
+    if (args[0] === 'synthetic slow media') { entered.resolve(); await gate.promise }
+    return original(...args)
+  }
+  const older = h.receive('synthetic slow media')
+  await entered.promise
+  await h.receive('  ')
+  assert.equal(await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId), null)
+  gate.resolve(); await older
+  assert.equal(h.pending.length, 1)
+  h.start(); await h.preStep()
+  assert.equal((await h.decide()).accepted, true)
+})
+
+test('admission commits serialize per scope and a rejected storage call releases its tail', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy, policy = adapter.policy
+  const gate = defer(), entered = defer(), original = policy.recordInbound
+  let calls = 0
+  policy.recordInbound = async value => {
+    calls++
+    if (calls === 1) { entered.resolve(); await gate.promise; throw new Error('synthetic storage failure') }
+    return original(value)
+  }
+  const inbound = id => ({ chatId: h.chat.chatId, messageId: id, userId: '101', text: id })
+  const admit = value => adapter.processInbound(value, () => adapter.observeInbound(value))
+  const first = assert.rejects(admit(inbound('failed-commit')), /synthetic storage failure/)
+  await entered.promise
+  const next = admit(inbound('newer-commit'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 1, 'newer policy commit must wait for the same scope')
+  gate.resolve(); await first
+  assert.equal((await next).accepted, true)
+  assert.equal(calls, 2)
+  assert.equal(adapter.inboundAdmissions.size, 0)
+  assert.equal((await policy.snapshot(h.chat.chatId)).revision, 1)
+})
 
 test('busy burst collapses pending inputs, preserves canceled originals, reserves only claimed native turn', async t => {
   const h = await fixture(t)

@@ -371,6 +371,9 @@ export class OneBotDecisionAdapter {
     this.chats = new WeakMap()
     this.observations = new Map()
     this.incoming = new Map()
+    this.inboundSequence = 0
+    this.inboundAdmissions = new Map()
+    this.latestInbound = new Map()
     this.log = log
     this.now = now
     this.memoryContext = memoryContext || ((scope, text, owner) => this.readMemoryContext(scope, text, owner))
@@ -484,8 +487,10 @@ export class OneBotDecisionAdapter {
 
   async processInbound(inbound, run) {
     const scope = canonicalScope(inbound.chatId)
+    if (!Number.isSafeInteger(this.inboundSequence + 1)) throw new Error('Inbound sequence exhausted')
+    const arrival = ++this.inboundSequence
     this.incoming.set(scope, (this.incoming.get(scope) || 0) + 1)
-    try { return await this.context.run({ inbound, binding: null }, run) }
+    try { return await this.context.run({ inbound, arrival, binding: null }, run) }
     finally {
       const left = this.incoming.get(scope) - 1
       if (left) this.incoming.set(scope, left)
@@ -503,6 +508,20 @@ export class OneBotDecisionAdapter {
     const context = this.context.getStore()
     if (!context || context.inbound !== inbound || inbound.lanyaInjected === true) return { accepted: false, reason: 'not_live' }
     if (typeof inbound.messageId !== 'string' || !inbound.messageId) return { accepted: false, reason: 'missing_message_id' }
+    const scope = canonicalScope(inbound.chatId)
+    // Admission happens after commands, media/quote resolution, rate limiting
+    // and the final empty-content gate. Retain trusted arrival order so a slow
+    // older input cannot advance the revision after a newer one was admitted.
+    // Serialize only the policy commit, never enrichment or model execution.
+    const prior = this.inboundAdmissions.get(scope)
+    let release
+    const current = new Promise(resolve => { release = resolve })
+    this.inboundAdmissions.set(scope, current)
+    try {
+      await prior
+      if (!Number.isSafeInteger(context.arrival) || context.arrival <= (this.latestInbound.get(scope) || 0)) {
+        return { accepted: false, reason: 'superseded_before_admission' }
+      }
     // Parsed text also contains synthetic [引用]/[图片] placeholders. Those
     // are not a new human control request: inspect only current text segments.
     const directText = Array.isArray(inbound.segments)
@@ -512,8 +531,13 @@ export class OneBotDecisionAdapter {
     const observed = await this.policy.recordInbound({ scope: canonicalScope(inbound.chatId), messageId: inbound.messageId,
       sender: inbound.userId, origin: 'live', quoted: !hasDirectEvidence,
       controlAllowed: this.deps.policy.adminUsers.includes(inbound.userId) })
+    if (observed.accepted) this.latestInbound.set(scope, context.arrival)
     if (observed.accepted) context.binding = Object.freeze({ ...observed, origin: 'live' })
     return observed
+    } finally {
+      release()
+      if (this.inboundAdmissions.get(scope) === current) this.inboundAdmissions.delete(scope)
+    }
   }
 
   captureInbound(scope) {
