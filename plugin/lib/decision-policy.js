@@ -96,6 +96,32 @@ function safeUnlinkOwned(file, contents) {
   }
 }
 
+function createOwnerCandidate(target, contents) {
+  // Publish a complete owner with linkSync, never an empty wx-created lock.
+  // An interruption before publication leaves only this unique inert file;
+  // after publication the normal dead-owner recovery can identify the owner.
+  const candidate = target + '.owner-' + process.pid + '-' + randomUUID()
+  let fd, created = false
+  try {
+    fd = fs.openSync(candidate, 'wx', 0o600)
+    created = true
+    fs.writeFileSync(fd, contents)
+    fs.fsyncSync(fd)
+    fs.closeSync(fd); fd = undefined
+    return candidate
+  } catch (error) {
+    const errors = [error]
+    try { if (fd !== undefined) fs.closeSync(fd) } catch (closeError) { errors.push(closeError) }
+    try { if (created) removeOwnerCandidate(candidate) } catch (cleanupError) { errors.push(cleanupError) }
+    if (errors.length > 1) throw new AggregateError(errors, 'Owner candidate creation and cleanup failed')
+    throw error
+  }
+}
+
+function removeOwnerCandidate(candidate) {
+  try { fs.unlinkSync(candidate) } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
+
 /** Diagnose a lock and its exact recovery claim without changing policy JSON.
  *
  * const preview = repairPolicyLocks({ stateFile })
@@ -195,21 +221,23 @@ export function createJsonPolicyStorage({ stateFile, lockTimeoutMs = 2500, retry
     if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || !identifier(owner.nonce) || isOwnerAlive(owner.pid)) return
     const claim = lock + '.reclaim-' + createHash('sha256').update(contents).digest('hex')
     const ours = JSON.stringify({ pid: process.pid, nonce: randomUUID() })
-    let fd
-    try { fd = fs.openSync(claim, 'wx', 0o600) } catch (error) {
-      // A crashed reclaimer's claim is intentionally not stolen: another
-      // reclaimer can otherwise delete a fresh lock (ABA). Stop all writers and
-      // use repairPolicyLocks for this uncommon fail-closed recovery path.
-      if (error.code === 'EEXIST') return
-      throw error
-    }
+    const candidate = createOwnerCandidate(claim, ours)
+    let claimed = false
+    const errors = []
     try {
-      fs.writeFileSync(fd, ours)
-      fs.closeSync(fd); fd = undefined
+      try { fs.linkSync(candidate, claim); claimed = true } catch (error) {
+        // A crashed reclaimer's claim is intentionally not stolen: another
+        // reclaimer can otherwise delete a fresh lock (ABA). Stop all writers
+        // and use repairPolicyLocks for this fail-closed recovery path.
+        if (error.code === 'EEXIST') return
+        throw error
+      }
       if (fs.readFileSync(lock, 'utf8') === contents && !isOwnerAlive(owner.pid)) fs.unlinkSync(lock)
-    } catch (error) { if (error.code !== 'ENOENT') throw error } finally {
-      if (fd !== undefined) fs.closeSync(fd)
-      safeUnlinkOwned(claim, ours)
+    } catch (error) { if (error.code !== 'ENOENT') errors.push(error) } finally {
+      try { removeOwnerCandidate(candidate) } catch (error) { errors.push(error) }
+      try { if (claimed) safeUnlinkOwned(claim, ours) } catch (error) { errors.push(error) }
+      if (errors.length > 1) throw new AggregateError(errors, 'Lock reclamation and cleanup failed')
+      if (errors.length === 1) throw errors[0]
     }
   }
 
@@ -217,31 +245,42 @@ export function createJsonPolicyStorage({ stateFile, lockTimeoutMs = 2500, retry
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const start = Date.now()
     const contents = JSON.stringify({ pid: process.pid, nonce: randomUUID() })
-    for (;;) {
-      ordinary(lock)
-      let fd
-      try { fd = fs.openSync(lock, 'wx', 0o600) } catch (error) {
-        const windowsPendingDelete = process.platform === 'win32' && ['EPERM', 'EACCES'].includes(error.code)
-        if (error.code !== 'EEXIST' && !windowsPendingDelete) throw error
-        // Windows can report access denied while another process is closing a
-        // deleted file. Wait within the same bound; permission failures never
-        // establish a dead owner and must not trigger lock reclamation.
-        if (!windowsPendingDelete) reclaimDeadLock()
-        if (Date.now() - start >= lockTimeoutMs) {
-          const unavailable = new PolicyStateError('Decision state lock unavailable; inspect repairPolicyLocks before stopped-writer repair')
-          unavailable.code = 'POLICY_LOCK_UNAVAILABLE'
-          throw unavailable
+    const candidate = createOwnerCandidate(lock, contents)
+    let published = false, acquireError
+    try {
+      for (;;) {
+        ordinary(lock)
+        try { fs.linkSync(candidate, lock); published = true } catch (error) {
+          const windowsPendingDelete = process.platform === 'win32' && ['EPERM', 'EACCES'].includes(error.code)
+          if (error.code !== 'EEXIST' && !windowsPendingDelete) throw error
+          // Windows can report access denied while another process is closing a
+          // deleted file. Wait within the same bound; permission failures never
+          // establish a dead owner and must not trigger lock reclamation.
+          if (!windowsPendingDelete) reclaimDeadLock()
+          if (Date.now() - start >= lockTimeoutMs) {
+            const unavailable = new PolicyStateError('Decision state lock unavailable; inspect repairPolicyLocks before stopped-writer repair')
+            unavailable.code = 'POLICY_LOCK_UNAVAILABLE'
+            throw unavailable
+          }
+          await new Promise((resolve) => setTimeout(resolve, retryMs))
+          continue
         }
-        await new Promise((resolve) => setTimeout(resolve, retryMs))
-        continue
+        return () => safeUnlinkOwned(lock, contents)
       }
-      try { fs.writeFileSync(fd, contents) } catch (error) {
-        fs.closeSync(fd)
-        // A partially written owner is deliberately left locked for inspection.
+    } catch (error) {
+      acquireError = error
+      throw error
+    } finally {
+      try { removeOwnerCandidate(candidate) } catch (error) {
+        // No transaction has begun yet. Do not strand a live-owner lock merely
+        // because cleanup of its otherwise inert candidate was denied.
+        const errors = acquireError ? [acquireError, error] : [error]
+        if (published) {
+          try { safeUnlinkOwned(lock, contents) } catch (releaseError) { errors.push(releaseError) }
+        }
+        if (errors.length > 1) throw new AggregateError(errors, 'Lock acquisition or release and candidate cleanup failed')
         throw error
       }
-      fs.closeSync(fd)
-      return () => safeUnlinkOwned(lock, contents)
     }
   }
 

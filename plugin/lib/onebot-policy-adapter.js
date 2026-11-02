@@ -14,6 +14,10 @@ import { createObservationPump, validateObservation } from './observation-queue.
 // Freeze the on-disk bytes at ESM evaluation, including for new bridge
 // instances created from this cached module after a later deployment.
 const LOADED_ADAPTER_SHA256 = createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex')
+// Internal compatibility boundary, NOT a public SDK API. This exact method in
+// the reviewed dsh-agent-loop build can wake existing input without reinserting
+// it. Any other implementation is refused rather than guessed or monkeypatched.
+const REVIEWED_INTERNAL_WAKE_DRIVER_SHA256 = '1779f6ec8a911c771a858b6507f1b438d2b383d2e760895d4172c9180681c7a6'
 // Project-local owner-confirmed amount convention. This is not a claim about
 // the supplier's settlement currency; native numeric estimates use scale one.
 const BUDGET_CONTRACT = Object.freeze({ schema: 'unified-budget/v2', currency: 'CNY',
@@ -278,6 +282,16 @@ export class OneBotDecisionAdapter {
     ctx.on('agent/pre-step', async (request, next) => {
       const chat = this.nativeChat(request.agent), record = chat && this.state(chat).active
       if (!record?.binding || record.turn !== request.turn || record.claimConflict || record.ended || request.signal?.aborted) {
+        // A resumed historical input has no process-local binding. Reject it
+        // as before, but remember this exact first-step rejection so an owned
+        // input queued behind it can continue after the SDK driver goes idle.
+        // Aborts, stale hooks and previously admitted turns cannot mint this.
+        if (record && record.turn === request.turn && request.step === 1 && !record.ended && !request.signal?.aborted &&
+            !record.claimedId && !record.reservation && !record.binding?.budget && !record.ticket &&
+            !record.decision && record.outcomes.length === 0) {
+          record.unboundIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+            turn: request.turn, epoch: this.startEpoch })
+        }
         return { kind: 'reject', reason: 'unbound_native_input' }
       }
       if (this.budgetEnabled && !record.binding.budget) {
@@ -300,6 +314,7 @@ export class OneBotDecisionAdapter {
 
   onTurnStart(chat, turn) {
     const state = this.state(chat)
+    state.latestNativeTurn = turn
     const binding = this.nativeClaims ? null : state.queue.shift() || null
     // Each turn owns an independent legacy interim state. An old settleLoop
     // waking after await can never clear a newer turn's pending text or timers.
@@ -315,6 +330,47 @@ export class OneBotDecisionAdapter {
     state.turns.set(turn, record)
     state.active = record
     this.bridge.interim.onTurnStart(shadow)
+  }
+
+  async wakeOwnedPendingAfterUnbound(chat, record, event) {
+    const marker = record.unboundIdleWake
+    if (!marker || record.unboundIdleWakeConsumed || event.data.reason?.kind !== 'blocked') return
+    record.unboundIdleWakeConsumed = true
+    const agent = marker.agent, state = this.state(chat), scope = chat.chatId
+    const refuse = reason => this.log('warn', 'native_internal_idle_wake_refused:' + reason)
+    const unchanged = () => marker.signal && !marker.signal.aborted && record.ended &&
+      record.turn === marker.turn && state.latestNativeTurn === marker.turn && !state.active &&
+      marker.epoch === this.startEpoch && !this.bridge.stopping && chat.agent === agent &&
+      this.nativeChat(agent) === chat && this.nativeScopes.has(agent.ctx)
+    if (!unchanged() || typeof agent.whenIdle !== 'function') { refuse('stale_rejected_turn'); return }
+    const wake = agent.wakeDriver
+    if (typeof wake !== 'function' || identity(Function.prototype.toString.call(wake)) !== REVIEWED_INTERNAL_WAKE_DRIVER_SHA256) {
+      refuse('sdk_method_mismatch'); return
+    }
+    await agent.whenIdle()
+    const front = () => {
+      if (!unchanged() || agent.status !== 'idle' || agent.phase?.kind !== 'idle' ||
+          !Array.isArray(agent.inbox?.nextStep) || agent.inbox.nextStep.length !== 0 ||
+          !Array.isArray(agent.inbox.nextTurn)) return null
+      const message = agent.inbox.nextTurn[0], entry = message && state.pending.get(message.id)
+      if (!entry || entry.agent !== agent || !['admin', 'member'].includes(entry.role) ||
+          !['live', 'observation'].includes(entry.binding.origin) || entry.binding.scope !== scope ||
+          !entry.binding.owner || entry.fingerprint !== identity(JSON.stringify(message)) ||
+          message.source?.kind !== (entry.binding.origin === 'live' ? 'plugin:dsh-onebot' : 'plugin:dsh-lanya-observation')) return null
+      return { message, entry }
+    }
+    const selected = front()
+    if (!selected) { refuse('unowned_or_changed_front'); return }
+    const owner = await this.trustedOwner(scope)
+    const current = front()
+    if (!current || current.message.id !== selected.message.id || current.entry !== selected.entry ||
+        !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === current.entry.binding.owner[key]) ||
+        this.bridge.effectiveCwd(scope) !== owner.cwd ||
+        agent.wakeDriver !== wake) { refuse('owner_or_front_changed'); return }
+    // No async gap after the final guards. This only starts the existing SDK
+    // driver; normal native claim, budget admission and output guards still run.
+    wake.call(agent)
+    this.log('info', 'native_internal_idle_wake_started:unbound_native_input')
   }
 
   captureExec(exec) {
@@ -566,6 +622,8 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     record.ended = true
     if (state.active === record) state.active = null
+    void this.wakeOwnedPendingAfterUnbound(chat, record, event)
+      .catch(error => this.log('warn', 'native_internal_idle_wake_unavailable:' + error.name))
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
     if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     void (async () => {

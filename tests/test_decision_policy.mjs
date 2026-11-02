@@ -343,7 +343,7 @@ test('corrupt JSON and schema never fall back to an open state', async (t) => {
 test('a living or unknown lock owner is never reclaimed', async (t) => {
   const { stateFile } = temporary(t)
   const store = createJsonPolicyStorage({ stateFile, lockTimeoutMs: 20, retryMs: 1 })
-  for (const contents of [JSON.stringify({ pid: process.pid, nonce: 'live' }), 'unreadable-owner']) {
+  for (const contents of [JSON.stringify({ pid: process.pid, nonce: 'live' }), 'unreadable-owner', '']) {
     fs.writeFileSync(stateFile + '.lock', contents)
     await assert.rejects(() => store.transact(() => undefined), /lock unavailable/)
     assert.equal(fs.readFileSync(stateFile + '.lock', 'utf8'), contents)
@@ -452,15 +452,15 @@ test('parallel policy instances keep separate scopes and revisions', async (t) =
 
 test('Windows pending-delete access failures wait without reclaiming a lock', { skip: process.platform !== 'win32' }, async t => {
   const { stateFile } = temporary(t)
-  const open = fs.openSync
+  const link = fs.linkSync
   let attempts = 0
-  t.mock.method(fs, 'openSync', (file, flags, ...rest) => {
-    if (file === stateFile + '.lock' && flags === 'wx' && ++attempts === 1) {
+  t.mock.method(fs, 'linkSync', (candidate, file) => {
+    if (file === stateFile + '.lock' && ++attempts === 1) {
       const error = new Error('synthetic Windows pending-delete conflict')
       error.code = 'EPERM'
       throw error
     }
-    return open(file, flags, ...rest)
+    return link(candidate, file)
   })
   const policy = createDecisionPolicy({ stateFile })
   const result = await policy.recordInbound({ scope: 'private:101', sender: '101',

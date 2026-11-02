@@ -110,10 +110,12 @@ export function readObservationEvidence(directory, key) {
   const base = ordinaryDirectories(directory)
   const target = path.join(ordinaryDirectories(path.join(base, 'pending')), key + '.json')
   const markerPath = path.join(ordinaryDirectories(path.join(base, 'done')), key + '.json')
-  let read, marker, hasMarker = false
+  let read, marker, completionSha256 = null, hasMarker = false
   try { read = readRegular(target, MAX_OBSERVATION_BYTES) } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    marker = readRegular(markerPath).value
+    const markerRead = readRegular(markerPath)
+    marker = markerRead.value
+    completionSha256 = markerRead.sha256
     hasMarker = true
     if (!plain(marker) || ![2, 3].includes(marker.version) || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires an exact terminal original')
     const raw = Buffer.from(marker.event_raw, 'utf8')
@@ -123,10 +125,15 @@ export function readObservationEvidence(directory, key) {
   const event = validateObservation(read.value)
   if (observationKey(event.scope, event.event_id) !== key) throw new ObservationQueueError('Observation filename/identity mismatch')
   if (!hasMarker) {
-    try { marker = readRegular(markerPath).value; hasMarker = true } catch (error) { if (error.code !== 'ENOENT') throw error }
+    try {
+      const markerRead = readRegular(markerPath)
+      marker = markerRead.value
+      completionSha256 = markerRead.sha256
+      hasMarker = true
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
   }
   if (hasMarker) validateCompletion(marker, event, read.sha256, read.raw)
-  return { ...read, completion: hasMarker ? marker : null }
+  return { ...read, completion: hasMarker ? marker : null, completionSha256 }
 }
 
 function publish(file, value) {
@@ -155,6 +162,23 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   const leaseFile = path.join(base, 'consumer.sqlite')
   let timer, busy = false, stopped = true, release = null, leaseDb = null
   const invalidEvidence = new Set()
+  // A restart retries acknowledgement from durable evidence. Within this pump,
+  // unchanged terminal bytes need not reacquire the policy lock every poll.
+  // This cache never authorizes dispatch, hides changed evidence or marks sends.
+  const acknowledgedTerminals = new Map()
+
+  async function acknowledgeTerminal(event, marker, name, eventHash, markerHash) {
+    const fingerprint = eventHash + ':' + markerHash
+    if (acknowledgedTerminals.get(name) === fingerprint) return
+    const result = await acknowledge(event, marker)
+    // Legacy callbacks resolve void. A missing pin is the idempotent result of
+    // an earlier successful ack (including a crash before this cache existed).
+    // Other negative outcomes remain retryable and never enter this cache.
+    if (result === undefined || (plain(result) && (result.acknowledged === true ||
+        (result.acknowledged === false && result.reason === 'unknown_observation')))) {
+      acknowledgedTerminals.set(name, fingerprint)
+    }
+  }
 
   function takeClaim() {
     ordinaryDirectories(pending, true)
@@ -242,7 +266,13 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       ordinaryDirectories(done)
       const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
       const entries = new Map()
-      for (const name of names) {
+      for (const [index, name] of names.entries()) {
+        // Awaiting already-resolved acknowledgements only yields microtasks.
+        // Let timers, input and provider I/O run even with a large done history.
+        if (index > 0 && index % 32 === 0) {
+          await new Promise(resolve => setImmediate(resolve))
+          if (stopped) break
+        }
         try {
           if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
           const read = readObservationEvidence(base, name.slice(0, -5))
@@ -252,7 +282,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
             const completed = read.completion
             // A crash after durable completion but before core acknowledgement
             // is recovered here, without running the model or sending again.
-            await acknowledge(event, completed)
+            await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
             const review = scheduleReview(event, completed)
             if (review) entries.set(review.name, review)
             invalidEvidence.delete(name)
@@ -266,7 +296,8 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         }
       }
       const ordered = [...entries.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
-      for (const { event, name, sha256, raw } of ordered) {
+      for (const [index, { event, name, sha256, raw }] of ordered.entries()) {
+        if (index > 0 && index % 32 === 0) await new Promise(resolve => setImmediate(resolve))
         if (stopped) break
         if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
         let outcome
@@ -313,7 +344,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         }
         publish(path.join(done, name), marker)
         leaseDb.prepare('DELETE FROM retry WHERE event_key=?').run(name)
-        await acknowledge(event, marker)
+        await acknowledgeTerminal(event, marker, name, sha256, hash(JSON.stringify(marker) + '\n'))
         processed += 1
       }
       return { processed, status: 'drained' }

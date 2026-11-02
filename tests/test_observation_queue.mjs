@@ -57,7 +57,7 @@ test('one real decision leaves immutable evidence and a physical-hash completion
   assert.equal(done.event_sha256, createHash('sha256').update(before).digest('hex'))
   await p.drain()
   assert.equal(calls, 1)
-  assert.equal(acknowledgements, 2)
+  assert.equal(acknowledgements, 1)
 })
 
 test('failed model dispatch is retained with durable backoff and can recover', async (t) => {
@@ -150,6 +150,8 @@ test('completion before a failed core acknowledgement is redriven without a new 
   await assert.rejects(() => p.drain(), /state busy/)
   await p.drain()
   assert.equal(model, 1)
+  assert.equal(ack, 2)
+  await p.drain()
   assert.equal(ack, 2)
 })
 

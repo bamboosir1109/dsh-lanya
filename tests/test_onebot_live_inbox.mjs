@@ -8,6 +8,8 @@ import path from 'node:path'
 import vm from 'node:vm'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createHash } from 'node:crypto'
+import nativeIdleWake from './fixtures/native_idle_wake/native-methods.mjs'
 
 if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
@@ -278,6 +280,184 @@ test('conflicting observation claim rejects its completion without acknowledging
   assert.match(completionError?.message || '', /claim conflict/)
   assert.equal(h.requests.length, 0)
   assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+})
+
+async function nativeDriverFixture(t, options = {}) {
+  const h = await fixture(t), steps = [], nativeEvents = []
+  const hash = text => createHash('sha256').update(text).digest('hex')
+  assert.equal(nativeIdleWake.source_module_sha256, '00c4814d63f3d1e2754eb09144832d19b30499d6ea444730473f740b587948c2')
+  for (const [key, value] of Object.entries(nativeIdleWake.agentMethods)) assert.equal(hash(value), nativeIdleWake.snippet_sha256[key])
+  assert.equal(hash(nativeIdleWake.inboxClass), nativeIdleWake.snippet_sha256.inboxClass)
+  assert.equal(hash(nativeIdleWake.helper), nativeIdleWake.snippet_sha256.helper)
+  // Unchanged native driver/inbox methods; assembly, Session persistence,
+  // scoped notifications and model execution are explicit inert host seams.
+  // Session.append notifies synchronously, matching the reviewed native code.
+  const { Driver, Inbox } = vm.runInNewContext(nativeIdleWake.helper + '\n' + nativeIdleWake.inboxClass +
+    '\nclass Driver {\n' + Object.values(nativeIdleWake.agentMethods).join('\n') + '\n}\n({ Driver, Inbox: ReactLoopInbox })', {
+    AbortController, assembleContextFor: () => ({}), renderContextSections: () => [], joinContextSections: () => '',
+    assertNever: value => { throw new Error('Unexpected fixture branch: ' + String(value)) },
+    errorChain: error => error.message, LlmError: class extends Error {},
+    ToolCallRecovery: class { observe() {} results() { return [] } },
+  })
+  for (const name of Reflect.ownKeys(Driver.prototype)) {
+    if (name !== 'constructor') Object.defineProperty(h.agent, name, Object.getOwnPropertyDescriptor(Driver.prototype, name))
+  }
+  const hooks = h.deps.nativeHooks, nativePending = { 'next-turn': [], 'next-step': [] }
+  h.agent.ctx.on = (name, hook) => {
+    const list = hooks.get(name) || []; list.push(hook); hooks.set(name, list)
+    return () => { const index = list.indexOf(hook); if (index >= 0) list.splice(index, 1) }
+  }
+  h.agent.dispatch = {
+    emit(name, data) { for (const hook of [...hooks.get(name) || []]) hook({ agent: h.agent, ...data }) },
+    async serial(name, data) { for (const hook of [...hooks.get(name) || []]) await hook({ agent: h.agent, ...data }) },
+    async waterfall(name, data, fallback) {
+      let next = fallback
+      for (const hook of [...hooks.get(name) || []].reverse()) { const tail = next; next = () => hook({ agent: h.agent, ...data }, tail) }
+      return next()
+    },
+  }
+  h.agent.session.snapshotEvents = () => nativeEvents
+  h.agent.session.append = (type, data) => {
+    const event = { type, data: structuredClone(data), seq: nativeEvents.length + 1 }
+    nativeEvents.push(event)
+    if (type === 'agent/inbox/spliced') nativePending[data.target].splice(data.start, data.removedCount || 0, ...structuredClone(data.inserted))
+    h.bridge.onSessionEvent(h.agent.session, event)
+    options.onEvent?.(event, h)
+    return event
+  }
+  h.agent.phase = { kind: 'idle', lastTurn: 0 }
+  h.agent.activityDone = Promise.resolve()
+  h.agent.loopCtx = { agents: { withInitiator: (_agent, run) => run() },
+    systemPrompt: { assemble: async () => { await options.assemble?.(); return {} } } }
+  h.agent.runtimeContext = { project: () => undefined }
+  h.agent.inbox = new Inbox({ stateOf: () => nativePending }, h.agent.session, h.agent.dispatch)
+  h.agent.step = async () => {
+    const active = h.bridge.lanyaPolicy.state(h.chat).active
+    assert.ok(active?.binding, 'inert step must still pass native claim and admission')
+    steps.push({ turn: h.agent.phase.turn, role: h.chat.activeTurnRole, claimedId: active.claimedId })
+    return { kind: 'completed' }
+  }
+  return { ...h, steps, nativeEvents, nativePending }
+}
+
+async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 2))
+  }
+  assert.fail('native fixture did not settle')
+}
+
+test('reviewed native driver wakes an owned pending live input after its unbound restored turn blocks', async t => {
+  const entered = defer(), gate = defer(); let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => { if (++assemblies === 1) { entered.resolve(); await gate.promise } } })
+  const restored = { id: 'restored-without-binding', source: { kind: 'plugin:dsh-onebot' }, content: [{ type: 'text', text: 'historical fixture' }] }
+  h.agent.inbox.append('next-turn', restored)
+  h.agent.wakeDriver()
+  await entered.promise
+  await h.receive('new owned fixture')
+  const owned = h.agent.inbox.nextTurn[0]
+  assert.equal(h.agent.phase.wakeRequested, false, 'ordinary running followup does not latch a native wake')
+  gate.resolve()
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+  assert.equal(h.steps[0].claimedId, owned.id)
+  assert.equal(h.steps[0].role, 'admin')
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, 1)
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+  assert.equal(h.nativeEvents.filter(event => event.type === 'agent/inbox/spliced' && event.data.inserted.some(message => message.id === owned.id)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+})
+
+test('internal idle wake refuses a foreign front, canceled rejected turn and changed SDK method', async t => {
+  for (const mode of ['foreign-front', 'user-cancel', 'sdk-method-changed']) await t.test(mode, async t => {
+    const entered = defer(), gate = defer(); let assemblies = 0
+    const h = await nativeDriverFixture(t, {
+      assemble: async () => { if (++assemblies === 1) { entered.resolve(); await gate.promise } },
+      onEvent: (event, state) => {
+        if (mode === 'user-cancel' && event.type === 'turn/end' && event.data.reason.kind === 'blocked') state.agent.cancel({ kind: 'user' }, { keepInbox: true })
+      },
+    })
+    h.agent.inbox.append('next-turn', { id: 'restored', source: { kind: 'plugin:dsh-onebot' }, content: [] })
+    h.agent.wakeDriver()
+    await entered.promise
+    if (mode === 'foreign-front') h.agent.inbox.append('next-turn', { id: 'foreign', source: { kind: 'host:web' }, content: [] })
+    await h.receive('owned fixture remains pending')
+    const before = structuredClone(h.agent.inbox.nextTurn)
+    if (mode === 'sdk-method-changed') h.agent.wakeDriver = () => assert.fail('unreviewed internal method must not run')
+    gate.resolve()
+    await h.agent.whenIdle()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(h.agent.inbox.nextTurn, before)
+    assert.equal(h.steps.length, 0)
+    assert.equal(h.requests.length, 0)
+    assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, 1)
+  })
+})
+
+test('budget refusal cannot mint an internal idle wake for another pending input', async t => {
+  const h = await nativeDriverFixture(t), entered = defer(), gate = defer()
+  h.bridge.lanyaPolicy.budgetProvider = async request => {
+    assert.equal(request.operation, 'reserve')
+    entered.resolve(); await gate.promise
+    return { allowed: false }
+  }
+  await h.receive('budget denied fixture')
+  await entered.promise
+  await h.receive('next owned fixture')
+  const before = structuredClone(h.agent.inbox.nextTurn)
+  gate.resolve()
+  await h.agent.whenIdle()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(h.agent.inbox.nextTurn, before)
+  assert.equal(h.steps.length, 0)
+  assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, 1)
+})
+
+test('owned observation input uses the same reviewed wake and native admission', async t => {
+  const entered = defer(), gate = defer(); let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => { if (++assemblies === 1) { entered.resolve(); await gate.promise } } })
+  h.agent.inbox.append('next-turn', { id: 'restored', source: { kind: 'plugin:dsh-onebot' }, content: [] })
+  h.agent.wakeDriver()
+  await entered.promise
+  const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const observed = await adapter.policy.recordObservation({ scope, eventId: 'owned-observation', kind: 'activity.opportunity', producer: 'mind', createdAt: Date.now() })
+  await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation' }) }, async () => {
+    const text = await adapter.enrichContext(scope, 'observation fixture')
+    adapter.dispatchNative(h.chat, { id: 'owned-native-observation', source: { kind: 'plugin:dsh-lanya-observation' },
+      content: [{ type: 'text', text }] }, 'member', 'observation fixture')
+  })
+  gate.resolve()
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+  assert.equal(h.steps[0].claimedId, 'owned-native-observation')
+  assert.equal(h.steps[0].role, 'member')
+  assert.equal(h.requests.filter(request => request.operation === 'reserve' && request.origin === 'observation').length, 1)
+})
+
+test('idle wake rechecks owner, queue front and newer turns after asynchronous owner resolution', async t => {
+  for (const mode of ['owner-changed', 'front-changed', 'newer-turn']) await t.test(mode, async t => {
+    const entered = defer(), assemblyGate = defer(); let assemblies = 0
+    const h = await nativeDriverFixture(t, { assemble: async () => { if (++assemblies === 1) { entered.resolve(); await assemblyGate.promise } } })
+    h.agent.inbox.append('next-turn', { id: 'restored', source: { kind: 'plugin:dsh-onebot' }, content: [] })
+    h.agent.wakeDriver()
+    await entered.promise
+    await h.receive('owned input')
+    const validating = defer(), ownerGate = defer()
+    h.bridge.resolvePresetId = async () => { validating.resolve(); await ownerGate.promise; return mode === 'owner-changed' ? 'changed-fixture' : 'fixture' }
+    assemblyGate.resolve()
+    await validating.promise
+    if (mode === 'front-changed') h.agent.inbox.prepend('next-turn', { id: 'foreign-after-await', source: { kind: 'host:web' }, content: [] })
+    if (mode === 'newer-turn') {
+      h.agent.wakeDriver()
+      await h.agent.whenIdle()
+    }
+    const before = structuredClone(h.agent.inbox.nextTurn)
+    ownerGate.resolve()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(h.agent.inbox.nextTurn, before)
+    assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, mode === 'newer-turn' ? 2 : 1)
+    assert.equal(h.steps.length, mode === 'newer-turn' ? 1 : 0)
+  })
 })
 
 test('actual installed SDK inbox and preStep method await claim-bound admission', {
