@@ -282,6 +282,36 @@ test('conflicting observation claim rejects its completion without acknowledging
   assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
 })
 
+test('conflicting owned observation batch rejects every consumed completion including a modified claim', async t => {
+  for (const modified of [false, true]) await t.test(modified ? 'modified-second' : 'two-owned', async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    const failures = [[], []]
+    for (let index = 0; index < failures.length; index++) {
+      const completion = { reject(error) { failures[index].push(error) }, resolve() { assert.fail('Conflict cannot resolve') } }
+      const observed = await adapter.policy.recordObservation({ scope, eventId: 'owned-batch-' + index,
+        kind: 'activity.opportunity', producer: 'mind', createdAt: Date.now() })
+      await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', completion }) }, async () => {
+        const text = await adapter.enrichContext(scope, 'synthetic batch evidence')
+        adapter.dispatchNative(h.chat, { id: 'owned-batch-input-' + index,
+          source: { kind: 'plugin:dsh-lanya-observation' }, content: [{ type: 'text', text }] }, 'member', 'synthetic batch')
+      })
+    }
+    const claimed = h.pending.splice(0)
+    if (modified) claimed[1] = { ...claimed[1], content: [{ type: 'text', text: 'modified synthetic evidence' }] }
+    h.start(claimed)
+    assert.equal((await h.preStep()).kind, 'reject')
+    await h.end()
+    for (const errors of failures) {
+      assert.equal(errors.length, 1)
+      assert.match(errors[0].message, /claim conflict/)
+    }
+    assert.equal(adapter.state(h.chat).pending.size, 0)
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal(h.requests.length, 0)
+    assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  })
+})
+
 async function nativeDriverFixture(t, options = {}) {
   const h = await fixture(t), steps = [], nativeEvents = []
   const hash = text => createHash('sha256').update(text).digest('hex')
@@ -347,6 +377,107 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   }
   assert.fail('native fixture did not settle')
 }
+
+async function primaryEvent(h, eventId) {
+  const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  adapter.runtimeCapabilities = async (conversation, owner) => ({
+    schema: 'dsh-runtime-capabilities/v1', read_only: true, conversation_key: conversation,
+    owner: { workspace_key: owner.workspace_key, agent_key: owner.agent_key },
+    tools: { entertainment: { primary_identity_valid: true, primary_internal_leisure: true,
+      cadence: { valid: true, configured_opportunity_min: 3 } } },
+  })
+  const owner = await adapter.trustedOwner(scope)
+  return { version: 1, event_id: eventId, scope, workspace_key: owner.workspace_key, agent_key: owner.agent_key,
+    kind: 'activity.opportunity', producer: 'mind', created_at: Date.now(), payload: {},
+    origin: 'observation', control_allowed: false }
+}
+
+test('native mixed restored and owned observation claim rejects the consumed completion instead of hanging', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  // The actual native inbox claims next-step history BEFORE the fresh queued
+  // turn. No synthetic h.start()/emitClaim call substitutes this ordering.
+  h.agent.inbox.append('next-step', { id: 'unbound-restored-step', source: { kind: 'host:web' },
+    content: [{ type: 'text', text: 'synthetic restored input' }] })
+  const event = await primaryEvent(h, 'synthetic-mixed-observation')
+  let outcome = 'pending', failure
+  const completion = adapter.dispatchObservation(event).then(
+    () => { outcome = 'resolved' }, error => { outcome = 'rejected'; failure = error })
+  await driverSettled(h, () => h.nativeEvents.some(item => item.type === 'turn/end') && h.agent.status === 'idle')
+  // The defect left this promise pending forever even though the SDK already
+  // consumed both physical inputs and ended the rejected native turn.
+  await Promise.race([completion, new Promise(resolve => setTimeout(resolve, 30))])
+  assert.equal(outcome, 'rejected')
+  assert.match(failure.message, /claim conflict/)
+  assert.equal(h.steps.length, 0)
+  assert.equal(h.requests.filter(item => item.operation === 'reserve').length, 0)
+  assert.deepEqual(h.nativeEvents.filter(item => item.type === 'turn/end').map(item => item.data.reason.kind), ['blocked'])
+  assert.equal(h.agent.inbox.hasPending, false)
+  assert.equal(adapter.state(h.chat).pending.size, 0)
+  assert.equal(adapter.observations.size, 0)
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  assert.equal((await adapter.policy.snapshot(scope)).current.decided, false)
+})
+
+test('native first-step unresolved prior reservation closes only the unused observation lifecycle', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const event = await primaryEvent(h, 'synthetic-unresolved-reservation')
+  const priorReservation = Object.freeze({ status: 'reserved', reserve_cny: 0.05, instance_id: 'other-instance' })
+  const priorBytes = JSON.stringify(priorReservation)
+  h.bridge.lanyaPolicy.budgetProvider = async request => {
+    h.requests.push(structuredClone(request))
+    assert.equal(request.operation, 'reserve', 'refusal must not settle or mark the old reservation unknown')
+    return { allowed: false, category: 'autonomy', limited: true, reason: 'previous_turn_unresolved' }
+  }
+  const outcome = await adapter.dispatchObservation(event)
+  await driverSettled(h)
+  assert.equal(outcome.completed, true)
+  assert.equal(outcome.status, 'no_decision')
+  assert.equal(outcome.reason, 'native_admission_refused')
+  assert.equal(outcome.native_turn_completed, false)
+  assert.equal('decision_id' in outcome, false)
+  assert.equal('next_review_at' in outcome, false)
+  assert.equal(JSON.stringify(priorReservation), priorBytes)
+  assert.deepEqual(h.requests.map(item => item.operation), ['reserve'])
+  assert.equal(h.steps.length, 0)
+  assert.deepEqual(h.nativeEvents.filter(item => item.type === 'turn/end').map(item => item.data.reason.kind), ['blocked'])
+  const snapshot = await adapter.policy.snapshot(event.scope)
+  assert.equal(snapshot.current.decided, false)
+  assert.equal(snapshot.current.ticket, null)
+  assert.equal(snapshot.deliveries.length, 0)
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+})
+
+test('other native admission failures reject rather than claim the unresolved-reservation lifecycle', async t => {
+  for (const mode of ['budget_exhausted', 'cost_meter_unavailable', 'provider-error', 'live-input',
+    'other-kind', 'other-producer', 'cancel-after-refusal']) await t.test(mode, async t => {
+    const h = await nativeDriverFixture(t, { onEvent: (event, state) => {
+      if (mode === 'cancel-after-refusal' && event.type === 'turn/end' && event.data.reason.kind === 'blocked') {
+        state.agent.cancel({ kind: 'user' }, { keepInbox: true })
+      }
+    } }), adapter = h.bridge.lanyaPolicy
+    const event = await primaryEvent(h, 'synthetic-other-refusal-' + mode)
+    if (mode === 'other-kind') event.kind = 'system.maintenance'
+    if (mode === 'other-producer') event.producer = 'observer-repair'
+    h.bridge.lanyaPolicy.budgetProvider = async request => {
+      h.requests.push(structuredClone(request))
+      assert.equal(request.operation, 'reserve')
+      if (mode === 'provider-error') throw Object.assign(new Error('synthetic'), { reason: 'previous_turn_unresolved' })
+      return { allowed: false, category: mode === 'live-input' ? 'private' : 'autonomy', limited: true,
+        reason: ['live-input', 'other-kind', 'other-producer', 'cancel-after-refusal'].includes(mode)
+          ? 'previous_turn_unresolved' : mode }
+    }
+    let lifecycleCalls = 0
+    const original = adapter.policy.completeObservationWithoutDecision
+    adapter.policy.completeObservationWithoutDecision = (...args) => { lifecycleCalls++; return original(...args) }
+    if (mode === 'live-input') await h.receive('synthetic live refusal')
+    else await assert.rejects(adapter.dispatchObservation(event), /before a real decision/)
+    await driverSettled(h)
+    assert.equal(lifecycleCalls, 0)
+    assert.equal(h.steps.length, 0)
+    assert.deepEqual(h.requests.map(item => item.operation), ['reserve'])
+    assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  })
+})
 
 test('reviewed native driver wakes an owned pending live input after its unbound restored turn blocks', async t => {
   const entered = defer(), gate = defer(); let assemblies = 0

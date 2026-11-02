@@ -26,6 +26,8 @@ const BUDGET_CONTRACT = Object.freeze({ schema: 'unified-budget/v2', currency: '
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const identity = (...parts) => createHash('sha256').update(parts.map(String).join('\0')).digest('hex')
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
+const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
+  'cost_meter_unavailable', 'budget_unavailable'])
 
 export class PolicyDeliveryError extends Error {
   constructor(status, reason) {
@@ -264,6 +266,11 @@ export class OneBotDecisionAdapter {
       if (!record || record.ended) return
       const entry = state.pending.get(message?.id)
       state.pending.delete(message?.id)
+      // A native batch may claim restored next-step input before an owned
+      // observation. Even a conflicting claim consumes that physical input;
+      // keep its local completion so the rejected turn cannot strand a pump.
+      // This remembers no authority: binding/tickets still fail closed below.
+      if (entry?.agent === agent && entry.binding?.completion) record.claimCompletions.add(entry.binding.completion)
       if (record.claimConflict || !entry || entry.agent !== agent || entry.fingerprint !== identity(JSON.stringify(message)) || record.binding) {
         record.claimConflict = true
         record.reservation ||= record.binding?.budget
@@ -299,7 +306,25 @@ export class OneBotDecisionAdapter {
         const local = { binding }
         try {
           await this.context.run(local, () => this.reserveBudget(binding.scope, binding.owner))
-        } catch { return { kind: 'reject', reason: 'budget_admission_refused' } }
+        } catch (error) {
+          // Only our exact negative reserve receipt can identify this local
+          // admission failure. Provider exceptions and arbitrary error text
+          // never establish that an observation is safe to close.
+          const reason = error instanceof PolicyDeliveryError && error.status === 'suppressed' &&
+            NATIVE_BUDGET_REFUSALS.has(error.reason) ? error.reason : null
+          this.log('warn', 'native_budget_admission_refused:' + (reason || 'unavailable_or_invalid_receipt'))
+          if (reason === 'previous_turn_unresolved' && request.step === 1 &&
+              record === this.state(chat).active && record.turn === request.turn && !record.ended &&
+              !request.signal?.aborted && !record.claimConflict && record.binding === binding &&
+              binding.origin === 'observation' && binding.observationKind === 'activity.opportunity' &&
+              ['mind', 'main-review'].includes(binding.observationProducer) && !binding.budget &&
+              !record.reservation && !record.nativeStepEntered && !record.decision && !record.ticket &&
+              record.outcomes.length === 0 && record.inFlight.size === 0) {
+            record.nativeAdmissionRefused = Object.freeze({ binding, turn: request.turn, signal: request.signal,
+              reason: 'previous_turn_unresolved' })
+          }
+          return { kind: 'reject', reason: reason || 'budget_admission_refused' }
+        }
         // A native claim already happened. Keep this exact reservation for
         // native end accounting even if the turn was aborted while awaiting.
         record.reservation = local.binding?.budget
@@ -308,6 +333,7 @@ export class OneBotDecisionAdapter {
         }
         record.binding = local.binding
       }
+      record.nativeStepEntered = true
       return next()
     })
   }
@@ -320,7 +346,8 @@ export class OneBotDecisionAdapter {
     // waking after await can never clear a newer turn's pending text or timers.
     const shadow = { ...chat, loopPending: null, loopBuffer: [], recallTimers: new Map(),
       recalledInterimIds: new Set(), lastHandledMessageId: undefined }
-    const record = { binding, turn, shadow, ticket: null, decision: null, inFlight: new Set(), outcomes: [], ended: false }
+    const record = { binding, turn, shadow, ticket: null, decision: null, inFlight: new Set(), outcomes: [],
+      claimCompletions: new Set(), ended: false }
     if (binding?.budget || this.nativeClaims) {
       try {
         const starts = chat.agent.session.snapshotEvents().filter(event => event.type === 'turn/start' && event.data?.turn === turn)
@@ -644,11 +671,30 @@ export class OneBotDecisionAdapter {
       catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
       state.turns.delete(event.data.turn)
       const completion = record.binding?.completion || record.completion
-      if (!completion) return
       if (record.claimConflict) {
-        completion.reject(new Error('Observation native input claim conflict')); return
+        const completions = new Set(record.claimCompletions)
+        if (completion) completions.add(completion)
+        for (const claimed of completions) claimed.reject(new Error('Observation native input claim conflict'))
+        return
       }
+      if (!completion) return
       if (!record.decision) {
+        const refused = record.nativeAdmissionRefused
+        if (event.data.reason?.kind === 'blocked' && refused?.reason === 'previous_turn_unresolved' &&
+            refused.turn === record.turn && refused.binding === record.binding && !refused.signal?.aborted &&
+            record.binding.origin === 'observation' && record.binding.observationKind === 'activity.opportunity' &&
+            ['mind', 'main-review'].includes(record.binding.observationProducer) &&
+            !record.binding.budget && !record.reservation && !record.nativeStepEntered && !record.ticket &&
+            record.outcomes.length === 0 && record.inFlight.size === 0) {
+          try {
+            const outcome = await this.policy.completeObservationWithoutDecision({ scope,
+              eventId: record.binding.messageId, expectedRevision: record.binding.revision,
+              nativeTurnCompleted: false, nativeModelSteps: 0,
+              nativeAdmissionReason: 'previous_turn_unresolved' })
+            completion.resolve({ completed: true, ...outcome })
+          } catch (error) { completion.reject(error) }
+          return
+        }
         // A normal native completion without qq_decide is a local lifecycle
         // outcome, never an invented model verdict, review or send permit.
         if (event.data.reason?.kind !== 'completed' || record.ticket || record.outcomes.length ||

@@ -19,7 +19,8 @@ const identifier = (value) => typeof value === 'string' && value.length > 0 && v
 const noDecisionId = (scope, eventId, revision) => createHash('sha256').update(['no-decision', scope, eventId, revision].join('\0')).digest('hex')
 const localOutcomeValid = (value, scope, eventId, revision) => plain(value) &&
   Object.keys(value).sort().join(',') === 'completed_at,local_outcome_id,native_turn_completed,observation_revision,reason,status' &&
-  value.status === 'no_decision' && value.reason === 'model_completed_without_decision' && value.native_turn_completed === true &&
+  value.status === 'no_decision' && ((value.reason === 'model_completed_without_decision' && value.native_turn_completed === true) ||
+    (value.reason === 'native_admission_refused' && value.native_turn_completed === false)) &&
   Number.isSafeInteger(revision) && revision >= 1 && value.observation_revision === revision &&
   Number.isSafeInteger(value.completed_at) && value.completed_at >= 0 && value.local_outcome_id === noDecisionId(scope, eventId, revision)
 
@@ -438,21 +439,34 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     /** Persist the local lifecycle outcome before the queue publishes done.
      * This does not grant a verdict, ticket, or persistent silence change.
      */
-    async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted } = {}) {
+    async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted,
+      nativeAdmissionReason, nativeModelSteps } = {}) {
       canonicalScope(scope)
-      if (!identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || nativeTurnCompleted !== true) {
-        throw new PolicyStateError('Exact native-completed observation identity required')
+      // These attestations come only from the native adapter, never qq_decide
+      // arguments. A refused admission is not a completed model turn or a
+      // settled budget. Only the stable old-instance key refusal is terminal.
+      const refused = nativeAdmissionReason === 'previous_turn_unresolved' &&
+        nativeTurnCompleted === false && nativeModelSteps === 0
+      const completed = nativeAdmissionReason === undefined && nativeTurnCompleted === true && nativeModelSteps === undefined
+      if (!identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || (!completed && !refused)) {
+        throw new PolicyStateError('Exact native completion or zero-step admission refusal required')
       }
       return transaction((state) => {
         const current = scopeState(state, scope)
         const entry = current?.observations?.find(item => item.eventId === eventId)
+        // A pinned entry's decision is never cleared by redrive. decide writes
+        // that decision and its ticket in the same transaction; recordObservation
+        // refuses every later redrive once it exists. Thus no decision here
+        // excludes a legal ticket/send across ALL earlier revisions of this
+        // same pinned event, without attributing other events' deliveries to it.
         if (!entry || entry.revision !== expectedRevision || entry.decision ||
             current.deliveries.some(item => item.revision === expectedRevision) ||
             (current.revision === expectedRevision && (current.current?.decided || current.current?.ticket))) {
           throw new PolicyStateError('Observation is not an exact undecided no-delivery turn')
         }
-        if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision', reason: 'model_completed_without_decision',
-          native_turn_completed: true, observation_revision: expectedRevision, completed_at: now(),
+        if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision',
+          reason: refused ? 'native_admission_refused' : 'model_completed_without_decision',
+          native_turn_completed: completed, observation_revision: expectedRevision, completed_at: now(),
           local_outcome_id: noDecisionId(scope, eventId, expectedRevision) }
         return clone(entry.localOutcome)
       })

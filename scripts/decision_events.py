@@ -117,8 +117,8 @@ def _validated_completion(result, event, raw):
                   "reason", "local_outcome_id", "observation_revision", "native_turn_completed"}
         revision = result.get("observation_revision")
         if (set(result) != fields or result.get("status") != "no_decision" or
-                result.get("reason") != "model_completed_without_decision" or
-                result.get("native_turn_completed") is not True or
+                not ((result.get("reason") == "model_completed_without_decision" and result.get("native_turn_completed") is True) or
+                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False)) or
                 type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
                 event["kind"] != "activity.opportunity" or event["producer"] not in ("mind", "main-review")):
             raise ObservationError("Invalid native no-decision completion")

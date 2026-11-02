@@ -85,6 +85,37 @@ class NoDecisionEvidenceTests(unittest.TestCase):
         with self.assertRaises(events.ObservationError):
             self.submit(agent_key="foreign-agent")
 
+    def test_zero_step_admission_refusal_is_a_distinct_local_terminal_without_model_completion(self):
+        pending, done, marker, raw = self.write()
+        marker.update(reason="native_admission_refused", native_turn_completed=False)
+        done.write_text(json.dumps(marker), encoding="utf-8")
+        before = done.read_bytes()
+        self.assertEqual(self.completion(), marker)
+        self.assertEqual(self.submit(created_at=9000)["state"], "done")
+        chain = events.observation_review_chain(self.event["scope"], self.event["event_id"], directory=self.root)
+        self.assertFalse(chain["waiting_review"])
+        self.assertFalse(chain["completion"]["native_turn_completed"])
+        self.assertEqual(chain["completion"]["reason"], "native_admission_refused")
+        self.assertNotIn("decision_id", chain["completion"])
+        self.assertNotIn("next_review_at", chain["completion"])
+        self.assertEqual(done.read_bytes(), before)
+        self.assertEqual(pending.read_bytes(), raw)
+        pending.unlink()
+        self.assertEqual(self.completion(), marker)
+
+    def test_admission_refusal_rejects_mismatched_reason_completion_and_additional_authority(self):
+        _, done, marker, _ = self.write()
+        marker.update(reason="native_admission_refused", native_turn_completed=False)
+        for change in ({"native_turn_completed": True}, {"native_turn_completed": 0},
+                       {"reason": "model_completed_without_decision"}, {"reason": "budget_exhausted"},
+                       {"reason": "turn_in_flight"}, {"native_model_steps": 0},
+                       {"native_admission_reason": "previous_turn_unresolved"},
+                       {"verdict": "idle"}, {"decision_id": "invented"}, {"next_review_at": 3000}):
+            with self.subTest(change=change):
+                done.write_text(json.dumps(dict(marker, **change)), encoding="utf-8")
+                with self.assertRaises(events.ObservationError):
+                    self.completion()
+
     def test_present_corrupt_pending_cannot_be_hidden_by_completed_original(self):
         pending, _, _, _ = self.write()
         for raw in (b"{", b"null", b"\xff"):
@@ -209,7 +240,9 @@ try {
         run = subprocess.run(["node", "--input-type=module", "-e", script, QUEUE.as_uri(), str(self.root)],
                              capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(json.loads(run.stdout), {"calls": 1, "acknowledgements": 2})
+        # The same pump caches an exact successful acknowledgement; evidence
+        # fallback remains readable without repeating policy I/O or dispatch.
+        self.assertEqual(json.loads(run.stdout), {"calls": 1, "acknowledgements": 1})
         marker = self.completion()
         self.assertEqual(marker["version"], 3)
         self.assertEqual(marker["event_raw"].encode("utf-8"), original)
@@ -259,20 +292,23 @@ class MindNoDecisionTests(unittest.TestCase):
     def state(self):
         return json.loads(Path(self.mind.MIND).read_text(encoding="utf-8"))
 
-    def finish(self, scope, *, unknown=False):
+    def finish(self, scope, *, unknown=False, admission_refused=False, preserve_pending=False):
         state = self.state()["decision_scopes"][scope]
         identity = state["pending"]["event_id"]
         key = events.event_key(scope, identity)
         pending = self.inbox / "pending" / (key + ".json")
         raw = pending.read_bytes(); event = json.loads(raw)
         marker = marker_for(event, raw, completed_at=1001000)
+        if admission_refused:
+            marker.update(reason="native_admission_refused", native_turn_completed=False)
         if unknown:
             marker = dict(version=2, event_raw=raw.decode(), scope=scope, event_id=identity,
                           event_sha256=hashlib.sha256(raw).hexdigest(), completed_at=1001000,
                           status="unknown", decision_id="uncertain-send")
         done = self.inbox / "done" / (key + ".json")
         done.write_text(json.dumps(marker), encoding="utf-8")
-        pending.unlink()
+        if not preserve_pending:
+            pending.unlink()
         return identity, done.read_bytes()
 
     def test_native_completion_clears_once_then_offers_only_next_normal_generation(self):
@@ -321,6 +357,47 @@ class MindNoDecisionTests(unittest.TestCase):
         self.assertEqual(states[self.scopes[0]]["generation"], 1)
         self.assertEqual(states[self.scopes[1]]["generation"], 2)
         self.assertEqual(self.submit.call_count, 3)
+
+    def test_admission_refusal_preserves_old_evidence_then_offers_an_independent_generation_with_uncertainty(self):
+        self.assertEqual(self.mind.one_cycle(), 0)
+        primary, original = self.finish(self.scopes[0], admission_refused=True, preserve_pending=True)
+        self.finish(self.scopes[1], unknown=True)
+        key = events.event_key(self.scopes[0], primary)
+        pending = self.inbox / "pending" / (key + ".json")
+        original_pending = pending.read_bytes()
+        self.clock.return_value = 1002
+        self.assertEqual(self.mind.one_cycle(), 0)
+        state = self.state()["decision_scopes"][self.scopes[0]]
+        fact = dict(event_id=primary, completed_at=1001000, reason="previous_turn_unresolved",
+                    previous_activity_status="unknown", budget_reservation_preserved=True)
+        self.assertEqual(state["last_status"], "no_decision")
+        self.assertEqual(state["last_admission_refusal"], fact)
+        self.assertEqual(state["generation"], 1)
+        self.assertNotIn("pending", state)
+        self.assertIsNone(state["next_review_at"])
+        self.assertEqual(state["next_opportunity_at"], 1181000)
+        self.clock.return_value = 1180.999
+        self.assertEqual(self.mind.one_cycle(), 0)
+        self.assertEqual(self.submit.call_count, 2)
+        self.clock.return_value = 1181
+        self.assertEqual(self.mind.one_cycle(), 0)
+        states = self.state()["decision_scopes"]
+        fresh = states[self.scopes[0]]["pending"]["event_id"]
+        self.assertNotEqual(fresh, primary)
+        self.assertEqual(states[self.scopes[0]]["generation"], 2)
+        self.assertEqual(states[self.scopes[0]]["last_admission_refusal"], fact)
+        fresh_path = self.inbox / "pending" / (events.event_key(self.scopes[0], fresh) + ".json")
+        payload = json.loads(fresh_path.read_text(encoding="utf-8"))["payload"]
+        self.assertEqual(payload["prior_admission_refusal"], fact)
+        self.assertIn("new independent review, not a retry", payload["instruction"])
+        self.assertIn("repeat an uncertain external action", payload["instruction"])
+        self.assertEqual(states[self.scopes[1]]["last_status"], "unknown")
+        self.assertIsNone(states[self.scopes[1]]["next_opportunity_at"])
+        self.assertEqual(self.submit.call_count, 3)
+        self.assertEqual(self.mind.one_cycle(), 0)
+        self.assertEqual(self.submit.call_count, 3)
+        self.assertEqual((self.inbox / "done" / (key + ".json")).read_bytes(), original)
+        self.assertEqual(pending.read_bytes(), original_pending)
 
 
 if __name__ == "__main__":

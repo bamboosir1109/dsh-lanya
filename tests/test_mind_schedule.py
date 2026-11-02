@@ -86,6 +86,31 @@ class MindScheduleTests(unittest.TestCase):
         self.assertEqual(self.mind.one_cycle(), 0)
         self.assertEqual(self.ask.call_count, 2)
 
+    def test_new_opportunity_carries_prior_refusal_without_turning_it_into_evidence_or_permission(self):
+        refusal = {"event_id": "fixture-old-opportunity", "completed_at": 1000,
+                   "reason": "previous_turn_unresolved", "previous_activity_status": "unknown",
+                   "budget_reservation_preserved": True}
+        value = {"plan": None, "mood": "fixture"}
+        before = self.mind._observation_signature(value, [], True)
+        payload = self.mind._observation_payload(value, [], True, refusal)
+        self.assertEqual(payload["prior_admission_refusal"], refusal)
+        self.assertIsNot(payload["prior_admission_refusal"], refusal)
+        self.assertIn("new independent review, not a retry", payload["instruction"])
+        self.assertIn("do not clear it", payload["instruction"])
+        self.assertIn("repeat an uncertain external action", payload["instruction"])
+        self.assertEqual(self.mind._observation_signature(value, [], True), before)
+        self.assertNotIn("prior_admission_refusal", self.mind._observation_payload(value, [], False))
+        state = {"decision_observers_version": 2, "decision_scopes": {
+            "private:101": {"generation": 0, "last_admission_refusal": refusal}}}
+        self.mind._validate_observers(state)
+        for defect in [{"reason": "budget_exhausted"}, {"previous_activity_status": "completed"},
+                       {"budget_reservation_preserved": False}, {"completed_at": True}, {"event_id": "bad\nidentity"}]:
+            state["decision_scopes"]["private:101"]["last_admission_refusal"] = dict(refusal, **defect)
+            with self.assertRaises(ValueError):
+                self.mind._validate_observers(state)
+        self.ask.assert_not_called()
+        self.deliver.assert_not_called()
+
     def test_force_bypasses_eta_but_not_lock(self):
         self.mind.one_cycle()
         self.assertEqual(self.mind.one_cycle(force=True), 0)

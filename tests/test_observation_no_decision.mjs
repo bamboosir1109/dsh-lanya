@@ -177,3 +177,102 @@ test('an already decided or sent/unknown observation cannot be locally reclassif
     expectedRevision: seen.revision, nativeTurnCompleted: true }))
   assert.equal((await h.adapter.policy.snapshot(scope)).observations.length, 1)
 })
+
+const refusedAdmission = { nativeTurnCompleted: false, nativeModelSteps: 0,
+  nativeAdmissionReason: 'previous_turn_unresolved' }
+
+test('a zero-step old-key admission refusal durably retires only its exact observation without claiming model completion', async t => {
+  const h = fixture(t), value = event('admission-refusal'), name = h.write(value)
+  // An unrelated historical delivery is not attributed to this observation.
+  const live = await h.adapter.policy.recordInbound({ scope, messageId: 'unrelated-live', sender: '101', controlAllowed: true, origin: 'live' })
+  const reply = await h.adapter.policy.decide({ scope, messageId: 'unrelated-live', expectedRevision: live.revision, verdict: 'reply' })
+  await h.adapter.policy.runGuarded(reply.ticket, { operationId: 'historical-send', kind: 'text' }, async () => ({ ok: true }))
+  const deliveries = (await h.adapter.policy.snapshot(scope)).deliveries
+  const request = { scope, eventId: value.event_id, kind: value.kind, producer: value.producer, createdAt: 1 }
+  await h.adapter.policy.recordObservation(request)
+  const observed = await h.adapter.policy.recordObservation({ ...request, redrive: true })
+  const input = { scope, eventId: value.event_id, expectedRevision: observed.revision, ...refusedAdmission }
+  const local = await h.adapter.policy.completeObservationWithoutDecision(input)
+  assert.equal(local.status, 'no_decision'); assert.equal(local.reason, 'native_admission_refused')
+  assert.equal(local.native_turn_completed, false)
+  assert.deepEqual(await h.adapter.policy.completeObservationWithoutDecision(input), local)
+  const pinned = await h.adapter.policy.snapshot(scope)
+  assert.equal(pinned.current.decided, false); assert.equal(pinned.current.ticket, null)
+  assert.deepEqual(pinned.deliveries, deliveries)
+  await h.adapter.pump.start({ poll: false })
+  assert.equal((await h.adapter.pump.drain()).processed, 1)
+  const done = completion(h, name)
+  assert.equal(done.version, 3); assert.equal(done.reason, 'native_admission_refused')
+  assert.equal(done.native_turn_completed, false); assert.equal(done.local_outcome_id, local.local_outcome_id)
+  assert.equal(readObservationEvidence(h.directory, name.slice(0, -5)).completion.reason, 'native_admission_refused')
+  assert.deepEqual(h.counts(), { nativeDispatches: 0, sends: 0 })
+  const state = await h.adapter.policy.snapshot(scope)
+  assert.equal(state.observations.length, 0); assert.deepEqual(state.deliveries, deliveries)
+  await h.adapter.stop()
+  const next = fixture(t, { root: h.root }); await next.adapter.pump.start({ poll: false })
+  await next.adapter.pump.drain()
+  assert.deepEqual(next.counts(), { nativeDispatches: 0, sends: 0 })
+  assert.deepEqual((await next.adapter.policy.snapshot(scope)).deliveries, deliveries)
+})
+
+test('admission refusal requires exactly the stable reason, zero model steps and explicit noncompletion', async t => {
+  const h = fixture(t), value = event('strict-admission-refusal')
+  const seen = await h.adapter.policy.recordObservation({ scope, eventId: value.event_id, kind: value.kind, producer: value.producer, createdAt: 1 })
+  const args = { scope, eventId: value.event_id, expectedRevision: seen.revision, ...refusedAdmission }
+  const before = fs.readFileSync(h.stateFile)
+  for (const extra of [{ nativeAdmissionReason: 'budget_exhausted' }, { nativeAdmissionReason: 'budget_error' },
+    { nativeAdmissionReason: 'turn_in_flight' }, { nativeAdmissionReason: 'turn_already_settled' },
+    { nativeAdmissionReason: 'other' }, { nativeAdmissionReason: undefined }, { nativeTurnCompleted: true },
+    { nativeTurnCompleted: undefined }, { nativeModelSteps: undefined }, { nativeModelSteps: 1 },
+    { nativeModelSteps: false }, { nativeModelSteps: '0' }, { expectedRevision: seen.revision + 1 },
+    { eventId: 'missing-observation' }, { scope: 'group:202' }]) {
+    await assert.rejects(h.adapter.policy.completeObservationWithoutDecision({ ...args, ...extra }))
+    assert.deepEqual(fs.readFileSync(h.stateFile), before)
+  }
+})
+
+test('an earlier revision decision prevents redrive and cannot be relabeled as admission refusal', async t => {
+  const h = fixture(t), value = event('previous-revision-with-ticket')
+  const request = { scope, eventId: value.event_id, kind: value.kind, producer: value.producer, createdAt: 1 }
+  const seen = await h.adapter.policy.recordObservation(request)
+  const reply = await h.adapter.policy.decide({ scope, messageId: value.event_id, expectedRevision: seen.revision, verdict: 'reply' })
+  await h.adapter.policy.runGuarded(reply.ticket, { operationId: 'prior-uncertain-send', kind: 'media' }, async () => { throw new Error('uncertain fixture') })
+  await h.adapter.policy.recordInbound({ scope, messageId: 'later-live', sender: '101', controlAllowed: true, origin: 'live' })
+  const before = fs.readFileSync(h.stateFile)
+  assert.equal((await h.adapter.policy.recordObservation({ ...request, redrive: true })).reason, 'already_decided')
+  await assert.rejects(h.adapter.policy.completeObservationWithoutDecision({ scope, eventId: value.event_id,
+    expectedRevision: seen.revision, ...refusedAdmission }))
+  assert.deepEqual(fs.readFileSync(h.stateFile), before)
+  assert.equal((await h.adapter.policy.snapshot(scope)).deliveries[0].status, 'unknown')
+})
+
+test('any recorded delivery at the exact refused observation revision prevents a local terminal', async t => {
+  for (const status of ['reserved', 'sent', 'unknown', 'suppressed']) {
+    const h = fixture(t), value = event('delivery-record-' + status)
+    const seen = await h.adapter.policy.recordObservation({ scope, eventId: value.event_id, kind: value.kind, producer: value.producer, createdAt: 1 })
+    // Deliberately inconsistent historical evidence must still fail closed.
+    const state = JSON.parse(fs.readFileSync(h.stateFile, 'utf8'))
+    state.scopes[scope].deliveries.push({ key: 'fixture-existing-delivery', status, revision: seen.revision })
+    fs.writeFileSync(h.stateFile, JSON.stringify(state))
+    const before = fs.readFileSync(h.stateFile)
+    await assert.rejects(h.adapter.policy.completeObservationWithoutDecision({ scope, eventId: value.event_id,
+      expectedRevision: seen.revision, ...refusedAdmission }))
+    assert.deepEqual(fs.readFileSync(h.stateFile), before)
+  }
+})
+
+test('admission terminal evidence rejects crossed reason/completion pairs and model authority fields', async t => {
+  const h = fixture(t), value = event('strict-admission-evidence'), name = h.write(value)
+  const observed = await h.adapter.policy.recordObservation({ scope, eventId: value.event_id, kind: value.kind, producer: value.producer, createdAt: 1 })
+  await h.adapter.policy.completeObservationWithoutDecision({ scope, eventId: value.event_id, expectedRevision: observed.revision, ...refusedAdmission })
+  await h.adapter.pump.start({ poll: false }); await h.adapter.pump.drain()
+  const file = path.join(h.directory, 'done', name), marker = completion(h, name)
+  for (const extra of [{ native_turn_completed: true }, { native_turn_completed: 0 },
+    { reason: 'model_completed_without_decision' }, { reason: 'budget_exhausted' },
+    { native_admission_reason: 'previous_turn_unresolved' }, { native_model_steps: 0 },
+    { decision_id: 'invented' }, { next_review_at: 2000 }]) {
+    fs.writeFileSync(file, JSON.stringify({ ...marker, ...extra }))
+    assert.throws(() => readObservationEvidence(h.directory, name.slice(0, -5)))
+  }
+  fs.writeFileSync(file, JSON.stringify(marker))
+})

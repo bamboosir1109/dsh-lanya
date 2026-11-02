@@ -31,7 +31,8 @@ function validateCompletion(marker, event, sha256, raw) {
     const fields = ['version', 'event_raw', 'event_id', 'scope', 'event_sha256', 'completed_at', 'status',
       'reason', 'local_outcome_id', 'observation_revision', 'native_turn_completed']
     if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
-        marker.reason !== 'model_completed_without_decision' || marker.native_turn_completed !== true ||
+        !((marker.reason === 'model_completed_without_decision' && marker.native_turn_completed === true) ||
+          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false)) ||
         event.kind !== 'activity.opportunity' || !['mind', 'main-review'].includes(event.producer) ||
         marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
         !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||

@@ -574,13 +574,18 @@ def _journal_cycle():
         log("local facts journal skipped (%s)" % (code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", code) else "JournalError"))
 
 
-def _observation_payload(mind, hits, primary=True):
+def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None):
     return {"legacy_plan_reference": mind.get("plan") if primary else None,
             "mood": mind.get("mood") if primary else None, "interrupts": hits,
             "activity_role": "internal_leisure" if primary else "conversation_social",
+            **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
             "instruction": (
                 "This is an optional autonomous opportunity for this conversation, not a request to speak. "
                 "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
+                "If prior_admission_refusal is present, this is a new independent review, not a retry of that "
+                "earlier activity. Its old budget reservation remains unresolved; do not clear it, assume "
+                "the earlier activity did not happen, or repeat an uncertain external action. Read current "
+                "confirmed state before choosing a fresh activity or social response. "
                 + ("This primary private conversation owns internal leisure: actively consider continuing "
                    "one small real game, browsing Bilibili, or making something you are interested in. "
                    "Prefer a concrete small activity over repeatedly planning to act later when the tools "
@@ -644,6 +649,15 @@ def _validate_observers(mind):
                 raise ValueError("invalid autonomous timing")
         if state.get("last_status") not in (None, "decided", "sent", "unknown", "suppressed", "no_decision"):
             raise ValueError("invalid autonomous completion status")
+        refusal = state.get("last_admission_refusal")
+        if refusal is not None and (not isinstance(refusal, dict) or
+                set(refusal) != {"event_id", "completed_at", "reason", "previous_activity_status", "budget_reservation_preserved"} or
+                not isinstance(refusal.get("event_id"), str) or not 1 <= len(refusal["event_id"]) <= 256 or
+                re.search(r"[\x00-\x1f]", refusal["event_id"]) or not _valid_ms(refusal.get("completed_at")) or
+                refusal.get("reason") != "previous_turn_unresolved" or
+                refusal.get("previous_activity_status") != "unknown" or
+                refusal.get("budget_reservation_preserved") is not True):
+            raise ValueError("invalid autonomous admission refusal")
         if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
                 not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
             raise ValueError("invalid autonomous signature")
@@ -815,6 +829,12 @@ def _observe_cycle(mind, dry=False, force=False):
                 continue
             state["last_status"] = completed["status"]
             state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
+            if (completed["status"] == "no_decision" and completed.get("reason") == "native_admission_refused"
+                    and completed.get("native_turn_completed") is False):
+                state["last_admission_refusal"] = {
+                    "event_id": chain["event"]["event_id"], "completed_at": completed["completed_at"],
+                    "reason": "previous_turn_unresolved", "previous_activity_status": "unknown",
+                    "budget_reservation_preserved": True}
             # A native-completed turn without qq_decide closes this observation,
             # not an LLM decision or a queue-owned review. The ordinary interval
             # below may offer a new generation; the old event is never replayed.
@@ -831,7 +851,7 @@ def _observe_cycle(mind, dry=False, force=False):
             state.pop("pending")
             hits = _read_observer_hits()
         scoped_hits = _scope_hits(hits, scope, primary)
-        payload = _observation_payload(mind, scoped_hits, primary)
+        payload = _observation_payload(mind, scoped_hits, primary, state.get("last_admission_refusal"))
         signature = _observation_signature(mind, scoped_hits, primary)
         changed = signature != state.get("completed_signature")
         due = state.get("next_opportunity_at")
