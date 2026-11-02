@@ -43,12 +43,12 @@ class PanelActivityTests(unittest.TestCase):
         self.rows.append(row)
         return row
 
-    def call(self, name, output=None, *, args=None, error=False, pending=False):
+    def call(self, name, output=None, *, args=None, error=False, pending=False, turn=1):
         call_id = 'call-' + str(len(self.rows))
-        call = self.event('tool/call', {'name': name, 'callId': call_id, 'turn': 1,
+        call = self.event('tool/call', {'name': name, 'callId': call_id, 'turn': turn,
                                       'step': len(self.rows), 'arguments': json.dumps(args or {})})
         if not pending:
-            self.event('tool/result', {'turn': 1, 'step': call['data']['step'],
+            self.event('tool/result', {'turn': turn, 'step': call['data']['step'],
                 'message': {'source': {'callId': call_id}, 'toolCallId': call_id,
                             'isError': error, 'content': [{'type': 'text', 'text': json.dumps(output)}]}},
                 sourceEventSeqs=[call['seq']])
@@ -68,7 +68,7 @@ class PanelActivityTests(unittest.TestCase):
         self.event('user/message', {'content': [{'type': 'text', 'text': SECRET}]})
         self.call('bili_recommend', {'ok': True, 'videos': [{'bvid': BV, 'title': 'Public fixture'}, {'bvid': BV}]})
         self.call('bili_video_info', {'bvid': BV, 'title': 'Public fixture'}, args={'bvid': BV})
-        self.call('bili_subtitle', {'bvid': BV, 'title': 'Public fixture', 'segments': 2, 'text': SECRET}, args={'bvid': BV})
+        self.call('bili_subtitle', {'bvid': BV, 'title': 'Public fixture', 'segments': 2, 'text': 'Public subtitle'}, args={'bvid': BV})
         self.call('bili_frames', {'ok': True, 'bvid': BV, 'frames': [1, 2], 'image_attached': False}, args={'bvid': BV})
         self.call('read', {'text': SECRET}, args={'path': SECRET})
         result = self.snapshot(); main = result['mainAgent']
@@ -120,7 +120,7 @@ class PanelActivityTests(unittest.TestCase):
         self.assertEqual(reply['public_visibility'], 'unverified')
         self.assertNotIn(SECRET, json.dumps(result))
         self.assertNotIn('reply', result['recentActivity']['records'][0])
-        self.assertNotIn(text, json.dumps(result['recentActivity'], ensure_ascii=False))
+        self.assertEqual(result['recentActivity']['episodes'][0]['evidence'][0]['reply']['text'], text)
 
     def test_failed_unknown_and_pending_comments_keep_attempt_text_without_claiming_sent(self):
         for value, extra in [({'success': False, 'error': SECRET}, {}),
@@ -176,7 +176,7 @@ class PanelActivityTests(unittest.TestCase):
         self.call('bili_recommend', {'ok': True, 'videos': [{'bvid': other, 'title': '仅候选'}]})
         self.call('bili_reply', {'success': True, 'rpid': 202}, args={'bvid': action_only, 'text': '仅评论'})
         self.call('bili_video_info', {'bvid': BV, 'title': '真实资料标题'}, args={'bvid': BV})
-        self.call('bili_subtitle', {'bvid': BV, 'segments': 1, 'text': SECRET}, args={'bvid': BV})
+        self.call('bili_subtitle', {'bvid': BV, 'segments': 1, 'text': '实际公开字幕'}, args={'bvid': BV})
         self.call('bili_reply', {'success': True, 'rpid': 203}, args={'bvid': BV, 'text': '公开评论'})
         self.call('bili_frames', {'error': SECRET}, args={'bvid': BV})
         self.call('bili_cover', args={'bvid': BV}, pending=True)
@@ -340,6 +340,194 @@ class PanelActivityTests(unittest.TestCase):
             identity_file=self.identity, dsh_home=self.home, now=NOW)['mainAgent']
         self.assertEqual(main['status'], 'unavailable')
         self.assertIn('unsafe_source', main['coverage']['reasons'])
+
+    def trusted_options(self):
+        self.write()
+        return dict(workspace=str(self.work), agent_preset='Fixture',
+                    identity_file=self.identity, dsh_home=self.home, now=NOW)
+
+    def test_turn_episode_has_actual_public_content_and_no_private_or_reasoning_text(self):
+        self.event('turn/start', {'turn': 1})
+        self.event('user/message', {'source': {'kind': 'plugin:dsh-lanya-observation'}, 'content': SECRET})
+        self.event('assistant/message', {'message': {'content': [{'type': 'reasoning', 'text': SECRET},
+                                                                  {'type': 'text', 'text': SECRET}]}})
+        self.call('bili_video_info', {'bvid': BV, 'title': '真正返回的标题',
+                  'owner': {'name': '公开作者', 'mid': 9_999_999_999}, 'cookie': SECRET},
+                  args={'bvid': BV, 'title': SECRET, 'author': SECRET})
+        public = '这是一段实际返回的公开字幕。\n' * 200
+        self.call('bili_subtitle', {'bvid': BV, 'segments': 2, 'text': public}, args={'bvid': BV})
+        self.call('exec', {'stdout': SECRET}, args={'command': SECRET})
+        self.call('qq_decide', {'accepted': True}, args={'verdict': 'idle', 'reasoning': SECRET})
+        self.event('turn/end', {'turn': 1})
+        result = self.snapshot(); recent = result['recentActivity']
+        self.assertEqual(len(recent['episodes']), 1)
+        episode = recent['episodes'][0]
+        self.assertEqual(episode['trigger_origin'], 'observation')
+        self.assertEqual(episode['turn_count'], 1)
+        self.assertEqual(episode['status'], 'observed')
+        self.assertEqual(episode['videos'][0]['author'], '公开作者')
+        self.assertIn('真正返回的标题', episode['title'])
+        subtitle = next(row for row in episode['evidence'] if row['tool'] == 'bili_subtitle')
+        self.assertEqual(subtitle['content_excerpt'], public.strip()[:activity.MAX_CONTENT_EXCERPT])
+        self.assertTrue(subtitle['content_truncated'])
+        self.assertIn('不代表完整播放', subtitle['summary'])
+        self.assertEqual(recent['decisions'][0]['verdict'], 'idle')
+        self.assertEqual(recent['decisions'][0]['status'], 'accepted')
+        self.assertNotIn('qq_decide', episode['tool_names'])
+        text = json.dumps(result)
+        for value in (SECRET, str(9_999_999_999), self.header['id'], '_episode_id', 'command', 'reasoning'):
+            self.assertNotIn(value, text)
+
+    def test_idle_decisions_do_not_push_real_activity_out_of_episode_limit(self):
+        self.call('bili_video_info', {'bvid': BV, 'title': '实际活动'}, args={'bvid': BV}, turn=1)
+        for turn in range(2, 52):
+            self.call('qq_decide', {'accepted': True}, args={'verdict': 'idle'}, turn=turn)
+        recent = self.snapshot(limit=1)['recentActivity']
+        self.assertEqual(len(recent['episodes']), 1)
+        self.assertIn('实际活动', recent['episodes'][0]['title'])
+        self.assertEqual(recent['counts'], {'episodes': 1, 'decisions': 50, 'tools': 1})
+        self.assertFalse(recent['coverage']['truncated'])
+        self.assertTrue(recent['coverage']['records_truncated'])
+        self.assertTrue(recent['coverage']['decisions_truncated'])
+
+    def test_only_complete_native_single_input_turns_have_a_known_origin(self):
+        cases = [(['plugin:dsh-onebot', 'runtime-context'], 'live'),
+                 (['plugin:dsh-lanya-observation', 'agent-instructions'], 'observation'),
+                 (['plugin:dsh-lanya-observation', 'plugin:dsh-onebot'], 'unknown'),
+                 (['runtime-context'], 'unknown'), (['other'], 'unknown')]
+        for turn, (kinds, expected) in enumerate(cases, 1):
+            self.event('turn/start', {'turn': turn})
+            for kind in kinds:
+                self.event('user/message', {'source': {'kind': kind}, 'content': SECRET})
+            self.call('bili_video_info', {'bvid': BV, 'title': expected}, args={'bvid': BV}, turn=turn)
+            self.event('turn/end', {'turn': turn})
+        self.event('turn/start', {'turn': 6})
+        self.event('user/message', {'source': {'kind': 'plugin:dsh-onebot'}})
+        self.call('read', {'text': SECRET}, turn=6)
+        episodes = self.snapshot()['recentActivity']['episodes']
+        self.assertEqual([row['trigger_origin'] for row in episodes],
+                         ['unknown', *[expected for _, expected in reversed(cases)]])
+        self.assertNotIn(SECRET, json.dumps(episodes))
+
+    def test_failed_pending_and_unknown_tool_results_never_become_accomplishments(self):
+        self.call('bili_video_info', {'error': SECRET}, args={'bvid': BV}, turn=1)
+        self.call('bili_subtitle', args={'bvid': BV}, pending=True, turn=2)
+        self.call('bili_subtitle', {'bvid': BV, 'text': SECRET, 'segments': 0}, args={'bvid': BV}, turn=3)
+        self.call('exec', {'stdout': 'I watched everything ' + SECRET}, args={'command': SECRET}, turn=4)
+        episodes = self.snapshot()['recentActivity']['episodes']
+        self.assertEqual([row['status'] for row in episodes], ['returned', 'unknown', 'pending', 'failed'])
+        self.assertTrue(all('content_excerpt' not in item for row in episodes for item in row['evidence']))
+        self.assertNotIn(SECRET, json.dumps(episodes))
+
+    def test_daily_facts_exact_beijing_day_reads_beyond_seven_days_and_counts_before_limits(self):
+        target = activity.dt.datetime.fromtimestamp(NOW / 1000, activity.CHINA).date() - activity.dt.timedelta(days=10)
+        start = int(activity.dt.datetime.combine(target, activity.dt.time(), activity.CHINA).timestamp() * 1000)
+        stamps = [start - 1, start, start + 1, start + 86400000]
+        for turn, stamp in enumerate(stamps, 1):
+            begin = len(self.rows)
+            self.call('bili_video_info', {'bvid': BV, 'title': '日边界事实'}, args={'bvid': BV}, turn=turn)
+            for row in self.rows[begin:]: row['time'] = stamp
+        options = self.trusted_options()
+        view = activity.daily_facts(day=target.isoformat(), limit=1, **options)
+        self.assertEqual(view['counts']['episodes'], 2)
+        self.assertEqual(view['counts']['tools'], 2)
+        self.assertTrue(view['coverage']['truncated'])
+        self.assertTrue(view['coverage']['day_closed'])
+        self.assertFalse(view['coverage']['all_account_history_complete'])
+        self.assertEqual(view['coverage']['window_start'], start)
+        self.assertEqual(view['coverage']['window_end'], start + 86400000)
+        self.assertEqual(view['episodes'][0]['started_at'], start + 1)
+        self.assertEqual(activity.activity_snapshot(**options)['recentActivity']['counts']['episodes'], 0)
+
+    def test_daily_catalog_parses_once_and_matches_each_daily_view_without_tail_cutoff(self):
+        for turn in range(1, 45):
+            begin = len(self.rows)
+            self.call('read', {'text': SECRET}, args={'path': SECRET}, turn=turn)
+            for row in self.rows[begin:]: row['time'] = NOW - (turn % 3) * 86400000 - 10000
+        options = self.trusted_options()
+        with mock.patch.object(activity, '_native', wraps=activity._native) as parser:
+            catalog = activity.daily_catalog(**options)
+        self.assertEqual(parser.call_count, 1)
+        self.assertEqual(sum(row['counts']['tools'] for row in catalog['facts']), 44)
+        for fact in catalog['facts']:
+            self.assertEqual(fact, activity.daily_facts(day=fact['day'], **options))
+        self.assertNotIn(SECRET, json.dumps(catalog))
+
+    def test_episode_evidence_is_bounded_without_losing_full_tool_count_or_old_inode_checks(self):
+        for _ in range(activity.MAX_EPISODE_EVIDENCE + 5): self.call('read', {'text': SECRET})
+        recent = self.snapshot()['recentActivity']
+        episode = recent['episodes'][0]
+        self.assertEqual(episode['evidence_total'], activity.MAX_EPISODE_EVIDENCE + 5)
+        self.assertEqual(len(episode['evidence']), activity.MAX_EPISODE_EVIDENCE)
+        self.assertTrue(episode['evidence_truncated'])
+        self.assertEqual(recent['counts']['tools'], activity.MAX_EPISODE_EVIDENCE + 5)
+        self.header['agentPreset'] = 'Foreign'
+        unavailable = activity.daily_catalog(**self.trusted_options())
+        self.assertEqual(unavailable['status'], 'unavailable')
+        self.assertTrue(all(row['episodes'] == [] for row in unavailable['facts']))
+
+    def test_exact_day_invalid_or_future_input_is_refused(self):
+        for day in ('2026-99-99', '2026-1-1', '2039-01-01', '../private', None):
+            with self.subTest(day=day), self.assertRaises(activity.ActivityUnavailable):
+                activity.daily_facts(day=day, **self.trusted_options())
+
+    def test_catalog_does_not_make_a_future_journal_date_from_clock_tolerance(self):
+        today = activity.dt.datetime.fromtimestamp(NOW / 1000, activity.CHINA).date()
+        next_start = int(activity.dt.datetime.combine(today + activity.dt.timedelta(days=1),
+                         activity.dt.time(), activity.CHINA).timestamp() * 1000)
+        self.call('read_image', {'text': SECRET})
+        for row in self.rows: row['time'] = next_start + 10
+        options = dict(self.trusted_options(), now=next_start - 10)
+        self.assertEqual(activity.activity_snapshot(**options)['recentActivity']['counts']['tools'], 1)
+        catalog = activity.daily_catalog(**options)
+        self.assertEqual(catalog['days'], [today.isoformat()])
+        self.assertEqual(catalog['facts'][0]['counts']['tools'], 0)
+        self.assertEqual(catalog['coverage']['future_day_records_omitted'], 1)
+
+    def test_actual_tool_families_get_readable_labels_without_raw_operations(self):
+        for name in ('pwsh', 'read_image', 'glob', 'edit'):
+            self.call(name, {'stdout': SECRET}, args={'command': SECRET, 'path': SECRET})
+        episode = self.snapshot()['recentActivity']['episodes'][0]
+        self.assertEqual(episode['title'], '运行本地工具与查看结果')
+        self.assertIn('运行PowerShell工具 1 次', episode['summary'])
+        self.assertIn('查看图片或截图 1 次', episode['summary'])
+        self.assertIn('查找文件 1 次', episode['summary'])
+        self.assertNotIn(SECRET, json.dumps(episode))
+
+    def test_successful_subtitle_does_not_hide_unknown_action_or_label_a_different_failed_video(self):
+        self.call('bili_video_info', {'bvid': BV, 'title': '确实读取的字幕视频'}, args={'bvid': BV})
+        self.call('bili_subtitle', {'bvid': BV, 'text': '实际字幕', 'segments': 1}, args={'bvid': BV})
+        other = 'BV0000000001'
+        self.call('bili_video_info', {'error': SECRET}, args={'bvid': other})
+        self.call('bili_reply', {'success': True}, args={'bvid': other, 'text': '尝试评论'})
+        episode = self.snapshot()['recentActivity']['episodes'][0]
+        self.assertEqual(episode['status'], 'partial')
+        self.assertEqual(episode['title'], '读取B站：确实读取的字幕视频')
+        self.assertEqual(episode['evidence'][-1]['reply']['status'], 'unknown')
+        self.assertNotIn(SECRET, json.dumps(episode))
+
+    def test_source_binding_changes_with_mapping_but_not_append_or_content_compaction(self):
+        self.call('bili_video_info', {'bvid': BV, 'title': '公开资料'}, args={'bvid': BV})
+        def binding():
+            return self.snapshot()['recentActivity']['coverage']['source_windows'][0]['binding_sha256']
+        first = binding()
+        self.assertRegex(first, '^[0-9a-f]{64}$')
+        rewritten = json.loads(json.dumps(self.rows[-1]['data']))
+        rewritten['message']['content'] = [{'type': 'text', 'text': '压缩后的公开摘要'}]
+        self.event('tool/result', rewritten, sourceEventSeqs=[1],
+                   surfaceOp={'op': 'replace', 'startSeq': 1, 'endSeq': 1})
+        self.assertEqual(binding(), first)
+        self.call('read_image', {'text': SECRET}, turn=2)
+        self.assertEqual(binding(), first)
+        new_session = 'different-fixture-session'
+        self.header['id'] = new_session
+        self.mapping.write_text(json.dumps({'private:101': new_session}))
+        self.path = self.path.parent.parent / activity._segment(new_session) / 'session.v4.jsonl'
+        self.path.parent.mkdir()
+        self.assertNotEqual(binding(), first)
+        text = json.dumps(self.snapshot())
+        self.assertNotIn(new_session, text)
+        self.assertNotIn(str(self.work), text)
 
 
 if __name__ == '__main__': unittest.main()

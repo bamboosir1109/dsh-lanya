@@ -952,6 +952,18 @@ def panel_main_activity():
                 "recentActivity": dict(base, schema="panel-native-tools/v1")}
 
 
+def panel_activity_journal(day=None, limit=90):
+    """Only the configured local owner's managed fact diaries; never generates."""
+    try:
+        from activity_journal import journal_snapshot
+        options = _panel_native_record_options()
+        return journal_snapshot(workspace=options["workspace"], agent_preset=options["agent_preset"],
+                                data_directory=DATA, day=day, limit=limit)
+    except (OSError, ValueError, TypeError, ImportError, project_conf.ConfigError):
+        return {"schema": "activity-journal/v1", "status": "error", "generated_at": int(time.time() * 1000),
+                "read_only": True, "private": True, "days": [], "selected": None, "selected_status": "unavailable"}
+
+
 def _bili_cached_covers(bvids):
     """Panel refresh must not fetch platform data or write a cache."""
     try:
@@ -1880,6 +1892,51 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/activity/journal":
+            # This private local reader does not inherit generic wildcard CORS.
+            origin = self.headers.get("Origin")
+            code, selected, limit = 200, None, 90
+            try:
+                import ipaddress
+                if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                    raise PermissionError()
+                ports = {int(project_conf.get("panelPort", 19389)), int(project_conf.get("panelStaticPort", 19388)), self.server.server_port}
+                host = urlparse("http://" + self.headers.get("Host", ""))
+                if host.hostname not in ("127.0.0.1", "localhost", "::1") or host.port not in ports or host.username or host.password:
+                    raise PermissionError()
+                if origin:
+                    parsed = urlparse(origin)
+                    if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or
+                            parsed.port not in ports or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+                        raise PermissionError()
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) - {"day", "limit"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError()
+                selected = query.get("day", [None])[0]
+                if selected is not None and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", selected) is None:
+                    raise ValueError()
+                limit = int(query.get("limit", ["90"])[0])
+                if not 1 <= limit <= 90:
+                    raise ValueError()
+                result = panel_activity_journal(selected, limit)
+            except PermissionError:
+                code, origin = 403, None
+                result = {"schema": "activity-journal/v1", "status": "error", "read_only": True, "private": True, "days": [], "selected": None}
+            except (ValueError, TypeError):
+                code = 400
+                result = {"schema": "activity-journal/v1", "status": "error", "read_only": True, "private": True, "days": [], "selected": None}
+            body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.send_header("x-content-type-options", "nosniff")
+            self.send_header("vary", "Origin")
+            if origin:
+                self.send_header("access-control-allow-origin", origin)
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/service-health":
             port = self.server.server_port
             role = "works" if port == project_conf.get("panelStaticPort", 19388) else "api" if port == project_conf.get("panelPort", 19389) else "unknown"

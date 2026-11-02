@@ -127,6 +127,17 @@ main{flex:1;height:100vh;overflow-y:auto;padding:30px 34px 80px}
 .record-row a{color:var(--acc);text-decoration:none}
 .record-row .dsc{display:block;margin-top:3px}
 .record-row .reply-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.record-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:5px}
+.record-head strong{font-size:15px;color:var(--fg)}
+.record-status{font-size:11px;color:var(--fg2);background:var(--card2);border-radius:99px;padding:3px 9px}
+.record-status[data-state="failed"],.record-status[data-state="partial"],.record-status[data-state="unknown"],.record-status[data-state="pending"]{color:var(--warn)}
+.record-summary{margin:8px 0;color:var(--fg2);font-size:13px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+.record-details{margin-top:10px;color:var(--fg2);font-size:12px}
+.record-details summary{cursor:pointer;color:var(--acc);padding:5px 0}
+.record-details .record-row{padding:10px 0}
+.record-excerpt{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.8;background:var(--card2);padding:12px;border-radius:9px;max-height:400px;overflow:auto}
+.record-day{margin:18px 0 3px;font-size:12px;color:var(--dim);font-weight:600}
+.record-day:first-child{margin-top:0}
 .page{display:none;max-width:1020px;margin:0 auto}
 .page.on{display:block;animation:rise .26s cubic-bezier(.22,1,.36,1)}
 @keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
@@ -817,6 +828,15 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="stat"><div class="k">自主机会间隔</div><div class="v" id="activityCadence">—</div><div class="s" id="activityNext">正在核对下次复查</div></div>
     <div class="stat"><div class="k">执行预算</div><div class="v" id="liveMoney" style="font-size:17px">—</div><div class="s" id="liveMoneySub">正在读取当前规则</div></div>
   </div>
+  <div class="card"><h3>最近做了什么</h3><p class="note" id="activityHistoryNote">正在归并可核验的实际活动。</p><div class="record-list" id="liveLog"></div></div>
+  <div class="card" id="activityJournal">
+    <h3>每天的事实日记</h3>
+    <p class="note" id="activityJournalNote">正在读取已生成的本地日记。这里只记录有证据的事情，不代表完整账号活动或主观感受。</p>
+    <div class="spend-toolbar"><label for="activityJournalDate">查看日期 <select id="activityJournalDate" onchange="loadActivityJournal(this.value)" disabled></select></label><button onclick="loadActivityJournal()">刷新日记记录</button></div>
+    <p class="note" id="activityJournalState">尚未确认生成状态。</p>
+    <details id="activityJournalDetails"><summary id="activityJournalTitle">查看日记正文</summary><pre class="record-excerpt" id="activityJournalBody" tabindex="0" aria-label="本地事实日记正文">正在读取…</pre></details>
+  </div>
+  <details class="card" id="activityDecisions"><summary id="activityDecisionSummary">休息与回复判断</summary><p class="note">判断回复或保持安静，不代表实际发送。活动证据在上方单独展示。</p><div class="record-list" id="activityDecisionList"></div></details>
   <div class="card">
     <h3>当前生效的设置 <span class="setting-state" id="activitySettingState">正在读取</span></h3>
     <p class="note">保存后供新的自主机会读取。到期只请求主 agent 判断，正在进行的活动和已约复查不会被重放。</p>
@@ -827,12 +847,11 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="btnrow"><button class="pri" id="activitySave" onclick="saveAutonomySettings()" disabled>保存设置</button><button onclick="reloadCurrentSettings('activity')">放弃修改并重读</button><button onclick="goto('money')">查看自主预算</button></div>
     <div class="out" id="actOut"></div>
   </div>
-  <div class="card">
-    <h3>检查与下一步</h3>
+  <details class="card">
+    <summary>调度与下一次复查</summary>
     <div class="filelist" id="activitySchedule"></div>
     <div class="btnrow"><button id="liveCheck" onclick="doAction('lifeloop','actOut')" disabled>请求主 agent 检查</button><button onclick="loadLive()">刷新记录</button><button onclick="goto('bili')">B站浏览与回复</button></div>
-  </div>
-  <div class="card"><h3>近期实际工具活动</h3><p class="note">按本工作区可核验的调用记录展示。工具成功、播放完成和 QQ 送达分别核对。</p><div class="filelist record-list" id="liveLog"></div></div>
+  </details>
 </div>
 
 <div class="page" id="page-napcat">
@@ -1006,11 +1025,15 @@ function recordPage(path){
   const bare = path.split('?')[0];
   if(bare === '/state') return currentPage === 'system' ? 'system' : 'overview';
   if(bare === '/files') return /[?&]dir=(made|archive)(&|$)/.test(path) ? 'works' : 'memory';
-  return ({'/bili':'bili','/live':'activity','/autonomy/settings':currentPage === 'talk' ? 'talk' : 'activity','/memes':'memes',
+  return ({'/bili':'bili','/live':'activity','/activity/journal':'activity','/autonomy/settings':currentPage === 'talk' ? 'talk' : 'activity','/memes':'memes',
     '/budget':['activity','overview','system'].includes(currentPage) ? currentPage : 'money','/schedule':'schedule','/memory':'memory','/works':'works',
     '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'napcat'})[bare];
 }
 function noteRecord(path, state, at){
+  if(path.split('?')[0] === '/activity/journal'){
+    const match = path.match(/[?&]day=([^&]+)/), selectedDay = $('activityJournal')?.dataset.date;
+    if(match && selectedDay && decodeURIComponent(match[1]) !== selectedDay) return;
+  }
   if(path.split('?')[0] === '/files'){
     const match = path.match(/[?&]dir=([^&]+)/);
     const dir = match ? decodeURIComponent(match[1]) : '';
@@ -1042,10 +1065,10 @@ function renderRecordSync(){
   if(button) button.disabled = refreshingPages.has(currentPage);
 }
 document.addEventListener('input', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 document.addEventListener('change', event => {
-  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
+  if(event.target.matches?.('input,textarea,select') && !event.target.matches('input.fchk[type="checkbox"],#fileSearch,#spendRange,#spendSelectedDate,#activityJournalDate')) { dirtyPages.add(currentPage); pageEdits.set(currentPage, (pageEdits.get(currentPage) || 0) + 1); renderRecordSync(); }
 });
 
 async function refreshCurrentPage(manual){
@@ -1987,6 +2010,157 @@ async function loadBiliCred(){
   }catch(e){ return false; }
 }
 
+function recordOpenDetails(box){
+  return new Set([...box.querySelectorAll('details[data-record-key]')].filter(node => node.open).map(node => node.dataset.recordKey));
+}
+
+function recordDetails(box, key, label, opened){
+  const details = document.createElement('details'); details.className = 'record-details';
+  details.dataset.recordKey = String(key); details.open = opened.has(String(key));
+  const summary = document.createElement('summary'); summary.textContent = label; details.appendChild(summary);
+  box.appendChild(details); return details;
+}
+
+function recordText(box, text, className = 'record-summary'){
+  if(typeof text !== 'string' || !text.trim()) return;
+  const node = document.createElement('p'); node.className = className; node.textContent = text; box.appendChild(node); return node;
+}
+
+function recordState(box, state, label){
+  const node = document.createElement('span'); node.className = 'record-status'; node.dataset.state = state;
+  node.textContent = label || ({observed:'已记录动作',returned:'工具已返回',succeeded:'已确认',accepted:'接口已接受',rejected:'未接受',failed:'失败',partial:'部分结果待确认',pending:'待完成',unknown:'结果未确认'})[state] || '结果未确认';
+  box.appendChild(node);
+}
+
+function recordContent(box, text, truncated, label){
+  if(typeof text !== 'string' || !text.trim()) return false;
+  recordText(box, label + (truncated || text.length > 6000 ? ' · 部分内容' : ''), 'dsc');
+  const content = document.createElement('pre'); content.className = 'record-excerpt'; content.textContent = text.slice(0, 6000); box.appendChild(content); return true;
+}
+
+function recordReply(box, reply){
+  if(!reply || typeof reply !== 'object') return;
+  const type = ({comment:'评论正文',comment_reply:'回复评论正文',private_message:'私信状态'})[reply.type] || '平台回复';
+  recordText(box, type + ' · ' + (({accepted:'接口已接受',failed:'失败',pending:'待完成',unknown:'结果未知'})[reply.status] || '结果未知'));
+  if(reply.type !== 'private_message') recordContent(box, reply.text, reply.text_truncated, '实际尝试的公开正文');
+  recordText(box, '平台回执：' + (reply.receipt_present === true ? '存在' : '尚未确认'), 'dsc');
+  if(reply.status === 'accepted') recordText(box, reply.type === 'private_message' ? '接口接受回执，未验证接收方可见。' : '有接口回执，公开可见性尚未核验。', 'dsc');
+  else if(reply.status === 'unknown') recordText(box, '未获得确定结果，不能认定已发出；不自动重发。', 'dsc');
+}
+
+function renderActivityHistory(data){
+  const box = $('liveLog'); if(!box) return;
+  if(arguments.length) box.activityData = data;
+  const history = box.activityData || {}, opened = recordOpenDetails(box);
+  const available = ['ok','partial'].includes(history.status), ready = Array.isArray(history.episodes);
+  const episodes = available && ready ? history.episodes.filter(row => row && typeof row === 'object') : [];
+  const records = available && Array.isArray(history.records) ? history.records.filter(row => row.tool !== 'qq_decide') : [];
+  const coverage = history.coverage || {};
+  setText('activityHistoryNote', !available ? '活动来源暂不可用，不能据此判断没有活动。' : !ready ? '当前来源尚未提供归并记录，可展开查看实际调用明细。' :
+    '仅当前管理员私聊与配置群的当前绑定记录，同一轮实际动作归为一件事，并标明触发来源。按动作发起日归档，回执可能跨日返回。' + (history.status === 'partial' || coverage.truncated ? '当前只覆盖部分记录。' : '') + '工具返回、视频完整播放和消息送达分别核对。');
+  const fingerprint = JSON.stringify([history.status, episodes, history.decisions, history.counts, coverage.truncated, box.dataset.visibleCount]);
+  if(box.activityFingerprint === fingerprint) return;
+  box.activityFingerprint = fingerprint; box.innerHTML = '';
+  if(!episodes.length) recordText(box, !available ? '等待恢复可核验记录。' : ready ? '当前范围暂无实际动作；休息与回复判断单独列在下方。' : '尚无按活动归并的时间线。', 'empty');
+  const count = Math.max(20, Number(box.dataset.visibleCount) || 20), visible = episodes.slice(0, count);
+  let previousDay;
+  visible.forEach((episode, index) => {
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(episode.day) ? episode.day : '日期未确认';
+    if(day !== previousDay){ recordText(box, day, 'record-day'); previousDay = day; }
+    const entry = document.createElement('article'); entry.className = 'record-row';
+    const head = document.createElement('div'); head.className = 'record-head';
+    const title = document.createElement('strong'); title.textContent = episode.title || '实际活动'; head.appendChild(title);
+    recordState(head, episode.status); entry.appendChild(head);
+    recordState(head, episode.trigger_origin === 'unknown' || !episode.trigger_origin ? 'unknown' : 'origin', ({observation:'自主活动',live:'会话中活动'})[episode.trigger_origin] || '触发来源未确认');
+    recordText(entry, biliRecordTime(episode.started_at) + (episode.updated_at && episode.updated_at !== episode.started_at ? ' 至 ' + biliRecordTime(episode.updated_at) : ''), 'dsc');
+    recordText(entry, ({primary:'管理员私聊范围',social:'配置群范围'})[episode.conversation_role] || '会话范围未确认', 'dsc');
+    recordText(entry, episode.summary);
+    (Array.isArray(episode.videos) ? episode.videos : []).slice(0, 8).forEach(video => {
+      entry.appendChild(biliVideoLink(video)); if(video.author) recordText(entry, '作者：' + video.author, 'dsc');
+    });
+    const evidence = Array.isArray(episode.evidence) ? episode.evidence : [];
+    const details = recordDetails(entry, episode.id || 'activity-' + index, '查看内容和 ' + evidence.length + ' 项动作证据', opened);
+    if(episode.evidence_truncated === true) recordText(details, '当前展示 ' + evidence.length + ' / ' + (Number.isSafeInteger(episode.evidence_total) ? episode.evidence_total : '部分') + ' 项证据，未展示部分不能据此认定不存在。', 'dsc');
+    evidence.forEach(item => {
+      const row = document.createElement('div'); row.className = 'record-row';
+      recordText(row, String(item.label || '工具动作') + ' · ' + biliRecordTime(item.at));
+      if(item.completed_at) recordText(row, '回执时间：' + biliRecordTime(item.completed_at), 'dsc');
+      recordState(row, item.status);
+      recordText(row, item.summary);
+      if(item.video) row.appendChild(biliVideoLink(item.video));
+      recordContent(row, item.content_excerpt, item.content_truncated, item.kind === 'subtitle' || item.tool === 'bili_subtitle' ? '字幕摘录，未证明完整播放' : '结果内容摘录');
+      recordReply(row, item.reply);
+      recordText(row, '调用：' + String(item.tool || '未确认'), 'dsc'); details.appendChild(row);
+    });
+    if(!evidence.length) recordText(details, '没有可展开的动作证据。', 'dsc');
+    box.appendChild(entry);
+  });
+  if(episodes.length > visible.length){
+    const more = document.createElement('button'); more.type = 'button'; more.textContent = '再显示 ' + Math.min(20, episodes.length - visible.length) + ' 次活动';
+    more.onclick = () => { box.dataset.visibleCount = String(count + 20); renderActivityHistory(); }; box.appendChild(more);
+  }
+  if(!ready && records.length){
+    const details = recordDetails(box, 'unmerged-tools', '实际调用明细 · ' + records.length + ' 条', opened);
+    records.slice(0, 30).forEach(item => { recordText(details, biliRecordTime(item.at) + ' · ' + String(item.tool || '工具动作')); recordState(details, item.status); });
+  }
+  const list = $('activityDecisionList'), decisions = available && Array.isArray(history.decisions) ? history.decisions : [];
+  list.innerHTML = '';
+  const quiet = decisions.filter(row => row.status === 'accepted' && ['idle','defer'].includes(row.verdict)).length;
+  setText('activityDecisionSummary', '休息与回复判断 · 最近 ' + decisions.length + ' 次' + (Number.isSafeInteger(history.counts?.decisions) && history.counts.decisions > decisions.length ? ' / 共 ' + history.counts.decisions + ' 次' : '') + (quiet ? '，其中 ' + quiet + ' 次选择安静或稍后再看' : ''));
+  if(!decisions.length) recordText(list, available ? '当前范围暂无独立判断记录。' : '判断来源暂不可用。', 'empty');
+  decisions.slice(0, 30).forEach(item => {
+    const row = document.createElement('div'); row.className = 'record-row';
+    recordText(row, biliRecordTime(item.at) + ' · ' + (item.status === 'accepted' ? '已选择：' : '尝试：') + (({reply:'可回复',idle:'本轮保持安静',defer:'稍后再看',tool_action:'内部行动'})[item.verdict] || '判断结果未确认'));
+    recordState(row, item.status, ({accepted:'判断已接受',rejected:'判断未接受',returned:'判断已返回'})[item.status]); list.appendChild(row);
+  });
+}
+
+function activityJournalStatus(status){
+  return ({open:'当日持续记录',closed_snapshot:'日终事实快照',partial:'部分来源或结果待确认'})[status] || '状态未确认';
+}
+
+async function loadActivityJournal(day){
+  const root = $('activityJournal'); if(!root) return;
+  const sequence = (root.requestSequence || 0) + 1; root.requestSequence = sequence;
+  if(day !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(day))) return;
+  if(day){ root.dataset.date = day; root.dataset.explicitDate = 'true'; }
+  try{
+    const data = await api('/activity/journal?limit=90', null, true);
+    if(sequence !== root.requestSequence) return;
+    if(data.schema !== 'activity-journal/v1' || data.read_only !== true || data.private !== true || !['ok','empty'].includes(data.status) || !Array.isArray(data.days)) throw new Error('日记来源暂不可确认');
+    const days = data.days.filter(row => row && /^\d{4}-\d{2}-\d{2}$/.test(row.date)).sort((a,b) => b.date.localeCompare(a.date));
+    const select = $('activityJournalDate'); select.innerHTML = ''; select.disabled = !days.length;
+    days.forEach(row => { const option = document.createElement('option'); option.value = row.date; option.textContent = row.date + ' · ' + activityJournalStatus(row.status); select.appendChild(option); });
+    const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+    setText('activityJournalNote', (days.some(row => row.date === today) ? '今天已有事实记录，后续可能继续补充。' : '今天尚未生成事实日记。') + '仅覆盖当前可信来源，即管理员私聊与配置群的当前绑定记录，不代表完整账号活动或主观感受。');
+    if(data.freshness?.status === 'degraded') setText('activityJournalNote','保留上次成功日记，当前来源不足。仅覆盖此前可信来源，不代表当前扫描完整或完整账号活动。');
+    if(!days.length){
+      delete root.dataset.date; setText('activityJournalState','尚无已生成的日记。'); setText('activityJournalTitle','暂无日记正文'); setText('activityJournalBody','有真实事实快照后才会显示；刷新不会调用模型编写日记。'); return;
+    }
+    const chosen = root.dataset.explicitDate === 'true' ? days.find(row => row.date === root.dataset.date) : days.find(row => row.date === today) || days[0];
+    if(!chosen) throw new Error('所选日期尚无已生成日记');
+    root.dataset.date = chosen.date; select.value = chosen.date;
+    const result = await api('/activity/journal?day=' + encodeURIComponent(chosen.date), null, true);
+    if(sequence !== root.requestSequence) return;
+    const selected = result.selected;
+    if(result.schema !== 'activity-journal/v1' || result.read_only !== true || result.private !== true || result.status !== 'ok' || selected?.date !== chosen.date || typeof selected.markdown !== 'string') throw new Error('所选日记尚未生成或读取失败');
+    const coverage = selected.coverage || {}, degraded = data.freshness?.status === 'degraded' || result.freshness?.status === 'degraded' || coverage.latest_scan_degraded === true;
+    const partial = selected.status === 'partial' || coverage.complete === false || coverage.truncated === true;
+    if(degraded) setText('activityJournalNote','保留上次成功日记，当前来源不足。仅覆盖此前可信来源，不代表当前扫描完整或完整账号活动。');
+    setText('activityJournalState', (degraded ? '保留上次成功日记，当前来源不足 · 原记录状态：' : '') + activityJournalStatus(selected.status) +
+      (selected.updated_at ? (degraded ? ' · 最后成功记录于 ' : ' · 更新于 ') + biliRecordTime(selected.updated_at) : degraded ? ' · 最后成功时间未确认' : '') +
+      (partial ? ' · 来源覆盖不完整，待确认事项见正文。' : ' · 仍仅代表当时可核验的事实。'));
+    setText('activityJournalTitle', chosen.date + ' · 查看事实日记');
+    const text = selected.markdown.slice(0, 200000) + (selected.markdown.length > 200000 ? '\n\n页面仅显示前 200000 字符，原始日记保留。' : ''), body = $('activityJournalBody');
+    if(body.textContent !== text) body.textContent = text;
+    body.setAttribute('aria-label', chosen.date + ' 本地事实日记正文');
+  }catch(error){
+    if(sequence !== root.requestSequence) return;
+    setText('activityJournalState','读取失败，已有正文仅供对照，不能据此判断今天没有记录。');
+    if(typeof noteRecord === 'function') noteRecord('/activity/journal','error');
+  }
+}
+
 async function loadLive(){
   try{
     const result = await api('/live', null, true);
@@ -2013,20 +2187,13 @@ async function loadLive(){
       if(Number.isSafeInteger(observer.no_decision_count) && observer.no_decision_count > 0) appendPolicyRow(schedule, observer.no_decision_count + ' 个观察范围的上次活动未提交决策，已收尾并等待新机会。');
       appendPolicyRow(schedule, '请求检查只提交观察，是否行动或发消息由主 agent 决定。');
     }
-    const history = live.recentActivity || {}, events = Array.isArray(history.records) ? history.records : [], box = $('liveLog');
-    if(box){
-      box.innerHTML = '';
-      if(!events.length) appendPolicyRow(box, history.status === 'ok' ? '当前可核验范围暂无工具活动。' : '近期活动来源暂不可用，不能据此判断没有活动。');
-      if(history.status === 'partial') appendPolicyRow(box, '当前记录只覆盖部分可核验来源。');
-      events.slice(0,30).forEach(event => {
-        const stamp = new Date(typeof event.at === 'number' && event.at < 1e12 ? event.at * 1000 : event.at);
-        appendPolicyRow(box, (Number.isNaN(stamp.getTime()) ? '时间未确认' : stamp.toLocaleString('zh-CN')) + ' · ' + String(event.tool || '工具调用') + ' · ' + (({succeeded:'成功',failed:'失败',returned:'已返回',pending:'待完成',unknown:'结果未知'})[event.status] || '结果未知'));
-      });
-    }
+    renderActivityHistory(live.recentActivity);
     await loadActivityBudget();
+    await loadActivityJournal();
   }catch(error){
     setText('liveLast','刷新失败，状态未确认'); setText('liveLastAt','无法读取最新调度状态，请稍后刷新。');
     setText('liveWatch','看护状态未确认'); setText('liveWatchAt','最新状态读取失败');
+    setText('activityHistoryNote','刷新失败，保留上次活动记录；不能当作最新状态。');
     if($('liveCheck')) $('liveCheck').disabled = true;
   }
 }
@@ -2127,8 +2294,9 @@ async function loadNapcat(){
 }
 
 function biliRecordTime(at){
+  if((typeof at !== 'number' || !Number.isFinite(at)) && (typeof at !== 'string' || !at.trim())) return '时间未确认';
   const date = new Date(typeof at === 'number' && at < 1e12 ? at * 1000 : at);
-  return Number.isNaN(date.getTime()) ? '时间未确认' : date.toLocaleString('zh-CN');
+  return Number.isNaN(date.getTime()) ? '时间未确认' : date.toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'});
 }
 
 function biliVideoLink(video){
@@ -2162,7 +2330,10 @@ function renderMainBili(history){
   const meta = (entry, text) => { const node = document.createElement('span'); node.className = 'dsc'; node.textContent = text; entry.appendChild(node); };
   const unavailable = !available ? '记录源暂不可用，请稍后刷新。' : !projectionReady ? '当前快照未含完整读取记录，请恢复实时连接后刷新。' : '';
   const videoBox = $('bMainVideos');
-  if(videoBox){
+  const videoFingerprint = JSON.stringify([data.status, projectionReady, videos, records]);
+  if(videoBox && videoBox.recordFingerprint !== videoFingerprint){
+    videoBox.recordFingerprint = videoFingerprint;
+    const opened = recordOpenDetails(videoBox);
     videoBox.innerHTML = '';
     if(unavailable || !videos.length) empty(videoBox, unavailable || '当前范围暂无视频读取记录；推荐候选在下方明细。');
     else videos.forEach(video => {
@@ -2170,12 +2341,29 @@ function renderMainBili(history){
       const reads = records.filter(row => row.video?.bvid === video.bvid && readKinds.includes(row.kind));
       const methods = [...new Set(reads.map(row => (kinds[row.kind] || '读取') + ' · ' + (statuses[row.status] || '结果未知')))];
       meta(entry, biliRecordTime(video.at));
+      if(video.author) meta(entry, '作者：' + video.author);
       meta(entry, methods.length ? methods.join('；') : (video.kinds || []).filter(kind => readKinds.includes(kind)).map(kind => kinds[kind]).join('、'));
+      const subtitle = reads.find(row => row.kind === 'subtitle' && row.status === 'succeeded' && typeof row.content_excerpt === 'string');
+      const excerpt = typeof video.content_excerpt === 'string' ? video.content_excerpt : subtitle?.content_excerpt;
+      const truncated = video.content_truncated === true || subtitle?.content_truncated === true;
+      if(excerpt) recordText(entry, '字幕摘录：' + excerpt.slice(0, 160) + (excerpt.length > 160 ? '…' : ''));
+      const details = recordDetails(entry, video.bvid || 'video-' + videoBox.children.length, excerpt ? '查看字幕内容和读取证据' : '查看读取证据', opened);
+      if(excerpt) recordContent(details, excerpt, truncated, '字幕内容摘录，未证明完整播放');
+      else recordText(details, '当前记录没有可核验的字幕内容摘录。', 'dsc');
+      reads.forEach(row => {
+        recordText(details, biliRecordTime(row.at) + ' · ' + (kinds[row.kind] || '读取') + ' · ' + (statuses[row.status] || '结果未知'), 'dsc');
+        if(Number.isInteger(row.subtitle_chars)) recordText(details, '原始字幕 ' + row.subtitle_chars + ' 字' + (Number.isInteger(row.segment_count) ? '，' + row.segment_count + ' 段' : ''), 'dsc');
+        if(Number.isInteger(row.frame_count)) recordText(details, '取得 ' + row.frame_count + ' 个视频帧；不等于连续播放。', 'dsc');
+      });
+      recordText(details, '推荐、资料、字幕和单帧读取都不能单独证明完整观看。', 'dsc');
       videoBox.appendChild(entry);
     });
   }
   const replyBox = $('bMainReplyRecords');
-  if(replyBox){
+  const replyFingerprint = JSON.stringify([data.status, projectionReady, replies]);
+  if(replyBox && replyBox.recordFingerprint !== replyFingerprint){
+    replyBox.recordFingerprint = replyFingerprint;
+    const opened = recordOpenDetails(replyBox);
     replyBox.innerHTML = '';
     if(unavailable || !replies.length) empty(replyBox, unavailable || '当前范围暂无评论或私信调用记录，不代表全账号从未回复。');
     else replies.forEach(reply => {
@@ -2186,7 +2374,12 @@ function renderMainBili(history){
       entry.appendChild(head); meta(entry, biliRecordTime(reply.at));
       if(reply.video) entry.appendChild(biliVideoLink(reply.video));
       if(reply.type !== 'private_message' && typeof reply.text === 'string'){
-        const body = document.createElement('p'); body.className = 'reply-text'; body.textContent = reply.text; entry.appendChild(body);
+        const body = document.createElement('p'); body.className = 'reply-text'; body.textContent = reply.text.slice(0, 160) + (reply.text.length > 160 ? '…' : ''); entry.appendChild(body);
+        const details = recordDetails(entry, reply.id || 'reply-' + replyBox.children.length, '查看公开正文与回执证据', opened);
+        recordContent(details, reply.text, reply.text_truncated, '实际尝试的公开正文');
+        recordText(details, '平台回执：' + (reply.receipt_present === true ? '存在' : '尚未确认'), 'dsc');
+        const evidence = ({platform_receipt:'平台接口返回了接受回执',platform_rejection:'平台接口明确拒绝',tool_error:'工具执行报错',pending_call:'等待工具返回',unconfirmed_result:'结果没有得到确认'})[reply.evidence];
+        if(evidence) recordText(details, evidence, 'dsc');
         if(reply.text_truncated) meta(entry, '正文较长，当前显示前 2000 字。');
       }
       if(reply.status === 'accepted') meta(entry, reply.type === 'private_message' ? '接口接受回执，未验证接收方可见。' : '有接口回执，公开可见性尚未核验。');

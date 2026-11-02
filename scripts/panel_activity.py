@@ -1,12 +1,15 @@
 """Bounded read-only projections of native tool events for the local panel.
 
-Only configured conversations' current mapping is read. Conversation text,
-reasoning, raw arguments, session IDs and private recipients never enter output.
-Public comment attempts are projected explicitly; platform receipts do not
-establish public visibility. Private-message text is never projected.
+Only configured conversations' current mapping is read. Chat text, reasoning,
+raw arguments, session IDs and private recipients never enter output. Public
+video metadata, bounded actual subtitle excerpts and public comment attempts
+are explicit allowlists; platform receipts do not establish public visibility.
+Compatibility tool records omit replies; episode evidence may contain public
+comments. Private-message text is never projected.
 This is a local runtime record, not proof of playback or recipient visibility.
 """
 import hashlib
+import datetime as dt
 import io
 import json
 import os
@@ -21,6 +24,8 @@ MAX_LINE = 4 * 1024 * 1024
 MAX_ROWS = 200000
 MAX_RESULT = 2 * 1024 * 1024
 MAX_REPLY_TEXT = 2000
+MAX_CONTENT_EXCERPT = 1800
+MAX_EPISODE_EVIDENCE = 40
 SAFE_INTEGER = 9007199254740991
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
@@ -28,6 +33,24 @@ BILI_TOOLS = {
     'bili_frames': 'frames', 'bili_cover': 'cover',
     'bili_reply': 'action', 'bili_send_message': 'action',
 }
+TOOL_LABELS = {
+    'recommendation': '读取B站推荐', 'details': '读取视频资料', 'subtitle': '读取视频字幕',
+    'frames': '提取视频画面', 'cover': '读取视频封面', 'action': '尝试平台操作',
+}
+NAMED_TOOL_LABELS = {
+    'pwsh': '运行PowerShell工具', 'exec': '运行本地工具', 'bash': '运行本地工具',
+    'read': '读取文件', 'view': '查看文件或画面', 'read_image': '查看图片或截图',
+    'write': '写入文件请求', 'edit': '编辑文件请求', 'glob': '查找文件', 'grep': '搜索文件内容',
+    'send_meme': '挑选表情图片', 'qq_send_image': 'QQ发图尝试',
+    'qq_send_message': 'QQ消息发送尝试', 'qq_send_text': 'QQ消息发送尝试',
+    'bili_comments': '读取B站公开评论', 'bili_search': '搜索B站内容',
+    'browser_open': '打开浏览器页面', 'browser_screenshot': '获取浏览器截图',
+    'browser_snapshot': '读取浏览器页面', 'browser_click': '点击浏览器页面',
+    'android_screenshot': '获取手机截图', 'android_tap': '点击手机界面',
+}
+DECISION_VERDICTS = {'reply', 'idle', 'defer', 'tool_action'}
+HOST_CONTEXT_KINDS = {'agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint'}
+CHINA = dt.timezone(dt.timedelta(hours=8))
 
 
 class ActivityUnavailable(ValueError):
@@ -126,7 +149,32 @@ def _video(value):
     title = value.get('title')
     if isinstance(title, str):
         result['title'] = ''.join(char for char in title[:240] if ord(char) >= 32 and ord(char) != 127)
+    # These are public video metadata fields, never a UID or a private sender.
+    author = value.get('author')
+    if not isinstance(author, str):
+        owner = value.get('owner')
+        author = owner.get('name') if isinstance(owner, dict) else None
+    if isinstance(author, str) and author.strip():
+        result['author'] = ''.join(char for char in author[:120] if ord(char) >= 32 and ord(char) != 127)
     return result
+
+
+def _excerpt(text):
+    if not isinstance(text, str):
+        return {}
+    clean = ''.join(char for char in text if ord(char) >= 32 or char in '\n\t').strip()
+    return {'content_excerpt': clean[:MAX_CONTENT_EXCERPT],
+            'content_truncated': len(clean) > MAX_CONTENT_EXCERPT}
+
+
+def _arguments(data):
+    value = data.get('arguments')
+    if isinstance(value, str) and len(value) <= 65536:
+        try:
+            value = _json(value)
+        except ActivityUnavailable:
+            return None
+    return value if isinstance(value, dict) else None
 
 
 def _result_object(message):
@@ -242,7 +290,9 @@ def _bili_result(record, message, error):
             # A malformed nonempty list is not an authoritative empty success.
             if items and not valid:
                 return
-            distinct = {item['bvid']: item for item in valid}
+            distinct = {}
+            for item in valid:
+                distinct.setdefault(item['bvid'], {}).update(item)
             record.update(status='succeeded', item_count=len(distinct), videos=list(distinct.values())[:8])
     elif kind == 'details':
         if video and isinstance(value.get('title'), str):
@@ -252,6 +302,7 @@ def _bili_result(record, message, error):
         count = len(segments) if isinstance(segments, list) else segments
         if video and isinstance(text, str) and text.strip() and _integer(count) and count > 0:
             record.update(status='succeeded', subtitle_chars=len(text), segment_count=count)
+            record.update(_excerpt(text))
     elif kind == 'frames':
         frames = value.get('frames')
         count = len(frames) if isinstance(frames, list) else frames
@@ -283,7 +334,7 @@ def _result_header(data):
     return json.dumps(rest, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
 
 
-def _native(path, session, cwd, preset, role, cutoff, now):
+def _native(path, session, cwd, preset, role, cutoff, now, *, window_end=None, metadata=None):
     raw = read_bytes(path)
     if path.suffix == '.zstd':
         try:
@@ -306,18 +357,43 @@ def _native(path, session, cwd, preset, role, cutoff, now):
     _require(header.get('id') == session and _workspace(header.get('cwd')) == _workspace(cwd), 'owner_mismatch')
     current = _preset(header.get('agentPreset', ''))
     calls, records, markers = {}, [], 0
+    active_turn = None
+    available_from = None
     for index, line in enumerate(lines[1:]):
         event = _json(line)
         _require(isinstance(event, dict) and isinstance(event.get('type'), str) and event.get('seq') == index and _integer(event.get('seq'))
                  and _integer(event.get('time')) and isinstance(event.get('data'), dict))
         kind, data, stamp = event.get('type'), event['data'], event['time']
+        if available_from is None:
+            available_from = stamp
         if kind == 'session/end-seed' and data.get('inherited') is True:
             _require(header['isSeeded'])
             markers += 1
             calls.clear(); records.clear(); current = _preset(header.get('agentPreset', ''))
+            available_from = stamp
+            active_turn = None
         elif kind == 'agent-preset/selected':
             current = _preset(data.get('agentPreset'))
             calls.clear()
+            active_turn = None
+        elif kind == 'turn/start' and current == _preset(preset):
+            _require(_integer(data.get('turn')) and active_turn is None)
+            active_turn = {'turn': data['turn'], 'inputs': [], 'records': [], 'at': stamp}
+        elif kind == 'user/message' and active_turn is not None:
+            # Origin is native transport metadata only. Never inspect content,
+            # quoted text or a model's explanation to infer an autonomous turn.
+            source = data.get('source')
+            origin = source.get('kind', '') if isinstance(source, dict) else ''
+            if origin not in HOST_CONTEXT_KINDS:
+                active_turn['inputs'].append(origin)
+        elif kind == 'turn/end' and current == _preset(preset):
+            _require(active_turn is not None and _integer(data.get('turn')) and data['turn'] == active_turn['turn'] and stamp >= active_turn['at'])
+            inputs = active_turn['inputs']
+            origin = ({'plugin:dsh-lanya-observation': 'observation', 'plugin:dsh-onebot': 'live'}
+                      .get(inputs[0], 'unknown') if len(inputs) == 1 else 'unknown')
+            for record in active_turn['records']:
+                record['trigger_origin'] = origin
+            active_turn = None
         elif kind == 'tool/call' and current == _preset(preset):
             name, call_id = data.get('name'), data.get('callId')
             if not isinstance(name, str) or not re.fullmatch('[A-Za-z][A-Za-z0-9_:-]{0,79}', name):
@@ -325,20 +401,26 @@ def _native(path, session, cwd, preset, role, cutoff, now):
             _require(isinstance(call_id, str) and 0 < len(call_id) <= 512 and call_id not in calls)
             _require(_integer(data.get('turn')) and _integer(data.get('step')))
             record = {'id': hashlib.sha256((session + '\0' + call_id + '\0' + str(index)).encode()).hexdigest()[:32],
-                      'at': stamp, 'tool': name, 'kind': BILI_TOOLS.get(name, 'tool'), 'status': 'pending', 'source': role}
+                      'at': stamp, 'tool': name, 'kind': BILI_TOOLS.get(name, 'tool'), 'status': 'pending', 'source': role,
+                      'trigger_origin': 'unknown'}
+            if active_turn is not None:
+                _require(active_turn['turn'] == data['turn'])
+                active_turn['records'].append(record)
+            record['_episode_id'] = hashlib.sha256((session + '\0turn\0' + str(data['turn'])).encode()).hexdigest()[:32]
             args = None
             if name in BILI_TOOLS:
-                args = data.get('arguments')
-                if isinstance(args, str) and len(args) <= 65536:
-                    try: args = _json(args)
-                    except ActivityUnavailable: args = None
+                args = _arguments(data)
                 if name != 'bili_send_message':
                     video = _video({'bvid': args.get('bvid')}) if isinstance(args, dict) else None
                     if video: record['video'] = video
                 reply = _reply_call(name, args)
                 if reply is not None: record['reply'] = reply
+            elif name == 'qq_decide':
+                args = _arguments(data)
+                if args and args.get('verdict') in DECISION_VERDICTS:
+                    record['verdict'] = args['verdict']
             calls[call_id] = {'seq': index, 'turn': data['turn'], 'step': data['step'], 'record': record, 'done': False}
-            if cutoff <= stamp <= now + 30000:
+            if cutoff <= stamp <= now + 30000 and (window_end is None or stamp < window_end):
                 records.append(record)
         elif kind == 'tool/result':
             message = data.get('message')
@@ -369,14 +451,24 @@ def _native(path, session, cwd, preset, role, cutoff, now):
             call['done'] = True
             call['result_seq'], call['result_header'] = index, _result_header(data)
             record = call['record']
+            record['completed_at'] = stamp
             error = message.get('isError') is True or data.get('error') is not None
             if record['tool'] in BILI_TOOLS:
                 _bili_result(record, message, error)
                 _settle_reply(record, message, error)
             else:
                 record['status'] = 'failed' if error else 'returned'
+                if record['tool'] == 'qq_decide' and not error:
+                    value = _result_object(message)
+                    if value and type(value.get('accepted')) is bool:
+                        record['status'] = 'accepted' if value['accepted'] else 'rejected'
     _require(markers == (1 if header['isSeeded'] else 0))
     _require(current == _preset(preset), 'owner_mismatch')
+    if metadata is not None:
+        metadata['available_from'] = available_from
+        metadata['binding_sha256'] = hashlib.sha256(json.dumps(
+            [session, _workspace(cwd), _preset(preset)], ensure_ascii=True,
+            separators=(',', ':')).encode('utf-8')).hexdigest()
     return records
 
 
@@ -392,6 +484,12 @@ def _recent_videos(records, limit):
             statuses=set(), record_count=0, subtitle_count=0, reply_count=0))
         if not row.get('title') and video.get('title'):
             row['title'] = video['title']
+        if not row.get('author') and video.get('author'):
+            row['author'] = video['author']
+        if (record.get('content_excerpt') and record['status'] == 'succeeded' and
+                record['at'] >= row.get('_excerpt_at', -1)):
+            row.update(content_excerpt=record['content_excerpt'], content_truncated=record['content_truncated'],
+                       _excerpt_at=record['at'])
         row['at'] = max(row['at'], record['at'])
         row['kinds'].add(record['kind']); row['statuses'].add(record['status'])
         row['record_count'] += 1
@@ -401,19 +499,105 @@ def _recent_videos(records, limit):
     for row in videos.values():
         if not row['kinds'] & reads:
             continue
+        row.pop('_excerpt_at', None)
         row['kinds'] = sorted(row['kinds']); row['statuses'] = sorted(row['statuses'])
         result.append(row)
     return sorted(result, key=lambda row: (row['at'], row['bvid']), reverse=True)[:limit]
 
 
-def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mapping_file=None,
-                      group_fallback='', now=None, limit=100):
+def _public_record(record, *, reply=True):
+    return {key: value for key, value in record.items()
+            if not key.startswith('_') and (reply or key != 'reply')}
+
+
+def _evidence(record):
+    item = _public_record(record)
+    item['label'] = TOOL_LABELS.get(record['kind'], NAMED_TOOL_LABELS.get(record['tool'], '调用工具 ' + record['tool']))
+    states = {'succeeded': '已取得工具确认的内容', 'returned': '工具已返回，具体结果未核验',
+              'failed': '工具明确失败', 'pending': '等待工具回执', 'unknown': '结果未确认'}
+    item['summary'] = states.get(record['status'], '结果未确认')
+    if record['kind'] in ('details', 'subtitle', 'frames', 'cover'):
+        item['summary'] += '；不代表完整播放'
+    if record['tool'] == 'send_meme':
+        item['summary'] = '挑图工具' + ('已返回；不代表已发送图片' if record['status'] == 'returned' else '结果未确认')
+    if record['tool'] in ('qq_send_image', 'qq_send_message', 'qq_send_text'):
+        item['summary'] += '；未核验 QQ 客户端送达'
+    return item
+
+
+def _episodes(records, limit):
+    groups, decisions = {}, []
+    for record in records:
+        if record['tool'] == 'qq_decide':
+            decisions.append({key: record[key] for key in ('id', 'at', 'status', 'verdict', 'trigger_origin') if key in record})
+            continue
+        groups.setdefault(record['_episode_id'], []).append(record)
+    episodes = []
+    for key, rows in groups.items():
+        rows.sort(key=lambda row: (row['at'], row['id']))
+        bili = [row for row in rows if row['tool'] in BILI_TOOLS]
+        successful = [row for row in bili if row['status'] == 'succeeded']
+        videos = _recent_videos(bili, 20)
+        states = {row['status'] for row in rows}
+        status = ('partial' if len(states) > 1 and states & {'failed', 'pending', 'unknown'} else
+                  'failed' if states == {'failed'} else 'observed' if successful else
+                  'pending' if 'pending' in states else 'unknown' if 'unknown' in states else 'returned')
+        title = '工具活动'
+        if bili:
+            title = 'B站活动'
+            successful_reads = [row for row in successful if row['kind'] in {'subtitle', 'details', 'frames', 'cover'} and row.get('video')]
+            if successful_reads:
+                selected = next((row for row in reversed(successful_reads) if row['kind'] == 'subtitle'), successful_reads[-1])
+                video = next((item for item in videos if item['bvid'] == selected['video']['bvid']), selected['video'])
+                title = ('读取B站：' if selected['kind'] == 'subtitle' else 'B站资料：') + (video.get('title') or video['bvid'])
+            elif any(row['kind'] == 'recommendation' for row in bili):
+                title = '读取B站推荐'
+            elif any(row['kind'] == 'action' for row in bili):
+                title = 'B站操作回执'
+        else:
+            names = {row['tool'] for row in rows}
+            if names & {'send_meme', 'qq_send_image'}:
+                title = '表情图片与QQ发送尝试'
+            elif names <= {'read_image', 'view'}:
+                title = '查看图片或截图'
+            elif names & {'pwsh', 'exec', 'bash'}:
+                title = '运行本地工具与查看结果'
+            elif names & {'read', 'write', 'edit', 'glob', 'grep'}:
+                title = '本地文件操作记录'
+            else:
+                title = ' · '.join(NAMED_TOOL_LABELS.get(name, '调用工具 ' + name) for name in sorted(names)[:2])
+        counts = {}
+        for row in rows:
+            label = TOOL_LABELS.get(row['kind'], NAMED_TOOL_LABELS.get(row['tool'], '调用工具 ' + row['tool']))
+            counts[label] = counts.get(label, 0) + 1
+        start = min(row['at'] for row in rows)
+        episodes.append({'id': key, 'day': dt.datetime.fromtimestamp(start / 1000, CHINA).date().isoformat(),
+                         'started_at': start, 'updated_at': max(row.get('completed_at', row['at']) for row in rows),
+                         'title': title, 'status': status, 'activity_kind': 'bili' if bili else 'tools',
+                         'trigger_origin': rows[0]['trigger_origin'], 'conversation_role': rows[0]['source'],
+                         'summary': ' · '.join('%s %d 次' % item for item in counts.items()),
+                         'tool_names': sorted({row['tool'] for row in rows}), 'turn_count': 1,
+                         'videos': videos, 'evidence': [_evidence(row) for row in rows[:MAX_EPISODE_EVIDENCE]],
+                         'evidence_total': len(rows), 'evidence_truncated': len(rows) > MAX_EPISODE_EVIDENCE})
+    episodes.sort(key=lambda row: (row['started_at'], row['id']), reverse=True)
+    decisions.sort(key=lambda row: (row['at'], row['id']), reverse=True)
+    return episodes[:limit], decisions[:30], len(episodes), len(decisions)
+
+
+def _activity_projection(*, workspace, agent_preset, identity_file, dsh_home, mapping_file=None,
+                         group_fallback='', now=None, limit=100, window_start=None, window_end=None,
+                         collect_records=False):
     """Caller supplies trusted project/config paths; no HTTP or model inputs."""
     now = int(time.time() * 1000) if now is None else now
-    _require(_integer(now) and type(limit) is int and 1 <= limit <= 200, 'invalid_configuration')
+    _require(_integer(now) and type(limit) is int and 1 <= limit <= 2000, 'invalid_configuration')
+    start = now - 7 * 86400000 if window_start is None else window_start
+    _require(_integer(start) and (window_end is None or _integer(window_end) and window_end > start), 'invalid_configuration')
     coverage = {'configured_scopes': 0, 'mapped_scopes': 0, 'owner_verified_scopes': 0,
                 'current_mapped_sessions_only': True, 'window_days': 7,
-                'window_start': now - 7 * 86400000, 'truncated': False, 'reasons': []}
+                'window_start': start, 'window_end': window_end or now, 'truncated': False, 'reasons': [],
+                'source_windows': [], 'date_basis': 'tool_call_started_at',
+                'scope': 'current_configured_admin_and_group_native_tools',
+                'chat_text_included': False}
     records, reasons = [], []
     try:
         _workspace(workspace); _preset(agent_preset)
@@ -452,7 +636,10 @@ def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mappi
                 paths = [directory / name for name in ('session.v4.jsonl', 'session.v4.jsonl.zstd')
                          if os.path.lexists(directory / name)]
                 _require(len(paths) == 1, 'source_missing' if not paths else 'source_ambiguous')
-                records.extend(_native(paths[0], session, cwd, agent_preset, role, now - 7 * 86400000, now))
+                source_meta = {}
+                records.extend(_native(paths[0], session, cwd, agent_preset, role, start, now,
+                                       window_end=window_end, metadata=source_meta))
+                coverage['source_windows'].append(dict(source=role, **source_meta))
                 coverage['owner_verified_scopes'] += 1
             except ActivityUnavailable as error: reasons.append(str(error))
             except (OSError, ValueError, TypeError, UnicodeError, OverflowError): reasons.append('source_unavailable')
@@ -472,6 +659,8 @@ def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mappi
     coverage['reasons'] = sorted(set(reasons))[:10]
     status = ('ok' if coverage['owner_verified_scopes'] and not reasons else
               'partial' if coverage['owner_verified_scopes'] else 'unavailable')
+    if collect_records:
+        return records, coverage, status, now
     counts = dict(recommendation=0, details=0, subtitle=0, frames=0, cover=0, actions=0,
                   failed=0, unknown=0, pending=0)
     for record in bili:
@@ -479,10 +668,84 @@ def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mappi
             counts['actions' if record['kind'] == 'action' else record['kind']] += 1
         elif record['status'] in counts: counts[record['status']] += 1
     base = {'status': status, 'generated_at': now}
-    return {'mainAgent': dict(base, schema='panel-bili-native/v1', records=bili[:limit], counts=counts,
+    episodes, decisions, episode_total, decision_total = _episodes(records, limit)
+    return {'mainAgent': dict(base, schema='panel-bili-native/v1', records=[_public_record(row) for row in bili[:limit]], counts=counts,
                               replies=replies[:limit], recent_videos=_recent_videos(bili, limit),
                               coverage=dict(coverage, truncated=len(bili) > limit)),
             'recentActivity': dict(base, schema='panel-native-tools/v1',
-                                  records=[{key: value for key, value in record.items() if key != 'reply'}
-                                           for record in records[:30]],
-                                  coverage=dict(coverage, truncated=len(records) > 30))}
+                                  records=[_public_record(row, reply=False) for row in records[:30]],
+                                  episodes=episodes, decisions=decisions,
+                                  counts=dict(episodes=episode_total, decisions=decision_total,
+                                              tools=len(records) - decision_total),
+                                  coverage=dict(coverage, truncated=episode_total > limit,
+                                                records_truncated=len(records) > 30,
+                                                decisions_truncated=decision_total > 30))}
+
+
+def activity_snapshot(*, workspace, agent_preset, identity_file, dsh_home, mapping_file=None,
+                      group_fallback='', now=None, limit=100):
+    """Current mapped native activity during the most recent seven days."""
+    _require(type(limit) is int and 1 <= limit <= 200, 'invalid_configuration')
+    return _activity_projection(workspace=workspace, agent_preset=agent_preset, identity_file=identity_file,
+                                dsh_home=dsh_home, mapping_file=mapping_file, group_fallback=group_fallback,
+                                now=now, limit=limit)
+
+
+def _daily_view(records, coverage, status, now, day, start, end, limit):
+    rows = [row for row in records if start <= row['at'] < end]
+    episodes, decisions, episode_total, decision_total = _episodes(rows, limit)
+    coverage = dict(coverage, window_days=1, window_start=start, window_end=end,
+                    day_closed=now >= end, all_account_history_complete=False,
+                    truncated=episode_total > limit, decisions_truncated=decision_total > 30,
+                    bili_records_total=sum(row['tool'] in BILI_TOOLS for row in rows))
+    return {'schema': 'panel-activity-daily/v1', 'day': day, 'status': status, 'generated_at': now,
+            'episodes': episodes, 'decisions': decisions,
+            'counts': {'episodes': episode_total, 'decisions': decision_total, 'tools': len(rows) - decision_total},
+            'coverage': coverage}
+
+
+def daily_facts(*, day, now=None, limit=2000, **options):
+    """Exact Beijing-day projection using the same bounded, trusted reader.
+
+    Current mappings are the only source. A closed date is not evidence that
+    replaced/missing sessions or an entire account's day were recovered.
+    """
+    now = int(time.time() * 1000) if now is None else now
+    _require(_integer(now) and isinstance(day, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', day), 'invalid_configuration')
+    try:
+        date = dt.date.fromisoformat(day)
+        start = int(dt.datetime.combine(date, dt.time(), CHINA).timestamp() * 1000)
+    except (ValueError, OverflowError):
+        raise ActivityUnavailable('invalid_configuration') from None
+    _require(0 <= start <= now, 'invalid_configuration')
+    end = start + 86400000
+    records, coverage, status, now = _activity_projection(now=now, limit=limit, window_start=start,
+                                                         window_end=end, collect_records=True, **options)
+    return _daily_view(records, coverage, status, now, day, start, end, limit)
+
+
+def daily_catalog(*, now=None, limit=2000, **options):
+    """All dates present in current trusted native logs, parsed only once.
+
+    ``facts`` has the same per-date contract as daily_facts. It intentionally
+    does not discover archives, other mappings, arbitrary files or old owners.
+    """
+    records, coverage, status, now = _activity_projection(now=now, limit=limit, window_start=0,
+                                                         collect_records=True, **options)
+    buckets = {}
+    today = dt.datetime.fromtimestamp(now / 1000, CHINA).date()
+    future_count = 0
+    for row in records:
+        date = dt.datetime.fromtimestamp(row['at'] / 1000, CHINA).date()
+        if date > today:
+            future_count += 1
+            continue
+        buckets.setdefault(date, []).append(row)
+    buckets.setdefault(today, [])
+    facts = []
+    for date, rows in sorted(buckets.items()):
+        start = int(dt.datetime.combine(date, dt.time(), CHINA).timestamp() * 1000)
+        facts.append(_daily_view(rows, coverage, status, now, date.isoformat(), start, start + 86400000, limit))
+    return {'schema': 'panel-activity-catalog/v1', 'status': status, 'generated_at': now,
+            'days': [row['day'] for row in facts], 'facts': facts,
+            'coverage': dict(coverage, future_day_records_omitted=future_count)}

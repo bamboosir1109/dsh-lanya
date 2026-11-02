@@ -47,7 +47,12 @@ function element(tag = 'div') {
     appendChild(child) { this.children.push(child); child.parentElement = child.parentNode = this; return child },
     insertBefore(child, before) { const i = this.children.indexOf(before); if(i < 0) return this.appendChild(child); this.children.splice(i, 0, child); child.parentElement = child.parentNode = this; return child },
     remove() { if(this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this) },
-    querySelector() { return null }, querySelectorAll() { return [] },
+    querySelector() { return null }, querySelectorAll(selector) {
+      const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')])
+      if(selector === '*') return all
+      if(selector === 'details[data-record-key]') return all.filter(child => child.tagName === 'DETAILS' && child.dataset.recordKey !== undefined)
+      return []
+    },
     setAttribute(name, value) { this[name] = value },
     removeAttribute(name) { delete this[name] },
     listeners }
@@ -390,13 +395,16 @@ test('first memory status render uses the real top-level selection initializatio
 })
 
 
-const BILI_RENDERERS = ['biliRecordTime', 'biliVideoLink', 'renderMainBili']
+const RECORD_HELPERS = ['recordOpenDetails', 'recordDetails', 'recordText', 'recordState', 'recordContent', 'recordReply', 'biliRecordTime', 'biliVideoLink']
+const BILI_RENDERERS = [...RECORD_HELPERS, 'renderMainBili']
+const ACTIVITY_RENDERERS = [...RECORD_HELPERS, 'renderActivityHistory']
+const JOURNAL_READERS = ['biliRecordTime', 'activityJournalStatus', 'loadActivityJournal']
 const treeText = node => [node.textContent || '', ...node.children.map(treeText)].join(' ')
 
 test('activity displays a local no-decision outcome without inventing an LLM verdict or hiding uncertain scheduling', async () => {
   for (const count of [0, 1, '1', -1]) {
-    const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', 'loadLive'], extra: {
-      componentActionPending: false, loadActivityBudget: async () => {},
+    const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', ...ACTIVITY_RENDERERS, 'loadLive'], extra: {
+      componentActionPending: false, loadActivityBudget: async () => {}, loadActivityJournal: async () => {},
       api: async () => ({ ok: true, live: { autonomy: { mode: 'unified', status: 'uncertain', can_request_check: true,
         observer: { no_decision_count: count, next_opportunity_at: 1793535000000 } }, recentActivity: { status: 'ok', records: [] } } })
     } })
@@ -413,8 +421,8 @@ const descendants = node => [node, ...node.children.flatMap(descendants)]
 
 test('activity keeps actual scheduler offline distinct from a living background watcher and clears stale watch labels on error', async () => {
   let fail = false
-  const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', 'loadLive'], extra: {
-    componentActionPending: false, loadActivityBudget: async () => {},
+  const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', ...ACTIVITY_RENDERERS, 'loadLive'], extra: {
+    componentActionPending: false, loadActivityBudget: async () => {}, loadActivityJournal: async () => {},
     api: async () => {
       if (fail) throw new Error('fixture unavailable')
       return { ok: true, live: { autonomy: { mode: 'unified', status: 'offline', can_request_check: false,
@@ -429,6 +437,191 @@ test('activity keeps actual scheduler offline distinct from a living background 
   await h.context.loadLive()
   assert.equal(h.node('liveWatch').textContent, '看护状态未确认')
 })
+const activityEpisode = (id, overrides = {}) => ({ id, day: '2026-11-01', started_at: Date.UTC(2026, 10, 1, 10),
+  updated_at: Date.UTC(2026, 10, 1, 10, 1), title: '读取一段视频字幕', status: 'observed', summary: '字幕读取 1 次',
+  trigger_origin: 'observation', conversation_role: 'primary',
+  videos: [{ bvid: 'BV1234567890', title: 'Fixture video', author: 'Fixture creator' }],
+  evidence: [{ id: id + '-read', tool: 'bili_subtitle', kind: 'subtitle', at: Date.UTC(2026, 10, 1, 10),
+    status: 'succeeded', label: '读取字幕', summary: '取得字幕；不代表完整播放', content_excerpt: 'Fixture subtitle content', content_truncated: false }], ...overrides })
+
+test('actual activity renderer groups facts and content while quiet decisions cannot crowd out real activity', () => {
+  const h = harness({ functions: ACTIVITY_RENDERERS })
+  const history = { status: 'partial', episodes: [activityEpisode('fixture-video')],
+    decisions: Array.from({ length: 30 }, (_, i) => ({ id: 'quiet-' + i, at: Date.UTC(2026, 10, 1, 11), status: 'accepted', verdict: 'idle' })),
+    counts: { episodes: 1, decisions: 80 }, coverage: { decisions_truncated: true } }
+  const before = structuredClone(history)
+  h.context.renderActivityHistory(history)
+  const text = treeText(h.node('liveLog'))
+  assert.match(text, /2026-11-01.*读取一段视频字幕.*Fixture video.*Fixture creator.*Fixture subtitle content/)
+  assert.doesNotMatch(text, /qq_decide|quiet-|本轮保持安静/)
+  assert.match(h.node('activityDecisionSummary').textContent, /最近 30 次 \/ 共 80 次.*30 次选择安静/)
+  assert.match(treeText(h.node('activityDecisionList')), /本轮保持安静.*判断已接受/)
+  assert.match(h.node('activityHistoryNote').textContent, /只覆盖部分记录/)
+  assert.equal(h.node('activityDecisions').open, undefined)
+  assert.deepEqual(history, before)
+  assert.equal(h.calls.length, 0)
+})
+
+test('actual activity evidence stays plain text with unknown outcomes and no private-message bodies', () => {
+  const h = harness({ functions: ACTIVITY_RENDERERS })
+  h.context.renderActivityHistory({ status: 'ok', episodes: [activityEpisode('fixture-unknown', {
+    status: 'partial', evidence_truncated: true, evidence_total: 9, evidence: [
+      { tool: 'bili_subtitle', kind: 'subtitle', label: '读取字幕', status: 'succeeded', content_excerpt: '<img onerror=fixture()>\nSubtitle only', content_truncated: true },
+      { tool: 'bili_send_message', status: 'unknown', reply: { type: 'private_message', status: 'unknown', text: 'PRIVATE_FIXTURE_NOT_FOR_PANEL', recipient: 'PRIVATE_FIXTURE_RECIPIENT' } },
+      { tool: 'qq_send_image', status: 'unknown', summary: '客户端送达未核验' }
+    ] })], decisions: [] })
+  const text = treeText(h.node('liveLog'))
+  assert.match(text, /部分结果待确认.*3 \/ 9 项证据/)
+  assert.match(text, /字幕摘录，未证明完整播放 · 部分内容/)
+  assert.match(text, /结果未确认.*不能认定已发出；不自动重发/)
+  assert.doesNotMatch(text, /PRIVATE_FIXTURE_NOT_FOR_PANEL|PRIVATE_FIXTURE_RECIPIENT|已完整观看|已送达/)
+  const content = descendants(h.node('liveLog')).find(row => row.textContent.startsWith('<img onerror='))
+  assert.ok(content); assert.equal(content.innerHTML, '')
+})
+
+test('actual activity details and incremental pagination survive subsequent refreshes', () => {
+  const h = harness({ functions: ACTIVITY_RENDERERS })
+  const history = { status: 'ok', episodes: Array.from({ length: 25 }, (_, i) => activityEpisode('fixture-' + i)), decisions: [] }
+  h.context.renderActivityHistory(history)
+  assert.equal(h.node('liveLog').children.filter(row => row.tagName === 'ARTICLE').length, 20)
+  h.node('liveLog').querySelectorAll('details[data-record-key]')[0].open = true
+  h.node('liveLog').children.find(row => row.tagName === 'BUTTON').onclick()
+  assert.equal(h.node('liveLog').children.filter(row => row.tagName === 'ARTICLE').length, 25)
+  assert.equal(h.node('liveLog').querySelectorAll('details[data-record-key]')[0].open, true)
+  h.context.renderActivityHistory(structuredClone(history))
+  assert.equal(h.node('liveLog').children.filter(row => row.tagName === 'ARTICLE').length, 25)
+  assert.equal(h.node('liveLog').querySelectorAll('details[data-record-key]')[0].open, true)
+})
+
+test('activity origin is independent of private or group scope and rejected quiet choices never count as applied', () => {
+  const h = harness({ functions: ACTIVITY_RENDERERS })
+  h.context.renderActivityHistory({ status: 'ok', episodes: [
+    activityEpisode('fixture-inbound', { trigger_origin: 'live', conversation_role: 'primary' }),
+    activityEpisode('fixture-autonomous', { trigger_origin: 'observation', conversation_role: 'social' }),
+    activityEpisode('fixture-no-origin', { trigger_origin: 'unknown', conversation_role: 'primary' })
+  ], decisions: [{ id: 'rejected-quiet', status: 'rejected', verdict: 'idle' }] })
+  const articles = h.node('liveLog').children.filter(row => row.tagName === 'ARTICLE').map(treeText)
+  assert.match(articles[0], /会话中活动.*管理员私聊范围/)
+  assert.doesNotMatch(articles[0], /自主活动/)
+  assert.match(articles[1], /自主活动.*配置群范围/)
+  assert.match(articles[2], /触发来源未确认/)
+  assert.doesNotMatch(h.node('activityDecisionSummary').textContent, /选择安静/)
+  assert.match(treeText(h.node('activityDecisionList')), /尝试：本轮保持安静.*判断未接受/)
+  assert.match(h.node('activityHistoryNote').textContent, /管理员私聊与配置群的当前绑定记录/)
+})
+
+test('source gaps and ungrouped compatibility records never invent an empty successful activity timeline', () => {
+  const h = harness({ functions: ACTIVITY_RENDERERS })
+  h.context.renderActivityHistory({ status: 'ok', records: [{ tool: 'qq_decide', status: 'returned' }, { tool: 'browser_fixture', status: 'unknown' }] })
+  assert.match(h.node('activityHistoryNote').textContent, /尚未提供归并记录/)
+  assert.match(treeText(h.node('liveLog')), /browser_fixture.*结果未确认/)
+  assert.doesNotMatch(treeText(h.node('liveLog')), /qq_decide/)
+  h.context.renderActivityHistory({ status: 'unavailable', episodes: [] })
+  assert.match(h.node('activityHistoryNote').textContent, /不能据此判断没有活动/)
+  assert.doesNotMatch(treeText(h.node('liveLog')), /当前范围暂无实际动作/)
+})
+
+const journalList = (days, status = days.length ? 'ok' : 'empty') => ({ schema: 'activity-journal/v1', status, read_only: true, private: true,
+  days: days.map(date => ({ date, status: 'open', updated_at: Date.UTC(2026, 10, 1, 12), entries: 1, coverage: { complete: false } })), selected: null })
+const journalPage = (date, markdown = 'Fixture factual diary') => ({ ...journalList([date]), selected: { date, status: 'partial',
+  updated_at: Date.UTC(2026, 10, 1, 12), markdown, coverage: { complete: false }, entries: 1 } })
+
+test('actual journal loader requests generated dates only and renders markdown as inert local text', async () => {
+  const requests = []
+  const h = harness({ functions: JOURNAL_READERS, extra: { api: async (route, options, live) => {
+    requests.push({ route, options, live })
+    if(route.includes('day=')) return journalPage('2026-11-01', '# Fixture diary\n<script>fixture()</script>\n[example](javascript:fixture())')
+    return journalList(['2026-10-31', '2026-11-01'])
+  } } })
+  await h.context.loadActivityJournal()
+  assert.equal(h.node('activityJournalDate').value, '2026-11-01')
+  assert.match(h.node('activityJournalNote').textContent, /今天已有事实记录.*仅覆盖当前可信来源/)
+  assert.match(h.node('activityJournalState').textContent, /部分来源或结果待确认.*覆盖不完整/)
+  assert.match(h.node('activityJournalBody').textContent, /<script>fixture\(\)<\/script>/)
+  assert.equal(h.node('activityJournalBody').innerHTML, '')
+  assert.equal(h.node('activityJournalBody').children.length, 0)
+  assert.deepEqual(requests.map(row => row.route), ['/activity/journal?limit=90', '/activity/journal?day=2026-11-01'])
+  assert.ok(requests.every(row => row.options === null && row.live === true))
+  assert.equal(h.context.dirtyPages.size, 0)
+})
+
+test('journal history selection and expanded body survive refresh while today remains explicitly not generated', async () => {
+  const h = harness({ functions: JOURNAL_READERS, extra: { api: async route => route.includes('day=') ? journalPage('2026-10-31') : journalList(['2026-10-31']) } })
+  await h.context.loadActivityJournal('2026-10-31')
+  h.node('activityJournalDetails').open = true
+  await h.context.loadActivityJournal()
+  assert.equal(h.node('activityJournalDate').value, '2026-10-31')
+  assert.equal(h.node('activityJournalDetails').open, true)
+  assert.match(h.node('activityJournalNote').textContent, /今天尚未生成事实日记/)
+  assert.match(h.node('activityJournalTitle').textContent, /2026-10-31/)
+})
+
+test('journal empty and unavailable states differ and a failed refresh preserves prior body with a warning', async () => {
+  let status = 'ok'
+  const h = harness({ functions: JOURNAL_READERS, extra: { api: async route => {
+    if(status === 'error') return { ...journalList([]), status: 'error' }
+    if(status === 'empty') return journalList([])
+    return route.includes('day=') ? journalPage('2026-11-01') : journalList(['2026-11-01'])
+  } } })
+  await h.context.loadActivityJournal()
+  status = 'error'; await h.context.loadActivityJournal()
+  assert.equal(h.node('activityJournalBody').textContent, 'Fixture factual diary')
+  assert.match(h.node('activityJournalState').textContent, /读取失败.*不能据此判断今天没有记录/)
+  status = 'empty'; await h.context.loadActivityJournal()
+  assert.equal(h.node('activityJournalDate').disabled, true)
+  assert.match(h.node('activityJournalState').textContent, /尚无已生成/)
+  assert.doesNotMatch(h.node('activityJournalBody').textContent, /Fixture factual diary/)
+})
+
+test('a degraded journal scan retains the last successful text and timestamp without presenting the scan time as a fresh diary', async () => {
+  let degraded = false
+  const savedAt = Date.UTC(2026, 10, 1, 12), scanAt = Date.UTC(2026, 10, 5, 14)
+  const h = harness({ now: scanAt, functions: JOURNAL_READERS, extra: { api: async route => {
+    const result = route.includes('day=') ? journalPage('2026-11-01', 'Previous successful fixture facts') : journalList(['2026-11-01'])
+    if(result.selected){ result.selected.status = 'closed_snapshot'; result.selected.updated_at = savedAt; result.selected.coverage.complete = true }
+    if(degraded){
+      result.generated_at = scanAt
+      result.freshness = { status: 'degraded', reasons: ['source_coverage_regressed'], blocked_dates: ['2026-11-01'] }
+      if(result.selected) result.selected.coverage.latest_scan_degraded = true
+    }
+    return result
+  } } })
+  await h.context.loadActivityJournal('2026-11-01')
+  degraded = true; await h.context.loadActivityJournal()
+  assert.equal(h.node('activityJournalBody').textContent, 'Previous successful fixture facts')
+  assert.match(h.node('activityJournalNote').textContent, /保留上次成功日记，当前来源不足/)
+  const state = h.node('activityJournalState').textContent
+  assert.match(state, /原记录状态：日终事实快照.*最后成功记录于/)
+  assert.ok(state.includes(h.context.biliRecordTime(savedAt)))
+  assert.ok(!state.includes(h.context.biliRecordTime(scanAt)))
+  assert.doesNotMatch(state, /更新于/)
+})
+
+test('late journal response for a previously selected date cannot replace the current date or body', async () => {
+  const old = deferred()
+  const h = harness({ functions: JOURNAL_READERS, extra: { api: async route => {
+    if(route.includes('day=2026-10-31')) return old.promise
+    if(route.includes('day=')) return journalPage('2026-11-01', 'Current fixture day')
+    return journalList(['2026-11-01', '2026-10-31'])
+  } } })
+  const previous = h.context.loadActivityJournal('2026-10-31')
+  await Promise.resolve(); await Promise.resolve()
+  await h.context.loadActivityJournal('2026-11-01')
+  old.resolve(journalPage('2026-10-31', 'Stale fixture day')); await previous
+  assert.equal(h.node('activityJournalDate').value, '2026-11-01')
+  assert.equal(h.node('activityJournalBody').textContent, 'Current fixture day')
+})
+
+test('a previous journal date cannot overwrite the selected date refresh indicator', () => {
+  const h = harness({ functions: API_FUNCTIONS, extra: { currentPage: 'activity' } })
+  h.node('activityJournal').dataset.date = '2026-11-01'
+  h.context.noteRecord('/activity/journal?day=2026-10-31', 'error')
+  assert.equal(h.context.recordStates.size, 0)
+  h.context.noteRecord('/activity/journal?day=2026-11-01', 'live', Date.UTC(2026, 10, 1, 12))
+  assert.equal(h.node('recordSync').dataset.state, 'live')
+  assert.equal(h.context.recordStates.size, 1)
+})
+
 const MONEY_FORMATTERS = ['budgetAmount', 'budgetDecimal', 'renderBudgetInput', 'budgetInputUsd']
 const DAILY_RENDERERS = [...MONEY_FORMATTERS, 'spendingDayState', 'spendingAmount', 'nativeSpendingReady', 'renderTodaySpending', 'selectSpendingDate', 'renderDailySpending']
 const BUDGET_RENDERERS = ['appendPolicyRow', 'renderBudgetSummary', ...DAILY_RENDERERS, 'renderBudget']
@@ -549,7 +742,7 @@ test('actual input and change listeners exclude chart navigation while retaining
     const listener = h.events.get(event)
     assert.equal(typeof listener, 'function')
     for (const [id, tag, page, shouldEdit] of [
-      ['spendRange', 'select', 'money', false], ['spendSelectedDate', 'select', 'money', false],
+      ['spendRange', 'select', 'money', false], ['spendSelectedDate', 'select', 'money', false], ['activityJournalDate', 'select', 'activity', false],
       ['bAutonomy', 'input', 'money', true], ['bReserve', 'input', 'money', true],
       ['syntheticBudgetOption', 'select', 'money', true], ['activityInterval', 'input', 'activity', true],
       ['memOwner', 'select', 'memory', true], ['persona', 'textarea', 'persona', true]
@@ -831,7 +1024,7 @@ test('actual currency labels and accessible USD references agree with the fixed 
   assert.match(treeText(h.node('spendDetail')), /¥7\.3440（USD 1\.02）/)
 })
 
-test('the complete actual budget script keeps its lexical revision, original-dollar baseline and rounded 3-yuan input coherent over two saves', async () => {
+for(const [yuan, usd] of [['3.0', 0.416_666], ['5.0', 0.694_444]]) test('the complete actual budget script keeps its revision and original USD over two saves of ' + yuan + ' yuan', async () => {
   const requests = [], initial = budgetData()
   const h = harness({ currencyDeclaration: false, functions: ['appendPolicyRow'], extra: {
     api: async (_route, options) => {
@@ -846,16 +1039,16 @@ test('the complete actual budget script keeps its lexical revision, original-dol
   h.run(h.source.slice(start, end))
   h.context.initialBudget = initial
   h.run('renderBudget(initialBudget, false, 0)')
-  h.node('bAutonomy').value = '3.0'
+  h.node('bAutonomy').value = yuan
   h.context.dirtyPages.add('money'); h.context.pageEdits.set('money', 1)
   await h.run('saveBudget()')
   assert.equal(h.run('budgetSettingsRevision'), '2'.repeat(64))
-  assert.equal(h.node('bAutonomy').value, '3')
-  assert.equal(h.node('bAutonomy').dataset.originalUsd, '0.416' + '666')
+  assert.equal(h.node('bAutonomy').value, String(Number(yuan)))
+  assert.equal(h.node('bAutonomy').dataset.originalUsd, String(usd))
   await h.run('saveBudget()')
   assert.deepEqual(requests.map(row => row.settings), [
-    { limits: { autonomy: 0.416_666, private: 0, group: 0 }, reserve_usd: 0.05 },
-    { limits: { autonomy: 0.416_666, private: 0, group: 0 }, reserve_usd: 0.05 }
+    { limits: { autonomy: usd, private: 0, group: 0 }, reserve_usd: 0.05 },
+    { limits: { autonomy: usd, private: 0, group: 0 }, reserve_usd: 0.05 }
   ])
   assert.deepEqual(requests.map(row => row.revision), ['a'.repeat(64), '2'.repeat(64)])
   assert.equal(h.run('budgetSettingsRevision'), '3'.repeat(64))
@@ -1086,6 +1279,42 @@ test('Bili replies show attempted body, uncertain status and accepted-receipt vi
   assert.ok(text)
   assert.equal(text.innerHTML, '')
   assert.equal(h.calls.length, 0)
+})
+
+test('Bili video cards expose real author and expandable subtitle evidence without claiming playback and retain expansion', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  const excerpt = 'Fixture subtitle '.repeat(20) + '<script>fixture()</script>'
+  const history = biliData({ recent_videos: [{ bvid: 'BV1234567890', title: 'Fixture detail title', author: 'Fixture public author',
+    at: Date.UTC(2026, 10, 1, 10), kinds: ['details','subtitle','frames'], content_excerpt: excerpt, content_truncated: true }],
+    records: [{ kind: 'subtitle', tool: 'bili_subtitle', status: 'succeeded', video: { bvid: 'BV1234567890' }, subtitle_chars: 900,
+      segment_count: 15, content_excerpt: excerpt, content_truncated: true },
+      { kind: 'frames', status: 'succeeded', video: { bvid: 'BV1234567890' }, frame_count: 2 }] })
+  h.context.renderMainBili(history)
+  const text = treeText(h.node('bMainVideos'))
+  assert.match(text, /Fixture public author.*字幕摘录/)
+  assert.match(text, /字幕内容摘录，未证明完整播放 · 部分内容/)
+  assert.match(text, /原始字幕 900 字，15 段/)
+  assert.match(text, /2 个视频帧；不等于连续播放/)
+  assert.doesNotMatch(text, /已看完|已完整观看/)
+  const body = descendants(h.node('bMainVideos')).find(row => row.tagName === 'PRE')
+  assert.equal(body.textContent, excerpt); assert.equal(body.innerHTML, '')
+  h.node('bMainVideos').querySelectorAll('details[data-record-key]')[0].open = true
+  h.context.renderMainBili(structuredClone(history))
+  assert.equal(h.node('bMainVideos').querySelectorAll('details[data-record-key]')[0].open, true)
+  assert.equal(h.calls.length, 0)
+})
+
+test('Bili public reply details show the exact attempted body and receipt evidence without opening private content', () => {
+  const h = harness({ functions: BILI_RENDERERS })
+  const text = 'Fixture public comment '.repeat(20)
+  h.context.renderMainBili(biliData({ replies: [{ id: 'fixture-public-comment', type: 'comment_reply', status: 'accepted',
+    receipt_present: true, evidence: 'platform_receipt', text }, { id: 'fixture-private', type: 'private_message', status: 'unknown', text: 'PRIVATE_FIXTURE_HIDDEN' }] }))
+  assert.match(treeText(h.node('bMainReplyRecords')), /平台回执：存在.*平台接口返回了接受回执/)
+  assert.match(treeText(h.node('bMainReplyRecords')), /公开可见性尚未核验/)
+  assert.doesNotMatch(treeText(h.node('bMainReplyRecords')), /PRIVATE_FIXTURE_HIDDEN|已公开/)
+  const details = h.node('bMainReplyRecords').querySelectorAll('details[data-record-key]')
+  assert.equal(details.length, 1)
+  assert.equal(descendants(details[0]).find(row => row.tagName === 'PRE').textContent, text)
 })
 
 test('Bili source failure and older projection snapshots never masquerade as an empty successful history', () => {

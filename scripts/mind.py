@@ -520,7 +520,11 @@ def _one_cycle(dry=False, force=False, observe_only=False):
     if observe_only and not unified:
         raise ValueError("Observation-only request requires unified decision mode")
     if unified:
-        return _observe_cycle(mind, dry=dry, force=force)
+        try:
+            return _observe_cycle(mind, dry=dry, force=force)
+        finally:
+            if not dry:
+                _journal_cycle()
 
     next_check = float(mind.get("next_check_ts") or 0)
     if not dry and not force and time.time() < next_check:
@@ -552,6 +556,22 @@ def _one_cycle(dry=False, force=False, observe_only=False):
         mind["last_error"] = error
         save(MIND, mind)
         return 1
+
+
+def _journal_cycle():
+    """A failed local facts journal must never block an observation or retry it."""
+    try:
+        from activity_journal import update_journal
+        records = get("panelRecords", {})
+        if not isinstance(records, dict):
+            raise ValueError("invalid journal configuration")
+        update_journal(workspace=WORK, agent_preset=get("decisions.agentPreset", ""),
+                       data_directory=DATA, identity_file=os.path.join(DATA, "lanya-config.json"),
+                       dsh_home=records.get("dshHome", os.path.join(os.path.expanduser("~"), ".dsh")),
+                       mapping_file=records.get("onebotMappingFile"), group_fallback=get("fanGroup", ""))
+    except Exception as error:
+        code = type(error).__name__
+        log("local facts journal skipped (%s)" % (code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", code) else "JournalError"))
 
 
 def _observation_payload(mind, hits, primary=True):
