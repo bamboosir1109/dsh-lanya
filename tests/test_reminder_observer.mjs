@@ -35,6 +35,22 @@ test('pending reminders remain undelivered and repeated ticks do not publish mor
   assert.deepEqual(second.state.once, {})
   assert.equal(f.pending().length, 1)
 })
+test('reminder observation keeps actual content separate from uncertain-delivery control guidance', async (t) => {
+  const f = fixture(t)
+  const original = structuredClone(f.list[0])
+  await processReminders(f.list, {}, f.now, f.observer)
+  const event = JSON.parse(fs.readFileSync(path.join(f.directory, 'pending', f.pending()[0]), 'utf8'))
+  assert.deepEqual(event.payload.reminder, original)
+  assert.deepEqual(f.list[0], original)
+  assert.equal(event.scope, 'private:101')
+  assert.equal(event.origin, 'observation')
+  assert.equal(event.control_allowed, false)
+  assert.match(event.payload.instruction, /Decide once/)
+  assert.match(event.payload.instruction, /unknown or partial, stop all further QQ output in this turn/)
+  assert.match(event.payload.instruction, /including final text, alternative content or media/)
+  assert.match(event.payload.instruction, /do not call qq_decide again/)
+  assert.match(event.payload.instruction, /internal control evidence, not reminder content/)
+})
 test('a durable sent outcome removes the reminder only on the following acknowledgement tick', async (t) => {
   const f = fixture(t)
   const first = await processReminders(f.list, {}, f.now, f.observer)
@@ -56,6 +72,24 @@ for (const status of ['unknown', 'decided', 'suppressed']) {
     assert.equal(f.pending().length, 1)
   })
 }
+test('unknown completion remains terminal even when a future review time was recorded', async (t) => {
+  const f = fixture(t)
+  const first = await f.observer(f.list[0], { key: 'unknown-with-review' })
+  assert.equal(first.status, 'pending')
+  const name = f.pending()[0]
+  const file = path.join(f.directory, 'pending', name)
+  const original = fs.readFileSync(file)
+  const next = f.state.clock + 120_000
+  f.complete(name, 'unknown', next)
+  for (const clock of [f.state.clock, next, next + 24 * 3600 * 1000]) {
+    f.state.clock = clock
+    const result = await f.observer(f.list[0], { key: 'unknown-with-review' })
+    assert.deepEqual(result, { delivered: false, status: 'unknown', terminal: true,
+      decision_id: 'main-fixture', next_review_at: null })
+    assert.deepEqual(f.pending(), [name])
+    assert.deepEqual(fs.readFileSync(file), original)
+  }
+})
 test('only the primary LLM future review can create one successor observation', async (t) => {
   const f = fixture(t)
   await processReminders(f.list, {}, f.now, f.observer)

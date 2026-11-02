@@ -1148,6 +1148,17 @@ export class OneBotDecisionAdapter {
       if (voiceArtifact.state !== 'ready') throw new PolicyDeliveryError('suppressed', 'voice_artifact_unavailable')
       verifyVoicePacket(voiceArtifact, params)
     }
+    // A failed/partial transport ends communication for this exact native turn,
+    // including later assistant text or a different tool/packet. A reply ticket
+    // is not revoked by a second (rejected) idle decision; without this gate an
+    // internal "do not retry" note could itself become another QQ delivery.
+    // Read-only tools return above, and a fresh turn owns a different record.
+    const requireCertainTurn = () => {
+      if (envelope.record?.outcomes.some(status => ['unknown', 'partial'].includes(status))) {
+        throw new PolicyDeliveryError('suppressed', 'turn_delivery_uncertain')
+      }
+    }
+    requireCertainTurn()
     const kind = /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (Array.isArray(params.message) && params.message.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
     let result
@@ -1156,6 +1167,9 @@ export class OneBotDecisionAdapter {
         sliceId: String(envelope.sequence.next++), meme: egressPart?.meme === true,
         socialOneOff: envelope.record?.binding?.observationKind === 'social.opportunity' }, () => {
         if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
+        // Raw API work may have awaited the durable policy transaction while
+        // another output settled. Recheck synchronously at the transport edge.
+        requireCertainTurn()
         if (voiceArtifact) {
           if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
           if (voiceArtifact.state !== 'ready' || matchingVoice.some(artifact => artifact.state !== 'ready' ||

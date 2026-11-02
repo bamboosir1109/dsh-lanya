@@ -1,5 +1,12 @@
 import { publishObservation, readObservationCompletion } from './observation-producer.js'
 
+const REMINDER_INSTRUCTION = [
+  'A local reminder is due. Decide once whether to deliver its actual content in this conversation, defer, or stay silent. Queuing is not delivery.',
+  'Reuse an accepted reply ticket; do not call qq_decide again to change it to idle after sending.',
+  'If any QQ send returns unknown or partial, stop all further QQ output in this turn, including final text, alternative content or media. Do not retry or claim success or failure without evidence.',
+  'Delivery states, tool errors and do-not-retry notes are internal control evidence, not reminder content. Do not send a status, diagnostic aside or confirmation of silence. Local read-only work may continue.'
+].join(' ')
+
 export function createReminderObserver({ directory, workspaceKey, agentKey = '', resolveScope, now = Date.now }) {
   if (typeof workspaceKey !== 'string' || typeof agentKey !== 'string' || typeof resolveScope !== 'function') throw new Error('Trusted reminder ownership is required')
   return async (reminder, { key } = {}) => {
@@ -23,7 +30,7 @@ export function createReminderObserver({ directory, workspaceKey, agentKey = '',
         scope, event_id: eventId, kind: 'reminder.due', producer: 'reminder-scheduler', created_at: now(),
         workspace_key: workspaceKey, agent_key: agentKey,
         payload: { reminder, previous_decision_id: previous?.decision_id || null,
-          instruction: 'A local reminder is due. Decide whether to deliver it in this conversation, defer, or stay silent. Queuing is not delivery. Do not send a confirmation of silence.' }
+          instruction: REMINDER_INSTRUCTION }
       })
       return { delivered: false, status: 'pending' }
     }

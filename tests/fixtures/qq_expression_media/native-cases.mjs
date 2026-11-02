@@ -201,7 +201,8 @@ test('unknown real meme acknowledgement retains its slot and never substitutes a
   h.deps.onTransmit = undefined
   const before = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
   assert.equal(before.length, 1); assert.equal(before[0].meme, true); assert.equal(before[0].status, 'unknown')
-  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [second.path] }, h.exec()), error => error.reason === 'meme_turn_limit')
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [second.path] }, h.exec()),
+    error => error.status === 'suppressed' && error.reason === 'turn_delivery_uncertain')
   assert.deepEqual((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, before)
   assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 1)
 })

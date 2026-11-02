@@ -64,6 +64,10 @@ OneBot 0.8.1 的接收顺序升级由 `scripts/patch_onebot_inbound_admission.py
 
 ## QQ 群消息队列升级
 
+当前私聊按用户、群聊按群映射到独立 session 和持久 inbox，实时输入不经过全局自主观察的模型队列。观察消费者按 scope 保序并有界并行；轮询期间即使某一轮仍在等待，也须能发现其它 scope 的新事件。同 scope 的活动轮与待处理输入继续串行，停止消费者要等在飞处理收尾后才释放唯一租约，不能另起第二个宿主抢占。
+
+排查零点等定时提醒时，检索对应日期、scope 与实际原生轮次，依次核对观察入队、`qq_decide`、媒体工具结果、最终 assistant 文本及发送记录。工具 `unknown` 后再调用 `idle` 会因本轮已决定而被拒绝，不能把它当作已撤销旧 reply 票。adapter 因此根据当前原生 record 的真实 `unknown`／`partial` 结果停止本轮后续外发；不要清掉历史不确定项，也不要发一条“不要重试”的 QQ 说明充当收尾。正常括号解释、新用户追问和未来独立提醒各按原边界处理。
+
 收到消息不等于已经开始处理。宿主每轮只取一条 `next-turn`；群消息连续到达时，过期输入可能逐条消耗模型轮次，而新版策略已经按更新输入递增 revision。此时 `stale_revision` 必须保留，不能通过放宽票或关闭静默校验来让旧回答发出。
 
 `scripts/patch_onebot_live_inbox.py` 在已安装 policy 层的 OneBot 0.8.1 bridge 上构建独立增量，保留 replay、egress 等现有修改。它只生成新文件，不改安装目录、不证明停机、不启动宿主。先明确实际 bridge 与全新暂存目录，从仓库根目录运行：

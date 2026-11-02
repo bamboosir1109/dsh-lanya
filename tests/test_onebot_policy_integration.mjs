@@ -454,7 +454,8 @@ test('failed/uncertain raw API ACK is never reported sent or retried by the same
   const exec = h.exec(chat, 'uncertain-raw')
   const args = { action: 'send_group_ai_record', params: { user_id: 101 } }
   await assert.rejects(() => h.tools.get('qq_napcat_api').execute(args, exec), error => error.status === 'unknown')
-  await assert.rejects(() => h.tools.get('qq_napcat_api').execute(args, exec), error => error.status === 'duplicate')
+  await assert.rejects(() => h.tools.get('qq_napcat_api').execute(args, exec),
+    error => error.status === 'suppressed' && error.reason === 'turn_delivery_uncertain')
   assert.equal(h.calls.length, 1)
 })
 

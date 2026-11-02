@@ -16,6 +16,7 @@ const hash = (x) => createHash('sha256').update(x).digest('hex')
 const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x)
 const terminalStatus = (x) => ['decided', 'sent', 'unknown', 'suppressed'].includes(x)
 const decisionIdentity = (x) => identity(x) && x.trim().length > 0
+const MAX_CONCURRENT_SCOPES = 4
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
 export const MAX_OBSERVATION_BYTES = 256 * 1024
 // Sixfold string escaping plus repeated event identities and bounded metadata.
@@ -163,6 +164,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   const done = path.join(base, 'done')
   const leaseFile = path.join(base, 'consumer.sqlite')
   let timer, busy = false, stopped = true, release = null, leaseDb = null
+  let rescanRequested = false, wakeDrain = null
   const invalidEvidence = new Set()
   // A restart retries acknowledgement from durable evidence. Within this pump,
   // unchanged terminal bytes need not reacquire the policy lock every poll.
@@ -259,101 +261,168 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     return { event: review, name, sha256: read.sha256, raw: read.raw }
   }
 
-  async function drain() {
-    if (busy || !release) return { processed: 0, status: 'not_owner_or_busy' }
-    busy = true
-    let processed = 0
+  async function processEntry({ event, name, sha256, raw }) {
+    let outcome
+    try { outcome = await dispatch(event) } catch (error) {
+      failed(name)
+      log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
+      return 0
+    }
+    // Errors before a real verdict are never consumed. Unknown transport
+    // outcomes ARE terminal evidence and may not be retried automatically.
+    if (!plain(outcome) || outcome.completed !== true) {
+      failed(name)
+      log('warn', 'observation_without_terminal_decision:' + name)
+      return 0
+    }
+    let current
+    try { current = readRegular(path.join(pending, name), MAX_OBSERVATION_BYTES) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      // A cleanup during the turn cannot discard the already validated
+      // bytes captured before dispatch or force the completed turn to replay.
+      current = { sha256: hash(raw) }
+    }
+    if (current.sha256 !== sha256) throw new ObservationQueueError('Observation changed before completion')
+    const local = outcome.status === 'no_decision'
+    const marker = { version: local ? 3 : 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
+      event_sha256: sha256, completed_at: local ? outcome.completed_at : now(), status: outcome.status,
+      ...(local ? { reason: outcome.reason, local_outcome_id: outcome.local_outcome_id,
+        observation_revision: outcome.observation_revision, native_turn_completed: outcome.native_turn_completed }
+        : { decision_id: outcome.decision_id }) }
+    // null/undefined in a dispatch receipt means the LLM did not schedule a
+    // review. A persisted marker with an explicit null timestamp is invalid.
+    if (!local && outcome.next_review_at !== undefined && outcome.next_review_at !== null) {
+      marker.next_review_at = outcome.next_review_at
+    }
     try {
-      ordinaryDirectories(pending, true)
-      ordinaryDirectories(done)
-      const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
-      const entries = new Map()
-      for (const [index, name] of names.entries()) {
-        // Awaiting already-resolved acknowledgements only yields microtasks.
-        // Let timers, input and provider I/O run even with a large done history.
-        if (index > 0 && index % 32 === 0) {
-          await new Promise(resolve => setImmediate(resolve))
-          if (stopped) break
-        }
-        try {
-          if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
-          const read = readObservationEvidence(base, name.slice(0, -5))
-          const event = validateObservation(read.value)
-          if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
-          if (read.completion) {
-            const completed = read.completion
-            // A crash after durable completion but before core acknowledgement
-            // is recovered here, without running the model or sending again.
-            await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
-            const review = scheduleReview(event, completed)
-            if (review) entries.set(review.name, review)
-            invalidEvidence.delete(name)
-            continue
-          }
-          entries.set(name, { event, name, sha256: read.sha256, raw: read.raw })
-          invalidEvidence.delete(name)
-        } catch (error) {
-          if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
-          invalidEvidence.add(name)
-        }
+      if (local && ('decision_id' in outcome || 'next_review_at' in outcome || 'verdict' in outcome || 'ticket' in outcome)) {
+        throw new ObservationQueueError('A local no-decision outcome cannot carry a model verdict or review')
       }
-      const ordered = [...entries.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
-      for (const [index, { event, name, sha256, raw }] of ordered.entries()) {
-        if (index > 0 && index % 32 === 0) await new Promise(resolve => setImmediate(resolve))
+      validateCompletion(marker, event, sha256, raw)
+    } catch (error) {
+      parkInvalidTerminal(name)
+      log('error', 'observation_invalid_terminal_parked:' + name + ':' + error.name)
+      return 0
+    }
+    publish(path.join(done, name), marker)
+    leaseDb.prepare('DELETE FROM retry WHERE event_key=?').run(name)
+    await acknowledgeTerminal(event, marker, name, sha256, hash(JSON.stringify(marker) + '\n'))
+    return 1
+  }
+
+  async function drain() {
+    if (busy) {
+      // A poll is also a rescan signal while other scopes await their models.
+      rescanRequested = true
+      wakeDrain?.()
+      return { processed: 0, status: 'not_owner_or_busy' }
+    }
+    if (!release) return { processed: 0, status: 'not_owner_or_busy' }
+    busy = true
+    rescanRequested = true
+    let processed = 0, launched = 0, failure = null
+    const backlog = new Map(), inFlight = new Map(), activeScopes = new Set(), terminal = new Set()
+    const wake = () => { wakeDrain?.(); wakeDrain = null }
+    const launch = entry => {
+      const scope = entry.event.scope
+      activeScopes.add(scope)
+      backlog.delete(entry.name)
+      const task = processEntry(entry).then(count => {
+        processed += count
+        if (count) terminal.add(entry.name)
+        else rescanRequested = true
+      }, error => { failure ||= error }).finally(() => {
+        inFlight.delete(entry.name)
+        activeScopes.delete(scope)
+        wake()
+      })
+      inFlight.set(entry.name, task)
+    }
+    try {
+      while (!stopped) {
+        if (rescanRequested) {
+          rescanRequested = false
+          backlog.clear()
+          ordinaryDirectories(pending, true)
+          ordinaryDirectories(done)
+          const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+          for (const [index, name] of names.entries()) {
+            // Awaiting already-resolved acknowledgements only yields microtasks.
+            // Let timers, input and provider I/O run even with a large done history.
+            if (index > 0 && index % 32 === 0) {
+              await new Promise(resolve => setImmediate(resolve))
+              if (stopped) break
+            }
+            try {
+              if (inFlight.has(name)) continue
+              const read = readObservationEvidence(base, name.slice(0, -5))
+              const event = validateObservation(read.value)
+              if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
+              if (read.completion) {
+                const completed = read.completion
+                // A crash after durable completion but before core acknowledgement
+                // is recovered here, without running the model or sending again.
+                await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
+                const review = scheduleReview(event, completed)
+                if (review) backlog.set(review.name, review)
+                invalidEvidence.delete(name)
+                continue
+              }
+              // Permanently parked uncertain terminal claims remain evidence, not
+              // an executable head that freezes every later event in this scope.
+              if (leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after === Number.MAX_SAFE_INTEGER) continue
+              backlog.set(name, { event, name, sha256: read.sha256, raw: read.raw })
+              invalidEvidence.delete(name)
+            } catch (error) {
+              if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
+              invalidEvidence.add(name)
+            }
+          }
+        }
+        if (failure) throw failure
+        const ordered = [...backlog.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
+        const heads = new Set()
+        let scheduled = false
+        for (const [index, entry] of ordered.entries()) {
+          if (index > 0 && index % 32 === 0) await new Promise(resolve => setImmediate(resolve))
+          if (stopped || failure || inFlight.size >= MAX_CONCURRENT_SCOPES) break
+          const scope = entry.event.scope
+          // Finite backoff holds this scope's oldest executable entry; unrelated
+          // scopes remain eligible. Only one head per scope can start in a pass.
+          // A scope completing during a yield cannot let a later entry overtake.
+          if (heads.has(scope)) continue
+          heads.add(scope)
+          if (activeScopes.has(scope) || terminal.has(entry.name)) continue
+          if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(entry.name)?.next_after || 0) > now()) continue
+          if (launched > 0 && launched % 32 === 0) {
+            await new Promise(resolve => setImmediate(resolve))
+            if (stopped || failure) break
+          }
+          launched += 1
+          launch(entry)
+          scheduled = true
+        }
+        if (failure) throw failure
         if (stopped) break
-        if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) continue
-        let outcome
-        try { outcome = await dispatch(event) } catch (error) {
-          failed(name)
-          log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
-          continue
+        if (!inFlight.size) {
+          if (scheduled || rescanRequested) continue
+          break
         }
-        // Errors before a real verdict are never consumed. Unknown transport
-        // outcomes ARE terminal evidence and may not be retried automatically.
-        if (!plain(outcome) || outcome.completed !== true) {
-          failed(name)
-          log('warn', 'observation_without_terminal_decision:' + name)
-          continue
-        }
-        let current
-        try { current = readRegular(path.join(pending, name), MAX_OBSERVATION_BYTES) } catch (error) {
-          if (error.code !== 'ENOENT') throw error
-          // A cleanup during the turn cannot discard the already validated
-          // bytes captured before dispatch or force the completed turn to replay.
-          current = { sha256: hash(raw) }
-        }
-        if (current.sha256 !== sha256) throw new ObservationQueueError('Observation changed before completion')
-        const local = outcome.status === 'no_decision'
-        const marker = { version: local ? 3 : 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
-          event_sha256: sha256, completed_at: local ? outcome.completed_at : now(), status: outcome.status,
-          ...(local ? { reason: outcome.reason, local_outcome_id: outcome.local_outcome_id,
-            observation_revision: outcome.observation_revision, native_turn_completed: outcome.native_turn_completed }
-            : { decision_id: outcome.decision_id }) }
-        // null/undefined in a dispatch receipt means the LLM did not schedule a
-        // review. A persisted marker with an explicit null timestamp is invalid.
-        if (!local && outcome.next_review_at !== undefined && outcome.next_review_at !== null) {
-          marker.next_review_at = outcome.next_review_at
-        }
-        try {
-          if (local && ('decision_id' in outcome || 'next_review_at' in outcome || 'verdict' in outcome || 'ticket' in outcome)) {
-            throw new ObservationQueueError('A local no-decision outcome cannot carry a model verdict or review')
-          }
-          validateCompletion(marker, event, sha256, raw)
-        } catch (error) {
-          parkInvalidTerminal(name)
-          log('error', 'observation_invalid_terminal_parked:' + name + ':' + error.name)
-          continue
-        }
-        publish(path.join(done, name), marker)
-        leaseDb.prepare('DELETE FROM retry WHERE event_key=?').run(name)
-        await acknowledgeTerminal(event, marker, name, sha256, hash(JSON.stringify(marker) + '\n'))
-        processed += 1
+        if (rescanRequested) continue
+        // Completion frees one scope; polling requests a new immutable scan.
+        // Neither wait holds up a different scope's live native inbox.
+        await new Promise(resolve => { wakeDrain = resolve })
       }
-      return { processed, status: 'drained' }
     } finally {
+      wakeDrain = null
+      // Even a scan/ack failure must not release the unique lease while another
+      // scope may still be producing a terminal receipt or uncertain delivery.
+      await Promise.allSettled([...inFlight.values()])
       busy = false
       if (stopped && release) { release(); release = null }
     }
+    if (failure) throw failure
+    return { processed, status: 'drained' }
   }
 
   return {
@@ -374,6 +443,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     drain,
     stop() {
       stopped = true
+      wakeDrain?.()
       if (timer) { clearInterval(timer); timer = null }
       // Retain the ownership lock until any in-flight decision settles.
       if (!busy && release) { release(); release = null }

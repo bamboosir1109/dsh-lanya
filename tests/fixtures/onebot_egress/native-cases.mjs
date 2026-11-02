@@ -358,6 +358,72 @@ test('native unknown second caption slice stops remaining output and is partial 
   const snapshot = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
   assert.deepEqual(Array.from(snapshot.deliveries, (d) => d.status), ['sent', 'unknown'])
   assert.equal(new Set(snapshot.deliveries.map((d) => d.ticketId)).size, 1)
+  await assert.rejects(() => h.send('A different final message is still the same uncertain turn.'), /turn_delivery_uncertain/)
+  assert.equal(h.calls.filter((c) => c.action === 'send_msg').length, 2)
+})
+
+test('native unknown image blocks later final text raw media and forwards until a fresh live turn', async (t) => {
+  const h = await setup(t)
+  await h.receive('synthetic reminder context'); h.start(); await h.decide()
+  h.deps.onTransmit = async () => { throw new Error('synthetic image delivery uncertainty') }
+  await assert.rejects(() => h.tools.get('qq_send_image').execute({ sources: ['https://example.invalid/synthetic.png'] }, h.exec()), /unknown/)
+  const uncertain = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
+  assert.deepEqual(Array.from(uncertain.deliveries, item => item.status), ['unknown'])
+  assert.equal((await h.decide('idle')).reason, 'already_decided')
+  h.deps.onTransmit = undefined
+  await assert.rejects(() => h.send('Synthetic internal status; do not repeat this reminder.'), /turn_delivery_uncertain/)
+  await assert.rejects(() => h.raw('send_private_msg', { user_id: '101', message: 'another body' }), /turn_delivery_uncertain/)
+  await assert.rejects(() => h.raw('send_private_msg', { user_id: '101', message: [{ type: 'image', data: { file: 'base64://YQ==' } }] }), /turn_delivery_uncertain/)
+  await assert.rejects(() => h.raw('send_private_forward_msg', { user_id: '101', messages: [
+    { type: 'node', data: { name: 'fixture', uin: '999', content: [{ type: 'text', data: { text: 'another forward body' } }] } },
+  ] }), /turn_delivery_uncertain/)
+  assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 1, 'no replacement text, media or forward reaches transport')
+  await h.raw('get_status', {})
+  assert.equal(h.calls.at(-1).action, 'get_status', 'internal read-only work remains available')
+  assert.deepEqual(Array.from((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, item => item.status), ['unknown'])
+  const record = h.bridge.lanyaPolicy.state(h.chat).active
+  h.assistant('Synthetic implicit final status after the failed image.')
+  h.end()
+  await waitFor(() => record.inFlight.size === 0)
+  assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 1, 'implicit final output is also stopped')
+  await h.receive('a new real user question'); h.start(); await h.decide()
+  await h.send('A fresh answer.')
+  assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 2)
+  assert.deepEqual(Array.from((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, item => item.status), ['unknown', 'sent'])
+})
+
+test('native successful image allows separate text under the same reply ticket', async (t) => {
+  const h = await setup(t)
+  await h.receive('synthetic ordinary conversation'); h.start(); await h.decide()
+  await h.tools.get('qq_send_image').execute({ sources: ['https://example.invalid/synthetic.png'] }, h.exec())
+  await h.send('A natural separate message.')
+  assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 2)
+  const delivered = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.deepEqual(Array.from(delivered, item => item.status), ['sent', 'sent'])
+  assert.equal(new Set(delivered.map(item => item.ticketId)).size, 1)
+})
+
+test('native raw send rechecks uncertainty after awaiting its durable guard', async (t) => {
+  const h = await setup(t)
+  await h.receive('synthetic concurrent raw operations'); h.start(); await h.decide()
+  let finishFirst, continueSecond, secondWaiting = false, calls = 0
+  const firstGate = new Promise(resolve => { finishFirst = resolve })
+  const secondGate = new Promise(resolve => { continueSecond = resolve })
+  t.after(() => { finishFirst(); continueSecond() })
+  const original = h.bridge.lanyaPolicy.policy.runGuarded.bind(h.bridge.lanyaPolicy.policy)
+  h.bridge.lanyaPolicy.policy.runGuarded = async (...args) => {
+    if (++calls === 2) { secondWaiting = true; await secondGate }
+    return original(...args)
+  }
+  h.deps.onTransmit = async () => { await firstGate; throw new Error('synthetic unknown first send') }
+  const first = assert.rejects(() => h.raw('send_private_msg', { user_id: '101', message: 'first body' }), /unknown/)
+  await waitFor(() => h.calls.some(item => item.action === 'send_private_msg'))
+  const second = assert.rejects(() => h.raw('send_private_msg', { user_id: '101', message: 'second body' }), /unknown/)
+  await waitFor(() => secondWaiting)
+  finishFirst(); await first
+  continueSecond(); await second
+  assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 1, 'the final synchronous gate runs before a second transport')
+  assert.ok(h.bridge.lanyaPolicy.state(h.chat).active.outcomes.includes('unknown'))
 })
 
 test('native silence between acknowledged slices revokes the fixed ticket without retry or RP relaxation', async (t) => {

@@ -127,6 +127,30 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertNotIn("No fixed meme quota", guide["limits"])
         self.assertEqual(self.snapshot(), before)
 
+    def test_delivery_state_boundary_is_internal_terminal_and_read_only_in_each_scope(self):
+        before = self.snapshot()
+        guides = []
+        for scope in ("private:101", "group:202"):
+            with self.subTest(scope=scope):
+                result = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)
+                guide = result["tools"]["qq_expression"]["delivery_state_boundary"]
+                guides.append(guide)
+                self.assertIn("unknown or partial", guide["uncertain_send"])
+                self.assertIn("stop all further QQ output in this turn", guide["uncertain_send"])
+                self.assertIn("including final text, alternative content or media", guide["uncertain_send"])
+                self.assertIn("read-only work may continue", guide["uncertain_send"])
+                self.assertIn("Host send guards remain authoritative", guide["uncertain_send"])
+                self.assertIn("Do not call qq_decide(idle)", guide["decision"])
+                self.assertIn("internal control evidence, not chat or reminder content", guide["visible_content"])
+                self.assertIn("fresh user question", guide["later_question"])
+                self.assertIn("own valid ticket", guide["later_question"])
+                self.assertIn("Ordinary parentheses and requested technical diagnostics are still allowed", guide["later_question"])
+        self.assertEqual(guides[0], guides[1])
+        guides[0]["decision"] = "isolated fixture mutation"
+        self.assertNotEqual(guides[0], guides[1])
+        self.assertEqual(self.snapshot(), before)
+
     def test_intent_protocol_preserves_real_candidates_and_recipient_authority_without_io(self):
         before = self.snapshot()
         primary = self.context()["tools"]["qq_autonomy"]
