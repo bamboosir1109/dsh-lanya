@@ -364,6 +364,141 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 .empty{color:var(--dim);font-size:13px;padding:26px 0;text-align:center}
 </style>
 <link rel="stylesheet" href="./theme-light.css">
+<style id="layout-refinement">
+/* Shared spacing and reading surfaces; data and actions stay in their own lanes. */
+:root{--r:20px;--dim:#91a0b9;--fg2:#b9c4d8;--acc:#a29bff;--surface-tint:rgba(139,128,255,.055);color-scheme:dark}
+html[data-theme="light"]{
+  --bg:#f5f6fb;--panel:rgba(255,255,255,.92);--card:#fff;--card2:#f5f6fb;
+  --line:#e6e9f2;--line2:#d7dceb;--fg:#22283d;--fg2:#56627a;--dim:#69768d;
+  --acc:#625bdb;--surface-tint:#f8f8fe;--shadow:0 3px 6px rgba(35,45,80,.025),0 12px 32px -22px rgba(35,45,80,.2);
+  --bg-grad:radial-gradient(ellipse at 90% 0,rgba(160,150,245,.10),transparent 48%);color-scheme:light
+}
+body{font-size:14px;line-height:1.75;letter-spacing:0;height:100vh;height:100dvh}
+aside{width:224px;padding:26px 14px 18px;height:100%;gap:6px}
+.brand{padding:0 12px 24px}.brand b{font-size:16px;line-height:1.5}.brand span{font-size:10px;letter-spacing:.14em}
+nav{gap:5px}.navitem{padding:10px 13px;font-size:13px;border-radius:12px;min-height:44px}
+.navitem.on{background:var(--surface-tint);border-color:var(--line2);color:var(--acc);box-shadow:none}
+.navitem.on:before{background:var(--acc);box-shadow:none;width:3px;height:22px}
+.navitem .cnt{line-height:1.7}.sidefoot{line-height:1.8}
+html[data-theme="light"] .navitem.on{background:#f0edff;border-color:#ddd7f7}
+html[data-theme="light"] .tab.on{background:#efecff;border-color:#d8d1f5;color:#5c51c7}
+main{min-width:0;min-height:0;height:100%;padding:32px clamp(20px,3vw,48px) 64px;scrollbar-gutter:stable}
+.page,.syncbar{max-width:1180px;min-width:0}
+.syncbar{font-size:12px;margin-bottom:28px;align-items:center;flex-wrap:wrap;line-height:1.7}
+.syncbar>span{min-width:0;overflow-wrap:anywhere}.syncbar button{margin-left:auto;font-size:12px;min-height:36px;padding:6px 12px}
+.phead{margin-bottom:28px;max-width:860px}.phead h1{font-size:30px;line-height:1.4;font-weight:720;letter-spacing:-.035em;margin-bottom:8px}
+.phead p{color:var(--fg2);font-size:14px;line-height:1.8;max-width:70ch}
+.page-kicker{font-size:11px;line-height:1.8;font-weight:650;letter-spacing:.14em;color:var(--acc);margin-bottom:8px}
+.card{padding:26px;margin-bottom:20px;border-radius:20px;min-width:0}
+.card>h3{font-size:15px;line-height:1.7;letter-spacing:0;text-transform:none;color:var(--fg);margin-bottom:16px}
+.card .note{font-size:12.5px;line-height:1.85;margin:12px 0 18px;color:var(--dim);overflow-wrap:anywhere}
+.card>h3+.note{margin-top:-6px}.card .field+.note{margin-top:14px}
+.card details>summary,details.card>summary{cursor:pointer;line-height:1.8;font-size:13px;font-weight:600;color:var(--acc);padding:8px 0;overflow-wrap:anywhere}
+details.card>summary{font-size:14px;padding:0}details.card[open]>summary{margin-bottom:16px}
+.card details>.note{margin:10px 0 14px}
+.stats{gap:16px;margin-bottom:24px;grid-template-columns:repeat(auto-fit,minmax(min(100%,158px),1fr))}
+.stat{border-radius:18px;padding:20px 22px;min-width:0;overflow:visible}
+.stat:before{inset:0 20px auto;height:2px;border-radius:0 0 2px 2px;opacity:.5}
+.stat .k{font-size:12px;letter-spacing:0;line-height:1.7;margin-bottom:10px;color:var(--fg2);overflow-wrap:anywhere}
+.stat .v{font-size:32px;line-height:1.3;letter-spacing:-.04em;overflow-wrap:anywhere}
+.stat .s{font-size:11.5px;line-height:1.8;margin-top:8px;overflow-wrap:anywhere}
+.grid2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2>*{min-width:0}
+.policy-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px}
+.policy-item{min-width:0;overflow-wrap:anywhere;border-radius:14px;padding:18px}
+.presets{grid-template-columns:repeat(auto-fit,minmax(min(100%,205px),1fr))}
+button{min-height:40px;line-height:1.5;padding:9px 15px;border-radius:11px;font-size:13px;white-space:normal;overflow-wrap:anywhere}
+button.sm{min-height:32px;padding:5px 11px;font-size:12px}button:disabled{opacity:.48}
+html[data-theme="light"] button.pri{background:#6560df;border-color:#6560df;box-shadow:0 4px 10px -6px rgba(84,74,196,.55)}
+html[data-theme="light"] button.pri:hover{background:#554fd0;border-color:#554fd0}
+:is(button,a,input,select,textarea,summary):focus-visible{outline:3px solid var(--acc);outline-offset:3px}
+input:is([type=text],[type=number],[type=password],[type=url],[type=date],[type=search],[type=time]),select,textarea{
+  max-width:100%;min-width:0;border:1px solid var(--line2);border-radius:11px;background:var(--card2);color:var(--fg);
+  font:inherit;font-size:13px;line-height:1.6;padding:10px 12px;min-height:42px;accent-color:var(--acc)
+}
+input:is([type=date],[type=time]){min-width:0;width:100%;font-variant-numeric:tabular-nums}
+select{min-width:0;text-overflow:ellipsis}textarea{line-height:1.85}input::placeholder,textarea::placeholder{color:var(--dim);opacity:.8}
+.field label{font-size:12.5px;line-height:1.7}.field .two-in{flex-wrap:wrap}.field .two-in input{flex:1 1 110px}
+.btnrow{gap:10px}.btnrow>*{min-width:0}.bulkbar{flex-wrap:wrap}
+.spend-toolbar{gap:14px;align-items:flex-end;margin:18px 0}
+.spend-toolbar label{display:flex;flex-direction:column;align-items:flex-start;gap:6px;font-size:12px;line-height:1.7;flex:1 1 150px;min-width:0}
+.spend-toolbar label>input,.spend-toolbar label>select{width:100%;font:inherit;font-size:13px;padding:10px 12px;min-height:42px;border-radius:11px}
+.spend-toolbar>button{min-height:42px;flex:none}.tabs{gap:8px}.tab{min-height:36px;line-height:1.6;display:flex;align-items:center;justify-content:center;padding:7px 14px}
+.table-scroll,.spend-table{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;border-radius:12px}
+.spend-table>.table-scroll{overflow:visible}table{min-width:540px}th{font-size:11.5px;letter-spacing:0;line-height:1.7;padding-bottom:14px}
+td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-height:34px}.dsc{line-height:1.8;overflow-wrap:anywhere}
+.frow{min-width:0;flex-wrap:wrap;gap:10px;padding:13px 12px}.frow .fmain{flex:1 1 180px;min-width:0}
+.frow .fmeta{font-size:12px;line-height:1.8;overflow-wrap:anywhere}.frow .fname{line-height:1.75}
+.fbody,.viewer{font-family:inherit;font-size:13.5px;line-height:1.9;padding:18px;overflow-wrap:anywhere}
+.out{line-height:1.85;overflow-wrap:anywhere}.empty{line-height:1.9;padding:32px 16px}
+.search-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+.search-toolbar>input{flex:1 1 220px;min-width:0!important}.search-toolbar>.tabs{flex:none}
+#memOwnerControls{padding:16px 18px;border:1px solid var(--line);background:var(--surface-tint);border-radius:14px;margin:20px 0}
+#memOwnerControls>label{font-size:12px;color:var(--fg2);line-height:1.8}#memOwnerInfo{margin:4px 0 0;font-size:12px}
+#memOwner{display:block;min-height:44px}#memNew{min-width:0!important}#memFilter{flex-wrap:wrap}
+#memHits{font:inherit;white-space:normal;background:transparent;border:0;padding:0;max-height:none;margin:18px 0}
+#memPropList,#memHits{gap:12px}
+:is(#memPropList,#memHits) .frow{display:grid;grid-template-columns:minmax(0,1fr) 40px 32px;align-items:start;gap:10px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--surface-tint);margin:0 0 12px}
+:is(#memPropList,#memHits) .fmain{display:block;min-width:0}
+:is(#memPropList,#memHits) .fname{display:block;white-space:normal;overflow:visible;font-size:15px;font-weight:650;line-height:1.75;color:var(--fg);overflow-wrap:anywhere}
+:is(#memPropList,#memHits) .fmeta{display:block;white-space:normal;font-size:11.5px;line-height:1.9;margin:7px 0;color:var(--dim)}
+:is(#memPropList,#memHits) .fprev{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.95;color:var(--fg2);text-overflow:clip}
+:is(#memPropList,#memHits) .fdel{width:32px;height:32px;margin:0;border:1px solid var(--line);background:var(--card);min-height:32px}
+:is(#memPropList,#memHits) .sm{margin:0;min-width:36px;background:var(--card)}
+:is(#memPropList,#memHits) textarea{min-height:120px;width:100%;font:inherit}
+#memoryDiaryCard{border-top:3px solid var(--acc);padding:28px}
+#memoryDiaryCard>h3:first-child{font-size:20px;margin-bottom:12px;letter-spacing:-.02em}
+#memoryDiaryCard .diary-toolbar{display:grid;grid-template-columns:minmax(150px,.7fr) minmax(180px,1.5fr) auto;gap:14px;margin:22px 0}
+#memoryDiaryState{border:1px solid var(--line);background:var(--surface-tint);border-radius:11px;padding:10px 14px;margin:16px 0;font-size:12px;line-height:1.85}
+#memoryDiaryDays{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
+#memoryDiaryDays:empty{display:none}#memoryDiaryDays button{margin:0!important;text-align:left;max-width:100%;line-height:1.8;overflow-wrap:anywhere}
+#memoryDiaryTitle{font-size:17px;line-height:1.8;margin:24px 0 14px;color:var(--fg);font-weight:650;overflow-wrap:anywhere}
+#memoryDiaryBody{font-family:inherit;font-size:15px;line-height:2;letter-spacing:.01em;padding:24px;border:1px solid var(--line);border-radius:15px;background:var(--surface-tint);color:var(--fg2);margin:0 0 18px;tab-size:2}
+#memoryDiaryCard>details{border-top:1px solid var(--line);padding-top:8px}
+#memoryDiaryFacts .record-excerpt{font:inherit;font-size:13px;line-height:1.95;padding:18px;border:1px solid var(--line);margin:12px 0}
+.record-excerpt{font-family:inherit;font-size:13px;line-height:1.95;max-width:100%;margin:12px 0;border:1px solid var(--line)}
+.record-row{min-width:0;overflow-wrap:anywhere;line-height:1.85}
+.record-row a{overflow-wrap:anywhere}.record-row>div:first-child>a{font-size:15px;font-weight:650;line-height:1.8;color:var(--fg);text-decoration:none}
+.record-row>div:first-child>a:hover{color:var(--acc);text-decoration:underline;text-underline-offset:4px}
+.record-head{gap:8px 12px;line-height:1.8}.record-status{line-height:1.8;max-width:100%;overflow-wrap:anywhere}
+.record-details{font-size:12px;line-height:1.9}.record-details summary{padding:8px 0}.record-summary{line-height:1.9}
+.bili-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px;align-items:start;margin-bottom:20px}
+.bili-grid>.card{margin:0;padding:24px;min-width:0}.bili-grid .record-list{max-height:720px;padding-right:5px;scrollbar-gutter:stable}
+.bili-grid .record-list>.record-row{border:1px solid var(--line);background:var(--surface-tint);border-radius:14px;padding:18px;margin-bottom:12px}
+.bili-grid .record-list>.record-row:last-child{margin-bottom:0}.bili-grid .record-row .dsc{margin-top:7px;font-size:11.5px;line-height:1.85}
+.bili-grid .record-row>.reply-text{font-size:14px;line-height:1.95;margin:14px 0;color:var(--fg)}
+#bMainVideos>.record-row>div:first-child{margin-bottom:10px}#bMainReplyRecords>.record-row>strong{font-size:12px;color:var(--acc);line-height:1.9}
+#biliQrImg{max-width:100%;height:auto!important;aspect-ratio:1}.banner{min-width:0}.banner .bd{overflow-wrap:anywhere}
+@media(min-width:1600px){main{padding-top:42px}.phead h1{font-size:34px}.card{padding:30px}}
+@media(max-width:1180px){aside{width:196px}.bili-grid{grid-template-columns:minmax(0,1fr)}.bili-grid .record-list{max-height:620px}}
+@media(max-width:960px){.grid2{grid-template-columns:minmax(0,1fr)}main{padding:24px 22px 48px}.card{padding:22px}.stat{padding:18px}}
+@media(max-width:900px){
+  body{flex-direction:column}aside{width:100%;height:auto;flex:none;padding:12px 16px 8px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;border-right:0;border-bottom:1px solid var(--line);overflow:visible}
+  .brand{padding:0;gap:9px}.brand .logo{width:30px;height:30px;font-size:15px;border-radius:10px}.brand b{font-size:14px}.brand span{font-size:9px}
+  aside nav{grid-column:1/-1;grid-row:2;min-width:0;display:flex;flex-direction:row;overflow-x:auto;gap:6px;padding:2px 0 6px;scrollbar-width:thin;overscroll-behavior-x:contain}
+  .navitem{flex:none;white-space:nowrap;padding:7px 11px;min-height:38px;font-size:12px;gap:7px}.navitem.on:before{display:none}.navitem .cnt{font-size:10px;padding:1px 5px}
+  .sidefoot{grid-column:2;grid-row:1;border:0;margin:0;padding:0;align-self:center}.sidefoot #footStamp{display:none}.sidefoot>div:last-child{margin-top:0!important}.sidefoot button.sm{font-size:11px;padding:5px 9px;min-height:30px}
+  main{height:auto;flex:1;min-height:0;width:100%;padding:20px 16px calc(36px + env(safe-area-inset-bottom))}.page,.syncbar{width:100%}
+  .syncbar{margin-bottom:22px;gap:8px}.syncbar>span{flex:1 1 180px}.phead{margin-bottom:22px}.phead h1{font-size:26px}.phead p{font-size:13px}
+  .card{padding:20px;border-radius:17px}.stats{gap:12px;margin-bottom:20px}.stat{border-radius:15px;padding:16px}.stat .v{font-size:28px}
+  #memoryDiaryCard{padding:22px}.bili-grid{gap:16px}.bili-grid>.card{padding:20px}
+}
+@media(max-width:520px){
+  main{padding-left:12px;padding-right:12px}.card{padding:18px}.phead h1{font-size:25px}.page-kicker{font-size:10px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}#page-memory>.stats{grid-template-columns:repeat(3,minmax(0,1fr))}#page-bili>.stats>.stat:first-child{grid-column:1/-1}
+  .stat{padding:14px 12px}.stat .k{font-size:11px;margin-bottom:6px}.stat .v{font-size:26px}.stat .s{font-size:10.5px;line-height:1.8}
+  .search-toolbar>input{flex-basis:100%}.search-toolbar>button{flex:1}.search-toolbar>.tabs{flex-basis:100%;margin-top:4px!important}#memFilter>.tab{flex:1;padding:7px 9px}
+  .spend-toolbar{gap:12px}.spend-toolbar label{flex-basis:calc(50% - 6px)}.spend-toolbar>button{width:100%}
+  #memoryDiaryCard{padding:20px 16px}#memoryDiaryCard .diary-toolbar{grid-template-columns:minmax(0,1fr);gap:12px;margin:18px 0}
+  #memoryDiaryBody{padding:18px;font-size:14px;line-height:1.95}#memoryDiaryTitle{font-size:16px}#memOwnerControls{padding:14px}
+  :is(#memPropList,#memHits) .frow{grid-template-columns:minmax(0,1fr) 32px;padding:16px;gap:8px}
+  :is(#memPropList,#memHits) .fmain{grid-column:1/-1}:is(#memPropList,#memHits) .sm{justify-self:end}
+  :is(#memPropList,#memHits) .fname{font-size:14px}:is(#memPropList,#memHits) .fprev{font-size:13px}
+  .frow .fmain{flex-basis:160px}.frow .fmeta{font-size:11px}.frow{gap:8px}.frow>.fmeta{margin-right:8px}
+  .bili-grid>.card{padding:18px 14px}.bili-grid .record-list{padding-right:0;max-height:660px}.bili-grid .record-list>.record-row{padding:16px 14px}
+  .btnrow>button{flex:1 1 140px}.table-scroll table{min-width:520px}
+}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+</style>
 </head>
 <body>
 
@@ -451,10 +586,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       主 agent 按调度与连接回执确认，服务按健康检查确认。
       灰点表示未运行，黄点表示待核验或存在多个进程；右侧按部件提供检查或恢复操作。
     </p>
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th>部件</th><th>作用</th><th class="num">进程</th><th class="num">内存</th><th class="op"></th></tr></thead>
       <tbody id="partsBody"></tbody>
-    </table>
+    </table></div>
     <div class="btnrow">
       <button class="pri" onclick="doAction('napcat-elevated','partsOut')">启动 / 重启 QQ</button>
       <button onclick="doAction('kill-strays','partsOut')">清理卡住的进程</button>
@@ -471,10 +606,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card">
     <h3>已装插件</h3>
     <p class="note">点开关启用或停用，<b>改动要重启 DSH 才生效</b>。来源可以点开看原仓库。</p>
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th style="width:46px">启用</th><th>插件</th><th>作用</th><th>来源</th><th class="num">版本</th><th class="op"></th></tr></thead>
       <tbody id="pluginsBody"></tbody>
-    </table>
+    </table></div>
     <div class="out" id="plugOut"></div>
   </div>
 
@@ -535,7 +670,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <div class="spend-chart" id="spendChart" role="group" aria-label="每日花销柱状图，单位人民币元，本机估算" aria-describedby="moneyUnitNote"><div class="empty">正在读取每日花销…</div></div>
     <div class="spend-detail" id="spendDetail" aria-live="polite"></div>
     <p class="spend-state" id="spendHistoryNote" role="status">正在核对按日记录。</p>
-    <details><summary>每日明细表</summary><div class="spend-table"><table><caption>按北京时间归日，单位人民币元，费用为本机估算；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></details>
+    <details><summary>每日明细表</summary><div class="spend-table"><div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table><caption>按北京时间归日，单位人民币元，费用为本机估算；待核算与缺失记录单独标记。</caption><thead><tr><th scope="col">日期</th><th scope="col">自主</th><th scope="col">私聊</th><th scope="col">群聊</th><th scope="col">合计</th><th scope="col">记录状态</th></tr></thead><tbody id="spendTable"></tbody></table></div></div></details>
   </div>
   <div class="card"><h3>预算执行用量 <span class="setting-state" id="mAvailability">正在读取</span></h3><div class="policy-grid" id="budgetBuckets"></div><p class="note" id="mGateAccounting">预算预留与剩余额度单独核对。</p></div>
   <div class="card">
@@ -614,7 +749,8 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
 <div class="page" id="page-memory">
   <div class="phead">
-    <h1>记忆</h1>
+    <div class="page-kicker">记录她的每一天</div>
+    <h1>记忆与日记</h1>
     <p>按主题、记录时间和内容找回她记的人和事。事实、感受与日记分别保留。</p>
   </div>
 
@@ -639,7 +775,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   <div class="card" id="memoryDiaryCard">
     <h3>她的日记</h3>
     <p class="note">由同一主 Agent 根据当天真实记录写下。经历附来源，感受作为她自己的表达；刷新页面不会代写。</p>
-    <div class="spend-toolbar">
+    <div class="spend-toolbar diary-toolbar">
       <label>日期 <input type="date" id="memoryDiaryDay" onchange="loadMemoryDiary()"></label>
       <label>找主题 <input type="search" id="memoryDiaryQuery" placeholder="日期或主题关键词" oninput="filterMemoryDiaryDays()"></label>
       <button onclick="loadMemoryDiary()">刷新日记</button>
@@ -653,7 +789,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 
   <div class="card">
     <h3>日记与随手记录原件</h3>
-    <div style="display:flex;gap:9px;margin-bottom:14px">
+    <div class="search-toolbar">
       <input type="text" id="fileSearch" placeholder="搜关键词…（在日记 / 随笔 / 人物档案里找）"
              style="flex:1" onkeydown="if(event.key==='Enter') doSearch()">
       <button class="pri" onclick="doSearch()">搜索</button>
@@ -687,13 +823,13 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       </select>
       <div class="note" id="memOwnerInfo">尚未选择；共享空键也需要明确选择。</div>
     </div>
-    <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
+    <div class="search-toolbar">
       <input type="text" id="memNew" placeholder="让她记住一件事（短句，别写作文）"
              style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')addMemory()">
       <button class="pri" id="memAdd" onclick="addMemory()" disabled>记住</button>
     </div>
     <p class="note">先在上方选择记忆范围，再添加；修改和移除按条目原范围及版本校验。</p>
-    <div style="display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap">
+    <div class="search-toolbar">
       <input type="text" id="memSearch" placeholder="搜话题、人、作品或一件事…" style="flex:1;min-width:160px"
              onkeydown="if(event.key==='Enter') memSmartSearch()">
       <button class="pri" onclick="memSmartSearch()">搜</button>
@@ -755,10 +891,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       <button class="sm dan" onclick="bulkDeleteWork()">删除选中的</button>
       <button class="sm" onclick="clearWorkSel()">取消选择</button>
     </div>
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th style="width:38px"></th><th>文件</th><th class="num">大小</th><th class="num">时间</th><th class="op"></th></tr></thead>
       <tbody id="worksBody"></tbody>
-    </table>
+    </table></div>
     <div class="empty" id="worksEmpty" style="display:none">她还没做东西</div>
     <div class="viewer" id="worksViewer"></div>
     <div class="out" id="worksOut"></div>
@@ -790,12 +926,13 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 </div>
 
 <div class="page" id="page-bili">
-  <div class="phead"><h1>B 站记录</h1><p>她最近读过哪些视频、写了什么回复。页面每十五秒更新。</p></div>
+  <div class="phead"><div class="page-kicker">浏览与互动</div><h1>B 站记录</h1><p>她最近读过哪些视频、写了什么回复。页面每十五秒更新。</p></div>
   <div class="stats">
     <div class="stat"><div class="k">记录来源</div><div class="v" id="bMainState" style="font-size:17px">—</div><div class="s" id="bMainCoverage">正在读取</div></div>
     <div class="stat"><div class="k">近期视频记录</div><div class="v" id="bMainCount">—</div><div class="s">含读取尝试，不含推荐候选</div></div>
     <div class="stat"><div class="k">评论与回复</div><div class="v" id="bMainReplies">—</div><div class="s">保留失败和结果未知</div></div>
   </div>
+  <div class="bili-grid">
   <div class="card">
     <h3>最近浏览</h3>
     <p class="note" id="bMainNote">按视频归并字幕、资料和画面读取；这些记录不等于完整播放。</p>
@@ -805,6 +942,7 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <h3>评论与回复记录</h3>
     <p class="note">显示实际尝试的正文与接口结果。接口接受不代表评论已公开；私信仅显示状态。</p>
     <div class="record-list" id="bMainReplyRecords"><div class="empty">正在读取…</div></div>
+  </div>
   </div>
   <details class="card"><summary>推荐与调用明细</summary>
     <div class="record-list" id="bMainRecords"><div class="empty">正在读取…</div></div>
@@ -832,10 +970,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
       到期后交给主 agent 判断，结合当前上下文、静默状态和发送许可决定是否提醒。
       这里显示提醒内容与时间，不代表消息已经送达。
     </p>
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th>内容</th><th>时间</th><th>发给</th><th class="op"></th></tr></thead>
       <tbody id="remBody"></tbody>
-    </table>
+    </table></div>
     <div class="empty" id="remEmpty" style="display:none">还没有提醒</div>
     <div class="out" id="schedOut"></div>
   </div>
@@ -845,10 +983,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
     <p class="note">
       显示本机任务的实际状态与功能归属。插件托管的观察由主 agent 判断，任务存在不代表独立循环正在运行。
     </p>
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th>任务</th><th>状态</th><th>下次</th><th>说明</th></tr></thead>
       <tbody id="taskBody"></tbody>
-    </table>
+    </table></div>
     <div class="empty" id="taskEmpty" style="display:none">没有相关计划任务</div>
   </div>
 </div>
@@ -956,10 +1094,10 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
 <div class="page" id="page-tools">
   <div class="phead"><h1>工具</h1><p>这些插件背后要用的东西。看版本、在不在、跑没跑，不用开命令行。</p></div>
   <div class="card">
-    <table>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table>
       <thead><tr><th>工具</th><th>作用</th><th>状态</th><th class="op"></th></tr></thead>
       <tbody id="toolsBody"></tbody>
-    </table>
+    </table></div>
     <div class="out" id="toolsOut"></div>
     <div class="btnrow">
       <button onclick="loadTools()">重新检查</button>
