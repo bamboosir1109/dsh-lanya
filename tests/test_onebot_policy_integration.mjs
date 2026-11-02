@@ -234,6 +234,43 @@ test('the same bound chat LLM decides, then tools and final text use its fixed t
   assert.equal(h.calls.some(item => JSON.stringify(item.params).includes('Pre-decision')), false)
 })
 
+test('reply expression plans reuse one ticket and never send automatically', async t => {
+  for (const expression of ['text', 'meme', 'text_meme', undefined]) {
+    const h = await setup(t), chat = await h.receive(), turn = h.start(chat)
+    const result = await h.decide(chat, 'reply', expression === undefined ? {} : { expression })
+    assert.equal(result.accepted, true)
+    assert.equal(result.can_send, true)
+    assert.equal(result.expression_plan.choice, expression || 'unspecified')
+    assert.equal(result.expression_plan.automatic_send, false)
+    assert.equal(h.calls.length, 0)
+    if (expression !== 'text') {
+      assert.match(result.expression_plan.next_step, /reuse a fitting candidate|Reuse a fitting candidate/)
+      assert.match(result.expression_plan.next_step, /read_image\(\{file_path: chosen_path\}\)/)
+      assert.match(result.expression_plan.next_step, /do not call qq_decide again/)
+      await h.tools.get('qq_send_image').execute({}, h.exec(chat))
+      assert.equal(h.calls.length, 1)
+    }
+    await h.end(chat, turn)
+  }
+})
+
+test('invalid or nonreply expression cannot settle a decision or grant a send', async t => {
+  const h = await setup(t), chat = await h.receive(), turn = h.start(chat)
+  const before = fs.readFileSync(h.stateFile)
+  for (const args of [{ verdict: 'idle', expression: 'meme' }, { verdict: 'silence', expression: 'text' },
+    { verdict: 'reply', expression: 'all' }, { verdict: 'reply', expression: {} }]) {
+    await assert.rejects(() => h.tools.get('qq_decide').execute(args, h.exec(chat)), /accepts only/)
+    assert.deepEqual(fs.readFileSync(h.stateFile), before)
+  }
+  await assert.rejects(() => h.tools.get('qq_send_image').execute({}, h.exec(chat)), /decision_required/)
+  assert.equal(h.calls.length, 0)
+  assert.equal((await h.decide(chat, 'reply', { expression: 'meme' })).can_send, true)
+  await h.receive({ text: 'new revision invalidates this planned image' })
+  await assert.rejects(() => h.tools.get('qq_send_image').execute({}, h.exec(chat)), /stale_revision/)
+  assert.equal(h.calls.length, 0)
+  await h.end(chat, turn)
+})
+
 test('cross-chat text/media/forward/raw-API targets cannot borrow a ticket', async t => {
   const h = await setup(t)
   const chat = await h.receive()
@@ -332,6 +369,13 @@ test('persistent silence survives a fresh adapter and quoted/member/observation 
   const chat = await h.receive({ scope: 'group:200', sender: '101' })
   let turn = h.start(chat)
   assert.equal((await h.decide(chat, 'silence', { control_update: true })).mode, 'silent')
+  await h.end(chat, turn)
+  await h.receive({ scope: 'group:200', sender: '101', text: 'a casual image reaction still has no silence override' })
+  turn = h.start(chat)
+  const planned = await h.decide(chat, 'reply', { expression: 'meme' })
+  assert.equal(planned.can_send, false)
+  assert.equal(planned.expression_plan, undefined)
+  await assert.rejects(() => h.tools.get('qq_send_image').execute({}, h.exec(chat)), /silent|suppressed|decision_required/)
   await h.end(chat, turn)
   await h.receive({ scope: 'group:200', sender: '202', text: 'resume' })
   turn = h.start(chat)

@@ -119,8 +119,8 @@ export function stageIndexedCandidate(memes, row, cap) {
     if ((created && identity(lstatSync(path)) !== identity(created)) ||
         digest(readStable(path, cap.maxBytes)) !== sha256) fail()
     cap.assertCurrent()
-    return { caption: typeof row.caption === 'string' ? row.caption.slice(0, 200) : '',
-      path, sha256, bytes: bytes.length, requires_visual_review: !row.caption?.trim() }
+    const caption = typeof row.caption === 'string' ? row.caption.slice(0, 200).trim() : ''
+    return { caption, path, sha256, bytes: bytes.length, requires_visual_review: !caption }
   } catch (error) {
     if (created && identity(lstatSync(path)) === identity(created)) unlinkSync(path)
     throw error
@@ -150,10 +150,25 @@ export function selectQqCandidates(memes, args, exec, cap) {
     } catch { cap.assertCurrent() /* Missing/unsafe indexed assets do not become placeholders. */ }
   }
   cap.assertCurrent()
-  return { ok: candidates.length > 0, mode: 'qq_selection', selected: candidates.length > 0,
+  const visible = { ok: candidates.length > 0, mode: 'qq_selection', selected: candidates.length > 0,
     delivered: false, candidates, ...(candidates.length ? {} : { reason: 'no_usable_images' }),
-    message: candidates.length
-      ? '已选图，尚未发送。caption为空或requires_visual_review=true时先用当前可用的图片读取工具看真实图片，不可凭标签编描述。需要发图时先qq_decide(reply)取得当前有效发送许可，再调用qq_send_image({sources:[path]})；选图不授发送权，也不解除静默。\n' +
-        candidates.map((item, index) => (index + 1) + '. ' + JSON.stringify(item)).join('\n')
-      : '没有可用的真实图片，未选图也未发送。不要生成占位表情文字。' }
+    summary: candidates.length
+      ? '已选到真实候选，尚未发送。选择贴合当前聊天的图片，也可以略过。空caption候选先用read_image看图；read只读文本，不能代替看图。已有当前有效reply许可就复用，不要再次qq_decide；尚未决策则选图看图后只决定一次。本轮已idle/tool_action等非reply决定时不改票、不发送。最终发送仍必须调用qq_send_image并核对成功回执，未知结果不重发。'
+      : '没有可用的真实图片，未选图也未发送。略过图片，不要生成占位表情文字。',
+    next_steps: candidates.length ? {
+      choice: 'choose_a_fitting_candidate_or_skip',
+      inspect: candidates.filter(item => item.requires_visual_review).map(item => ({
+        candidate_sha256: item.sha256, tool: 'read_image', arguments: { file_path: item.path } })),
+      if_inspection_unavailable: 'skip_candidate_without_guessing_its_contents',
+      reply_permission: { reuse_current_valid_reply_ticket: true,
+        only_if_this_turn_is_undecided: { tool: 'qq_decide', arguments: { verdict: 'reply' } },
+        if_this_turn_has_a_non_reply_decision: 'skip_qq_send_without_deciding_again' },
+      send: candidates.map(item => ({ candidate_sha256: item.sha256, tool: 'qq_send_image',
+        arguments: { sources: [item.path] }, when: 'only_if_this_candidate_is_chosen',
+        requires: 'current_valid_reply_ticket_after_any_required_image_review' })),
+      delivery_evidence: 'only_a_successful_qq_send_image_receipt_means_delivered_unknown_is_not_retried',
+    } : { choice: 'skip_image' } }
+  // The native SDK renders ONLY value.message into model-facing tool content.
+  // Include the full selection contract there, not only in structured output.
+  return { ...visible, message: JSON.stringify(visible, null, 2) }
 }

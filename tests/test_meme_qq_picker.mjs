@@ -145,7 +145,20 @@ test('actual scoped native register returns real path in rendered message, no au
   assert.equal(output.candidates[0].caption,'');assert.equal(output.candidates[0].requires_visual_review,true)
   assert.deepEqual(readFileSync(output.candidates[0].path),png)
   const rendered=picker.output.render({},output)[0].text
-  assert.equal(JSON.parse(rendered.split('\n')[1].slice(3)).path,output.candidates[0].path)
+  const visible=JSON.parse(rendered)
+  assert.equal(visible.ok,true);assert.equal(visible.mode,'qq_selection')
+  assert.equal(visible.selected,true);assert.equal(visible.delivered,false)
+  assert.deepEqual(visible.candidates,output.candidates)
+  assert.deepEqual(visible.next_steps.inspect,[{candidate_sha256:output.candidates[0].sha256,
+    tool:'read_image',arguments:{file_path:output.candidates[0].path}}])
+  assert.equal(visible.next_steps.reply_permission.reuse_current_valid_reply_ticket,true)
+  assert.deepEqual(visible.next_steps.reply_permission.only_if_this_turn_is_undecided,
+    {tool:'qq_decide',arguments:{verdict:'reply'}})
+  assert.equal(visible.next_steps.reply_permission.if_this_turn_has_a_non_reply_decision,'skip_qq_send_without_deciding_again')
+  assert.deepEqual(visible.next_steps.send[0].arguments,{sources:[output.candidates[0].path]})
+  assert.equal(visible.next_steps.send[0].tool,'qq_send_image')
+  assert.equal(visible.next_steps.send[0].when,'only_if_this_candidate_is_chosen')
+  assert.match(visible.summary,/不要再次qq_decide/)
   assert.doesNotMatch(output.message,/\[表情:/)
   assert.match(picker.description,/仅实际Web结果且mode不是qq_selection/)
   assert.doesNotMatch(picker.description,/发完短接|发完保持简短/)
@@ -173,6 +186,21 @@ test('missing genuine image returns no usable image instead of placeholder',t=>{
   const output=tool(m).execute({query:'猫'},scope.exec)
   assert.equal(output.ok,false);assert.equal(output.reason,'no_usable_images');assert.equal(output.delivered,false)
   assert.deepEqual(output.candidates,[]);assert.equal(readdirSync(scope.mediaDir).length,0)
+  const visible=JSON.parse(tool(m).output.render({},output)[0].text)
+  assert.equal(visible.ok,false);assert.equal(visible.mode,'qq_selection')
+  assert.equal(visible.selected,false);assert.equal(visible.delivered,false)
+  assert.equal(visible.reason,'no_usable_images');assert.deepEqual(visible.next_steps,{choice:'skip_image'})
+})
+
+test('visual-review flag describes the returned caption rather than text outside its bounded excerpt',t=>{
+  const p=pack(t,'caption-window',' '.repeat(200)+'outside visible caption')
+  const scope=bound(t,'caption-window-media')
+  const m=sampler(p.store,{packId:'_custom',enabledPacks:['_custom']},[{id:'_custom',path:p.directory}])
+  const output=tool(m).execute({tag:'happy',limit:1},scope.exec)
+  const visible=JSON.parse(tool(m).output.render({},output)[0].text)
+  assert.equal(visible.candidates[0].caption,'')
+  assert.equal(visible.candidates[0].requires_visual_review,true)
+  assert.equal(visible.next_steps.inspect[0].tool,'read_image')
 })
 
 test('capability capture rejects foreign exec and stale turn without Web fallback',t=>{

@@ -168,6 +168,8 @@ test('decision-only human control and local context remain possible with zero QQ
   const h = await fixture(t, { exhausted:true,decisionOnly:true })
   await h.receive('explicit user control fixture'); h.start()
   assert.equal(await h.runTool('read'), 'ran')
+  assert.equal(await h.runTool('read_image'), 'ran')
+  assert.deepEqual(await h.runTool('qq_send_image'), { denied:'budget_exhausted' })
   assert.deepEqual(await h.runTool('bili_recommend'), { denied:'budget_exhausted' })
   const denied = await h.decide('reply'); assert.equal(denied.accepted, false)
   const silenced = await h.runTool('qq_decide', exec => h.tools.get('qq_decide').execute({verdict:'silence',control_update:true,evidenceSource:'current'},exec))

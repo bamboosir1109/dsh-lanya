@@ -94,7 +94,7 @@ def transform(name, raw):
         anchor = "import { defineTool } from '@deepseek-ai/dsh-tools'"
         text = replace_once(text, anchor, anchor + "\nimport { getQqCapability, selectQqCandidates } from './lanya-qq-meme.mjs'")
         text = replace_once(text, "    description: '发一张表情包。两种搜法:",
-            "    description: '若当前QQ执行返回mode=qq_selection：只选真实图片，尚未发送；先qq_decide(reply)取得当前有效发送许可，再按返回path用qq_send_image发送，禁止占位文字，空caption先用可用图片工具看图。其它Web行为保持原样。两种搜法:")
+            "    description: 'QQ结果mode=qq_selection只选真实图片，selected不等于送达。空caption或requires_visual_review=true先read_image({file_path:候选path})；read只读文本。已有当前有效reply票就复用，不再次qq_decide；尚未决策则选图看图后qq_decide(reply)，再qq_send_image({sources:[候选path]})。已作非reply决定时不改票、不发图。禁止QQ占位文字。其它Web行为保持原样。两种搜法:")
         text = replace_once(text,"? '挑中后把 [表情: 描述] 原样写进回复",
                             "? '仅实际Web结果且mode不是qq_selection时，挑中后把 [表情: 描述] 原样写进回复")
         text = replace_once(text,"'气氛对了就主动发;发完短接,让图自己说话。'",

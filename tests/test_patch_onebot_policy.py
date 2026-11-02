@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -56,6 +57,35 @@ class OneBotPolicyPatchTests(unittest.TestCase):
         with self.assertRaises(patcher.PatchError):
             patcher.patch(self.plugin, state_file=directory)
         self.assertEqual(self.tree(), before)
+
+    def test_optional_expression_schema_forwards_without_changing_verdict(self):
+        """Exercise generated registration only, with no live host or delivery."""
+        raw = (self.plugin / "lib" / "tools.js").read_bytes()
+        generated = patcher.transform("tools.js", raw).decode("utf-8")
+        script = """
+import assert from 'node:assert/strict';
+const source = SOURCE;
+const { registerTools } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+const tools = new Map(), calls = [];
+const ctx = { tools: { register(tool) { tools.set(tool.name, tool); return () => {}; } } };
+const bridge = { lanyaPolicy: {
+  runTool: (_name, _args, _exec, run) => run(),
+  decide: args => { calls.push(structuredClone(args)); return { accepted: true }; },
+} };
+registerTools(ctx, bridge, { call: () => assert.fail('schema registration must not send') }, {});
+const tool = tools.get('qq_decide'), field = tool.parameters.expression;
+assert.deepEqual(field.enum, ['text', 'meme', 'text_meme']);
+assert.notEqual(field.required, true);
+assert.equal(tool.parameters.verdict.required, true);
+await tool.execute({ verdict: 'reply' }, {});
+await tool.execute({ verdict: 'reply', expression: 'text_meme' }, {});
+assert.deepEqual(calls, [{ verdict: 'reply' }, { verdict: 'reply', expression: 'text_meme' }]);
+""".replace("SOURCE", json.dumps(generated))
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node is required for generated tool registration")
+        result = subprocess.run([node, "--input-type=module", "-"], input=script,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_apply_verifies_backup_and_is_replayable(self):
         before = {name: (self.plugin / "lib" / name).read_bytes() for name in patcher.TARGETS}

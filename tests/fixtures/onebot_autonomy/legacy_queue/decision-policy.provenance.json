@@ -1,0 +1,9 @@
+{
+  "origin": "https://github.com/bamboosir1109/dsh-lanya",
+  "commit": "c63b24dffc7b5102de97368c239a8d51db9391b5",
+  "source": "plugin/lib/decision-policy.js",
+  "sha256": "1ad012e68a70ad0e6c69c8780d4fa98992d28c080f91512fa61c6b30b903907c",
+  "modifications": "none",
+  "purpose": "Historical v1 autonomy dependency fixture, not current runtime",
+  "license": "MIT; repository LICENSE copied alongside"
+}

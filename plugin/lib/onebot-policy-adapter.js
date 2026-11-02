@@ -425,7 +425,7 @@ export class OneBotDecisionAdapter {
     // Control decisions remain available, including an explicit real user's
     // silence/resume. Read/view is a narrow local context exception, not Bili,
     // browsing, commands, editing, paid generation, or QQ delivery permission.
-    return ['qq_decide', 'read', 'view'].includes(name)
+    return ['qq_decide', 'read', 'read_image', 'view'].includes(name)
   }
 
   async reserveBudget(scope, owner) {
@@ -490,10 +490,11 @@ export class OneBotDecisionAdapter {
   }
 
   async decide(args, exec) {
-    if (!plain(args) || Object.keys(args).some((key) => !['verdict', 'control_update', 'evidenceSource', 'next_review_at'].includes(key)) ||
+    if (!plain(args) || Object.keys(args).some((key) => !['verdict', 'control_update', 'evidenceSource', 'next_review_at', 'expression'].includes(key)) ||
         (args.control_update !== undefined && typeof args.control_update !== 'boolean') ||
-        (args.evidenceSource !== undefined && !['current', 'quote'].includes(args.evidenceSource))) {
-      throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at')
+        (args.evidenceSource !== undefined && !['current', 'quote'].includes(args.evidenceSource)) ||
+        (args.expression !== undefined && (args.verdict !== 'reply' || !['text', 'meme', 'text_meme'].includes(args.expression)))) {
+      throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at and optional reply expression')
     }
     const record = this.captureExec(exec)
     if (!['idle', 'defer', 'silence', 'resume'].includes(args.verdict)) {
@@ -518,12 +519,23 @@ export class OneBotDecisionAdapter {
       controlUpdate: args.control_update === true, evidenceSource: args.evidenceSource || 'current', nextReviewAt: nextReview })
     if (result.accepted) {
       record.ticket = result.ticket
-      record.decision = { verdict: args.verdict, mode: result.mode, reason: result.reason, next_review_at: result.next_review_at }
+      record.decision = { verdict: args.verdict, mode: result.mode, reason: result.reason, next_review_at: result.next_review_at,
+        ...(args.expression === undefined ? {} : { expression: args.expression }) }
       record.decisionId = result.decisionId
     }
     // Do not expose nonce, sender, scope, or authority knobs as model arguments.
     return { accepted: result.accepted, reason: result.reason || null, mode: result.mode || null,
       next_review_at: result.next_review_at ?? null, can_send: Boolean(result.ticket && args.verdict !== 'tool_action'),
+      ...(result.accepted && result.ticket && args.verdict === 'reply' ? { expression_plan: {
+        choice: args.expression || 'unspecified', automatic_send: false,
+        next_step: args.expression === 'text'
+          ? 'Reply naturally with text; this decision has not sent anything.'
+          : (args.expression ? 'For the chosen image reply, reuse a fitting candidate already selected this turn; otherwise select one with send_meme.'
+            : 'Choose the response medium before writing: a fitting real meme can be a complete casual reaction. Reuse a fitting candidate already selected this turn, or use send_meme when an image fits.')
+            + ' Inspect a candidate with read_image({file_path: chosen_path}) when visual review is required, then use qq_send_image({sources:[chosen_path]}).'
+            + ' Reuse this reply ticket; do not call qq_decide again. Send only the chosen image, not every candidate. If none fits, use text or omit the image.'
+            + ' This plan does not send anything and does not override later silence, revision, budget or transport checks.',
+      } } : {}),
       ...(cadence ? { requested_next_review_at: requestedReview,
         next_review_adjusted: result.accepted === true && nextReview !== requestedReview,
         autonomous_cadence_min: cadence.minutes } : {}) }

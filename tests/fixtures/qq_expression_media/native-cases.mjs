@@ -97,7 +97,10 @@ test('real native media fence rejects gallery outside the workspace until an exa
   const candidate = projection.candidates[0]
   assert.equal(candidate.caption, ''); assert.equal(candidate.requires_visual_review, true)
   assert.equal(candidate.sha256, digest(png)); assert.equal(candidate.bytes, png.length)
-  assert.ok(projection.message.includes(JSON.stringify(candidate)))
+  const rendered = JSON.parse(projection.message)
+  assert.deepEqual(rendered.candidates, [candidate])
+  assert.equal(rendered.mode, 'qq_selection')
+  assert.equal(rendered.selected, true); assert.equal(rendered.delivered, false)
   assert.equal(path.dirname(candidate.path), h.deps.config.mediaDir)
   const result = await h.tools.get('qq_send_image').execute({ sources: [candidate.path] }, h.exec())
   assert.equal(result.sent, true)
