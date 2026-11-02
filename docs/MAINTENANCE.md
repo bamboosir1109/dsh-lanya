@@ -57,6 +57,21 @@ python -B scripts/patch_onebot_live_inbox.py --bridge ABSOLUTE_INSTALLED_BRIDGE 
 
 若入站报 `POLICY_LOCK_UNAVAILABLE`，先检查决策锁及恢复 claim 的真实文件身份和内容。当前实现先完整写入同目录唯一 owner 候选，fsync、关闭后再以硬链接独占发布；需要支持硬链接的文件系统，失败时直接拒绝，不回退覆盖改名。已有空文件、损坏 owner 或未知 claim 不能当作死亡进程并按超时删除。常规 `repairPolicyLocks` 仍需预览、完整停写证明及原件校验；本次 Windows 零字节锁的独占句柄归档仅适用于已独立核实的特定事故，不是通用抢锁入口。崩溃候选留在本地供核查，不自动全目录清理。
 
+## 群聊指向、引用与单表情升级
+
+`scripts/patch_onebot_inbound_context.py` 为已经有 policy 的 OneBot 0.8.1 构建独立增量，分别处理 bridge、inbound 和此前部署的 prompt；不会安装、启动宿主或查询 QQ。先核实当前各文件及既有层的真实 before，在受保护的新目录预览和生成：
+
+```powershell
+python -B scripts/patch_onebot_inbound_context.py --input ABSOLUTE_INSTALLED_INBOUND --name inbound.js
+python -B scripts/patch_onebot_inbound_context.py --input ABSOLUTE_INSTALLED_INBOUND --name inbound.js --expected-sha256 EXACT_BEFORE_SHA256 --output NEW_PRIVATE_INBOUND_ARTIFACT
+```
+
+bridge 与旧 prompt 按各自文件名独立预检，不能把一个文件的哈希用到另一个文件。已由当前 policy 生成的新 prompt 本身已有新的周期、引用和单表情说明，不再叠加旧 prompt 的增量；不符合锚点或已有增量标记时拒绝，不能通过删除标记或放宽身份检查强行覆盖。引用、原生 inbox、重放和内容出口的既有修改须一起保留。
+
+部署是同一批受控变更：policy 的项目副本和 OneBot 别名副本、项目 adapter 和经当前完整编译链生成的 OneBot alias、OneBot 内容出口模块、bridge／inbound／prompt、运行能力脚本和版本元数据逐项核验。新版 alias 依赖新版出口的表情识别与明确拒绝标记，不能只替换其中一件。保留实际程序、配置、会话、队列及账本原件和权限，确认空闲并暂停看护后按固定 before／after 安装；恢复看护、实际重载，再核对新进程加载证据。生成文件或更新版本元数据本身不等于已加载。
+
+群复查只影响新配置群机会，复用页面现有周期，不重写较早持久预约、不重放未知动作。真实 QQ 验收分别确认对象判断、引用文字和图片、文字／表情独立消息及同轮一张；增加判断机会不能冒充已经更活跃，成功选图也不能冒充已发送。协议见 [主 LLM 决策](DECISIONS.md#群聊对象与引用)。
+
 ## QQ 上下文与原生压缩
 
 待处理条数少仍可能很慢。分别核对领取到 `step/start`、模型步骤到决策的时间，以及原生用量中的输入和缓存读取 token；缓存命中不能当作没有上下文成本。处理越久，新输入使旧许可过期的机会越多；大量历史可能加重延迟，步前等待与实际模型请求仍须分别核验。保留 `stale_revision`，不要以允许旧回答发送来掩盖延迟。

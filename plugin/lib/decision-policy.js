@@ -54,7 +54,8 @@ function validateState(state) {
     }
     for (const delivery of value.deliveries) {
       if (!plain(delivery) || !identifier(delivery.key) ||
-          !['reserved', 'sent', 'unknown', 'suppressed'].includes(delivery.status)) {
+          !['reserved', 'sent', 'unknown', 'suppressed'].includes(delivery.status) ||
+          (delivery.meme !== undefined && (delivery.meme !== true || !identifier(delivery.ticketId)))) {
         throw new PolicyStateError('Corrupt delivery dedup state')
       }
     }
@@ -548,10 +549,12 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * The adapter must normalize protocol ACKs: a resolved OneBot object with
      * status=failed or nonzero retcode must REJECT, not count as a delivery.
      */
-    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0' } = {}, transmit) {
+    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0', meme } = {}, transmit) {
       if (!identifier(operationId) || !identifier(String(sliceId)) || typeof transmit !== 'function') {
         throw new PolicyStateError('An operationId, sliceId and transport callback are required')
       }
+      if ((meme !== undefined && typeof meme !== 'boolean') ||
+          (meme === true && !['media', 'forward', 'api'].includes(kind))) throw new PolicyStateError('Invalid trusted meme delivery metadata')
       let acknowledgement
       const reservation = await transaction((state, commit) => {
         const permission = inspectTicket(state, ticket, { scope, kind })
@@ -560,16 +563,22 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         const key = createHash('sha256').update([ticket.id, operationId, String(sliceId)].join('\0')).digest('hex')
         const prior = current.deliveries.find((entry) => entry.key === key)
         if (prior) return { sent: false, status: 'duplicate', previousStatus: prior.status }
+        if (meme === true && current.deliveries.some(entry => entry.ticketId === ticket.id && entry.meme === true)) {
+          return { sent: false, status: 'suppressed', reason: 'meme_turn_limit' }
+        }
         // Never evict unresolved sends: losing their reservation could duplicate
         // a message after a restart. A full unresolved ledger fails closed.
         while (current.deliveries.length >= maxDeliveries) {
           const removable = current.deliveries.findIndex((entry) => ['sent', 'suppressed'].includes(entry.status) &&
+            // A slot for this ticket is durable until another ticket/revision;
+            // text pressure must never collect it and permit a second meme.
+            !(entry.meme === true && entry.ticketId === ticket.id) &&
             (entry.revision !== current.revision || now() >= entry.expiresAt))
           if (removable < 0) return { sent: false, status: 'suppressed', reason: 'delivery_capacity' }
           current.deliveries.splice(removable, 1)
         }
         current.deliveries.push({ key, status: 'reserved', at: now(), revision: ticket.revision,
-          ticketId: ticket.id, expiresAt: current.current.ticket.expiresAt })
+          ticketId: ticket.id, expiresAt: current.current.ticket.expiresAt, ...(meme === true ? { meme: true } : {}) })
         if (typeof commit !== 'function') throw new PolicyStateError('storage must support durable commit before egress')
         commit()
         // No await or event-loop yield between the final gate and initiating the

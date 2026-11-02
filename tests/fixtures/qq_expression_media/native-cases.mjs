@@ -128,6 +128,86 @@ test('five ordinary bubbles and a real local image retain all body bytes and one
   assert.equal(new Set(policy.deliveries.map(delivery => delivery.key)).size, 6)
 })
 
+async function twoRealMemes(h) {
+  const selected = await pickerFixture(h)
+  const first = selected.picker.selectQqCandidates(selected.memes, { query: 'fixture', limit: 1 }, selected.exec, selected.cap).candidates[0]
+  fs.writeFileSync(selected.file, Buffer.concat([png, Buffer.from([1])]))
+  const second = selected.picker.selectQqCandidates(selected.memes, { query: 'fixture', limit: 1 }, selected.exec, selected.cap).candidates[0]
+  assert.notEqual(first.sha256, second.sha256)
+  return [first, second]
+}
+
+test('actual image tool separates caption and limits real picker memes within one call without false sent receipt', async t => {
+  const h = await setup(t)
+  await h.receive('fixture casual reply'); h.start(); await h.decide()
+  const [first, second] = await twoRealMemes(h)
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [first.path, second.path], caption: '必要说明' }, h.exec()),
+    error => error.reason === 'meme_turn_limit' && error.partial && error.delivered_meme_images === 1 && error.skipped_meme_images === 1)
+  const messages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(messages.map(call => call.params.message.map(segment => segment.type)), [['text'], ['image']])
+  assert.equal(messages[0].params.message[0].data.text, '必要说明')
+  assert.equal(messages[1].params.message[0].data.file, 'base64://' + png.toString('base64'))
+  const state = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
+  assert.equal(state.deliveries.filter(row => row.meme === true).length, 1)
+  assert.equal(state.deliveries.filter(row => row.meme === true)[0].status, 'sent')
+  assert.equal(h.bridge.lanyaPolicy.state(h.chat).active.outcomes.includes('partial'), false)
+})
+
+test('a second image tool call cannot bypass the ticket slot while later text and ordinary attachments remain possible', async t => {
+  const h = await setup(t)
+  await h.receive('fixture casual reply'); h.start(); await h.decide()
+  const [first, second] = await twoRealMemes(h)
+  assert.equal((await h.tools.get('qq_send_image').execute({ sources: [first.path] }, h.exec())).sent, true)
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [second.path], caption: '继续必要文字', meme: false, attachment: true }, h.exec()),
+    error => error.reason === 'meme_turn_limit' && error.partial && error.delivered_meme_images === 0)
+  await h.send('还有完整说明')
+  fs.writeFileSync(h.staged, Buffer.concat([png, Buffer.from([9])]))
+  assert.equal((await h.tools.get('qq_send_image').execute({ sources: [h.staged, h.staged], caption: '普通附件' }, h.exec())).sent, true)
+  const state = await h.bridge.lanyaPolicy.policy.snapshot('private:101')
+  assert.equal(state.deliveries.filter(row => row.meme === true).length, 1)
+  assert.equal(new Set(state.deliveries.map(row => row.ticketId)).size, 1)
+  const messages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(messages.flatMap(call => call.params.message).filter(row => row.type === 'text').map(row => row.data.text),
+    ['继续必要文字', '还有完整说明', '普通附件'])
+  assert.equal(messages.flatMap(call => call.params.message).filter(row => row.type === 'image').length, 3)
+})
+
+test('actual raw terminal and forward paths cannot merge meme captions or lose text after a quota refusal', async t => {
+  const h = await setup(t)
+  await h.receive('fixture raw expression'); h.start(); await h.decide()
+  await twoRealMemes(h)
+  const firstImage = { type: 'image', data: { file: 'base64://' + png.toString('base64') } }
+  const secondImage = { type: 'image', data: { file: 'base64://' + Buffer.concat([png, Buffer.from([1])]).toString('base64') } }
+  const text = value => ({ type: 'text', data: { text: value } })
+  await assert.rejects(h.raw('send_msg', { user_id: 101,
+    message: [{ type: 'reply', data: { id: 'fixture-reference' } }, { type: 'at', data: { qq: '101' } },
+      text('原始前文'), firstImage, secondImage, text('原始后文')] }), error => error.reason === 'meme_turn_limit')
+  const messages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(messages.map(call => call.params.message.map(row => row.type)), [['reply', 'at', 'text'], ['image'], ['text']])
+  assert.equal(messages[2].params.message[0].data.text, '原始后文')
+  await assert.rejects(h.raw('send_private_forward_msg', { user_id: 101, messages: [{ type: 'node',
+    data: { name: 'fixture-author', uin: '101', content: [text('转发必要前文'), secondImage, text('转发必要后文')] } }] }),
+    error => error.reason === 'meme_turn_limit')
+  const forward = h.calls.filter(call => /forward/.test(call.action))
+  assert.equal(forward.length, 2)
+  assert.deepEqual(forward.map(call => call.params.messages[0].data.content.map(row => row.type)), [['text'], ['text']])
+  assert.equal(forward[1].params.messages[0].data.content[0].data.text, '转发必要后文')
+})
+
+test('unknown real meme acknowledgement retains its slot and never substitutes another image', async t => {
+  const h = await setup(t)
+  await h.receive('fixture uncertain expression'); h.start(); await h.decide()
+  const [first, second] = await twoRealMemes(h)
+  h.deps.onTransmit = async () => { throw new Error('synthetic uncertain transport') }
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [first.path, second.path] }, h.exec()))
+  h.deps.onTransmit = undefined
+  const before = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(before.length, 1); assert.equal(before[0].meme, true); assert.equal(before[0].status, 'unknown')
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [second.path] }, h.exec()), error => error.reason === 'meme_turn_limit')
+  assert.deepEqual((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, before)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 1)
+})
+
 test('new inbound while the actual media read waits revokes its captured image permit', async t => {
   const h = await setup(t), entered = deferred(), release = deferred()
   await h.receive('fixture ordinary question'); h.start(); await h.decide()

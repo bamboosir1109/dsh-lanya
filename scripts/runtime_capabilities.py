@@ -162,6 +162,8 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
 
     primary_valid = False
     primary_leisure = False
+    group_valid = False
+    group_social = False
     identity_path = data / "lanya-config.json"
     try:
         if ordinary_local(identity_path) and identity_path.stat().st_size <= 1024 * 1024:
@@ -173,6 +175,14 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
                 if not isinstance(admin, bool) and re.fullmatch(r"[1-9][0-9]*", str(admin or "")):
                     primary_valid = True
                     primary_leisure = conversation_key == "private:" + str(admin)
+                group = identity.get("fanGroupQQ")
+                if group in (None, ""):
+                    group = identity.get("fanGroup")
+                if group in (None, ""):
+                    group = configuration.get("fanGroup", "")
+                if not isinstance(group, bool) and re.fullmatch(r"[1-9][0-9]*", str(group or "")):
+                    group_valid = True
+                    group_social = conversation_key == "group:" + str(group)
     except (OSError, UnicodeError, ValueError):
         pass
 
@@ -200,14 +210,16 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
         "execution": "same_main_agent_no_independent_model",
         "primary_identity_valid": primary_valid,
         "primary_internal_leisure": primary_leisure,
+        "group_identity_valid": group_valid,
+        "group_social": group_social,
         "cadence": {
             "valid": valid_cadence,
             "configured_opportunity_min": cadence if valid_cadence else None,
             "configuration": ("This is the trusted configured opportunity preference, not proof that a scheduler is running or that a review is due."
                               if valid_cadence else "The configured opportunity interval is invalid, so no trustworthy cadence is available. Do not assume a default schedule or edit configuration to repair it."),
-            "preference_scope": "primary_internal_leisure_only_groups_social",
+            "preference_scope": "primary_internal_leisure_and_configured_group_social",
             "preference": "The user wants more frequent real autonomous activity and Bilibili browsing, with varied interests. When a useful tool is available and no concrete rest, foreground conversation or task blocks it, prefer doing one small real activity now over another plan-only or idle turn. Having nothing to tell QQ is not a reason to skip internal leisure. A task scheduled hours later leaves room for another small interest now; do not treat its future deadline as an instruction to stay idle until then. After a small game segment, actively consider real Bilibili recommendations, subtitles, frames or another interesting activity. Continuing notes or a distant 2048 target do not lock all future leisure to that game. Use the configured interval to review what is useful next; the same main agent may choose activity, idle, rest or defer. A review is not a requirement for a new action, comment or QQ speech.",
-            "explicit_review": "For a new trusted primary activity.opportunity from mind or main-review, qq_decide schedules the next review within the configured interval. A missing next_review_at uses that interval; a later request is adjusted to it and the tool returns both requested_next_review_at and the actual next_review_at. A valid earlier request is retained. Keep distant task deadlines in the scoped activity note, not as a reason to suspend every autonomous opportunity for hours. Already persisted decisions are not changed or replayed; this guide cannot cancel or wake an existing review. Other conversations and ordinary live turns retain their own review semantics.",
+            "explicit_review": "For a new trusted primary or configured group social activity.opportunity from mind or main-review, qq_decide schedules the next review within the configured interval. A missing next_review_at uses that interval; a later request is adjusted to it and the tool returns both requested_next_review_at and the actual next_review_at. A valid earlier request is retained. Keep distant task deadlines in the scoped activity note, not as a reason to suspend every autonomous opportunity for hours. Already persisted decisions are not changed or replayed; this guide cannot cancel or wake an existing review. Other conversations and ordinary live turns retain their own review semantics. A group review remains a chance for this same main LLM to decide, never a speech quota or permission to message another scope.",
             "longer_interval": "A longer activity or rest may retain its target time and concrete reason in this conversation's activity note, but it does not extend the next autonomous review beyond the configured interval. At a periodic review you may remain idle, continue resting or keep watching; the check does not require ending a rest, taking a new action or sending a message. Keep the actual reason, confirmed progress and next intent in the note; distinguish a planned rest or future task from verified activity. Saying you are busy is not evidence that an action occurred.",
             "communication": "QQ silence limits communication, not local games, ordinary activity notes or read-only Bilibili browsing. Internal leisure needs no QQ report. This guide grants no sending authority or silence-control permission. Group opportunities remain social only and must not start a second copy of private entertainment."
         },
@@ -218,7 +230,9 @@ def entertainment_guide(workspace, data, configuration, conversation_key):
             "routine_progress": "For unsolicited everyday QQ sharing, game moves, coordinates, score changes, tool/plugin inventories, debug status and next-step checklists are internal progress, not a reason by themselves to notify someone. Keep those steps in this conversation's activity note and panel instead of narrating each move. Do not append private activity-note paths/links or local diagnostic URLs to routine autonomous updates.",
             "meaningful_sharing": "You may naturally share a fresh interesting discovery, personal view, meaningful result or suitable invitation when you judge it relevant to this conversation. A relaxed short chat, a small amusing observation or a suitable real meme is also a valid social choice; it does not require a major achievement or the other person to speak first. Share the content rather than a tool-by-tool execution report. Consider the recent conversation, unanswered messages and timing; avoid repeated nudges or repeating what was already shared. A periodic review or successful tool result does not require a message. This is not a ban on initiative or on worthwhile discussion of a plugin.",
             "primary_choice": ("On this primary private opportunity, actively consider reaching out in this same conversation as well as internal leisure or rest. The user prefers more initiative: a brief natural message, shared interest or suitable real meme can be enough, without a major achievement or a special occasion. When recent contact leaves room for a light exchange, prefer a concrete social choice over repeatedly waiting for the other person to start. Respect recent contact, unanswered messages and persistent silence, and do not change the recipient." if primary_leisure else
-                               "Consider only this conversation's social context. A recent active group normally merits another social review in about 5-10 minutes, rather than automatically waiting several hours; a review can still end without sending. A quiet group, unavailable tools or an actual rest may justify a later review. This guide does not authorize contacting the primary private conversation or borrowing its notes."),
+                               ("On this configured group social opportunity, actively consider a brief natural contribution, a fresh topic or a suitable real meme using this group's recent context. You need not wait for an @ mention, an explicit request or a major result. Distinguish who is speaking to whom before joining; group members talking to each other are not automatically addressing you. The configured interval offers another review even after idle; it does not require speech. Respect recent contact, unanswered messages and persistent silence. " if group_social else
+                                "Consider only this conversation's social context; no configured group review cadence is granted here. ") +
+                               "This guide does not authorize contacting the primary private conversation or borrowing its notes."),
             "requested_detail": "When the user asks about progress, evidence, plugins, comparisons or recommendations, answer the actual question accurately and completely. Do not suppress a useful plugin opinion merely because it mentions a tool. Keep private notes, unrelated conversations and secrets within their existing access boundaries; do not expose internal paths just to prove you worked.",
             "permission": "After considering the activity and social choice, make one qq_decide decision before the first QQ output. Choose reply if you may share text or an image; reply also permits internal activity and does not require sending. Reuse an existing valid reply ticket instead of deciding again. Choose tool_action or idle only when you have decided not to communicate in this turn; they cannot later be upgraded to reply in the same turn. Persistent silence, scope, revision, budget and deduplication still apply; this preference cannot resume silence or grant delivery.",
             "length": "Default to concise, direct, natural sharing. Say the useful point without a report-style preamble, repeated explanation or filler. Expand when the content needs it, with no fixed sentence count or total message count. Ordinary roughly 40-character QQ bubbles are formatting, not a requirement to produce several bubbles or a cap on useful detail."},

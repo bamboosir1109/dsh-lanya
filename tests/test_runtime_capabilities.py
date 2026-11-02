@@ -234,6 +234,45 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertTrue(context["tools"]["entertainment"]["primary_identity_valid"])
                 self.assertTrue(context["tools"]["entertainment"]["primary_internal_leisure"])
                 self.assertFalse(group_guide["primary_internal_leisure"])
+                self.assertFalse(group_guide["group_social"])
+
+    def test_group_cadence_uses_only_configured_group_and_same_visible_interval(self):
+        self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "mind": {
+            "opportunityMin": 2}, "fanGroup": "404"}), encoding="utf-8")
+        for identity, configured in (({"adminQQ": ["101"], "fanGroupQQ": "202", "fanGroup": "303"}, "202"),
+                                     ({"adminQQ": ["101"], "fanGroupQQ": "", "fanGroup": 303}, "303"),
+                                     ({"adminQQ": ["101"]}, "404")):
+            with self.subTest(identity=identity):
+                self.identity.write_text(json.dumps(identity), encoding="utf-8")
+                before = self.snapshot()
+                for scope, expected in (("group:" + configured, True), ("group:999", False), ("private:101", False)):
+                    guide = self.module.build_context(str(self.root), "fixture", scope,
+                        process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]["entertainment"]
+                    self.assertTrue(guide["group_identity_valid"])
+                    self.assertIs(guide["group_social"], expected)
+                    self.assertEqual(guide["cadence"]["configured_opportunity_min"], 2)
+                    self.assertIn("configured group social", guide["cadence"]["explicit_review"])
+                    self.assertIn("ordinary live turns retain", guide["cadence"]["explicit_review"])
+                    if expected:
+                        self.assertIn("need not wait for an @ mention", guide["proactive_sharing"]["primary_choice"])
+                        self.assertIn("who is speaking to whom", guide["proactive_sharing"]["primary_choice"])
+                        self.assertIn("does not require speech", guide["proactive_sharing"]["primary_choice"])
+                self.assertEqual(self.snapshot(), before)
+
+    def test_malformed_group_identity_cannot_borrow_fallback_or_private_leisure(self):
+        self.config.write_text(json.dumps({"dataDirName": "FixtureRole", "fanGroup": "202"}), encoding="utf-8")
+        for group in (True, False, [], {}, "0202", "not-a-group"):
+            with self.subTest(group=group):
+                self.identity.write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": group,
+                                                     "fanGroup": "202"}), encoding="utf-8")
+                before = self.snapshot()
+                guide = self.module.build_context(str(self.root), "fixture", "group:202",
+                    process_probe=lambda paths: {})["tools"]["entertainment"]
+                self.assertFalse(guide["group_identity_valid"])
+                self.assertFalse(guide["group_social"])
+                self.assertFalse(guide["primary_internal_leisure"])
+                self.assertIn("no configured group review cadence", guide["proactive_sharing"]["primary_choice"])
+                self.assertEqual(self.snapshot(), before)
 
     def test_primary_identity_comes_from_owner_data_not_administrator_allowlist_order(self):
         for admins in (["303", "101"], "303", 303):

@@ -34,9 +34,10 @@ def transform(name, raw):
     if name == 'lib/lanya-policy-adapter.js':
         text = replace_once(text, "import { AsyncLocalStorage } from 'node:async_hooks'", """import { AsyncLocalStorage } from 'node:async_hooks'
 import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply,
-  isPreparedReply, isVerbatimReply, isLiteralReply, rememberParameters, bindReplyOptions } from './lanya-qq-egress.js'""")
+  isPreparedReply, isVerbatimReply, isLiteralReply, rememberParameters, bindReplyOptions,
+  isStagedMemeImage, isKnownMemeLimit } from './lanya-qq-egress.js'""")
         text = replace_once(text, '    const observed = await this.policy.recordInbound({', """    // Copy trusted direct transport evidence before any storage/registry await.
-    const egressStyle = styleFromInbound({ origin: 'live', text: inbound.text,
+    const egressStyle = styleFromInbound({ origin: 'live', text: typeof directText === 'string' ? directText : inbound.text,
       replyId: inbound.replyId, quoted: !hasDirectEvidence, lanyaInjected: inbound.lanyaInjected })
     const observed = await this.policy.recordInbound({""")
         text = replace_once(text, "context.binding = Object.freeze({ ...observed, origin: 'live' })",
@@ -52,25 +53,31 @@ import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply,
       const pending = prepareAndSendReply(outbound, scope, text, options,
         envelope?.record?.binding?.egressStyle || NORMAL_STYLE)
       return pending.catch((error) => {
-        if (error.partial) envelope?.record?.outcomes.push('partial')
+        if (error.partial && !isKnownMemeLimit(error)) envelope?.record?.outcomes.push('partial')
         throw error
       })
     }""")
-        text = replace_once(text, '  async guardConnectionCall(action, params, suppliedScope, transmit) {', """  async dispatchEgress(action, params, suppliedScope, transmit) {
+        guard_signature = '  async guardConnectionCall(action, params, suppliedScope, transmit) {'
+        current_signature = '  async guardConnectionCall(action, params, suppliedScope, transmit, egressPart = null) {'
+        if current_signature in text:
+            guard_signature = current_signature
+        dispatch = """  async dispatchEgress(action, params, suppliedScope, transmit) {
     if (!communicates(action)) return this.guardConnectionCall(action, params, suppliedScope, () => transmit(action, params))
     const envelope = this.context.getStore()?.envelope
     try {
       return await dispatchEgress(action, params,
         envelope?.record?.binding?.egressStyle || NORMAL_STYLE,
-        (nextAction, nextParams) => this.guardConnectionCall(nextAction, nextParams, suppliedScope,
-          () => transmit(nextAction, nextParams)))
+        (nextAction, nextParams, egressPart) => this.guardConnectionCall(nextAction, nextParams, suppliedScope,
+          () => transmit(nextAction, nextParams), egressPart),
+        { isMemeSegment: segment => isStagedMemeImage(segment, this.deps.config.mediaDir) })
     } catch (error) {
-      if (error.partial) envelope?.record?.outcomes.push('partial')
+      if (error.partial && !isKnownMemeLimit(error)) envelope?.record?.outcomes.push('partial')
       throw error
     }
   }
 
-  async guardConnectionCall(action, params, suppliedScope, transmit) {""")
+""" + guard_signature
+        text = replace_once(text, guard_signature, dispatch)
         text = replace_once(text, 'original.call(this, scope, body, { ...options, lanyaEnvelope: envelope })',
                             'original.call(this, scope, body, bindReplyOptions(options, { lanyaEnvelope: envelope }))')
         text = replace_once(text, "const status = record.outcomes.includes('unknown') ? 'unknown'",

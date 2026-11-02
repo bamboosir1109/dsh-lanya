@@ -162,6 +162,41 @@ test('autonomous cadence belongs to the queued turn while later configurations a
   assert.equal(h.calls.length, 0)
 })
 
+test('configured group opportunity uses its trusted cadence independently of primary identity', async t => {
+  const h = await setup(t), clock = await cadenceFixture(h), original = h.bridge.lanyaPolicy.runtimeCapabilities
+  h.bridge.lanyaPolicy.runtimeCapabilities = async (...args) => {
+    const value = await original(...args)
+    value.tools.entertainment.primary_identity_valid = false
+    value.tools.entertainment.group_identity_valid = true
+    value.tools.entertainment.group_social = args[0] === 'group:202'
+    return value
+  }
+  for (const requested of [undefined, clock.now() + 60_000, clock.now() + 30 * 60_000]) {
+    const current = await opportunity(h, { scope: 'group:202', producer: 'main-review' })
+    assert.equal(current.chat.activeTurnRole, 'member')
+    const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
+    assert.equal(result.next_review_at, requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000))
+    assert.equal(result.autonomous_cadence_min, 3)
+    await current.end(); await current.completion
+  }
+  for (const change of [{ scope: 'group:303' }, { scope: 'group:202', producer: 'other-observer' },
+    { scope: 'group:202', kind: 'reminder.due' }]) {
+    const current = await opportunity(h, change), future = clock.now() + 30 * 60_000
+    const result = await h.decide(current.chat, 'idle', { next_review_at: future })
+    assert.equal(result.next_review_at, future); assert.equal(result.autonomous_cadence_min, undefined)
+    await current.end(); await current.completion
+  }
+  const live = await h.receive({ scope: 'group:202', sender: '202' }), turn = h.start(live)
+  const result = await h.decide(live, 'idle', { next_review_at: clock.now() + 30 * 60_000 })
+  assert.equal(result.autonomous_cadence_min, undefined)
+  await h.end(live, turn)
+  h.bridge.lanyaPolicy.runtimeCapabilities = async () => { throw new Error('synthetic guide unavailable') }
+  const unavailable = await opportunity(h, { scope: 'group:303' }), future = clock.now() + 30 * 60_000
+  assert.equal((await h.decide(unavailable.chat, 'idle', { next_review_at: future })).next_review_at, future)
+  await unavailable.end(); await unavailable.completion
+  assert.equal(h.calls.length, 0)
+})
+
 test('invalid cadence identity or helper owner refuses autonomous dispatch without a model or send', async t => {
   for (const defect of ['cadence', 'cadence-string', 'cadence-nan', 'cadence-range', 'identity', 'owner']) {
     const h = await setup(t); await cadenceFixture(h)

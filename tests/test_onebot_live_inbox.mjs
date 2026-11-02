@@ -43,16 +43,17 @@ async function fixture(t) {
 import shutil,sys
 from pathlib import Path
 repo,out=map(Path,sys.argv[1:3]);sys.path.insert(0,str(repo/'scripts'))
-import patch_onebot_policy as p,patch_onebot_replay as r,patch_onebot_egress as e,patch_onebot_live_inbox as n
+import patch_onebot_policy as p,patch_onebot_replay as r,patch_onebot_egress as e,patch_onebot_live_inbox as n,patch_onebot_inbound_context as q
 shutil.copytree(repo/'tests/fixtures/onebot_egress',out)
 for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  f=out/'lib'/name;raw=p.transform(name,f.read_bytes())
  if name=='bridge.js':raw=r.transform('lib/bridge.js',raw)
  if name in ['bridge.js','outbound.js']:raw=e.transform('lib/'+name,raw)
  if name=='bridge.js':raw=n.transform(raw)
+ if name=='bridge.js':raw=q.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
-f.write_text(s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a),encoding='utf-8')
+f.write_bytes(q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8')))
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
  (out/'lib'/name).write_bytes(raw)
@@ -198,6 +199,67 @@ test('late enrichment cannot replace a newer revision and no pending budget is l
   assert.equal(h.requests.length, 0)
   h.start(); await h.preStep()
   assert.equal((await h.decide()).accepted, true)
+})
+
+test('late partially resolved quoted images cannot supersede a newer native input or borrow its authority', async t => {
+  const h = await fixture(t), gate = defer(), entered = defer(), reads = []
+  h.deps.connection.call = async (action, params) => {
+    assert.equal(action, 'get_msg'); assert.equal(params.message_id, 41)
+    return { message_id: 41, message_type: 'private', sender: { user_id: 101, nickname: 'Quoted author' },
+      message: ['one.png', 'two.png'].map(file => ({ type: 'image', data: { file, sub_type: '1' } })) }
+  }
+  h.deps.media.resolve = async ref => {
+    reads.push(ref.file)
+    if (ref.file === 'two.png') { entered.resolve(); await gate.promise; return undefined }
+    return { kind: 'image', path: path.join(h.directory, 'synthetic-quote.png') }
+  }
+  const older = h.receive('older quote', { message: [{ type: 'reply', data: { id: '41' } },
+    { type: 'text', data: { text: 'older quote' } }] })
+  await entered.promise
+  await h.receive('fresh current request')
+  const newest = JSON.stringify(h.pending[0]), revision = h.bridge.lanyaPolicy.state(h.chat).liveRevision
+  gate.resolve(); await older
+  assert.deepEqual(reads, ['one.png', 'two.png'])
+  assert.equal(h.pending.length, 1); assert.equal(JSON.stringify(h.pending[0]), newest)
+  assert.equal(h.bridge.lanyaPolicy.state(h.chat).liveRevision, revision)
+  assert.equal(h.requests.length, 0); assert.equal(h.calls.length, 0)
+  assert.doesNotMatch(h.pending[0].content[0].text, /synthetic-quote|older quote/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide()).accepted, true)
+  assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+})
+
+test('quote-only admin input cannot authorize control; fresh current text with quote still can', async t => {
+  const h = await fixture(t)
+  h.deps.connection.call = async () => ({ message_id: 41, message_type: 'private', sender: { user_id: 101 },
+    message: [{ type: 'text', data: { text: 'synthetic quoted resume instruction' } }] })
+  const reply = { type: 'reply', data: { id: '41' } }
+  await h.receive('', { message: [reply], raw_message: '[CQ:reply,id=41]' })
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('resume', { control_update: true, evidenceSource: 'current' })).accepted, false)
+  await h.end()
+  await h.receive('resume now', { message: [reply, { type: 'text', data: { text: 'resume now' } }] })
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('resume', { control_update: true, evidenceSource: 'current' })).accepted, true)
+  assert.equal(h.calls.length, 0)
+})
+
+test('only a confirmed current-scope send ACK seeds metadata for a bot-authored private quote', async t => {
+  const h = await fixture(t)
+  h.deps.connection.call = async () => ({ message_id: 41 })
+  await h.receive('fresh question'); h.start(); await h.preStep(); await h.decide()
+  await h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'synthetic response' } }] })
+  assert.equal(h.bridge.inbound.messageScopes.get('41'), 'private:101')
+  assert.equal(h.bridge.inbound.messageScopes.has('unknown'), false)
+  h.deps.connection.call = async action => {
+    assert.equal(action, 'get_msg')
+    return { message_id: 41, message_type: 'private', sender: { user_id: 999 },
+      message: [{ type: 'text', data: { text: 'synthetic response' } }] }
+  }
+  assert.equal((await h.bridge.expandQuote('41', 'private:101')).status, 'available')
+  h.deps.connection.call = async () => { throw new Error('synthetic network failure') }
+  await assert.rejects(h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'uncertain' } }] }))
+  assert.equal(h.bridge.inbound.messageScopes.size, 1)
 })
 
 test('active reservation is never borrowed, old reply remains stale, and silence persists', async t => {

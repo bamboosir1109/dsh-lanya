@@ -2,12 +2,80 @@
  * never owns a transport or retries a failed/unknown operation. The installed
  * bridge must call its existing policy guard separately for EVERY output part.
  */
+import fs from 'node:fs'
+import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+
 const prepared = new WeakMap()
 const parameterHints = new WeakMap()
+const memePackets = new WeakSet()
+const knownMemeLimits = new WeakSet()
 export const NORMAL_STYLE = Object.freeze({ roleplay: false, technical: false, localFiles: false })
 const segmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' })
 const characters = (text) => [...segmenter.segment(text)].map((part) => part.segment)
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+const imageDigest = bytes => createHash('sha256').update(bytes).digest('hex')
+const MEME_MAX_BYTES = 20 * 1024 * 1024
+
+/** Identify only an exact ordinary content-addressed picker copy. Images,
+ * screenshots, GIFs and remote attachments are not memes merely by type.
+ * This classification grants no file/QQ authority and never changes assets.
+ */
+export function isStagedMemeImage(segment, mediaDirectory) {
+  if (segment?.type !== 'image' || !plain(segment.data) || typeof mediaDirectory !== 'string' || !path.isAbsolute(mediaDirectory)) return false
+  const source = segment.data.file ?? segment.data.url
+  if (typeof source !== 'string') return false
+  const root = path.resolve(mediaDirectory)
+  let bytes, expectedPath, expectedDigest
+  if (source.startsWith('base64://')) {
+    const encoded = source.slice(9)
+    if (!encoded.length || encoded.length > Math.ceil(MEME_MAX_BYTES / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return false
+    bytes = Buffer.from(encoded, 'base64')
+    if (!bytes.length || bytes.length > MEME_MAX_BYTES || bytes.toString('base64') !== encoded) return false
+    expectedDigest = imageDigest(bytes)
+  } else {
+    let file = source
+    try { if (file.startsWith('file:')) file = fileURLToPath(file) } catch { return false }
+    if (!path.isAbsolute(file)) return false
+    expectedPath = path.resolve(file)
+    if (!samePath(path.dirname(expectedPath), root)) return false
+    const match = /^media_meme_([a-f0-9]{64})\.(png|jpg|gif|webp)$/.exec(path.basename(expectedPath))
+    if (!match) return false
+    expectedDigest = match[1]
+  }
+  for (const extension of ['png', 'jpg', 'gif', 'webp']) {
+    const file = expectedPath || path.join(root, 'media_meme_' + expectedDigest + '.' + extension)
+    let before
+    try { before = fs.lstatSync(file) } catch (error) { if (error.code === 'ENOENT') continue; throw error }
+    const identity = info => [info.dev, info.ino, info.mode, info.nlink, info.size, info.mtimeMs, info.ctimeMs].join(':')
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size < 1 || before.size > MEME_MAX_BYTES ||
+        !samePath(fs.realpathSync(root), root) || !samePath(fs.realpathSync(file), file)) {
+      throw new EgressDeliveryError('suppressed', 'unsafe_staged_meme')
+    }
+    let descriptor, actual
+    try {
+      descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+      if (identity(fs.fstatSync(descriptor)) !== identity(before)) throw new EgressDeliveryError('suppressed', 'changed_staged_meme')
+      const bounded = Buffer.alloc(before.size + 1)
+      let count = 0
+      while (count < bounded.length) {
+        const read = fs.readSync(descriptor, bounded, count, bounded.length - count, count)
+        if (!read) break
+        count += read
+      }
+      actual = bounded.subarray(0, count)
+      if (identity(fs.fstatSync(descriptor)) !== identity(before)) throw new EgressDeliveryError('suppressed', 'changed_staged_meme')
+    } finally { if (descriptor !== undefined) fs.closeSync(descriptor) }
+    if (identity(fs.lstatSync(file)) !== identity(before) || actual.length !== before.size ||
+        imageDigest(actual) !== expectedDigest || (bytes && !actual.equals(bytes))) {
+      throw new EgressDeliveryError('suppressed', 'changed_staged_meme')
+    }
+    return true
+  }
+  return false
+}
 
 export class EgressDeliveryError extends Error {
   constructor(status, reason, sent = []) {
@@ -20,6 +88,9 @@ export class EgressDeliveryError extends Error {
     this.partial = sent.length > 0
   }
 }
+
+/** Only this helper's completed quota plan may avoid an uncertainty marker. */
+export function isKnownMemeLimit(error) { return knownMemeLimits.has(error) }
 
 /** Input must be the normalized DIRECT transport text, copied before awaits.
  * Quoted/CQ-only/injected/observation/model arguments cannot enable an exception.
@@ -319,13 +390,20 @@ export async function prepareAndSendReply(pipeline, scope, text, options, style 
   return ids
 }
 
-function splitSegments(segments, style, verbatim) {
+function splitSegments(segments, style, verbatim, isMemeSegment) {
   if (!Array.isArray(segments)) throw new TypeError('OneBot message segments required')
   const packets = []
   let packet = [], length = 0
   const flush = () => { if (packet.length) packets.push(packet); packet = []; length = 0 }
   for (const segment of segments) {
     if (!plain(segment) || typeof segment.type !== 'string' || !plain(segment.data)) throw new TypeError('Invalid OneBot segment')
+    if (segment.type === 'image' && isMemeSegment?.(segment) === true) {
+      // Reply/@ controls stay with their adjacent content, never become a
+      // detached notification. Necessary caption/prose uses its own packet.
+      if (packet.some(item => !['reply', 'at'].includes(item.type))) flush()
+      packet.push(structuredClone(segment)); memePackets.add(packet); flush()
+      continue
+    }
     if (segment.type !== 'text') { packet.push(structuredClone(segment)); continue }
     for (const part of textParts(segment.data.text, style, verbatim)) {
       const size = characters(part.text).length
@@ -342,7 +420,7 @@ function splitSegments(segments, style, verbatim) {
 /** Plan only known OneBot text-bearing shapes; never mutate a caller's params.
  * Nontext segments retain order and occur in exactly one resulting packet.
  */
-export function planEgress(action, params, style = NORMAL_STYLE) {
+export function planEgress(action, params, style = NORMAL_STYLE, { isMemeSegment } = {}) {
   if (!plain(params)) throw new TypeError('OneBot params must be an object')
   const hint = parameterHints.get(params)
   const copy = structuredClone(params)
@@ -355,13 +433,28 @@ export function planEgress(action, params, style = NORMAL_STYLE) {
       if (/\[CQ:/i.test(message)) throw new TypeError('Use real OneBot segments instead of raw CQ markup')
       message = [{ type: 'text', data: { text: message } }]
     }
-    return splitSegments(message, style, hint?.verbatim === true).map((packet) => ({ action, params: { ...copy, message: packet } }))
+    return splitSegments(message, style, hint?.verbatim === true, isMemeSegment).map((packet) => ({ action,
+      params: { ...copy, message: packet }, ...(memePackets.has(packet) ? { meme: true } : {}) }))
   }
   if (['send_forward_msg', 'send_private_forward_msg', 'send_group_forward_msg'].includes(action) && Array.isArray(copy.messages)) {
+    const memes = new WeakSet()
     copy.messages = copy.messages.flatMap((node) => {
       if (!plain(node?.data) || !Array.isArray(node.data.content)) throw new TypeError('Explicit forward content is required')
-      return splitSegments(node.data.content, style, false).map((content) => ({ ...node, data: { ...node.data, content } }))
+      return splitSegments(node.data.content, style, false, isMemeSegment).map((content) => {
+        const next = { ...node, data: { ...node.data, content } }
+        if (memePackets.has(content)) memes.add(next)
+        return next
+      })
     })
+    if (copy.messages.some(node => memes.has(node))) {
+      const parts = [], nodes = []
+      const flush = () => { if (nodes.length) parts.push({ action, params: { ...copy, messages: nodes.splice(0) } }) }
+      for (const node of copy.messages) {
+        if (!memes.has(node)) { nodes.push(node); continue }
+        flush(); parts.push({ action, params: { ...copy, messages: [node] }, meme: true })
+      }
+      flush(); return parts
+    }
     return copy.messages.length ? [{ action, params: copy }] : []
   }
   return [{ action, params: copy }]
@@ -372,19 +465,32 @@ export function planEgress(action, params, style = NORMAL_STYLE) {
  * Successful aggregate keeps the legacy last message_id and exposes all IDs.
  * A later blocked/unknown part throws with partial=true, never "sent:true".
  */
-export async function dispatchEgress(action, params, style, transmit) {
-  const plan = planEgress(action, params, style)
+export async function dispatchEgress(action, params, style, transmit, options) {
+  const plan = planEgress(action, params, style, options)
   if (!plan.length) throw new EgressDeliveryError('suppressed', 'empty_content')
   const ids = []
   let result
+  let skippedMemes = 0, sentMemes = 0
   for (const part of plan) {
     try {
-      result = await transmit(part.action, part.params)
+      result = await transmit(part.action, part.params, part.meme === true ? { meme: true } : null)
       ids.push(result?.message_id === undefined ? null : String(result.message_id))
+      if (part.meme) sentMemes++
     } catch (error) {
+      if (part.meme && error.name === 'PolicyDeliveryError' && error.status === 'suppressed' && error.reason === 'meme_turn_limit') {
+        skippedMemes++; continue
+      }
       if (!ids.length) throw error
       throw new EgressDeliveryError(error.status || 'unknown', error.reason || 'later_part_failed', ids)
     }
+  }
+  if (skippedMemes) {
+    const error = new EgressDeliveryError('suppressed', 'meme_turn_limit', ids)
+    error.skipped_meme_images = skippedMemes
+    error.delivered_meme_images = sentMemes
+    error.message += '; confirmed_meme_images=' + sentMemes + '; skipped_meme_images=' + skippedMemes + '; confirmed_packets=' + ids.length
+    knownMemeLimits.add(error)
+    throw error // Never let qq_send_image report sent:true for a suppressed image.
   }
   return plain(result) ? { ...result, lanya_egress: { status: 'sent', parts: plan.length, message_ids: ids.filter((id) => id !== null) } } : result
 }
