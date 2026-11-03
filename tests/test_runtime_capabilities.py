@@ -151,6 +151,36 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertNotEqual(guides[0], guides[1])
         self.assertEqual(self.snapshot(), before)
 
+    def test_meme_alone_can_finish_without_receipt_quota_or_filler_text_in_each_scope(self):
+        before = self.snapshot()
+        for scope in ("private:101", "group:202", "private:404"):
+            with self.subTest(scope=scope):
+                tools = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]
+                guide = tools["qq_expression"]
+                self.assertIn("choose expression=meme when a fitting real image says enough", guide["expression_decision"])
+                self.assertIn("expression=text_meme only for genuinely useful additional content", guide["expression_decision"])
+                self.assertIn("not because an image requires accompanying text", guide["expression_decision"])
+                completion = guide["meme_completion"]
+                self.assertIn("real image alone", completion)
+                self.assertIn("do not append text in this turn, whether the image succeeds, is unavailable or fails", completion)
+                self.assertIn("qq_send_image confirms successful delivery", completion)
+                self.assertIn("end immediately without a text bubble", completion)
+                self.assertIn("choose expression=text_meme before the first QQ output", completion)
+                self.assertIn("accompanying text is never required", completion)
+                self.assertIn("Selection or staging is not delivery", completion)
+                self.assertIn("Unknown or partial results still require stopping all further QQ output", completion)
+                visible = guide["delivery_state_boundary"]["visible_content"]
+                for internal in ("Successful tool receipts", "message_id", "raw tool JSON", "internal quota",
+                                 "remaining allowance", "usage counts"):
+                    self.assertIn(internal, visible)
+                self.assertIn("not an extra chat bubble", visible)
+                self.assertIn("fresh user question", guide["delivery_state_boundary"]["later_question"])
+                self.assertEqual(tools["entertainment"]["rest_window"]["timezone"], "Asia/Shanghai")
+                self.assertEqual(tools["entertainment"]["proactive_sharing"]["private_contact"]["minimum_interval_minutes"], 60)
+                self.assertTrue(tools["entertainment"]["proactive_sharing"]["private_contact"]["wait_for_live_reply"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_intent_protocol_preserves_real_candidates_and_recipient_authority_without_io(self):
         before = self.snapshot()
         primary = self.context()["tools"]["qq_autonomy"]

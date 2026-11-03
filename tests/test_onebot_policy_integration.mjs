@@ -283,13 +283,23 @@ test('reply expression plans reuse one ticket and never send automatically', asy
     assert.equal(result.can_send, true)
     assert.equal(result.expression_plan.choice, expression || 'unspecified')
     assert.equal(result.expression_plan.automatic_send, false)
+    assert.equal(result.expression_plan.text_output, expression !== 'meme')
     assert.equal(h.calls.length, 0)
     if (expression !== 'text') {
       assert.match(result.expression_plan.next_step, /reuse a fitting candidate|Reuse a fitting candidate/)
       assert.match(result.expression_plan.next_step, /read_image\(\{file_path: chosen_path\}\)/)
       assert.match(result.expression_plan.next_step, /do not call qq_decide again/)
-      await h.tools.get('qq_send_image').execute({}, h.exec(chat))
-      assert.equal(h.calls.length, 1)
+      if (expression === 'meme') {
+        // This basic fixture has no real media classifier. Native media cases
+        // separately prove that an actual staged picker meme may be sent.
+        const before = JSON.stringify((await h.bridge.lanyaPolicy.policy.snapshot(chat.chatId)).deliveries)
+        await assert.rejects(h.tools.get('qq_send_image').execute({}, h.exec(chat)), error => error.reason === 'meme_only_reply')
+        assert.equal(h.calls.length, 0)
+        assert.equal(JSON.stringify((await h.bridge.lanyaPolicy.policy.snapshot(chat.chatId)).deliveries), before)
+      } else {
+        await h.tools.get('qq_send_image').execute({}, h.exec(chat))
+        assert.equal(h.calls.length, 1)
+      }
     }
     await h.end(chat, turn)
   }
@@ -305,7 +315,9 @@ test('invalid or nonreply expression cannot settle a decision or grant a send', 
   }
   await assert.rejects(() => h.tools.get('qq_send_image').execute({}, h.exec(chat)), /decision_required/)
   assert.equal(h.calls.length, 0)
-  assert.equal((await h.decide(chat, 'reply', { expression: 'meme' })).can_send, true)
+  // This unclassified image fixture exercises revision withdrawal through the
+  // ordinary media path; pure staged-meme transport is tested natively.
+  assert.equal((await h.decide(chat, 'reply', { expression: 'text_meme' })).can_send, true)
   await h.receive({ text: 'new revision invalidates this planned image' })
   await assert.rejects(() => h.tools.get('qq_send_image').execute({}, h.exec(chat)), /stale_revision/)
   assert.equal(h.calls.length, 0)

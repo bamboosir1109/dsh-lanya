@@ -96,6 +96,7 @@ const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exha
   'cost_meter_unavailable', 'budget_unavailable'])
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
+const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
 const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
 const SOCIAL_VERDICTS = ['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action']
@@ -943,13 +944,17 @@ export class OneBotDecisionAdapter {
     return { accepted: result.accepted, reason: result.reason || (sendPermission && !canSend ? sendPermission.reason : null), mode: result.mode || null,
       next_review_at: result.next_review_at ?? null, can_send: canSend,
       ...(result.accepted && canSend && args.verdict === 'reply' ? { expression_plan: {
-        choice: args.expression || 'unspecified', automatic_send: false,
+        choice: args.expression || 'unspecified', automatic_send: false, text_output: args.expression !== 'meme',
         next_step: args.expression === 'text'
           ? 'Reply naturally with text; this decision has not sent anything.'
           : (args.expression ? 'For the chosen image reply, reuse a fitting candidate already selected this turn; otherwise select one with send_meme.'
             : 'Choose the response medium before writing: a fitting real meme can be a complete casual reaction. Reuse a fitting candidate already selected this turn, or use send_meme when an image fits.')
             + ' Inspect a candidate with read_image({file_path: chosen_path}) when visual review is required, then use qq_send_image({sources:[chosen_path]}).'
-            + ' Reuse this reply ticket; do not call qq_decide again. Send only the chosen image, not every candidate. If none fits, use text or omit the image.'
+            + ' Reuse this reply ticket; do not call qq_decide again. Send only the chosen image, not every candidate.'
+            + (args.expression === 'meme'
+              ? ' This is an image-only reply: send one real selected meme without a caption. The image itself completes the reply; end the turn without final text or a send confirmation. If none fits, omit the image and end without claiming delivery; do not switch to text in this turn.'
+              : ' Add separate text only when it says something useful beyond the image. If none fits, use text or omit the image.')
+            + ' Tool acknowledgements, message IDs, quotas and usage counts are internal evidence, not a reply to copy into chat.'
             + ' This plan does not send anything and does not override later silence, revision, budget or transport checks.',
       } } : {}),
       ...(socialOneOff ? { one_off: true, requested_next_review_at: requestedReview, ignored_for_social_one_off: requestedReview !== null } : {}),
@@ -1067,6 +1072,9 @@ export class OneBotDecisionAdapter {
   onAssistantMessage(scope, chat, event) {
     const record = this.state(chat).turns.get(event.data.turn)
     if (!record?.ticket || record.ended) return
+    // The native session keeps the assistant message. A chosen image-only
+    // response must not turn its narration or tool receipt into a QQ bubble.
+    if (memeOnlyReply(record)) { record.shadow.loopPending = null; return }
     const envelope = this.envelope(record, identity('assistant', chat.sessionId, event.data.turn, event.data.message.id))
     this.runEnvelope(envelope, () => this.bridge.interim.onAssistantMessage(scope, record.shadow, event.data.message))
   }
@@ -1080,7 +1088,8 @@ export class OneBotDecisionAdapter {
     void this.wakeOwnedPendingAfterUnbound(chat, record, event)
       .catch(error => this.log('warn', 'native_internal_idle_wake_unavailable:' + error.name))
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
-    if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
+    if (memeOnlyReply(record)) record.shadow.loopPending = null
+    else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     void (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
       try { await this.settleBudget(chat, record, event) }
@@ -1220,6 +1229,12 @@ export class OneBotDecisionAdapter {
       }
     }
     requireCertainTurn()
+    // Classification comes from the host's actual staged-meme packet planner,
+    // not model arguments. Reject before the durable reservation so an omitted
+    // caption or receipt is not falsely recorded as an uncertain transport.
+    if (memeOnlyReply(envelope.record) && egressPart?.meme !== true) {
+      throw new PolicyDeliveryError('suppressed', 'meme_only_reply')
+    }
     const kind = /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (Array.isArray(params.message) && params.message.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
     let result

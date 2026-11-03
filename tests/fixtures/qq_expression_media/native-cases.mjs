@@ -135,6 +135,135 @@ async function twoRealMemes(h) {
   return [first, second]
 }
 
+async function waitForTurn(h, turn) {
+  for (let attempt = 0; attempt < 600; attempt++) {
+    if (!h.bridge.lanyaPolicy.state(h.chat).turns.has(turn)) return
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  assert.fail('Synthetic native turn did not settle')
+}
+
+test('a chosen real meme is the complete reply and the next live text turn remains independent', async t => {
+  const h = await setup(t)
+  await h.receive('fixture casual reaction'); const turn = h.start()
+  await h.decide('reply', { expression: 'meme' })
+  const [first] = await twoRealMemes(h)
+  assert.equal((await h.tools.get('qq_send_image').execute({ sources: [first.path] }, h.exec())).sent, true)
+  h.assistant('Synthetic receipt commentary must stay inside the session')
+  h.end(); await waitForTurn(h, turn)
+  const firstMessages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(firstMessages.map(call => call.params.message.map(segment => segment.type)), [['image']])
+  const before = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(before.length, 1); assert.equal(before[0].meme, true); assert.equal(before[0].status, 'sent')
+
+  await h.receive('fixture new ordinary question'); const next = h.start()
+  await h.decide('reply', { expression: 'text' })
+  h.assistant('这是下一轮有用的正文。')
+  h.end(); await waitForTurn(h, next)
+  const messages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(messages.map(call => call.params.message.map(segment => segment.type)), [['image'], ['text']])
+  assert.equal(messages[1].params.message[0].data.text, '这是下一轮有用的正文。')
+  assert.deepEqual((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries[0], before[0])
+})
+
+test('pure meme narration before selection and while a native image acknowledgement waits never enters interim output', async t => {
+  const h = await setup(t), entered = deferred(), release = deferred()
+  t.after(() => release.resolve())
+  h.deps.config.interimMessages = true
+  await h.receive('fixture casual reaction'); const turn = h.start()
+  await h.decide('reply', { expression: 'meme' })
+  h.assistant('Synthetic image selection narration')
+  h.assistant('Synthetic pre-image closing narration')
+  const [first] = await twoRealMemes(h)
+  h.deps.onTransmit = async () => { entered.resolve(); await release.promise }
+  const sending = h.tools.get('qq_send_image').execute({ sources: [first.path] }, h.exec())
+  await entered.promise
+  h.assistant('Synthetic final while image acknowledgement is pending')
+  h.end()
+  release.resolve()
+  assert.equal((await sending).sent, true)
+  await waitForTurn(h, turn)
+  assert.deepEqual(h.calls.filter(call => call.action === 'send_msg')
+    .map(call => call.params.message.map(segment => segment.type)), [['image']])
+  const rows = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'sent'); assert.equal(rows[0].meme, true)
+})
+
+test('a pure meme plan refuses explicit text captions ordinary attachments and raw forwards before any reservation', async t => {
+  const h = await setup(t)
+  await h.receive('fixture casual reaction'); const turn = h.start()
+  await h.decide('reply', { expression: 'meme' })
+  const [first] = await twoRealMemes(h)
+  const before = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  const denied = error => error.status === 'suppressed' && error.reason === 'meme_only_reply'
+  await assert.rejects(h.send('必要正文应在选媒介时选择文字。'), denied)
+  await assert.rejects(h.raw('send_msg', { user_id: 101,
+    message: [{ type: 'text', data: { text: 'Synthetic raw text' } }] }), denied)
+  await assert.rejects(h.tools.get('qq_napcat_api').execute({ action: 'upload_private_file',
+    params: { user_id: 101, file: h.staged, name: 'fixture.png' } }, h.exec()), denied)
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [first.path], caption: 'Synthetic caption' }, h.exec()), denied)
+  fs.writeFileSync(h.staged, Buffer.concat([png, Buffer.from([9])]))
+  await assert.rejects(h.tools.get('qq_send_image').execute({ sources: [h.staged] }, h.exec()), denied)
+  await assert.rejects(h.raw('send_private_forward_msg', { user_id: 101, messages: [{ type: 'node',
+    data: { name: 'fixture-author', uin: '101', content: [{ type: 'text', data: { text: 'Synthetic forward text' } }] } }] }), denied)
+  assert.equal(h.calls.filter(call => /^(?:send_|upload_)/.test(call.action)).length, 0)
+  assert.deepEqual((await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, before)
+  assert.equal((await h.tools.get('qq_send_image').execute({ sources: [first.path] }, h.exec())).sent, true)
+  h.end(); await waitForTurn(h, turn)
+  const after = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(after.length, 1); assert.equal(after[0].status, 'sent'); assert.equal(after[0].meme, true)
+})
+
+test('text with a real meme preserves independently useful text as separate native messages', async t => {
+  const h = await setup(t)
+  await h.receive('fixture asks for useful explanation'); const turn = h.start()
+  await h.decide('reply', { expression: 'text_meme' })
+  const [first] = await twoRealMemes(h)
+  await h.send('这是独立有用的前文。')
+  assert.equal((await h.tools.get('qq_send_image').execute({ sources: [first.path] }, h.exec())).sent, true)
+  h.assistant('这是后面的完整说明。')
+  h.end(); await waitForTurn(h, turn)
+  const messages = h.calls.filter(call => call.action === 'send_msg')
+  assert.deepEqual(messages.map(call => call.params.message.map(segment => segment.type)), [['text'], ['image'], ['text']])
+  assert.deepEqual(messages.flatMap(call => call.params.message).filter(segment => segment.type === 'text')
+    .map(segment => segment.data.text), ['这是独立有用的前文。', '这是后面的完整说明。'])
+  const rows = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(rows.filter(row => row.meme === true).length, 1)
+  assert.equal(new Set(rows.map(row => row.ticketId)).size, 1)
+})
+
+test('empty or uncertain pure meme attempts never fabricate success or fall back to final text', async t => {
+  const empty = await setup(t)
+  await empty.receive('fixture reaction without usable image'); const emptyTurn = empty.start()
+  await empty.decide('reply', { expression: 'meme' })
+  const selected = await pickerFixture(empty)
+  selected.memes.search = () => ({ memes: [] }); selected.memes.sampleMood = () => ({ memes: [] })
+  const projection = selected.picker.selectQqCandidates(selected.memes, { query: 'fixture', limit: 1 }, selected.exec, selected.cap)
+  assert.equal(projection.selected, false); assert.equal(projection.delivered, false); assert.equal(projection.candidates.length, 0)
+  await assert.rejects(empty.tools.get('qq_send_image').execute({ sources: [path.join(empty.deps.config.mediaDir, 'missing.png')] }, empty.exec()))
+  empty.assistant('Synthetic unavailable image confirmation must not become a reply')
+  empty.end(); await waitForTurn(empty, emptyTurn)
+  assert.equal(empty.calls.filter(call => call.action === 'send_msg').length, 0)
+  assert.equal((await empty.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries.length, 0)
+
+  const uncertain = await setup(t)
+  await uncertain.receive('fixture uncertain reaction'); const turn = uncertain.start()
+  await uncertain.decide('reply', { expression: 'meme' })
+  const [first, second] = await twoRealMemes(uncertain)
+  uncertain.deps.onTransmit = async () => { throw new Error('Synthetic uncertain image acknowledgement') }
+  await assert.rejects(uncertain.tools.get('qq_send_image').execute({ sources: [first.path] }, uncertain.exec()),
+    error => error.status === 'unknown')
+  uncertain.deps.onTransmit = undefined
+  const before = (await uncertain.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries
+  assert.equal(before.length, 1); assert.equal(before[0].status, 'unknown'); assert.equal(before[0].meme, true)
+  await assert.rejects(uncertain.tools.get('qq_send_image').execute({ sources: [second.path] }, uncertain.exec()),
+    error => error.reason === 'turn_delivery_uncertain')
+  uncertain.assistant('Synthetic uncertain receipt must not become a fallback reply')
+  uncertain.end(); await waitForTurn(uncertain, turn)
+  assert.equal(uncertain.calls.filter(call => call.action === 'send_msg').length, 1)
+  assert.deepEqual((await uncertain.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries, before)
+})
+
 test('actual image tool separates caption and limits real picker memes within one call without false sent receipt', async t => {
   const h = await setup(t)
   await h.receive('fixture casual reply'); h.start(); await h.decide()
