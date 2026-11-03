@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { createObservationPump, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
+import { createObservationPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const resources = new Map()
@@ -338,4 +338,157 @@ test('an invalid claimed-terminal review is durably parked, not revived by its p
   assert.equal(acknowledgements, 0)
   const review = readEvents(root).find((value) => value.producer === 'main-review')
   assert.equal(fs.existsSync(path.join(root, 'done', observationKey(review.scope, review.event_id) + '.json')), false)
+})
+
+// Pre-anchor histories remain real immutable evidence. Every existing child is
+// terminal; only the leaf has a future review, so polling has no work to create.
+function legacyHistory(t, count) {
+  const root = fixture(t), rows = []
+  fs.mkdirSync(path.join(root, 'done'), { recursive: true })
+  for (let index = 0; index < count; index++) {
+    const previous = rows.at(-1)
+    const value = previous ? {
+      ...previous.value,
+      event_id: 'main-review:' + previous.key + ':' + (index + 1),
+      producer: 'main-review', created_at: index + 1,
+      payload: { subject: 'synthetic review history', review_context: {
+        parent_observation_key: previous.key, parent_event_id: previous.value.event_id,
+        previous_decision_id: previous.marker.decision_id, scheduled_at: index + 1,
+      } },
+    } : event('history-root', { kind: 'social.notification', payload: { subject: 'synthetic review history' } })
+    const name = write(root, value), key = name.slice(0, -5)
+    const raw = fs.readFileSync(path.join(root, 'pending', name), 'utf8')
+    const marker = { version: 2, event_raw: raw, event_id: value.event_id, scope: value.scope,
+      event_sha256: createHash('sha256').update(raw).digest('hex'), completed_at: 1000,
+      status: 'decided', decision_id: 'history-decision-' + index,
+      next_review_at: index + 1 < count ? index + 2 : 10000 }
+    fs.writeFileSync(path.join(root, 'done', name), JSON.stringify(marker) + '\n')
+    rows.push({ value, name, key, raw, marker })
+  }
+  return { root, rows }
+}
+
+async function countHistoryIo(root, run) {
+  const read = fs.readFileSync, exists = fs.existsSync
+  const counts = { read: 0, exists: 0 }
+  const inside = (file) => typeof file === 'string' &&
+    (path.resolve(file) === root || path.resolve(file).startsWith(root + path.sep))
+  fs.readFileSync = function (file, ...args) {
+    if (inside(file)) counts.read++
+    return read.call(this, file, ...args)
+  }
+  fs.existsSync = function (file, ...args) {
+    if (inside(file)) counts.exists++
+    return exists.call(this, file, ...args)
+  }
+  try { await run(); return counts } finally { fs.readFileSync = read; fs.existsSync = exists }
+}
+
+test('polling terminal legacy review history uses linear file work across shared ancestry', async (t) => {
+  const samples = []
+  for (const count of [24, 48]) {
+    const { root } = legacyHistory(t, count)
+    const p = await pump(t, root, () => assert.fail('terminal history cannot dispatch'), { now: () => 1000 })
+    const first = await countHistoryIo(root, async () => assert.equal((await p.drain()).processed, 0))
+    const repeated = await countHistoryIo(root, async () => assert.equal((await p.drain()).processed, 0))
+    for (const metric of ['read', 'exists']) {
+      assert.ok(first[metric] > 0, 'the counter must observe real ' + metric + ' calls')
+      assert.ok(repeated[metric] <= first[metric] + count, 'another poll must retain the same bound for ' + metric)
+    }
+    assert.ok(first.read <= 16 * count, 'terminal history must not reread every ancestor for every child: ' + JSON.stringify(first))
+    samples.push(first)
+  }
+  t.diagnostic('terminal history filesystem calls for 24/48 nodes: ' + JSON.stringify(samples))
+  for (const metric of ['read', 'exists']) {
+    assert.ok(samples[1][metric] <= samples[0][metric] * 2.8 + 16,
+      'doubling terminal history must not quadruple ' + metric + ' calls: ' + JSON.stringify(samples))
+  }
+})
+
+test('a new review still revalidates changed ancestry after a terminal-only poll', async (t) => {
+  const { root, rows } = legacyHistory(t, 8)
+  let now = 1000, calls = 0
+  const p = await pump(t, root, async (value) => {
+    calls++
+    assert.equal(value.payload.review_context.freshness_anchor.key, rows[0].key)
+    return { completed: true, status: 'decided', decision_id: 'validated-after-repair' }
+  }, { now: () => now })
+  await p.drain()
+  fs.writeFileSync(path.join(root, 'pending', rows[0].name), JSON.stringify({ ...rows[0].value, control_allowed: true }) + '\n')
+  now = 10000
+  assert.equal((await p.drain()).processed, 0)
+  assert.equal(calls, 0)
+  assert.equal(readEvents(root).length, rows.length)
+  fs.writeFileSync(path.join(root, 'pending', rows[0].name), rows[0].raw)
+  assert.equal((await p.drain()).processed, 1)
+  assert.equal(calls, 1)
+  assert.equal(readEvents(root).length, rows.length + 1)
+})
+
+test('a changed unknown ancestor cannot authorize a fresh review or replay a terminal child', async (t) => {
+  const { root, rows } = legacyHistory(t, 8)
+  let now = 1000
+  const p = await pump(t, root, () => assert.fail('unknown history must not replay'), { now: () => now })
+  await p.drain()
+  const changed = rows[3]
+  const raw = JSON.stringify({ ...changed.marker, status: 'unknown' }) + '\n'
+  fs.writeFileSync(path.join(root, 'done', changed.name), raw)
+  now = 10000
+  assert.equal((await p.drain()).processed, 0)
+  assert.equal(readEvents(root).length, rows.length)
+  assert.equal(fs.readFileSync(path.join(root, 'done', changed.name), 'utf8'), raw)
+})
+
+test('terminal child shortcuts still reject conflicting contents and malformed completion evidence', async (t) => {
+  const { root, rows } = legacyHistory(t, 4), invalid = []
+  const p = await pump(t, root, () => assert.fail('conflicting terminal evidence must not dispatch'), {
+    now: () => 1000, log: (level, message) => { if (level === 'error') invalid.push(message) },
+  })
+  await p.drain()
+  assert.deepEqual(invalid, [])
+  const child = rows[1]
+  const raw = JSON.stringify({ ...child.value, payload: { ...child.value.payload, subject: 'conflicting immutable payload' } }) + '\n'
+  fs.writeFileSync(path.join(root, 'pending', child.name), raw)
+  fs.writeFileSync(path.join(root, 'done', child.name), JSON.stringify({ ...child.marker, event_raw: raw,
+    event_sha256: createHash('sha256').update(raw).digest('hex') }) + '\n')
+  await p.drain()
+  assert.ok(invalid.some(message => message.startsWith('observation_invalid:' + rows[0].name + ':')))
+  assert.equal(readEvents(root).length, rows.length)
+  for (const damaged of ['{', JSON.stringify({ ...child.marker, event_sha256: '0'.repeat(64) }) + '\n']) {
+    fs.writeFileSync(path.join(root, 'pending', child.name), child.raw)
+    fs.writeFileSync(path.join(root, 'done', child.name), JSON.stringify(child.marker) + '\n')
+    await p.drain()
+    invalid.length = 0
+    fs.writeFileSync(path.join(root, 'done', child.name), damaged)
+    assert.equal((await p.drain()).processed, 0)
+    assert.ok(invalid.some(message => message.startsWith('observation_invalid:' + rows[0].name + ':')))
+    assert.equal(fs.readFileSync(path.join(root, 'done', child.name), 'utf8'), damaged)
+    assert.equal(readEvents(root).length, rows.length)
+  }
+})
+
+test('new legacy reviews retain the 64-node ancestry boundary and reject self-parent metadata', async (t) => {
+  const bounded = legacyHistory(t, 64)
+  assert.equal(observationFreshness(bounded.root, bounded.rows.at(-1).value), 1)
+  const tooDeep = legacyHistory(t, 65)
+  assert.throws(() => observationFreshness(tooDeep.root, tooDeep.rows.at(-1).value), /bounded and acyclic/)
+  let now = 1000
+  const deepPump = await pump(t, tooDeep.root, () => assert.fail('overlong ancestry must not dispatch'), { now: () => now })
+  await deepPump.drain()
+  now = 10000
+  assert.equal((await deepPump.drain()).processed, 0)
+  assert.equal(readEvents(tooDeep.root).length, 65)
+
+  const cyclic = legacyHistory(t, 5), forged = cyclic.rows[2]
+  const value = { ...forged.value, payload: { ...forged.value.payload, review_context: {
+    ...forged.value.payload.review_context, parent_observation_key: forged.key, parent_event_id: forged.value.event_id,
+  } } }
+  const raw = JSON.stringify(value) + '\n'
+  fs.writeFileSync(path.join(cyclic.root, 'pending', forged.name), raw)
+  fs.writeFileSync(path.join(cyclic.root, 'done', forged.name), JSON.stringify({ ...forged.marker, event_raw: raw,
+    event_sha256: createHash('sha256').update(raw).digest('hex') }) + '\n')
+  assert.throws(() => observationFreshness(cyclic.root, cyclic.rows.at(-1).value), /Review freshness/)
+  const cyclePump = await pump(t, cyclic.root, () => assert.fail('self-parent ancestry must not dispatch'), { now: () => 10000 })
+  assert.equal((await cyclePump.drain()).processed, 0)
+  assert.equal(readEvents(cyclic.root).length, 5)
 })

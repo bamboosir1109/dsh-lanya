@@ -298,7 +298,6 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
         !('next_review_at' in completed) || completed.next_review_at > now()) return null
     const parentKey = observationKey(event.scope, event.event_id)
-    const anchor = reviewAnchor(base, event)
     const review = validateObservation({ ...event,
       event_id: 'main-review:' + parentKey + ':' + completed.next_review_at,
       producer: 'main-review', created_at: completed.next_review_at,
@@ -306,12 +305,21 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       payload: { ...event.payload, review_context: {
         parent_observation_key: parentKey, parent_event_id: event.event_id,
         previous_decision_id: completed.decision_id, scheduled_at: completed.next_review_at,
-        freshness_anchor: anchor,
       } },
     })
-    if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
     const name = observationKey(review.scope, review.event_id) + '.json'
     const target = path.join(pending, name)
+    if (fs.existsSync(path.join(done, name))) {
+      const existing = readObservationEvidence(base, name.slice(0, -5))
+      if (existing.completion && existing.value.payload.review_context?.freshness_anchor === undefined) {
+        if (stable(existing.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
+        // An exact completed legacy child needs no new work or freshness
+        // authority. Revalidate ancestry only at the unfinished frontier.
+        return null
+      }
+    }
+    review.payload.review_context.freshness_anchor = reviewAnchor(base, event)
+    if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
     if (!fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
       try { publish(target, review) } catch (error) { if (error.code !== 'EEXIST') throw error }
     }
