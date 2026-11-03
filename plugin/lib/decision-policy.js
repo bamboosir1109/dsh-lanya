@@ -16,11 +16,47 @@ const VERDICTS = new Set(['reply', 'silence', 'resume', 'defer', 'idle', 'tool_a
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const identifier = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value)
+const CONTACT_INTERVAL_MS = 60 * 60_000
+const REST_REASONS = new Set(['autonomy_rest', 'observation_expired'])
+
+/** Owner-selected daily rest, independent of the host/browser timezone. */
+export function autonomousRestState(at = Date.now()) {
+  if (!Number.isSafeInteger(at) || at < 0 || at > 8_640_000_000_000_000 - 8 * 3600_000) {
+    throw new PolicyStateError('A valid trusted epoch millisecond time is required')
+  }
+  const dayStart = Math.floor((at + 8 * 3600_000) / 86400_000) * 86400_000 - 8 * 3600_000
+  const wake = dayStart + 8 * 3600_000
+  return { timezone: 'Asia/Shanghai', resting: at < wake,
+    current_day_wake_at: wake, next_wake_at: at < wake ? wake : wake + 86400_000 }
+}
+
+function latestLiveRevision(current) {
+  return Math.max(current?.lastLiveRevision || 0,
+    ...(current?.seen || []).filter(item => (item.origin || 'live') === 'live').map(item => item.revision))
+}
+
+function privateContactState(current, at, ticketId) {
+  const contact = current?.proactiveContact
+  if (contact?.ticketId === ticketId && ticketId !== undefined) return { allowed: true, reason: 'same_contact_turn' }
+  // Existing deliveries have no trusted origin. Use their real time only as a
+  // conservative initial interval; never relabel them as autonomous contacts.
+  const previous = contact?.at ?? Math.max(0, ...(current?.deliveries || [])
+    .filter(item => ['sent', 'unknown', 'reserved'].includes(item.status))
+    .map(item => Number.isSafeInteger(item.at) && item.at >= 0 ? item.at : 0))
+  const next = previous ? previous + CONTACT_INTERVAL_MS : null
+  const waiting = Boolean(contact && latestLiveRevision(current) <= contact.lastLiveRevision)
+  const reason = next !== null && at < next ? 'proactive_contact_interval'
+    : waiting ? 'proactive_contact_unanswered' : 'proactive_contact_available'
+  return { allowed: reason === 'proactive_contact_available', reason,
+    minimum_interval_minutes: 60, wait_for_live_reply: true,
+    last_contact_at: previous || null, next_allowed_at: next, waiting_for_live_reply: waiting,
+    history_basis: contact ? 'trusted_proactive_reservation' : 'legacy_delivery_time_only' }
+}
 const noDecisionId = (scope, eventId, revision) => createHash('sha256').update(['no-decision', scope, eventId, revision].join('\0')).digest('hex')
 const localOutcomeValid = (value, scope, eventId, revision) => plain(value) &&
   Object.keys(value).sort().join(',') === 'completed_at,local_outcome_id,native_turn_completed,observation_revision,reason,status' &&
   value.status === 'no_decision' && ((value.reason === 'model_completed_without_decision' && value.native_turn_completed === true) ||
-    (value.reason === 'native_admission_refused' && value.native_turn_completed === false)) &&
+    ((value.reason === 'native_admission_refused' || REST_REASONS.has(value.reason)) && value.native_turn_completed === false)) &&
   Number.isSafeInteger(revision) && revision >= 1 && value.observation_revision === revision &&
   Number.isSafeInteger(value.completed_at) && value.completed_at >= 0 && value.local_outcome_id === noDecisionId(scope, eventId, revision)
 
@@ -52,6 +88,14 @@ function validateState(state) {
         throw new PolicyStateError('Corrupt inbound dedup state')
       }
     }
+    if (value.lastLiveRevision !== undefined && (!Number.isSafeInteger(value.lastLiveRevision) ||
+        value.lastLiveRevision < 0 || value.lastLiveRevision > value.revision)) throw new PolicyStateError('Corrupt live receipt revision')
+    if (value.proactiveContact !== undefined && (!plain(value.proactiveContact) || !key.startsWith('private:') ||
+        Object.keys(value.proactiveContact).sort().join(',') !== 'at,lastLiveRevision,ticketId' ||
+        !identifier(value.proactiveContact.ticketId) || !Number.isSafeInteger(value.proactiveContact.at) || value.proactiveContact.at < 0 ||
+        !Number.isSafeInteger(value.proactiveContact.lastLiveRevision) || value.proactiveContact.lastLiveRevision < 0)) {
+      throw new PolicyStateError('Corrupt proactive contact state')
+    }
     for (const delivery of value.deliveries) {
       if (!plain(delivery) || !identifier(delivery.key) ||
           !['reserved', 'sent', 'unknown', 'suppressed'].includes(delivery.status) ||
@@ -65,6 +109,10 @@ function validateState(state) {
         !identifier(entry.decision.decisionId) || !['open', 'silent'].includes(entry.decision.mode))) ||
       (entry.localOutcome !== undefined && (entry.decision !== undefined || !localOutcomeValid(entry.localOutcome, key, entry.eventId, entry.revision)))))) {
       throw new PolicyStateError('Corrupt pinned observation state')
+    }
+    if (value.observations?.some(entry => entry.localOnly !== undefined &&
+        (entry.localOnly !== true || entry.decision !== undefined || !REST_REASONS.has(entry.localOutcome?.reason)))) {
+      throw new PolicyStateError('Corrupt local rest outcome')
     }
     if (value.current !== null) {
       const current = value.current
@@ -369,12 +417,25 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       return { allowed: false, reason: 'invalid_ticket' }
     }
     if (now() >= permit.expiresAt) return { allowed: false, reason: 'ticket_expired' }
+    if (current.current.origin === 'observation' && autonomousRestState(now()).resting) {
+      return { allowed: false, reason: 'autonomy_rest' }
+    }
     if (permit.verdict === 'tool_action' && kind !== 'tool_action') return { allowed: false, reason: 'not_a_speech_ticket' }
     if (current.mode === 'silent' && kind !== 'tool_action') return { allowed: false, reason: 'silent' }
+    if (current.current.origin === 'observation' && ticket.scope.startsWith('private:') && kind !== 'tool_action') {
+      const contact = privateContactState(current, now(), ticket.id)
+      if (!contact.allowed) return { allowed: false, reason: contact.reason }
+    }
     return { allowed: true, reason: 'permitted', revision: current.revision }
   }
 
   return {
+    async proactiveStatus(scope) {
+      canonicalScope(scope)
+      return transaction(state => ({ ...autonomousRestState(now()),
+        ...(scope.startsWith('private:') ? privateContactState(scopeState(state, scope), now())
+          : { allowed: true, reason: 'group_not_private_contact_limited' }) }))
+    },
     async recordInbound(event) {
       if (!plain(event)) throw new PolicyStateError('Trusted inbound metadata is required')
       const scope = canonicalScope(event.scope)
@@ -390,6 +451,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         if (seen) return { accepted: false, reason: 'duplicate', scope, revision: seen.revision }
         if (!Number.isSafeInteger(current.revision + 1)) throw new PolicyStateError('Revision exhausted')
         current.revision += 1
+        current.lastLiveRevision = current.revision
         current.updatedAt = now()
         current.current = { messageId: event.messageId, sender: event.sender, controlAllowed: event.controlAllowed,
           origin: 'live', quoted: event.quoted === true, decided: false, ticket: null }
@@ -437,19 +499,60 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
+    /** A trusted consumer may close a missed rest-window opportunity locally.
+     * This never impersonates a model decision or changes the foreground ticket.
+     * localOnly revisions identify this event, not a native/live turn.
+     */
+    async finishUnstartedObservation({ scope, eventId, kind, producer, createdAt, canFinish } = {}) {
+      canonicalScope(scope)
+      if (![eventId, kind, producer].every(identifier) || !Number.isSafeInteger(createdAt) || createdAt < 0 ||
+          canFinish !== undefined && typeof canFinish !== 'function') throw new PolicyStateError('Trusted observation metadata required')
+      return transaction(state => {
+        const time = now(), rest = autonomousRestState(time)
+        if (createdAt > time) throw new PolicyStateError('A future observation cannot be closed as a missed opportunity')
+        const reason = rest.resting ? 'autonomy_rest' : createdAt < rest.current_day_wake_at ? 'observation_expired' : null
+        if (!reason) return { finished: false, reason: 'within_autonomous_hours' }
+        if (canFinish && canFinish() !== true) return { finished: false, reason: 'observation_in_flight' }
+        const current = scopeState(state, scope, true)
+        current.observations ||= []
+        let entry = current.observations.find(item => item.eventId === eventId)
+        if (entry?.decision) return { finished: false, reason: 'already_decided', decision: clone(entry.decision) }
+        if (entry?.localOutcome) return { finished: true, local_outcome: clone(entry.localOutcome) }
+        if (entry && (current.deliveries.some(item => item.revision === entry.revision) ||
+            current.current?.messageId === eventId && (current.current.decided || current.current.ticket))) {
+          return { finished: false, reason: 'unsafe_existing_delivery' }
+        }
+        if (!entry) {
+          if (current.observations.length >= maxObservations) throw new PolicyStateError('Pinned observation capacity reached')
+          entry = { eventId, revision: Math.max(1, current.revision), at: time, localOnly: true }
+          current.observations.push(entry)
+        }
+        entry.localOutcome = { status: 'no_decision', reason, native_turn_completed: false,
+          observation_revision: entry.revision, completed_at: time,
+          local_outcome_id: noDecisionId(scope, eventId, entry.revision) }
+        return { finished: true, local_outcome: clone(entry.localOutcome) }
+      })
+    },
+
     /** Persist the local lifecycle outcome before the queue publishes done.
      * This does not grant a verdict, ticket, or persistent silence change.
      */
     async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted,
-      nativeAdmissionReason, nativeModelSteps } = {}) {
+      nativeAdmissionReason, nativeModelSteps, nativeRestInterrupted, nativeRestInterruptedAt } = {}) {
       canonicalScope(scope)
       // These attestations come only from the native adapter, never qq_decide
       // arguments. A refused admission is not a completed model turn or a
       // settled budget. Only the stable old-instance key refusal is terminal.
       const refused = nativeAdmissionReason === 'previous_turn_unresolved' &&
-        nativeTurnCompleted === false && nativeModelSteps === 0
-      const completed = nativeAdmissionReason === undefined && nativeTurnCompleted === true && nativeModelSteps === undefined
-      if (!identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || (!completed && !refused)) {
+        nativeTurnCompleted === false && nativeModelSteps === 0 && nativeRestInterrupted === undefined
+      const completed = nativeAdmissionReason === undefined && nativeTurnCompleted === true && nativeModelSteps === undefined && nativeRestInterrupted === undefined
+      const interruptionAt = nativeRestInterruptedAt ?? now()
+      const restInterrupted = nativeRestInterrupted === true && nativeTurnCompleted === false &&
+        nativeAdmissionReason === undefined && Number.isSafeInteger(interruptionAt) && interruptionAt <= now() &&
+        interruptionAt >= 0 && autonomousRestState(interruptionAt).resting
+      if (nativeRestInterrupted !== undefined && nativeRestInterrupted !== true ||
+          nativeRestInterruptedAt !== undefined && nativeRestInterrupted !== true ||
+          !identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || (!completed && !refused && !restInterrupted)) {
         throw new PolicyStateError('Exact native completion or zero-step admission refusal required')
       }
       return transaction((state) => {
@@ -466,7 +569,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           throw new PolicyStateError('Observation is not an exact undecided no-delivery turn')
         }
         if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision',
-          reason: refused ? 'native_admission_refused' : 'model_completed_without_decision',
+          reason: restInterrupted ? 'autonomy_rest' : refused ? 'native_admission_refused' : 'model_completed_without_decision',
           native_turn_completed: completed, observation_revision: expectedRevision, completed_at: now(),
           local_outcome_id: noDecisionId(scope, eventId, expectedRevision) }
         return clone(entry.localOutcome)
@@ -487,7 +590,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
         const entry = current.observations[index]
         if (local ? !entry.localOutcome || entry.localOutcome.local_outcome_id !== localOutcomeId || entry.revision !== expectedRevision ||
-            entry.decision || current.deliveries.some(item => item.revision === expectedRevision)
+            entry.decision || !entry.localOnly && current.deliveries.some(item => item.revision === expectedRevision)
           : !entry.decision || entry.decision.decisionId !== decisionId) return { acknowledged: false, reason: 'decision_mismatch' }
         current.observations.splice(index, 1)
         return { acknowledged: true }
@@ -564,17 +667,19 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * The adapter must normalize protocol ACKs: a resolved OneBot object with
      * status=failed or nonzero retcode must REJECT, not count as a delivery.
      */
-    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0', meme, socialOneOff = false } = {}, transmit) {
+    async runGuarded(ticket, { scope, kind = 'text', operationId, sliceId = '0', meme, socialOneOff = false, autonomous } = {}, transmit) {
       if (!identifier(operationId) || !identifier(String(sliceId)) || typeof transmit !== 'function') {
         throw new PolicyStateError('An operationId, sliceId and transport callback are required')
       }
-      if (typeof socialOneOff !== 'boolean' || (meme !== undefined && typeof meme !== 'boolean') ||
+      if (typeof socialOneOff !== 'boolean' || (autonomous !== undefined && typeof autonomous !== 'boolean') || (meme !== undefined && typeof meme !== 'boolean') ||
           (meme === true && !['media', 'forward', 'api'].includes(kind))) throw new PolicyStateError('Invalid trusted meme delivery metadata')
       let acknowledgement
       const reservation = await transaction((state, commit) => {
         const permission = inspectTicket(state, ticket, { scope, kind })
         if (!permission.allowed) return { sent: false, status: 'suppressed', reason: permission.reason }
         const current = scopeState(state, ticket.scope)
+        const observed = current.current.origin === 'observation'
+        if (autonomous !== undefined && autonomous !== observed) return { sent: false, status: 'suppressed', reason: 'origin_mismatch' }
         const key = createHash('sha256').update([ticket.id, operationId, String(sliceId)].join('\0')).digest('hex')
         const prior = current.deliveries.find((entry) => entry.key === key)
         if (prior) return { sent: false, status: 'duplicate', previousStatus: prior.status }
@@ -596,6 +701,11 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         }
         current.deliveries.push({ key, status: 'reserved', at: now(), revision: ticket.revision,
           ticketId: ticket.id, expiresAt: current.current.ticket.expiresAt, ...(meme === true ? { meme: true } : {}) })
+        if (observed && ticket.scope.startsWith('private:') && current.proactiveContact?.ticketId !== ticket.id) {
+          // Commit the contact with the first actual transport reservation,
+          // not with a model verdict. A partial/unknown attempt remains held.
+          current.proactiveContact = { ticketId: ticket.id, at: now(), lastLiveRevision: latestLiveRevision(current) }
+        }
         if (typeof commit !== 'function') throw new PolicyStateError('storage must support durable commit before egress')
         commit()
         // No await or event-loop yield between the final gate and initiating the

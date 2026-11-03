@@ -301,6 +301,54 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertIn("does not authorize contacting the primary private conversation", group["proactive_sharing"]["primary_choice"])
         self.assertEqual(self.snapshot(), before)
 
+    def test_unsolicited_private_rhythm_waits_an_hour_and_for_a_real_reply_without_limiting_live_chat(self):
+        before = self.snapshot()
+        for scope in ("private:101", "private:303", "group:202"):
+            with self.subTest(scope=scope):
+                tools = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]
+                sharing = tools["entertainment"]["proactive_sharing"]
+                rhythm = sharing["private_contact"]
+                self.assertEqual(rhythm["scope"], "unsolicited_private_contact_per_recipient")
+                self.assertEqual(rhythm["minimum_interval_minutes"], 60)
+                self.assertIs(rhythm["wait_for_live_reply"], True)
+                self.assertIn("do not start another, even after an hour", rhythm["choice"])
+                self.assertIn("a first suitable contact remains possible", rhythm["choice"])
+                self.assertIn("a minimum, not a quota", rhythm["choice"])
+                self.assertIn("text_delivery=not_measured cannot establish last actual contact", rhythm["evidence"])
+                self.assertIn("Missing evidence is not permission to nudge", rhythm["evidence"])
+                self.assertIn("does not impose a one-hour gap on replies", rhythm["boundary"])
+                self.assertIn("never switch media or scope", rhythm["boundary"])
+                self.assertIn("do not block responses to actual incoming messages", tools["qq_expression"]["direct_contact"])
+                self.assertIn("unanswered proactive contact", tools["qq_expression"]["meme_preference"])
+                self.assertIn("no follow-up until an actual live reply", tools["qq_autonomy"]["proposal"])
+        primary = self.context()["tools"]["entertainment"]
+        self.assertIn("do not favor contacting the administrator", primary["proactive_sharing"]["primary_choice"])
+        self.assertNotIn("prefer a concrete social choice", primary["proactive_sharing"]["primary_choice"])
+        self.assertNotIn("Do not wait for a person to speak first", primary["continuity"])
+        self.assertIn("not a reason to skip daytime internal leisure", primary["cadence"]["preference"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_daily_beijing_rest_covers_autonomous_work_without_claiming_inflight_cancellation(self):
+        before = self.snapshot()
+        for scope in ("private:101", "group:202"):
+            with self.subTest(scope=scope):
+                guide = self.module.build_context(str(self.root), "fixture", scope,
+                    process_probe=lambda paths: {}, now=lambda: 1234.0)["tools"]["entertainment"]
+                rest = guide["rest_window"]
+                self.assertEqual((rest["timezone"], rest["start_inclusive"], rest["end_exclusive"]),
+                                 ("Asia/Shanghai", "00:00", "08:00"))
+                self.assertIn("All observation sources, including activity, reminders, Bilibili and social opportunities", rest["autonomous_activity"])
+                self.assertIn("stop starting new steps, tools and QQ sends", rest["autonomous_activity"])
+                self.assertIn("Do not claim that already-started HTTP requests or external actions were cancelled", rest["autonomous_activity"])
+                self.assertIn("do not replay skipped overnight opportunities", rest["autonomous_activity"])
+                self.assertIn("not proof of the current time", rest["authority"])
+                self.assertIn("may still receive a normal useful response", rest["live_input"])
+                self.assertIn("Persistent silence, scope, revision, budget and delivery guards", rest["live_input"])
+                self.assertIn("rest takes precedence", guide["cadence"]["explicit_review"])
+                self.assertIn("night rest separately pauses autonomous internal work", guide["cadence"]["communication"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_cadence_uses_current_trusted_configuration_and_preserves_read_only_scope(self):
         for minutes in (2, 3, 3.5, 60):
             with self.subTest(minutes=minutes):

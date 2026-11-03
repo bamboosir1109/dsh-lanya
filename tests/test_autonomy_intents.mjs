@@ -35,7 +35,7 @@ const waitUntil = async condition => {
 async function fixture(t) {
   const directory = path.join(root, 'case-' + ++serial)
   fs.mkdirSync(directory)
-  let now = Date.now(), call = 0
+  let now = Date.parse('2026-11-03T01:00:00Z'), call = 0
   const owner = { cwd: directory, preset: 'fixture', workspace_key: process.platform === 'win32' ? directory.toLowerCase() : directory, agent_key: 'fixture' }
   const stateFile = path.join(directory, 'decision-policy.json')
   const policy = createDecisionPolicy({ stateFile, now: () => now })
@@ -287,6 +287,9 @@ test('the final policy lock independently suppresses social sends over an old un
   const old = await h.policy.recordInbound({ scope: 'private:202', messageId: 'old-target', sender: '202', origin: 'live', quoted: false, controlAllowed: false })
   const oldReply = await h.policy.decide({ scope: 'private:202', messageId: old.messageId, expectedRevision: old.revision, verdict: 'reply' })
   assert.equal((await h.policy.runGuarded(oldReply.ticket, { scope: 'private:202', operationId: 'old-uncertain' }, async () => { throw new Error('Synthetic old uncertain ACK') })).status, 'unknown')
+  // Exercise unresolved-delivery protection independently of the initial
+  // one-hour contact interval; neither rule may clear an uncertain receipt.
+  h.advance(60 * 60_000 + 1)
   const current = await h.policy.recordObservation({ scope: 'private:202', eventId: 'new-social', kind: 'social.opportunity', producer: 'social-planner', createdAt: h.now() })
   const fresh = await h.policy.decide({ scope: 'private:202', messageId: current.messageId, expectedRevision: current.revision, verdict: 'reply' })
   const before = JSON.stringify((await h.policy.snapshot('private:202')).deliveries)

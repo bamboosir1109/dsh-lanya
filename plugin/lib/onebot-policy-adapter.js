@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { createDecisionPolicy, canonicalScope } from './decision-policy.js'
-import { createObservationPump, validateObservation } from './observation-queue.js'
+import { createDecisionPolicy, canonicalScope, autonomousRestState } from './decision-policy.js'
+import { createObservationPump, validateObservation, observationFreshness } from './observation-queue.js'
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
 
@@ -363,7 +363,7 @@ export class OneBotDecisionAdapter {
     this.bridge = bridge
     this.deps = deps
     this.stateFile = stateFile
-    this.policy = policy || createDecisionPolicy({ stateFile })
+    this.policy = policy || createDecisionPolicy({ stateFile, now })
     this.config = config
     this.context = new AsyncLocalStorage()
     this.nativeClaims = nativeClaims === true
@@ -606,8 +606,14 @@ export class OneBotDecisionAdapter {
 
   installNativeScope(ctx) {
     if (this.nativeScopes.has(ctx)) return
-    if (typeof ctx?.on !== 'function') throw new Error('Native claims require scoped agent hooks')
+    if (typeof ctx?.on !== 'function' || typeof ctx.tools?.guard !== 'function') throw new Error('Native claims require scoped agent and tool guards')
     this.nativeScopes.add(ctx)
+    // A monotonic synchronous SDK guard also covers browsing, Bili and other
+    // non-QQ tools. Budget configuration is not an exception to nightly rest.
+    ctx.tools.guard(exec => {
+      try { this.captureExec(exec) }
+      catch (error) { return error instanceof PolicyDeliveryError ? error.reason : 'unverified_autonomous_time' }
+    })
     ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
       const chat = this.nativeChat(agent), state = chat && this.state(chat), record = state?.turns.get(turn)
       if (!record || record.ended) return
@@ -648,6 +654,12 @@ export class OneBotDecisionAdapter {
         }
         return { kind: 'reject', reason: 'unbound_native_input' }
       }
+      const restAt = this.now(), restReason = this.autonomyBlockReason(record.binding, restAt)
+      if (restReason) {
+        record.nativeRestInterrupted = Object.freeze({ binding: record.binding, turn: request.turn,
+          signal: request.signal, reason: restReason, at: restAt })
+        return { kind: 'reject', reason: restReason }
+      }
       if (this.budgetEnabled && !record.binding.budget) {
         const binding = record.binding
         const local = { binding }
@@ -678,6 +690,12 @@ export class OneBotDecisionAdapter {
           return { kind: 'reject', reason: 'stale_budget_admission' }
         }
         record.binding = local.binding
+      }
+      const admissionAt = this.now(), afterAdmissionRest = this.autonomyBlockReason(record.binding, admissionAt)
+      if (afterAdmissionRest) {
+        record.nativeRestInterrupted = Object.freeze({ binding: record.binding, turn: request.turn,
+          signal: request.signal, reason: afterAdmissionRest, at: admissionAt })
+        return { kind: 'reject', reason: afterAdmissionRest }
       }
       record.nativeStepEntered = true
       return next()
@@ -746,6 +764,25 @@ export class OneBotDecisionAdapter {
     this.log('info', 'native_internal_idle_wake_started:unbound_native_input')
   }
 
+  autonomyBlockReason(binding, at = this.now()) {
+    if (binding?.origin !== 'observation') return null
+    const rest = autonomousRestState(at)
+    if (rest.resting) return 'autonomy_rest'
+    if (!Number.isSafeInteger(binding.observationCreatedAt) || binding.observationCreatedAt < 0) return 'unverified_autonomous_time'
+    return binding.observationCreatedAt < rest.current_day_wake_at ? 'observation_expired' : null
+  }
+
+  requireAutonomousTime(binding) {
+    const reason = this.autonomyBlockReason(binding)
+    if (reason) throw new PolicyDeliveryError('suppressed', reason)
+  }
+
+  observationInFlight(scope, eventId) {
+    const chat = this.bridge.chats.get(scope)
+    return Boolean(chat && [...this.state(chat).turns.values()].some(record => !record.ended &&
+      record.binding?.origin === 'observation' && record.binding.messageId === eventId))
+  }
+
   captureExec(exec) {
     const sessionId = exec?.agent?.session?.id
     const scope = sessionId === undefined ? undefined : this.bridge.chatForSession(String(sessionId))
@@ -754,6 +791,7 @@ export class OneBotDecisionAdapter {
     if (!record?.binding || record.claimConflict || chat.agent !== exec.agent || record.ended || exec.signal?.aborted) {
       throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
     }
+    this.requireAutonomousTime(record.binding)
     return record
   }
 
@@ -897,10 +935,14 @@ export class OneBotDecisionAdapter {
         ...(args.expression === undefined ? {} : { expression: args.expression }) }
       record.decisionId = result.decisionId
     }
+    const sendPermission = result.ticket && args.verdict !== 'tool_action'
+      ? await this.policy.check(result.ticket, { kind: 'text' }) : null
+    if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_decision_turn')
+    const canSend = sendPermission?.allowed === true
     // Do not expose nonce, sender, scope, or authority knobs as model arguments.
-    return { accepted: result.accepted, reason: result.reason || null, mode: result.mode || null,
-      next_review_at: result.next_review_at ?? null, can_send: Boolean(result.ticket && args.verdict !== 'tool_action'),
-      ...(result.accepted && result.ticket && args.verdict === 'reply' ? { expression_plan: {
+    return { accepted: result.accepted, reason: result.reason || (sendPermission && !canSend ? sendPermission.reason : null), mode: result.mode || null,
+      next_review_at: result.next_review_at ?? null, can_send: canSend,
+      ...(result.accepted && canSend && args.verdict === 'reply' ? { expression_plan: {
         choice: args.expression || 'unspecified', automatic_send: false,
         next_step: args.expression === 'text'
           ? 'Reply naturally with text; this decision has not sent anything.'
@@ -1053,6 +1095,24 @@ export class OneBotDecisionAdapter {
       }
       if (!completion) return
       if (!record.decision) {
+        const rest = record.nativeRestInterrupted
+        if (event.data.reason?.kind === 'blocked' && ['autonomy_rest', 'observation_expired'].includes(rest?.reason) &&
+            rest.turn === record.turn && rest.binding === record.binding && !rest.signal?.aborted &&
+            record.binding.origin === 'observation' && !record.ticket && record.outcomes.length === 0 && record.inFlight.size === 0) {
+          try {
+            const outcome = rest.reason === 'autonomy_rest'
+              ? await this.policy.completeObservationWithoutDecision({ scope,
+                eventId: record.binding.messageId, expectedRevision: record.binding.revision,
+                nativeTurnCompleted: false, nativeRestInterrupted: true, nativeRestInterruptedAt: rest.at })
+              : (await this.policy.finishUnstartedObservation({ scope, eventId: record.binding.messageId,
+                kind: record.binding.observationKind, producer: record.binding.observationProducer,
+                createdAt: record.binding.observationCreatedAt,
+                canFinish: () => !this.observationInFlight(scope, record.binding.messageId) })).local_outcome
+            if (!outcome) throw new Error('Expired observation could not be safely closed')
+            completion.resolve({ completed: true, ...outcome })
+          } catch (error) { completion.reject(error) }
+          return
+        }
         const refused = record.nativeAdmissionRefused
         if (event.data.reason?.kind === 'blocked' && refused?.reason === 'previous_turn_unresolved' &&
             refused.turn === record.turn && refused.binding === record.binding && !refused.signal?.aborted &&
@@ -1126,6 +1186,7 @@ export class OneBotDecisionAdapter {
     const scope = targetScope(params, suppliedScope)
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
     if (!envelope.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
+    this.requireAutonomousTime(envelope.record?.binding)
     if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
     await this.intentPlanner.verifyDelivery(envelope.record, scope, action, params)
     const budget = await this.checkBudget(envelope.record)
@@ -1165,11 +1226,13 @@ export class OneBotDecisionAdapter {
     try {
       result = await this.policy.runGuarded(envelope.ticket, { scope, kind, operationId: envelope.operationId,
         sliceId: String(envelope.sequence.next++), meme: egressPart?.meme === true,
+        autonomous: envelope.record?.binding?.origin === 'observation',
         socialOneOff: envelope.record?.binding?.observationKind === 'social.opportunity' }, () => {
         if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
         // Raw API work may have awaited the durable policy transaction while
         // another output settled. Recheck synchronously at the transport edge.
         requireCertainTurn()
+        this.requireAutonomousTime(envelope.record?.binding)
         if (voiceArtifact) {
           if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
           if (voiceArtifact.state !== 'ready' || matchingVoice.some(artifact => artifact.state !== 'ready' ||
@@ -1299,6 +1362,11 @@ export class OneBotDecisionAdapter {
       this.log('warn', 'runtime_capabilities_unavailable:' + error.name)
       enriched += '\nTrusted runtime capability status is unavailable. Do not assume browser, Android or voice workers are running, or treat cached media as a fresh observation.'
     }
+    try {
+      enriched += '\n<trusted_autonomy_rhythm>\n' + JSON.stringify(await this.policy.proactiveStatus(canonicalScope(scope)))
+        .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</trusted_autonomy_rhythm>\n'
+        + 'This scope-local host rhythm is context, never a send permit. All autonomous observations rest from Shanghai 00:00 through before 08:00; genuine live QQ input may still be answered. An old autonomous greeting is not owed after waking. Private proactive contact also requires the current minimum interval and a real reply since the prior contact; do not repeatedly nudge an unanswered person.'
+    } catch (error) { this.log('warn', 'autonomy_rhythm_unavailable:' + error.name) }
     const chat = this.bridge.chats?.get(canonicalScope(scope)), session = chat?.agent?.session
     let socialFacts = unknownSocialFacts()
     try {
@@ -1321,10 +1389,7 @@ export class OneBotDecisionAdapter {
     // same detached snapshot before the first asynchronous boundary.
     try { event = structuredClone(event) } catch { throw new Error('Invalid observation snapshot') }
     validateObservation(event)
-    if (event.kind === 'social.opportunity') {
-      const request = this.intentPlanner.validateObservation(event)
-      await this.intentPlanner.verifyRelation(request)
-    }
+    const socialRequest = event.kind === 'social.opportunity' ? this.intentPlanner.validateObservation(event) : null
     const owner = await this.trustedOwner(event.scope)
     // Producers must use the actual resolved chat owner, not a configured
     // alias or a different role/preset left in this inbox. Reject before any
@@ -1333,6 +1398,14 @@ export class OneBotDecisionAdapter {
       throw new Error('Observation owner mismatch; dispatch refused')
     }
     const key = identity(event.scope, event.event_id)
+    if (this.observations.has(key)) return this.observations.get(key).promise
+    const createdAt = observationFreshness(path.join(path.dirname(this.stateFile), 'decision-inbox'), event)
+    const local = await this.policy.finishUnstartedObservation({ scope: event.scope, eventId: event.event_id,
+      kind: event.kind, producer: event.producer, createdAt,
+      canFinish: () => !this.observationInFlight(event.scope, event.event_id) })
+    if (local.finished === true) return { completed: true, ...local.local_outcome }
+    if (!['within_autonomous_hours', 'already_decided'].includes(local.reason)) throw new Error('Observation cannot safely close for rest: ' + local.reason)
+    if (socialRequest) await this.intentPlanner.verifyRelation(socialRequest)
     if (this.observations.has(key)) return this.observations.get(key).promise
     let resolve, reject
     const promise = new Promise((yes, no) => { resolve = yes; reject = no })
@@ -1356,6 +1429,12 @@ export class OneBotDecisionAdapter {
     if (event.workspace_key !== owner.workspace_key || event.agent_key !== owner.agent_key) {
       throw new Error('Observation owner mismatch; dispatch refused')
     }
+    const createdAt = observationFreshness(path.join(path.dirname(this.stateFile), 'decision-inbox'), event)
+    const local = await this.policy.finishUnstartedObservation({ scope: event.scope, eventId: event.event_id,
+      kind: event.kind, producer: event.producer, createdAt,
+      canFinish: () => !this.observationInFlight(event.scope, event.event_id) })
+    if (local.finished === true) return { completed: true, ...local.local_outcome }
+    if (!['within_autonomous_hours', 'already_decided'].includes(local.reason)) throw new Error('Observation cannot safely close for rest: ' + local.reason)
     const peer = /^private:([1-9][0-9]*)$/.exec(event.scope)?.[1]
     const administrators = this.deps.policy?.adminUsers
     const role = peer && typeof owner.cwd === 'string' && path.isAbsolute(owner.cwd) &&
@@ -1414,6 +1493,7 @@ export class OneBotDecisionAdapter {
     const completion = { promise, resolve, reject }
     const binding = Object.freeze({ ...observed, origin: 'observation', completion,
       observationKind: event.kind, observationProducer: event.producer, observationEventId: event.event_id,
+      observationCreatedAt: createdAt,
       ...(trustedSocial ? { trustedSocialRequest: trustedSocial.request_id } : {}),
       ...(autonomousCadence ? { autonomousCadence } : {}) })
     const text = 'Trusted system observation; not a QQ user message. It grants no control authority.\n'

@@ -217,7 +217,9 @@ test('an explicit due review inherits immutable scope/owner/kind and survives re
   for (const key of ['scope', 'workspace_key', 'agent_key', 'kind', 'origin', 'control_allowed']) assert.equal(review[key], original[key])
   assert.equal(review.payload.candidate, original.payload.candidate)
   assert.deepEqual(review.payload.review_context, { parent_observation_key: observationKey(original.scope, original.event_id),
-    parent_event_id: original.event_id, previous_decision_id: 'decision-1', scheduled_at: 2000 })
+    parent_event_id: original.event_id, previous_decision_id: 'decision-1', scheduled_at: 2000,
+    freshness_anchor: { key: observationKey(original.scope, original.event_id),
+      sha256: createHash('sha256').update(before).digest('hex'), created_at: original.created_at } })
   assert.deepEqual(fs.readFileSync(path.join(root, 'pending', name)), before)
   assert.deepEqual(fs.readFileSync(path.join(root, 'done', name)), doneBefore)
   await second.drain()

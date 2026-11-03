@@ -88,6 +88,15 @@ export function acquireReminderLock(dataDir) {
   }
 }
 
+function localReminderRest(entry) {
+  return entry !== null && typeof entry === 'object' && !Array.isArray(entry) &&
+    entry.status === 'no_decision' && ['autonomy_rest', 'observation_expired'].includes(entry.reason) &&
+    entry.native_turn_completed === false && typeof entry.local_outcome_id === 'string' &&
+    /^[0-9a-f]{64}$/.test(entry.local_outcome_id) && Number.isSafeInteger(entry.observation_revision) &&
+    entry.observation_revision >= 1 && Number.isSafeInteger(entry.completed_at) && entry.completed_at >= 0 &&
+    !['decision_id', 'verdict', 'ticket', 'next_review_at'].some(key => key in entry)
+}
+
 // Pure orchestration: callers persist state before replacing the reminder list.
 // A rejected delivery remains due and must never be silently removed.
 export async function processReminders(list, previous, now, send, { persistState = async () => {} } = {}) {
@@ -110,9 +119,11 @@ export async function processReminders(list, previous, now, send, { persistState
     }
   }
   for (const [key, entry] of Object.entries(state.outcomes)) {
-    if (!['decided','suppressed','unknown'].includes(entry.status) ||
-        typeof entry.decision_id !== 'string' || !entry.decision_id.trim() || entry.decision_id.length > 256 ||
-        /[\x00-\x1f]/.test(entry.decision_id) || state.pending[key]) {
+    const valid = entry.status === 'no_decision' ? localReminderRest(entry)
+      : ['decided','suppressed','unknown'].includes(entry.status) &&
+        typeof entry.decision_id === 'string' && entry.decision_id.trim() && entry.decision_id.length <= 256 &&
+        !/[\x00-\x1f]/.test(entry.decision_id)
+    if (!valid || state.pending[key]) {
       throw new Error('Invalid settled reminder outcome')
     }
   }
@@ -162,17 +173,30 @@ export async function processReminders(list, previous, now, send, { persistState
         try {
           const outcome = await send(occurrence.reminder, { key:occurrence.key, now,
             occurrence:{ key:occurrence.key, day:occurrence.day, due_at:occurrence.due_at } })
+          if (outcome?.status === 'no_decision' &&
+              (outcome.delivered !== false || outcome.terminal !== true || !localReminderRest(outcome))) {
+            throw new Error('Invalid local reminder rest outcome')
+          }
           if (outcome?.delivered !== false) {
             if (r.daily) state.daily[originalKey] = 'yes'
             else state.once[originalKey] = now.toISOString()
             delete state.pending[originalKey]
             await persistState(state)
           } else if (outcome.terminal === true) {
-            if (!['decided','suppressed','unknown'].includes(outcome.status) ||
+            if (outcome.status === 'no_decision') {
+              // This closes one occurrence locally, without a model verdict,
+              // delivery or a later catch-up of the missed reminder.
+              state.outcomes[originalKey] = { ...occurrence, status: outcome.status,
+                reason: outcome.reason, local_outcome_id: outcome.local_outcome_id,
+                observation_revision: outcome.observation_revision, completed_at: outcome.completed_at,
+                native_turn_completed: false }
+            } else {
+              if (!['decided','suppressed','unknown'].includes(outcome.status) ||
                 typeof outcome.decision_id !== 'string' || !outcome.decision_id.trim()) {
-              throw new Error('Invalid terminal reminder outcome')
+                throw new Error('Invalid terminal reminder outcome')
+              }
+              state.outcomes[originalKey] = { ...occurrence, status:outcome.status, decision_id:outcome.decision_id }
             }
-            state.outcomes[originalKey] = { ...occurrence, status:outcome.status, decision_id:outcome.decision_id }
             delete state.pending[originalKey]
             await persistState(state)
           }

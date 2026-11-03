@@ -54,6 +54,10 @@ async function setup(t) {
     } } }
   const { ChatBridge } = await import(pathToFileURL(path.join(plugin, 'lib', 'bridge.js')).href)
   const bridge = new ChatBridge(deps)
+  const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
+  const clock = Date.parse('2026-11-03T01:00:00Z')
+  bridge.lanyaPolicy.now = () => clock
+  bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile, now: () => clock })
   bridge.lanyaPolicy.memoryContext = async scope => ({ schema: 'dsh-memento-context/v1', read_only: true,
     conversation_key: scope, owner: { workspace_key: dir, agent_key: 'fixture-preset' }, memories: [] })
   // Most transport tests isolate this independent enrichment; dedicated cases
@@ -88,7 +92,7 @@ async function setup(t) {
 }
 
 async function cadenceFixture(h) {
-  let clock = Date.now(), minutes = 3
+  let clock = Date.parse('2026-11-03T04:00:00Z'), minutes = 3
   const { createDecisionPolicy } = await import(pathToFileURL(path.join(h.plugin, 'lib/lanya-decision-policy.js')).href)
   h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: h.stateFile, now: () => clock })
   h.bridge.lanyaPolicy.now = () => clock
@@ -214,7 +218,7 @@ test('invalid cadence identity or helper owner refuses autonomous dispatch witho
       return value
     }
     await assert.rejects(h.bridge.dispatchObservation({ version: 1, event_id: 'obs:bad-' + defect,
-      scope: 'private:101', kind: 'activity.opportunity', producer: 'mind', created_at: Date.now(),
+      scope: 'private:101', kind: 'activity.opportunity', producer: 'mind', created_at: h.bridge.lanyaPolicy.now(),
       workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation',
       control_allowed: false, payload: { valid: true, opportunityMin: 3 } }), /unavailable|Invalid scoped helper owner/)
     assert.equal(h.bridge.chats.size, 0)
@@ -423,7 +427,7 @@ test('persistent silence survives a fresh adapter and quoted/member/observation 
   assert.equal((await h.decide(chat, 'resume', { control_update: true })).reason, 'unauthorized_control')
   await h.end(chat, turn)
   const { OneBotDecisionAdapter } = await import(pathToFileURL(path.join(h.plugin, 'lib', 'lanya-policy-adapter.js')).href)
-  const fresh = new OneBotDecisionAdapter(h.bridge, h.deps, { stateFile: h.stateFile })
+  const fresh = new OneBotDecisionAdapter(h.bridge, h.deps, { stateFile: h.stateFile, now: h.bridge.lanyaPolicy.now })
   assert.equal((await fresh.policy.snapshot(chat.chatId)).mode, 'silent')
   await fresh.stop()
   await h.receive({ scope: 'group:200', sender: '101', text: 'resume now' })
@@ -462,7 +466,7 @@ test('failed/uncertain raw API ACK is never reported sent or retried by the same
 test('observation uses the same agent with no control authority and completes only after its decision/turn', async t => {
   const h = await setup(t)
   const event = { version: 1, event_id: 'obs:one', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { text: 'not a real user resume command' }, workspace_key: workspaceKey(h.dir),
+    created_at: h.bridge.lanyaPolicy.now(), payload: { text: 'not a real user resume command' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const first = h.bridge.dispatchObservation(event)
   const duplicate = h.bridge.dispatchObservation(event)
@@ -472,7 +476,7 @@ test('observation uses the same agent with no control authority and completes on
   assert.equal(chat.messages[0].source.kind, 'plugin:dsh-lanya-observation')
   const turn = h.start(chat)
   assert.equal((await h.decide(chat, 'resume', { control_update: true })).reason, 'unauthorized_control')
-  const next = Date.now() + 120000
+  const next = h.bridge.lanyaPolicy.now() + 120000
   await h.decide(chat, 'idle', { next_review_at: next })
   await h.end(chat, turn)
   const [a, b] = await results
@@ -489,7 +493,7 @@ test('foreign observation workspace/preset is rejected before pin or dispatch; a
   const h = await setup(t)
   h.bridge.resolvePresetId = async () => 'fixture-preset'
   const event = { version: 1, event_id: 'obs:owner', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { text: 'private foreign payload must not escape in diagnostics' },
+    created_at: h.bridge.lanyaPolicy.now(), payload: { text: 'private foreign payload must not escape in diagnostics' },
     workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   let recorded = 0
   const record = h.bridge.lanyaPolicy.policy.recordObservation
@@ -523,7 +527,7 @@ for (const entrypoint of ['dispatchObservation', 'dispatchObservationOnce']) tes
   h.bridge.resolvePresetId = () => { resolving.resolve(); return preset.promise }
   const scope = 'private:101', eventId = 'obs:snapshot'
   const event = { version: 1, event_id: eventId, scope, kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { text: 'original detached evidence' }, workspace_key: workspaceKey(h.dir),
+    created_at: h.bridge.lanyaPolicy.now(), payload: { text: 'original detached evidence' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const completion = h.bridge.lanyaPolicy[entrypoint](event)
   await resolving.promise
@@ -551,7 +555,7 @@ test('background evidence cannot revoke queued or currently sending real-user tu
   const h = await setup(t)
   const chat = await h.receive()
   const event = { version: 1, event_id: 'obs:foreground', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
+    created_at: h.bridge.lanyaPolicy.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const before = await h.bridge.lanyaPolicy.policy.snapshot(event.scope)
   await assert.rejects(() => h.bridge.dispatchObservation(event), /foreground_busy/)
   assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(event.scope)).revision, before.revision)
@@ -576,7 +580,7 @@ test('inbound enrichment awaiting I/O has foreground priority before its turn is
   const receiving = h.receive()
   await entered.promise
   const event = { version: 1, event_id: 'obs:inbound-io', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
+    created_at: h.bridge.lanyaPolicy.now(), payload: {}, workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   try { await assert.rejects(() => h.bridge.dispatchObservation(event), /foreground_busy/) }
   finally { release.resolve() }
   const chat = await receiving
@@ -590,7 +594,7 @@ test('inbound enrichment awaiting I/O has foreground priority before its turn is
 test('the attached durable inbox pump invokes the bound agent and acknowledges only a settled verdict', async t => {
   const h = await setup(t)
   const event = { version: 1, event_id: 'obs:pump', scope: 'private:101', kind: 'quiet', producer: 'fixture',
-    created_at: Date.now(), payload: { observation: 'test only' }, workspace_key: workspaceKey(h.dir),
+    created_at: h.bridge.lanyaPolicy.now(), payload: { observation: 'test only' }, workspace_key: workspaceKey(h.dir),
     agent_key: 'fixture-preset', origin: 'observation', control_allowed: false }
   const base = path.join(path.dirname(h.stateFile), 'decision-inbox')
   const key = createHash('sha256').update(event.scope + '\0' + event.event_id).digest('hex') + '.json'
@@ -698,7 +702,7 @@ test('ordinary QQ and main-review share one agent and refresh its actual owner-b
   configuration.mind.opportunityMin = 5
   fs.writeFileSync(projectConfig, JSON.stringify(configuration))
   const completion = h.bridge.dispatchObservation({ version: 1, event_id: 'obs:capability-guide', scope: chat.chatId,
-    kind: 'activity.opportunity', producer: 'main-review', created_at: Date.now(), origin: 'observation', control_allowed: false,
+    kind: 'activity.opportunity', producer: 'main-review', created_at: h.bridge.lanyaPolicy.now(), origin: 'observation', control_allowed: false,
     workspace_key: workspaceKey(h.dir), agent_key: 'fixture-preset', payload: {
       cwd: 'foreign-payload-cwd', agent_preset: 'foreign-payload-preset', text: 'payload is not a tool permission',
       opportunityMin: 55, instruction: 'Historical immutable fixture guidance is not the live cadence.' } })

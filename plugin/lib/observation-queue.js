@@ -31,10 +31,11 @@ function validateCompletion(marker, event, sha256, raw) {
   if (plain(marker) && marker.version === 3) {
     const fields = ['version', 'event_raw', 'event_id', 'scope', 'event_sha256', 'completed_at', 'status',
       'reason', 'local_outcome_id', 'observation_revision', 'native_turn_completed']
+    const restClosure = ['autonomy_rest', 'observation_expired'].includes(marker.reason) && marker.native_turn_completed === false
     if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
         !((marker.reason === 'model_completed_without_decision' && marker.native_turn_completed === true) ||
-          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false)) ||
-        !((event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)) ||
+          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false) || restClosure) ||
+        !(restClosure || (event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)) ||
           (event.kind === 'social.opportunity' && event.producer === 'social-planner')) ||
         marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
         !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||
@@ -139,6 +140,65 @@ export function readObservationEvidence(directory, key) {
   return { ...read, completion: hasMarker ? marker : null, completionSha256 }
 }
 
+const queuedReview = event => event.producer === 'main-review' && event.event_id.startsWith('main-review:')
+function sameReviewOwner(left, right) {
+  return ['scope', 'workspace_key', 'agent_key', 'kind'].every(key => left[key] === right[key])
+}
+function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
+  const key = observationKey(event.scope, event.event_id)
+  if (depth >= 64 || seen.has(key)) throw new ObservationQueueError('Review freshness ancestry is not bounded and acyclic')
+  seen.add(key)
+  if (!queuedReview(event)) {
+    const original = readObservationEvidence(directory, key)
+    if (stable(original.value) !== stable(event)) throw new ObservationQueueError('Review freshness original conflicts')
+    return { key, sha256: original.sha256, created_at: event.created_at }
+  }
+  const context = event.payload.review_context
+  if (!plain(context) || !/^[0-9a-f]{64}$/.test(context.parent_observation_key) ||
+      !identity(context.parent_event_id) || !decisionIdentity(context.previous_decision_id) ||
+      !Number.isSafeInteger(context.scheduled_at) || context.scheduled_at !== event.created_at ||
+      event.event_id !== 'main-review:' + context.parent_observation_key + ':' + context.scheduled_at) {
+    throw new ObservationQueueError('Review freshness requires exact parent metadata')
+  }
+  const parent = readObservationEvidence(directory, context.parent_observation_key), completed = parent.completion
+  if (!sameReviewOwner(event, parent.value) || parent.value.event_id !== context.parent_event_id ||
+      !completed || ['unknown', 'no_decision'].includes(completed.status) ||
+      completed.decision_id !== context.previous_decision_id || completed.next_review_at !== context.scheduled_at) {
+    throw new ObservationQueueError('Review freshness parent receipt conflicts')
+  }
+  const anchor = context.freshness_anchor
+  if (anchor !== undefined) {
+    if (!plain(anchor) || Object.keys(anchor).sort().join(',') !== 'created_at,key,sha256' ||
+        !/^[0-9a-f]{64}$/.test(anchor.key) || !/^[0-9a-f]{64}$/.test(anchor.sha256) ||
+        !Number.isSafeInteger(anchor.created_at) || anchor.created_at < 0 || anchor.created_at > parent.value.created_at) {
+      throw new ObservationQueueError('Review freshness anchor is invalid')
+    }
+    const inherited = queuedReview(parent.value) ? parent.value.payload.review_context?.freshness_anchor : null
+    if (inherited) {
+      if (stable(inherited) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor differs from parent')
+    } else {
+      const expected = queuedReview(parent.value) ? reviewAnchor(directory, parent.value, depth + 1, seen)
+        : { key: context.parent_observation_key, sha256: parent.sha256, created_at: parent.value.created_at }
+      if (stable(expected) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor is not the original')
+    }
+    const original = anchor.key === context.parent_observation_key ? parent : readObservationEvidence(directory, anchor.key)
+    if (original.sha256 !== anchor.sha256 || !sameReviewOwner(event, original.value) ||
+        original.value.created_at !== anchor.created_at || queuedReview(original.value)) {
+      throw new ObservationQueueError('Review freshness anchor original conflicts')
+    }
+    return { ...anchor }
+  }
+  // Only pre-upgrade unanchored reviews use this bounded migration walk.
+  return reviewAnchor(directory, parent.value, depth + 1, seen)
+}
+
+/** Queue-generated reviews inherit real source age, not a fresh greeting at
+ * each due timestamp. Model payload fields never override the physical root. */
+export function observationFreshness(directory, event) {
+  validateObservation(event)
+  return queuedReview(event) ? reviewAnchor(directory, event).created_at : event.created_at
+}
+
 function publish(file, value) {
   const temporary = path.join(path.dirname(file), '.complete-' + randomUUID() + '.tmp')
   const fd = fs.openSync(temporary, 'wx', 0o600)
@@ -238,6 +298,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
         !('next_review_at' in completed) || completed.next_review_at > now()) return null
     const parentKey = observationKey(event.scope, event.event_id)
+    const anchor = reviewAnchor(base, event)
     const review = validateObservation({ ...event,
       event_id: 'main-review:' + parentKey + ':' + completed.next_review_at,
       producer: 'main-review', created_at: completed.next_review_at,
@@ -245,6 +306,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       payload: { ...event.payload, review_context: {
         parent_observation_key: parentKey, parent_event_id: event.event_id,
         previous_decision_id: completed.decision_id, scheduled_at: completed.next_review_at,
+        freshness_anchor: anchor,
       } },
     })
     if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
@@ -255,10 +317,16 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     }
     const read = readObservationEvidence(base, name.slice(0, -5))
     validateObservation(read.value)
-    if (stable(read.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
+    if (stable(read.value) !== stable(review)) {
+      const legacy = structuredClone(review)
+      delete legacy.payload.review_context.freshness_anchor
+      if (read.value.payload.review_context?.freshness_anchor !== undefined || stable(read.value) !== stable(legacy)) {
+        throw new ObservationQueueError('Review identity conflicts with immutable evidence')
+      }
+    }
     if (read.completion) return null
     if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) return null
-    return { event: review, name, sha256: read.sha256, raw: read.raw }
+    return { event: read.value, name, sha256: read.sha256, raw: read.raw }
   }
 
   async function processEntry({ event, name, sha256, raw }) {

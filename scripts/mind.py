@@ -591,16 +591,19 @@ def _diary_hint(primary):
         return None
 
 
-def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None):
+def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None, prior_rest_lifecycle=None):
     diary = _diary_hint(primary)
     return {"legacy_plan_reference": mind.get("plan") if primary else None,
             "mood": mind.get("mood") if primary else None, "interrupts": hits,
             "activity_role": "internal_leisure" if primary else "conversation_social",
             **({'memory': {'diary': diary}} if diary is not None else {}),
             **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
+            **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
             "instruction": (
                 "This is an optional autonomous opportunity for this conversation, not a request to speak. "
                 "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
+                "A prior_rest_lifecycle is a local rest/expiry closure, not proof that earlier internal work "
+                "never happened. Start a fresh current review; do not replay the old greeting or any uncertain action. "
                 "If prior_admission_refusal is present, this is a new independent review, not a retry of that "
                 "earlier activity. Its old budget reservation remains unresolved; do not clear it, assume "
                 "the earlier activity did not happen, or repeat an uncertain external action. Read current "
@@ -699,6 +702,14 @@ def _validate_observers(mind):
                 refusal.get("previous_activity_status") != "unknown" or
                 refusal.get("budget_reservation_preserved") is not True):
             raise ValueError("invalid autonomous admission refusal")
+        rest_lifecycle = state.get("last_rest_lifecycle")
+        if rest_lifecycle is not None and (not isinstance(rest_lifecycle, dict) or
+                set(rest_lifecycle) != {"event_id", "completed_at", "reason", "previous_activity_status", "old_actions_not_replayed"} or
+                not isinstance(rest_lifecycle.get("event_id"), str) or not 1 <= len(rest_lifecycle["event_id"]) <= 256 or
+                re.search(r"[\x00-\x1f]", rest_lifecycle["event_id"]) or not _valid_ms(rest_lifecycle.get("completed_at")) or
+                rest_lifecycle.get("reason") not in ("autonomy_rest", "observation_expired") or
+                rest_lifecycle.get("previous_activity_status") != "unknown" or rest_lifecycle.get("old_actions_not_replayed") is not True):
+            raise ValueError("invalid autonomous rest lifecycle")
         if state.get("completed_signature") is not None and (not isinstance(state["completed_signature"], str) or
                 not re.fullmatch(r"[0-9a-f]{64}", state["completed_signature"])):
             raise ValueError("invalid autonomous signature")
@@ -817,7 +828,7 @@ def _observe_cycle(mind, dry=False, force=False):
     outcomes are never retried by the clock or force; new evidence is distinct.
     """
     from decision_events import (project_scopes, submit_project_observation,
-                                 observation_review_chain)
+                                 observation_review_chain, autonomous_rest_state)
     scopes = project_scopes()
     # Unified opportunities have their own trusted configuration. Legacy ETA
     # state is not an everlasting override of the current activity policy.
@@ -826,6 +837,9 @@ def _observe_cycle(mind, dry=False, force=False):
         raise ValueError("invalid autonomous opportunity interval")
     interval = int(value * 60_000)
     now = int(time.time() * 1000)
+    if autonomous_rest_state(now)["resting"]:
+        log("Shanghai rest window; no autonomous opportunity or overdue greeting is submitted")
+        return 0
     states = _observer_states(mind, scopes, now, interval)
     hits = _read_observer_hits()
     if dry:
@@ -870,6 +884,11 @@ def _observe_cycle(mind, dry=False, force=False):
                 continue
             state["last_status"] = completed["status"]
             state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
+            if completed["status"] == "no_decision" and completed.get("reason") in ("autonomy_rest", "observation_expired"):
+                state["last_rest_lifecycle"] = {
+                    "event_id": chain["event"]["event_id"], "completed_at": completed["completed_at"],
+                    "reason": completed["reason"], "previous_activity_status": "unknown",
+                    "old_actions_not_replayed": True}
             if (completed["status"] == "no_decision" and completed.get("reason") == "native_admission_refused"
                     and completed.get("native_turn_completed") is False):
                 state["last_admission_refusal"] = {
@@ -892,7 +911,7 @@ def _observe_cycle(mind, dry=False, force=False):
             state.pop("pending")
             hits = _read_observer_hits()
         scoped_hits = _scope_hits(hits, scope, primary)
-        payload = _observation_payload(mind, scoped_hits, primary, state.get("last_admission_refusal"))
+        payload = _observation_payload(mind, scoped_hits, primary, state.get("last_admission_refusal"), state.get("last_rest_lifecycle"))
         signature = _observation_signature(mind, scoped_hits, primary)
         changed = signature != state.get("completed_signature")
         due = state.get("next_opportunity_at")

@@ -1,6 +1,6 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.23",
+  "version": "1.4.0-dev.24",
   "description": "DSH 角色插件与本地控制台：人设、记忆、群聊、自主活动与运行维护。",
   "type": "module",
   "main": "plugin/lib/index.js",

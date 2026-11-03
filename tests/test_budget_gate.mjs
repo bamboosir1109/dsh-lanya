@@ -63,6 +63,10 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'state.json')}
   const configPath = path.join(plugin, 'lib/lanya-policy.config.json')
   fs.writeFileSync(configPath, JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert-budget.py') }))
   const h = await nativeHost(plugin, root)
+  const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
+  const clock = Date.parse('2026-11-03T01:00:00Z')
+  h.bridge.lanyaPolicy.now = () => clock
+  h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: path.join(root, 'state.json'), now: () => clock })
   t.after(() => h.close())
   const requests = [], meterCalls = [], events = []
   h.agent.session.snapshotEvents = () => events
@@ -135,7 +139,7 @@ test('native dispatch reserves by trusted live origin and settles exact native s
 
 test('finite autonomous turn is refused before native followup and foreign owner before budget', async t => {
   const h = await fixture(t, { exhausted: true })
-  const event = { version:1,event_id:'budget-autonomous',scope:'private:101',kind:'activity.opportunity',producer:'mind',created_at:Date.now(),
+  const event = { version:1,event_id:'budget-autonomous',scope:'private:101',kind:'activity.opportunity',producer:'mind',created_at:h.bridge.lanyaPolicy.now(),
     workspace_key:process.platform==='win32'?path.resolve(h.directory).toLowerCase():path.resolve(h.directory),agent_key:'fixture',origin:'observation',control_allowed:false,payload:{} }
   h.bridge.lanyaPolicy.runtimeCapabilities = async (scope, owner) => ({ schema:'dsh-runtime-capabilities/v1',read_only:true,conversation_key:scope,owner,
     tools:{entertainment:{primary_identity_valid:true,primary_internal_leisure:true,cadence:{valid:true,configured_opportunity_min:3}}} })

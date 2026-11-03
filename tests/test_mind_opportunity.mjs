@@ -66,7 +66,10 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'character/syn
     runPython(['-c', prepare, repo, plugin])
     const h = await nativeHost(plugin, directory)
     const { createObservationPump } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-observation-queue.js')).href)
-    let now = Date.now()
+    // Both real policy and producer use one explicit daytime fixture clock.
+    let now = Date.parse('2026-11-03T04:00:00Z')
+    const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
+    h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: h.bridge.lanyaPolicy.stateFile, now: () => now })
     h.bridge.lanyaPolicy.now = () => now
     h.bridge.lanyaPolicy.runtimeCapabilities = async (scope, owner) => ({
       schema: 'dsh-runtime-capabilities/v1', read_only: true, conversation_key: scope,

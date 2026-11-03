@@ -68,6 +68,10 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   assert.equal(built.status, 0, built.stderr)
   fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py') }))
   const h = await nativeHost(plugin, root)
+  const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
+  const clock = Date.parse('2026-11-03T01:00:00Z')
+  h.bridge.lanyaPolicy.now = () => clock
+  h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: path.join(root, 'state.json'), now: () => clock })
   t.after(() => h.close())
   const pending = [], history = [], events = [], requests = []
   h.agent.status = 'running'
@@ -407,7 +411,7 @@ test('conflicting observation claim rejects its completion without acknowledging
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
   let completionError
   const completion = { reject(error) { completionError = error }, resolve() { assert.fail('Conflict must not acknowledge an observation') } }
-  const observed = await adapter.policy.recordObservation({ scope, eventId: 'synthetic-observation', kind: 'activity.opportunity', producer: 'mind', createdAt: Date.now() })
+  const observed = await adapter.policy.recordObservation({ scope, eventId: 'synthetic-observation', kind: 'activity.opportunity', producer: 'mind', createdAt: adapter.now() })
   await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', completion }) }, async () => {
     const text = await adapter.enrichContext(scope, 'synthetic evidence')
     adapter.dispatchNative(h.chat, { id: 'observation-with-completion', source: { kind: 'plugin:dsh-lanya-observation' }, content: [{ type: 'text', text }] }, 'member', 'synthetic evidence')
@@ -428,7 +432,7 @@ test('conflicting owned observation batch rejects every consumed completion incl
     for (let index = 0; index < failures.length; index++) {
       const completion = { reject(error) { failures[index].push(error) }, resolve() { assert.fail('Conflict cannot resolve') } }
       const observed = await adapter.policy.recordObservation({ scope, eventId: 'owned-batch-' + index,
-        kind: 'activity.opportunity', producer: 'mind', createdAt: Date.now() })
+        kind: 'activity.opportunity', producer: 'mind', createdAt: adapter.now() })
       await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', completion }) }, async () => {
         const text = await adapter.enrichContext(scope, 'synthetic batch evidence')
         adapter.dispatchNative(h.chat, { id: 'owned-batch-input-' + index,
@@ -527,7 +531,7 @@ async function primaryEvent(h, eventId) {
   })
   const owner = await adapter.trustedOwner(scope)
   return { version: 1, event_id: eventId, scope, workspace_key: owner.workspace_key, agent_key: owner.agent_key,
-    kind: 'activity.opportunity', producer: 'mind', created_at: Date.now(), payload: {},
+    kind: 'activity.opportunity', producer: 'mind', created_at: adapter.now(), payload: {},
     origin: 'observation', control_allowed: false }
 }
 
@@ -691,8 +695,8 @@ test('owned observation input uses the same reviewed wake and native admission',
   h.agent.wakeDriver()
   await entered.promise
   const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
-  const observed = await adapter.policy.recordObservation({ scope, eventId: 'owned-observation', kind: 'activity.opportunity', producer: 'mind', createdAt: Date.now() })
-  await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation' }) }, async () => {
+  const observed = await adapter.policy.recordObservation({ scope, eventId: 'owned-observation', kind: 'activity.opportunity', producer: 'mind', createdAt: adapter.now() })
+  await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', observationCreatedAt: adapter.now() }) }, async () => {
     const text = await adapter.enrichContext(scope, 'observation fixture')
     adapter.dispatchNative(h.chat, { id: 'owned-native-observation', source: { kind: 'plugin:dsh-lanya-observation' },
       content: [{ type: 'text', text }] }, 'member', 'observation fixture')

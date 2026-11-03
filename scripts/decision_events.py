@@ -24,6 +24,20 @@ MAX_OBSERVATION_BYTES = 256 * 1024
 MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
 
 
+def autonomous_rest_state(now_ms):
+    """Fixed Shanghai 00:00 inclusive to 08:00 exclusive, independent of host TZ."""
+    hour_ms = 60 * 60 * 1000
+    day_ms = 24 * hour_ms
+    offset = 8 * hour_ms
+    if type(now_ms) is not int or not 0 <= now_ms <= 8640 * 10**12 - offset:
+        raise ObservationError("A valid autonomous clock is required")
+    local = now_ms + offset
+    wake = (local // day_ms) * day_ms
+    resting = local % day_ms < offset
+    return {"resting": resting, "next_wake_at": wake if resting else wake + day_ms,
+            "current_day_wake_at": wake, "timezone": "Asia/Shanghai"}
+
+
 def canonical_json(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -116,11 +130,13 @@ def _validated_completion(result, event, raw):
         fields = {"version", "event_raw", "event_id", "scope", "event_sha256", "completed_at", "status",
                   "reason", "local_outcome_id", "observation_revision", "native_turn_completed"}
         revision = result.get("observation_revision")
+        rest_closure = (result.get("reason") in ("autonomy_rest", "observation_expired") and
+                        result.get("native_turn_completed") is False)
         if (set(result) != fields or result.get("status") != "no_decision" or
                 not ((result.get("reason") == "model_completed_without_decision" and result.get("native_turn_completed") is True) or
-                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False)) or
+                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False) or rest_closure) or
                 type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
-                not ((event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")) or
+                not (rest_closure or (event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")) or
                      (event["kind"] == "social.opportunity" and event["producer"] == "social-planner"))):
             raise ObservationError("Invalid native no-decision completion")
         identity = "no-decision\0" + event["scope"] + "\0" + event["event_id"] + "\0" + str(revision)
@@ -299,6 +315,55 @@ def project_scopes():
     return scopes
 
 
+def _queued_review(event):
+    return event["producer"] == "main-review" and event["event_id"].startswith("main-review:")
+
+
+def _review_anchor(base, event, depth=0, seen=None):
+    key = event_key(event["scope"], event["event_id"])
+    seen = set() if seen is None else seen
+    if depth >= 64 or key in seen:
+        raise ObservationError("Review freshness ancestry is not bounded and acyclic")
+    seen.add(key)
+    if not _queued_review(event):
+        original, raw, _ = _read_evidence(base, key)
+        if canonical_json(original) != canonical_json(event):
+            raise ObservationError("Review freshness original conflicts")
+        return {"key": key, "sha256": hashlib.sha256(raw).hexdigest(), "created_at": event["created_at"]}
+    context = event["payload"].get("review_context")
+    if (not isinstance(context, dict) or not isinstance(context.get("parent_observation_key"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", context["parent_observation_key"])
+            or not isinstance(context.get("parent_event_id"), str) or not context["parent_event_id"]
+            or not isinstance(context.get("previous_decision_id"), str) or not context["previous_decision_id"].strip()
+            or type(context.get("scheduled_at")) is not int or context["scheduled_at"] != event["created_at"]
+            or event["event_id"] != "main-review:" + context["parent_observation_key"] + ":" + str(context["scheduled_at"])):
+        raise ObservationError("Review freshness requires exact parent metadata")
+    parent, parent_raw, completed = _read_evidence(base, context["parent_observation_key"])
+    same_owner = lambda other: all(event[field] == other[field] for field in ("scope", "workspace_key", "agent_key", "kind"))
+    if (not same_owner(parent) or parent["event_id"] != context["parent_event_id"] or completed is None
+            or completed["status"] in ("unknown", "no_decision")
+            or completed["decision_id"] != context["previous_decision_id"]
+            or completed.get("next_review_at") != context["scheduled_at"]):
+        raise ObservationError("Review freshness parent receipt conflicts")
+    if "freshness_anchor" not in context:
+        return _review_anchor(base, parent, depth + 1, seen)
+    anchor = context["freshness_anchor"]
+    if (not isinstance(anchor, dict) or set(anchor) != {"key", "sha256", "created_at"}
+            or not all(isinstance(anchor.get(field), str) and re.fullmatch(r"[0-9a-f]{64}", anchor[field]) for field in ("key", "sha256"))
+            or type(anchor["created_at"]) is not int or not 0 <= anchor["created_at"] <= parent["created_at"]):
+        raise ObservationError("Review freshness anchor is invalid")
+    inherited = parent["payload"].get("review_context", {}).get("freshness_anchor") if _queued_review(parent) else None
+    expected = inherited if inherited is not None else (_review_anchor(base, parent, depth + 1, seen) if _queued_review(parent)
+        else {"key": context["parent_observation_key"], "sha256": hashlib.sha256(parent_raw).hexdigest(), "created_at": parent["created_at"]})
+    if canonical_json(expected) != canonical_json(anchor):
+        raise ObservationError("Review freshness anchor differs from parent")
+    original, raw, _ = (parent, parent_raw, completed) if anchor["key"] == context["parent_observation_key"] else _read_evidence(base, anchor["key"])
+    if (hashlib.sha256(raw).hexdigest() != anchor["sha256"] or not same_owner(original)
+            or original["created_at"] != anchor["created_at"] or _queued_review(original)):
+        raise ObservationError("Review freshness anchor original conflicts")
+    return dict(anchor)
+
+
 def observation_review_chain(scope, event_id, directory=None, limit=128):
     """Read immutable queue successors; never publish a second review owner.
 
@@ -332,6 +397,8 @@ def observation_review_chain(scope, event_id, directory=None, limit=128):
                             "parent_observation_key": key, "parent_event_id": event_id,
                             "previous_decision_id": completion["decision_id"], "scheduled_at": due}))
         actual, _, _ = _read_evidence(base, event_key(scope, successor_id))
+        if "freshness_anchor" in actual["payload"].get("review_context", {}):
+            expected["payload"]["review_context"]["freshness_anchor"] = _review_anchor(base, event)
         if canonical_json(actual) != canonical_json(expected):
             raise ObservationError("Review successor conflicts with immutable evidence")
         event_id = successor_id
