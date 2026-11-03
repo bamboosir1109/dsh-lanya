@@ -162,18 +162,25 @@ test('stop holds the sole lease until every parallel dispatch settles; unknown n
 })
 
 test('terminal acknowledgement failure waits for other lanes and never replays their deliveries', async t => {
-  const f = fixture(t), holds = [f.held(), f.held(), f.held()], calls = []
+  const f = fixture(t), holds = [f.held(), f.held(), f.held()], failedAcknowledgement = f.held(), calls = []
   let acknowledgements = 0
   for (let index = 0; index < 5; index += 1) f.write('item-' + index, 'private:' + (101 + index), index + 1)
   const first = f.make(async event => {
     calls.push(event.event_id)
     if (['item-1', 'item-2', 'item-3'].includes(event.event_id)) return holds[Number(event.event_id.slice(-1)) - 1].promise
     return settled(event.event_id)
-  }, { acknowledge: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error('fixture-ack-failed') } })
+  }, { acknowledge: async () => {
+    acknowledgements += 1
+    if (acknowledgements === 1) {
+      await failedAcknowledgement.promise
+      throw new Error('fixture-ack-failed')
+    }
+  } })
   await first.start({ poll: false })
   const running = f.drain(first)
   const rejected = assert.rejects(running, /fixture-ack-failed/)
-  await waitFor(() => acknowledgements === 1)
+  await waitFor(() => calls.length === 4 && acknowledgements === 1)
+  failedAcknowledgement.resolve()
   first.stop()
   const secondCalls = []
   const second = f.make(async event => { secondCalls.push(event.event_id); return settled(event.event_id) })

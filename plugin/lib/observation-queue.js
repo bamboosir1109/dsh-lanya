@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
 
 export class ObservationQueueError extends Error {
@@ -85,13 +86,14 @@ function ordinaryDirectories(value, create = false) {
   let current = parsed.root
   for (const part of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
     current = path.join(current, part)
-    if (create && !fs.existsSync(current)) {
+    let info
+    try { info = fs.lstatSync(current) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      if (!create) continue
       try { fs.mkdirSync(current) } catch (error) { if (error.code !== 'EEXIST') throw error }
+      info = fs.lstatSync(current)
     }
-    if (fs.existsSync(current)) {
-      const info = fs.lstatSync(current)
-      if (!info.isDirectory() || info.isSymbolicLink()) throw new ObservationQueueError('Inbox parents must be ordinary directories')
-    }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new ObservationQueueError('Inbox parents must be ordinary directories')
   }
   return absolute
 }
@@ -224,6 +226,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   const done = path.join(base, 'done')
   const leaseFile = path.join(base, 'consumer.sqlite')
   let timer, busy = false, stopped = true, release = null, leaseDb = null
+  let scanInProgress = false
   let rescanRequested = false, wakeDrain = null
   const invalidEvidence = new Set()
   // A restart retries acknowledgement from durable evidence. Within this pump,
@@ -397,6 +400,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     busy = true
     rescanRequested = true
     let processed = 0, launched = 0, failure = null
+    let lastYieldAt = performance.now()
     const backlog = new Map(), inFlight = new Map(), activeScopes = new Set(), terminal = new Set()
     const wake = () => { wakeDrain?.(); wakeDrain = null }
     const launch = entry => {
@@ -419,48 +423,55 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         if (rescanRequested) {
           rescanRequested = false
           backlog.clear()
-          ordinaryDirectories(pending, true)
-          ordinaryDirectories(done)
-          const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
-          for (const [index, name] of names.entries()) {
-            // Awaiting already-resolved acknowledgements only yields microtasks.
-            // Let timers, input and provider I/O run even with a large done history.
-            if (index > 0 && index % 32 === 0) {
-              await new Promise(resolve => setImmediate(resolve))
-              if (stopped) break
-            }
-            try {
-              if (inFlight.has(name)) continue
-              const read = readObservationEvidence(base, name.slice(0, -5))
-              const event = validateObservation(read.value)
-              if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
-              if (read.completion) {
-                const completed = read.completion
-                // A crash after durable completion but before core acknowledgement
-                // is recovered here, without running the model or sending again.
-                await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
-                const review = scheduleReview(event, completed)
-                if (review) backlog.set(review.name, review)
-                invalidEvidence.delete(name)
-                continue
+          scanInProgress = true
+          try {
+            ordinaryDirectories(pending, true)
+            ordinaryDirectories(done)
+            const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+            for (const [index, name] of names.entries()) {
+              // Check real monotonic work time: one complete evidence read stays
+              // synchronous, but cheap or costly histories both yield to I/O.
+              if (index > 0 && performance.now() - lastYieldAt >= 10) {
+                await new Promise(resolve => setImmediate(resolve))
+                lastYieldAt = performance.now()
+                if (stopped) break
               }
-              // Permanently parked uncertain terminal claims remain evidence, not
-              // an executable head that freezes every later event in this scope.
-              if (leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after === Number.MAX_SAFE_INTEGER) continue
-              backlog.set(name, { event, name, sha256: read.sha256, raw: read.raw })
-              invalidEvidence.delete(name)
-            } catch (error) {
-              if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
-              invalidEvidence.add(name)
+              try {
+                if (inFlight.has(name)) continue
+                const read = readObservationEvidence(base, name.slice(0, -5))
+                const event = validateObservation(read.value)
+                if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
+                if (read.completion) {
+                  const completed = read.completion
+                  // A crash after durable completion but before core acknowledgement
+                  // is recovered here, without running the model or sending again.
+                  await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
+                  const review = scheduleReview(event, completed)
+                  if (review) backlog.set(review.name, review)
+                  invalidEvidence.delete(name)
+                  continue
+                }
+                // Permanently parked uncertain terminal claims remain evidence, not
+                // an executable head that freezes every later event in this scope.
+                if (leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after === Number.MAX_SAFE_INTEGER) continue
+                backlog.set(name, { event, name, sha256: read.sha256, raw: read.raw })
+                invalidEvidence.delete(name)
+              } catch (error) {
+                if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
+                invalidEvidence.add(name)
+              }
             }
-          }
+          } finally { scanInProgress = false }
         }
         if (failure) throw failure
         const ordered = [...backlog.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
         const heads = new Set()
         let scheduled = false
         for (const [index, entry] of ordered.entries()) {
-          if (index > 0 && index % 32 === 0) await new Promise(resolve => setImmediate(resolve))
+          if (performance.now() - lastYieldAt >= 10) {
+            await new Promise(resolve => setImmediate(resolve))
+            lastYieldAt = performance.now()
+          }
           if (stopped || failure || inFlight.size >= MAX_CONCURRENT_SCOPES) break
           const scope = entry.event.scope
           // Finite backoff holds this scope's oldest executable entry; unrelated
@@ -470,8 +481,9 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           heads.add(scope)
           if (activeScopes.has(scope) || terminal.has(entry.name)) continue
           if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(entry.name)?.next_after || 0) > now()) continue
-          if (launched > 0 && launched % 32 === 0) {
+          if (launched > 0 && performance.now() - lastYieldAt >= 10) {
             await new Promise(resolve => setImmediate(resolve))
+            lastYieldAt = performance.now()
             if (stopped || failure) break
           }
           launched += 1
@@ -509,7 +521,13 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
         if (!takeClaim()) { stopped = true; return false }
       } catch (error) { stopped = true; throw error }
       if (poll) {
-        const tick = () => { void drain().catch((error) => log('error', 'observation_pump_failed:' + error.name)) }
+        const tick = () => {
+          // A slow full scan must not schedule another full scan of itself.
+          // Explicit drain() still requests a rescan, and polls while awaiting
+          // in-flight turns still discover new work in other scopes.
+          if (scanInProgress) return
+          void drain().catch((error) => log('error', 'observation_pump_failed:' + error.name))
+        }
         timer = setInterval(tick, intervalMs)
         timer.unref?.()
         tick()

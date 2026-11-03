@@ -127,9 +127,11 @@ test('a confirmed dead owner is replaced atomically without deleting inbox evide
 test('stop retains the consumer lease until its current decision has settled', async (t) => {
   const root = fixture(t)
   write(root, event('inflight'))
-  let finish
-  const first = await pump(t, root, () => new Promise((resolve) => { finish = resolve }))
+  let finish, markStarted
+  const started = new Promise(resolve => { markStarted = resolve })
+  const first = await pump(t, root, () => new Promise((resolve) => { finish = resolve; markStarted() }))
   const running = first.drain()
+  await started
   first.stop()
   const second = createObservationPump({ directory: root, dispatch: () => assert.fail('must wait') })
   resources.get(root).push(second)
@@ -396,6 +398,7 @@ test('polling terminal legacy review history uses linear file work across shared
       assert.ok(repeated[metric] <= first[metric] + count, 'another poll must retain the same bound for ' + metric)
     }
     assert.ok(first.read <= 16 * count, 'terminal history must not reread every ancestor for every child: ' + JSON.stringify(first))
+    assert.ok(first.exists <= 2 * count + 4, 'directory validation must not duplicate every native metadata lookup: ' + JSON.stringify(first))
     samples.push(first)
   }
   t.diagnostic('terminal history filesystem calls for 24/48 nodes: ' + JSON.stringify(samples))
@@ -491,4 +494,145 @@ test('new legacy reviews retain the 64-node ancestry boundary and reject self-pa
   const cyclePump = await pump(t, cyclic.root, () => assert.fail('self-parent ancestry must not dispatch'), { now: () => 10000 })
   assert.equal((await cyclePump.drain()).processed, 0)
   assert.equal(readEvents(cyclic.root).length, 5)
+})
+
+test('directory creation uses checked metadata and still refuses files, links and access errors', async (t) => {
+  const root = fixture(t), exists = fs.existsSync
+  let directoryExistenceProbes = 0
+  fs.existsSync = function (file, ...args) {
+    if ([root, path.join(root, 'pending'), path.join(root, 'done')].includes(file)) directoryExistenceProbes++
+    return exists.call(this, file, ...args)
+  }
+  try {
+    const p = await pump(t, root, () => assert.fail('empty inbox'))
+    assert.equal(fs.lstatSync(path.join(root, 'pending')).isDirectory(), true)
+    assert.equal(fs.lstatSync(path.join(root, 'done')).isDirectory(), true)
+    assert.equal((await p.drain()).processed, 0)
+    assert.equal(directoryExistenceProbes, 0)
+  } finally { fs.existsSync = exists }
+
+  const invalid = fixture(t)
+  fs.writeFileSync(path.join(invalid, 'pending'), 'ordinary file is not a directory')
+  const filePump = createObservationPump({ directory: invalid, dispatch: () => assert.fail('invalid directory') })
+  resources.get(invalid).push(filePump)
+  await assert.rejects(filePump.start({ poll: false }), /ordinary directories/)
+
+  const linked = fixture(t)
+  fs.mkdirSync(path.join(linked, 'real'))
+  fs.symlinkSync(path.join(linked, 'real'), path.join(linked, 'pending'), process.platform === 'win32' ? 'junction' : 'dir')
+  const linkPump = createObservationPump({ directory: linked, dispatch: () => assert.fail('linked directory') })
+  resources.get(linked).push(linkPump)
+  await assert.rejects(linkPump.start({ poll: false }), /ordinary directories/)
+
+  const denied = fixture(t), lstat = fs.lstatSync
+  const access = Object.assign(new Error('fixture access denied'), { code: 'EACCES' })
+  fs.lstatSync = function (file, ...args) {
+    if (file === path.join(denied, 'pending')) throw access
+    return lstat.call(this, file, ...args)
+  }
+  try {
+    const deniedPump = createObservationPump({ directory: denied, dispatch: () => assert.fail('unreadable directory') })
+    resources.get(denied).push(deniedPump)
+    await assert.rejects(deniedPump.start({ poll: false }), error => error === access)
+  } finally { fs.lstatSync = lstat }
+})
+
+test('a costly short history yields to actual timers and asynchronous tool file IO', async (t) => {
+  const { root } = legacyHistory(t, 16)
+  let acknowledgements = 0, timerAt = null, ioAt = null, clock = 0
+  const p = await pump(t, root, () => assert.fail('terminal history'), {
+    now: () => 1000, acknowledge: () => { acknowledgements++ },
+  })
+  const read = fs.readFileSync, descriptor = Object.getOwnPropertyDescriptor(performance, 'now')
+  fs.readFileSync = function (file, ...args) {
+    const raw = read.call(this, file, ...args)
+    if (typeof file === 'string' && file.startsWith(root + path.sep)) clock += 11
+    return raw
+  }
+  Object.defineProperty(performance, 'now', { configurable: true, value: () => clock })
+  try {
+    const timer = new Promise(resolve => setTimeout(() => { timerAt = acknowledgements; resolve() }, 0))
+    const io = fs.promises.readFile(path.join(root, 'pending', observationKey('private:101', 'history-root') + '.json'))
+      .then(() => { ioAt = acknowledgements })
+    assert.equal((await p.drain()).processed, 0)
+    await Promise.all([timer, io])
+    assert.equal(acknowledgements, 16)
+    assert.ok(timerAt > 0 && timerAt < 16, 'a timer must run before the history finishes')
+    assert.ok(ioAt > 0 && ioAt < 16, 'asynchronous tool IO must run before the history finishes')
+  } finally {
+    fs.readFileSync = read
+    if (descriptor) Object.defineProperty(performance, 'now', descriptor)
+    else delete performance.now
+  }
+})
+
+function capturePoll() {
+  const interval = globalThis.setInterval, clear = globalThis.clearInterval
+  const handle = { unref() {} }
+  let callback
+  globalThis.setInterval = function (fn, milliseconds, ...args) {
+    if (milliseconds !== 424242) return interval(fn, milliseconds, ...args)
+    assert.equal(callback, undefined)
+    callback = fn
+    return handle
+  }
+  globalThis.clearInterval = function (value) { if (value !== handle) return clear(value) }
+  return { tick: () => { assert.equal(typeof callback, 'function'); callback() },
+    restore: () => { globalThis.setInterval = interval; globalThis.clearInterval = clear } }
+}
+const immediate = () => new Promise(resolve => setImmediate(resolve))
+async function waitForFixture(check) {
+  for (let count = 0; count < 1000; count++) {
+    if (check()) return
+    await immediate()
+  }
+  assert.fail('bounded fixture progression did not complete')
+}
+
+test('internal polls during a full scan coalesce and a late file is found by the next poll', async (t) => {
+  const { root } = legacyHistory(t, 4), poll = capturePoll(), readdir = fs.readdirSync
+  let release, firstAck, acknowledgements = 0, scans = 0, calls = 0
+  const entered = new Promise(resolve => { firstAck = resolve })
+  const held = new Promise(resolve => { release = resolve })
+  fs.readdirSync = function (file, ...args) { if (file === path.join(root, 'pending')) scans++; return readdir.call(this, file, ...args) }
+  const p = createObservationPump({ directory: root, now: () => 1000, intervalMs: 424242,
+    dispatch: async () => { calls++; return { completed: true, status: 'decided', decision_id: 'late-file' } },
+    acknowledge: () => { if (++acknowledgements === 1) { firstAck(); return held } },
+  })
+  resources.get(root).push(p)
+  try {
+    assert.equal(await p.start(), true)
+    await entered
+    poll.tick(); poll.tick()
+    write(root, event('late-during-scan', { scope: 'group:202' }))
+    release()
+    await waitForFixture(() => acknowledgements === 4)
+    await immediate()
+    assert.equal(scans, 1, 'a poll must not make the full scan schedule itself again')
+    assert.equal(calls, 0)
+    poll.tick()
+    await waitForFixture(() => calls === 1)
+    await immediate()
+    assert.equal(calls, 1)
+    assert.equal(scans, 2)
+  } finally { release(); p.stop(); await immediate(); fs.readdirSync = readdir; poll.restore() }
+})
+
+test('an explicit drain during a scan still requests a rescan for newly published work', async (t) => {
+  const { root } = legacyHistory(t, 4)
+  let release, firstAck, acknowledgements = 0, calls = 0
+  const entered = new Promise(resolve => { firstAck = resolve })
+  const held = new Promise(resolve => { release = resolve })
+  const p = await pump(t, root, async () => { calls++; return { completed: true, status: 'decided', decision_id: 'explicit-rescan' } }, {
+    now: () => 1000, acknowledge: () => { if (++acknowledgements === 1) { firstAck(); return held } },
+  })
+  const running = p.drain()
+  try {
+    await entered
+    write(root, event('late-explicit-rescan', { scope: 'group:202' }))
+    assert.equal((await p.drain()).status, 'not_owner_or_busy')
+    release()
+    assert.equal((await running).processed, 1)
+    assert.equal(calls, 1)
+  } finally { release(); p.stop(); await running }
 })
