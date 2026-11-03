@@ -17,8 +17,8 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-freshness-'))
   pumps.set(root, [])
   for (const sub of ['pending', 'done']) fs.mkdirSync(path.join(root, sub))
-  t.after(() => {
-    for (const pump of pumps.get(root)) pump.stop()
+  t.after(async () => {
+    await Promise.all(pumps.get(root).map(pump => pump.stop()))
     pumps.delete(root)
     assert.ok(root.startsWith(path.join(os.tmpdir(), 'lanya-freshness-')))
     fs.rmSync(root, { recursive: true, force: true })

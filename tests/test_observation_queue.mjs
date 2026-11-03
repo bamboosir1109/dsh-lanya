@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { createObservationPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
+import { createInlineObservationPump as createObservationPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const resources = new Map()

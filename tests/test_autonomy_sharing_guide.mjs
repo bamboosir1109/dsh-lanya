@@ -91,6 +91,26 @@ function memoryPolicy() {
     storage: { transact: async fn => fn(state, () => {}) } })
 }
 
+test('trusted memory and capability reads start together and retain independent failure handling', async t => {
+  const f = fixture(t), entered = [], resolvers = {}
+  for (const [method, label] of [['memoryContext', 'memory'], ['runtimeCapabilities', 'capabilities']]) {
+    f.adapter[method] = (_scope, ...args) => {
+      entered.push(label)
+      return new Promise(resolve => { resolvers[label] = resolve })
+    }
+  }
+  const reading = f.adapter.enrichContext('private:101', 'fixture')
+  for (let count = 0; count < 30 && entered.length < 2; count++) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(entered, ['memory', 'capabilities'])
+  resolvers.memory({ bounded: 'fixture-memory' }); resolvers.capabilities({ read_only: true })
+  const enriched = await reading
+  assert.match(enriched, /fixture-memory/); assert.match(enriched, /trusted_runtime_capabilities/)
+  f.adapter.memoryContext = async () => { throw new Error('fixture-memory-offline') }
+  f.adapter.runtimeCapabilities = async () => ({ read_only: true, fixture: 'capabilities-survived' })
+  assert.match(await f.adapter.enrichContext('private:101', 'fixture'), /capabilities-survived/)
+  assert.equal(f.sends(), 0)
+})
+
 async function opportunity(policy, eventId) {
   return policy.recordObservation({ scope: 'private:101', eventId, kind: 'activity.opportunity',
     producer: 'mind', createdAt: 999_000 })

@@ -18,9 +18,10 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-scope-lanes-'))
   const pumps = [], tasks = [], gates = []
   t.after(async () => {
-    for (const pump of pumps) pump.stop()
+    const stopping = pumps.map(pump => pump.stop())
     for (const held of gates) held.resolve(settled('cleanup'))
     await Promise.allSettled(tasks)
+    await Promise.all(stopping)
     // Poll-driven drains may still finish their bounded terminal writes.
     await new Promise(resolve => setImmediate(resolve))
     assert.ok(path.resolve(root).startsWith(path.join(os.tmpdir(), 'lanya-scope-lanes-')))

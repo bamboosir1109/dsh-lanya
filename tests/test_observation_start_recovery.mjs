@@ -59,6 +59,13 @@ for name,raw in policy.module_outputs({'stateFile':str(out.parent/'state.json')}
 const assembled = spawnSync('python', ['-B', '-c', prepare, repo, template], { encoding: 'utf8', windowsHide: true })
 assert.equal(assembled.status, 0, assembled.stderr)
 const flush = async () => { for (let n = 0; n < 30; n++) await new Promise(resolve => setImmediate(resolve)) }
+async function waitFor(check) {
+  const deadline = Date.now() + 5000
+  while (!check()) {
+    assert.ok(Date.now() < deadline, 'worker fixture failed to reach its real barrier')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+}
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return { promise, resolve } }
 let sequence = 0
 async function fixture(t, { budget = true } = {}) {
@@ -76,7 +83,11 @@ async function fixture(t, { budget = true } = {}) {
   // boundaries are inert, so startup still reaches its real adapter hook.
   h.deps.ctx = { on: () => () => {} }; h.bridge.ready = async () => {}
   for (const name of ['loadRetired', 'loadSwitchable', 'loadMapping']) h.bridge.registry[name] = async () => {}
-  const tick = async () => { for (const timer of [...h.intervals.values()]) if (timer.ms === 30000) timer.fn(); await flush() }
+  const tick = async (settle = true) => {
+    for (const timer of [...h.intervals.values()]) if (timer.ms === 30000) timer.fn()
+    await flush()
+    if (settle) await h.bridge.lanyaPolicy.startAttempt
+  }
   t.after(async () => { await h.close(); assert.equal(h.intervals.size, 0); assert.equal(h.calls.length, 0); assert.equal(h.followups.length, 0) })
   return { ...h, logs, requests, tick, heartbeat: fn => { heartbeat = fn } }
 }
@@ -132,7 +143,7 @@ test('transient claim error recovers but successful pump is not started twice', 
 test('concurrent startup is serialized and stop prevents a late heartbeat claim', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy, wait = deferred(); let attempts = 0
   h.heartbeat(async () => { attempts++; return wait.promise })
-  const first = adapter.start(), second = adapter.start(); await h.tick()
+  const first = adapter.start(), second = adapter.start(); await h.tick(false)
   assert.equal(attempts, 1); assert.equal(h.intervals.size, 1)
   await adapter.stop(); wait.resolve({ bound: true })
   assert.equal(await first, false); assert.equal(await second, false); assert.equal(consumer(h), null)
@@ -157,12 +168,14 @@ test('recovery never replays an in-flight or unknown observation', async t => {
   fs.writeFileSync(path.join(directory, 'pending', name), JSON.stringify(event) + '\n')
   let dispatched = 0
   adapter.pump = createObservationPump({ directory, dispatch: () => { dispatched++; return wait.promise }, intervalMs: 5 })
-  assert.equal(await adapter.start(), true); await flush(); assert.equal(dispatched, 1)
+  assert.equal(await adapter.start(), true); await waitFor(() => dispatched === 1); assert.equal(dispatched, 1)
   const owner = consumer(h); for (let n = 0; n < 3; n++) await h.tick()
   assert.equal(dispatched, 1); assert.deepEqual(consumer(h), owner)
-  await adapter.stop(); assert.deepEqual(consumer(h), owner)
-  assert.equal(await adapter.start(), false); assert.equal(dispatched, 1)
-  wait.resolve({ completed: true, status: 'unknown', decision_id: 'synthetic-unknown' }); await flush()
+  const stopping = adapter.stop(); assert.deepEqual(consumer(h), owner)
+  assert.equal(dispatched, 1)
+  wait.resolve({ completed: true, status: 'unknown', decision_id: 'synthetic-unknown' }); await stopping
+  assert.equal(consumer(h), null)
+  await adapter.start()
   await h.tick(); assert.equal(adapter.pumpRunning, true); assert.equal(dispatched, 1)
   assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'done', name), 'utf8')).status, 'unknown')
 })

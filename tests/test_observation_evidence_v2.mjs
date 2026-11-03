@@ -16,8 +16,8 @@ const pumps = new Map()
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-evidence-v2-'))
   pumps.set(root, [])
-  t.after(() => {
-    for (const p of pumps.get(root)) p.stop()
+  t.after(async () => {
+    await Promise.all(pumps.get(root).map(p => p.stop()))
     assert.ok(path.resolve(root).startsWith(path.join(os.tmpdir(), 'lanya-evidence-v2-')))
     fs.rmSync(root, { recursive: true, force: true })
     pumps.delete(root)
@@ -63,7 +63,7 @@ test('deleted completed originals still yield exactly one due review, including 
   now = 2000
   assert.equal((await p.drain()).processed, 1)
   assert.equal(calls, 2)
-  p.stop()
+  await p.stop()
   for (const name of fs.readdirSync(path.join(root, 'pending'))) fs.unlinkSync(path.join(root, 'pending', name))
   const restarted = await start(t, root, () => assert.fail('completed parent or child replayed'), { now: () => now })
   await restarted.drain()
@@ -78,7 +78,7 @@ test('unknown with a deleted original is terminal; producer retry stays done wit
   let calls = 0
   const p = await start(t, root, async () => ({ completed: true, status: 'unknown', decision_id: 'unknown-' + (++calls), next_review_at: 2000 }), { now: () => 3000 })
   await p.drain();fs.unlinkSync(files.pending)
-  await p.drain();p.stop()
+  await p.drain();await p.stop()
   assert.equal(calls, 1)
   assert.equal(readObservationCompletion(root, value.scope, value.event_id).status, 'unknown')
   assert.equal(publishObservation(root, { ...value, created_at: 99 }).state, 'done')

@@ -38,7 +38,7 @@ function fixture(t, initial = Date.parse('2026-11-02T16:00:30Z'), firstReview = 
           : { decisionId: result.decision_id }) })
     }
   })
-  t.after(() => { pump.stop(); fs.rmSync(root, { recursive: true, force: true }) })
+  t.after(async () => { await pump.stop(); fs.rmSync(root, { recursive: true, force: true }) })
   const files = () => fs.existsSync(path.join(directory, 'pending'))
     ? fs.readdirSync(path.join(directory, 'pending')).filter(name => name.endsWith('.json')) : []
   return { directory, policy, observer, pump, files, scope,

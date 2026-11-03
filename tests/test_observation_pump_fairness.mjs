@@ -6,7 +6,7 @@ import path from 'node:path'
 import net from 'node:net'
 import { once } from 'node:events'
 import { createHash } from 'node:crypto'
-import { createObservationPump, observationKey } from '../plugin/lib/observation-queue.js'
+import { createInlineObservationPump as createObservationPump, observationKey } from '../plugin/lib/observation-queue.js'
 
 function fixture(t) {
   const prefix = path.join(os.tmpdir(), 'lanya-pump-fairness-')

@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
 
 export class ObservationQueueError extends Error {
@@ -218,88 +219,10 @@ function ownerAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
 }
 
-export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, log = () => {}, now = Date.now,
-  intervalMs = 2000, isOwnerAlive = ownerAlive } = {}) {
-  if (typeof directory !== 'string' || !directory.trim() || typeof dispatch !== 'function') throw new ObservationQueueError('directory and dispatch are required')
-  const base = path.resolve(directory)
-  const pending = path.join(base, 'pending')
-  const done = path.join(base, 'done')
-  const leaseFile = path.join(base, 'consumer.sqlite')
-  let timer, busy = false, stopped = true, release = null, leaseDb = null
-  let scanInProgress = false
-  let rescanRequested = false, wakeDrain = null
-  const invalidEvidence = new Set()
-  // A restart retries acknowledgement from durable evidence. Within this pump,
-  // unchanged terminal bytes need not reacquire the policy lock every poll.
-  // This cache never authorizes dispatch, hides changed evidence or marks sends.
-  const acknowledgedTerminals = new Map()
-
-  async function acknowledgeTerminal(event, marker, name, eventHash, markerHash) {
-    const fingerprint = eventHash + ':' + markerHash
-    if (acknowledgedTerminals.get(name) === fingerprint) return
-    const result = await acknowledge(event, marker)
-    // Legacy callbacks resolve void. A missing pin is the idempotent result of
-    // an earlier successful ack (including a crash before this cache existed).
-    // Other negative outcomes remain retryable and never enter this cache.
-    if (result === undefined || (plain(result) && (result.acknowledged === true ||
-        (result.acknowledged === false && result.reason === 'unknown_observation')))) {
-      acknowledgedTerminals.set(name, fingerprint)
-    }
-  }
-
-  function takeClaim() {
-    ordinaryDirectories(pending, true)
-    ordinaryDirectories(done, true)
-    if (fs.existsSync(leaseFile)) {
-      const info = fs.lstatSync(leaseFile)
-      if (!info.isFile() || info.isSymbolicLink()) throw new ObservationQueueError('Consumer lease must be an ordinary SQLite file')
-    }
-    const db = new DatabaseSync(leaseFile)
-    const nonce = randomUUID()
-    try {
-      db.exec('PRAGMA busy_timeout=2500; PRAGMA synchronous=FULL')
-      const version = db.prepare('PRAGMA user_version').get().user_version
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
-      if (version !== 1 && !(version === 0 && tables.length === 0)) throw new ObservationQueueError('Unknown consumer lease schema')
-      db.exec('BEGIN IMMEDIATE')
-      db.exec('CREATE TABLE IF NOT EXISTS consumer (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, nonce TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retry (event_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_after INTEGER NOT NULL); PRAGMA user_version=1')
-      const owner = db.prepare('SELECT pid,nonce FROM consumer WHERE id=1').get()
-      if (owner && (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !identity(owner.nonce) || isOwnerAlive(owner.pid))) {
-        db.exec('ROLLBACK'); db.close()
-        log('warn', 'observation_consumer_already_owned')
-        return false
-      }
-      // Atomic SQLite replacement avoids stale-file unlink/ABA races. A long
-      // running living owner is never reclaimed merely because time elapsed.
-      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce) VALUES (1,?,?)').run(process.pid, nonce)
-      db.exec('COMMIT')
-      leaseDb = db
-      release = () => {
-        try { db.prepare('DELETE FROM consumer WHERE id=1 AND pid=? AND nonce=?').run(process.pid, nonce) } finally { db.close(); leaseDb = null }
-      }
-      return true
-    } catch (error) {
-      try { db.exec('ROLLBACK') } catch { }
-      db.close()
-      throw error
-    }
-  }
-
-  function failed(key) {
-    const attempts = (leaseDb.prepare('SELECT attempts FROM retry WHERE event_key=?').get(key)?.attempts || 0) + 1
-    const delay = Math.min(600_000, 2000 * (2 ** Math.min(attempts - 1, 8)))
-    leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, attempts, now() + delay)
-  }
-
-  function parkInvalidTerminal(key) {
-    // A claimed terminal result with invalid metadata may already have sent.
-    // Keep evidence and durably require repair, never call the model again.
-    leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, 1, Number.MAX_SAFE_INTEGER)
-  }
-
-  function scheduleReview(event, completed) {
+function buildReviewCandidate(base, event, completed, at) {
+  const pending = path.join(base, 'pending'), done = path.join(base, 'done')
     if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
-        !('next_review_at' in completed) || completed.next_review_at > now()) return null
+        !('next_review_at' in completed) || completed.next_review_at > at) return null
     const parentKey = observationKey(event.scope, event.event_id)
     const review = validateObservation({ ...event,
       event_id: 'main-review:' + parentKey + ':' + completed.next_review_at,
@@ -336,13 +259,338 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       }
     }
     if (read.completion) return null
-    if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(name)?.next_after || 0) > now()) return null
     return { event: read.value, name, sha256: read.sha256, raw: read.raw }
   }
 
+
+const SCANNER_PROTOCOL = 'dsh-observation-file-scanner/v1'
+const RECONCILE_MS = 30_000
+const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.test(name)
+
+// This object runs in a worker in production. Its cache is a discovery index:
+// a hit only omits inert history, never authorizes execution or acknowledges it.
+// Every executable candidate and review is read and validated again.
+function fileScanner(directory, incremental = true) {
+  const base = path.resolve(directory), pending = path.join(base, 'pending'), done = path.join(base, 'done')
+  const history = new Map(), versions = new Map(), reads = new Map(), watchers = []
+  let generation = 0, fullAt = null, reconcile = true, directories = null
+  const metrics = { reads: 0, skipped: 0, selected: 0, entries: 0, full: true }
+  const dirty = filename => {
+    if (filename === null || filename === undefined) { reconcile = true; return }
+    const name = String(filename)
+    if (evidenceName(name)) versions.set(name, ++generation)
+  }
+  const directoryIdentity = () => [base, pending, done].map(directory => {
+    ordinaryDirectories(directory)
+    const info = fs.lstatSync(directory, { bigint: true })
+    return [String(info.dev), String(info.ino)]
+  })
+  return {
+    start() {
+      ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
+      directories = stable(directoryIdentity())
+      if (incremental) for (const directory of [pending, done]) {
+        try {
+          const watcher = fs.watch(directory, (_type, name) => dirty(name))
+          watcher.on('error', () => { reconcile = true })
+          watcher.unref?.(); watchers.push(watcher)
+        } catch { reconcile = true }
+      }
+      return { ready: true }
+    },
+    list({ full, at }) {
+      if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scanner timestamp')
+      ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
+      const identity = stable(directoryIdentity())
+      if (identity !== directories) { history.clear(); reads.clear(); reconcile = true; directories = identity }
+      const pendingNames = fs.readdirSync(pending), doneNames = new Set(fs.readdirSync(done))
+      const all = [...new Set([...pendingNames, ...doneNames])].filter(evidenceName)
+      const names = new Set(all)
+      for (const name of history.keys()) if (!names.has(name)) history.delete(name)
+      for (const name of versions.keys()) if (!names.has(name)) versions.delete(name)
+      reads.clear()
+      const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= RECONCILE_MS
+      if (audit) { fullAt = at; reconcile = false }
+      const selected = audit ? all : all.filter(name => {
+        const entry = history.get(name)
+        return !entry || !doneNames.has(name) || entry.version !== (versions.get(name) || 0) || entry.nextAt <= at
+      })
+      Object.assign(metrics, { skipped: all.length - selected.length, selected: selected.length, entries: all.length, full: audit })
+      return selected
+    },
+    read({ key }) {
+      const name = key + '.json', version = versions.get(name) || 0
+      const read = readObservationEvidence(base, key); metrics.reads++
+      if (!read.completion && history.has(name)) {
+        throw new ObservationQueueError('Previously terminal evidence lost its completion; automatic replay refused')
+      }
+      if (read.completion) reads.set(key, { read, version })
+      // Only one terminal read is awaiting its parent-side acknowledgement.
+      if (reads.size > 16) throw new ObservationQueueError('Scanner read window exceeded')
+      return read
+    },
+    review({ key, sha256, completionSha256, at, acknowledged }) {
+      const previous = reads.get(key)
+      reads.delete(key)
+      if (!previous || previous.read.sha256 !== sha256 || previous.read.completionSha256 !== completionSha256) {
+        throw new ObservationQueueError('Review does not match this scanner read')
+      }
+      const current = readObservationEvidence(base, key); metrics.reads++
+      if (current.sha256 !== sha256 || current.completionSha256 !== completionSha256 || !current.completion) {
+        throw new ObservationQueueError('Evidence changed during acknowledgement')
+      }
+      const event = current.value, completion = current.completion
+      const result = buildReviewCandidate(base, event, completion, at)
+      if (acknowledged === true) {
+        const future = !['unknown', 'no_decision'].includes(completion.status) && !producerOwnedReview.has(event.kind)
+          && Number.isSafeInteger(completion.next_review_at) && completion.next_review_at > at
+        history.set(key + '.json', { version: previous.version, nextAt: future ? completion.next_review_at : Infinity })
+      }
+      return result
+    },
+    verify({ key, sha256 }) {
+      const current = readObservationEvidence(base, key); metrics.reads++
+      if (current.completion || current.sha256 !== sha256) throw new ObservationQueueError('Executable evidence changed before dispatch')
+      // An unfinished review must still have its real, current parent ancestry.
+      if (queuedReview(current.value)) reviewAnchor(base, current.value)
+      return { verified: true }
+    },
+    complete({ key, sha256, raw: text, marker }) {
+      if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_OBSERVATION_BYTES) {
+        throw new ObservationQueueError('Completion original exceeds size limit')
+      }
+      const raw = Buffer.from(text, 'utf8'), event = validateObservation(JSON.parse(text))
+      if (observationKey(event.scope, event.event_id) !== key || raw.length > MAX_OBSERVATION_BYTES || hash(raw) !== sha256) {
+        throw new ObservationQueueError('Completion snapshot identity mismatch')
+      }
+      validateCompletion(marker, event, sha256, raw)
+      ordinaryDirectories(pending); ordinaryDirectories(done)
+      try {
+        if (readRegular(path.join(pending, key + '.json'), MAX_OBSERVATION_BYTES).sha256 !== sha256) {
+          throw new ObservationQueueError('Observation changed before completion')
+        }
+      } catch (error) { if (error.code !== 'ENOENT') throw error }
+      publish(path.join(done, key + '.json'), marker)
+      history.delete(key + '.json')
+      return { sha256: hash(JSON.stringify(marker) + '\n') }
+    },
+    stats() { return { ...metrics, cached: history.size, watchers: watchers.length } },
+    close() { for (const watcher of watchers) watcher.close(); history.clear(); reads.clear(); versions.clear() },
+  }
+}
+
+function inlineScanner(base) {
+  const files = fileScanner(base, false)
+  return { start: async () => files.start(), call: async (method, args) => files[method](args),
+    close: () => { files.close(); return Promise.resolve() }, status: () => ({ mode: 'inline', ...files.stats() }) }
+}
+
+function backgroundScanner(base) {
+  let worker = null, starting = null, terminating = Promise.resolve(), closed = false, serial = 0, starts = 0
+  let lastError = null, metrics = {}, closePromise = null, rejectStart = null
+  const pending = new Map()
+  const fail = (error, instance) => {
+    if (worker !== instance) return
+    lastError = error.name || 'Error'; worker = null
+    rejectStart?.(error); rejectStart = null
+    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(error) }
+    pending.clear()
+    terminating = instance.terminate().catch(() => {})
+  }
+  const start = async () => {
+    if (closed) throw new ObservationQueueError('Observation scanner stopped')
+    if (worker && !starting) return
+    if (starting) return starting
+    starting = (async () => {
+      await terminating
+      if (closed) throw new ObservationQueueError('Observation scanner stopped')
+      const instance = new Worker(new URL(import.meta.url), { workerData: { protocol: SCANNER_PROTOCOL, directory: base },
+        execArgv: [], env: {}, stdout: true, stderr: true,
+        resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 } })
+      worker = instance; starts++
+      // All business errors use the typed reply/error channel. Drain warning
+      // pipes so a worker cannot be blocked by its own diagnostic output.
+      instance.stdout.resume(); instance.stderr.resume()
+      await new Promise((resolve, reject) => {
+        rejectStart = reject
+        const timer = setTimeout(() => { const error = new ObservationQueueError('Scanner startup timeout'); fail(error, instance); reject(error) }, 10000)
+        instance.on('message', message => {
+          if (worker !== instance || !message || typeof message !== 'object') return
+          if (message.ready === SCANNER_PROTOCOL) { clearTimeout(timer); rejectStart = null; instance.unref(); resolve(); return }
+          const entry = pending.get(message.id)
+          if (!entry) return
+          pending.delete(message.id); clearTimeout(entry.timer)
+          if (!pending.size) instance.unref()
+          if (message.error) {
+            const error = new ObservationQueueError(message.error.message)
+            if (message.error.code) error.code = message.error.code
+            entry.reject(error)
+          } else { metrics = message.stats || metrics; entry.resolve(message.value) }
+        })
+        instance.on('error', error => { clearTimeout(timer); fail(error, instance); reject(error) })
+        instance.on('exit', () => {
+          clearTimeout(timer)
+          if (worker === instance) { const error = new ObservationQueueError('Scanner worker exited'); fail(error, instance); reject(error) }
+        })
+      })
+    })()
+    try { await starting } finally { starting = null }
+  }
+  return {
+    start,
+    async call(method, args) {
+      await start()
+      if (closed || !worker) throw new ObservationQueueError('Scanner unavailable')
+      if (pending.size >= 16) throw new ObservationQueueError('Scanner request window exceeded')
+      const instance = worker, id = ++serial
+      instance.ref()
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => fail(new ObservationQueueError('Scanner request timeout'), instance), 15000)
+        pending.set(id, { resolve, reject, timer })
+        try { instance.postMessage({ id, method, args }) } catch (error) { fail(error, instance) }
+      })
+    },
+    status() { return { mode: 'worker', thread_id: worker?.threadId || null, starts, pending: pending.size, last_error: lastError, ...metrics } },
+    close() {
+      if (closePromise) return closePromise
+      closed = true
+      if (worker) fail(new ObservationQueueError('Observation scanner stopped'), worker)
+      closePromise = Promise.allSettled([starting, terminating]).then(() => {})
+      return closePromise
+    },
+  }
+}
+
+// Explicit inline mode is for deterministic, isolated filesystem/clock tests.
+// The installed adapter always uses the default worker; there is no silent
+// fallback to the shared chat thread if worker initialization fails.
+export function createInlineObservationPump(options) { return createObservationPump({ ...options, scanMode: 'inline' }) }
+
+export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, log = () => {}, now = Date.now,
+  intervalMs = 2000, isOwnerAlive = ownerAlive, scanMode = 'worker' } = {}) {
+  if (typeof directory !== 'string' || !directory.trim() || typeof dispatch !== 'function') throw new ObservationQueueError('directory and dispatch are required')
+  if (!['worker', 'inline'].includes(scanMode)) throw new ObservationQueueError('Invalid observation scanner mode')
+  const base = path.resolve(directory)
+  const pending = path.join(base, 'pending')
+  const done = path.join(base, 'done')
+  const leaseFile = path.join(base, 'consumer.sqlite')
+  let timer, busy = false, stopped = true, release = null, leaseDb = null
+  let scanInProgress = false
+  let rescanRequested = false, wakeDrain = null
+  let fullRescanRequested = true, scanner = null, drainFinished = Promise.resolve(), finishDrain, stopping = null
+  const invalidEvidence = new Set()
+  // A restart retries acknowledgement from durable evidence. Within this pump,
+  // unchanged terminal bytes need not reacquire the policy lock every poll.
+  // This cache never authorizes dispatch, hides changed evidence or marks sends.
+  const acknowledgedTerminals = new Map()
+  // A scanner restart after a settled model turn retries only its terminal
+  // write. Never invoke that turn again merely because file RPC was lost.
+  const unsettledWrites = new Map()
+  let lastReportAt = 0
+
+  function reportScanner(phase, error = null) {
+    if (!leaseDb) return
+    const at = Date.now()
+    const value = { version: 1, phase, at, owner_pid: process.pid, active_scopes: inFlightCount,
+      invalid_evidence: invalidEvidence.size, error, ...scanner?.status() }
+    try {
+      leaseDb.prepare('INSERT OR REPLACE INTO scanner_health(id,pid,updated_at,status_json) VALUES (1,?,?,?)')
+        .run(process.pid, at, JSON.stringify(value))
+      lastReportAt = performance.now()
+    } catch (failure) { log('warn', 'observation_scanner_health_failed:' + failure.name) }
+  }
+  let inFlightCount = 0
+
+  async function acknowledgeTerminal(event, marker, name, eventHash, markerHash) {
+    const fingerprint = eventHash + ':' + markerHash
+    if (acknowledgedTerminals.get(name) === fingerprint) return true
+    const result = await acknowledge(event, marker)
+    // Legacy callbacks resolve void. A missing pin is the idempotent result of
+    // an earlier successful ack (including a crash before this cache existed).
+    // Other negative outcomes remain retryable and never enter this cache.
+    if (result === undefined || (plain(result) && (result.acknowledged === true ||
+        (result.acknowledged === false && result.reason === 'unknown_observation')))) {
+      acknowledgedTerminals.set(name, fingerprint)
+      return true
+    }
+    return false
+  }
+
+  function takeClaim() {
+    ordinaryDirectories(pending, true)
+    ordinaryDirectories(done, true)
+    if (fs.existsSync(leaseFile)) {
+      const info = fs.lstatSync(leaseFile)
+      if (!info.isFile() || info.isSymbolicLink()) throw new ObservationQueueError('Consumer lease must be an ordinary SQLite file')
+    }
+    const db = new DatabaseSync(leaseFile)
+    const nonce = randomUUID()
+    try {
+      db.exec('PRAGMA busy_timeout=2500; PRAGMA synchronous=FULL')
+      const version = db.prepare('PRAGMA user_version').get().user_version
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
+      if (version !== 1 && !(version === 0 && tables.length === 0)) throw new ObservationQueueError('Unknown consumer lease schema')
+      db.exec('BEGIN IMMEDIATE')
+      db.exec('CREATE TABLE IF NOT EXISTS consumer (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, nonce TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retry (event_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_after INTEGER NOT NULL); PRAGMA user_version=1')
+      db.exec('CREATE TABLE IF NOT EXISTS scanner_health (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, updated_at INTEGER NOT NULL, status_json TEXT NOT NULL)')
+      const owner = db.prepare('SELECT pid,nonce FROM consumer WHERE id=1').get()
+      if (owner && (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !identity(owner.nonce) || isOwnerAlive(owner.pid))) {
+        db.exec('ROLLBACK'); db.close()
+        log('warn', 'observation_consumer_already_owned')
+        return false
+      }
+      // Atomic SQLite replacement avoids stale-file unlink/ABA races. A long
+      // running living owner is never reclaimed merely because time elapsed.
+      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce) VALUES (1,?,?)').run(process.pid, nonce)
+      db.exec('COMMIT')
+      leaseDb = db
+      release = () => {
+        try { db.prepare('DELETE FROM consumer WHERE id=1 AND pid=? AND nonce=?').run(process.pid, nonce) } finally { db.close(); leaseDb = null }
+      }
+      return true
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch { }
+      db.close()
+      throw error
+    }
+  }
+
+  function failed(key) {
+    const attempts = (leaseDb.prepare('SELECT attempts FROM retry WHERE event_key=?').get(key)?.attempts || 0) + 1
+    const delay = Math.min(600_000, 2000 * (2 ** Math.min(attempts - 1, 8)))
+    leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, attempts, now() + delay)
+  }
+
+  function parkInvalidTerminal(key) {
+    // A claimed terminal result with invalid metadata may already have sent.
+    // Keep evidence and durably require repair, never call the model again.
+    leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, 1, Number.MAX_SAFE_INTEGER)
+  }
+
+  async function scheduleReview(event, completed, read, acknowledged) {
+    const review = await scanner.call('review', { key: observationKey(event.scope, event.event_id),
+      sha256: read.sha256, completionSha256: read.completionSha256, at: now(), acknowledged })
+    if (!review) return null
+    if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(review.name)?.next_after || 0) > now()) return null
+    return { ...review, raw: Buffer.from(review.raw) }
+  }
+
   async function processEntry({ event, name, sha256, raw }) {
+    const retained = unsettledWrites.get(name)
+    if (retained) {
+      if (retained.sha256 !== sha256) throw new ObservationQueueError('Settled observation bytes changed')
+      const receipt = await scanner.call('complete', retained.args)
+      await acknowledgeTerminal(event, retained.args.marker, name, sha256, receipt.sha256)
+      unsettledWrites.delete(name)
+      leaseDb.prepare('DELETE FROM retry WHERE event_key=?').run(name)
+      return 1
+    }
     let outcome
-    try { outcome = await dispatch(event) } catch (error) {
+    try {
+      await scanner.call('verify', { key: name.slice(0, -5), sha256 })
+      if (stopped) return 0
+      outcome = await dispatch(event)
+    } catch (error) {
       failed(name)
       log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
       return 0
@@ -354,14 +602,6 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       log('warn', 'observation_without_terminal_decision:' + name)
       return 0
     }
-    let current
-    try { current = readRegular(path.join(pending, name), MAX_OBSERVATION_BYTES) } catch (error) {
-      if (error.code !== 'ENOENT') throw error
-      // A cleanup during the turn cannot discard the already validated
-      // bytes captured before dispatch or force the completed turn to replay.
-      current = { sha256: hash(raw) }
-    }
-    if (current.sha256 !== sha256) throw new ObservationQueueError('Observation changed before completion')
     const local = outcome.status === 'no_decision'
     const marker = { version: local ? 3 : 2, event_raw: raw.toString('utf8'), event_id: event.event_id, scope: event.scope,
       event_sha256: sha256, completed_at: local ? outcome.completed_at : now(), status: outcome.status,
@@ -383,22 +623,28 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       log('error', 'observation_invalid_terminal_parked:' + name + ':' + error.name)
       return 0
     }
-    publish(path.join(done, name), marker)
+    const args = { key: name.slice(0, -5), sha256, raw: raw.toString('utf8'), marker }
+    unsettledWrites.set(name, { sha256, args })
+    const receipt = await scanner.call('complete', args)
     leaseDb.prepare('DELETE FROM retry WHERE event_key=?').run(name)
-    await acknowledgeTerminal(event, marker, name, sha256, hash(JSON.stringify(marker) + '\n'))
+    await acknowledgeTerminal(event, marker, name, sha256, receipt.sha256)
+    unsettledWrites.delete(name)
     return 1
   }
 
-  async function drain() {
+  async function drain(full = true) {
     if (busy) {
       // A poll is also a rescan signal while other scopes await their models.
       rescanRequested = true
+      fullRescanRequested ||= full
       wakeDrain?.()
       return { processed: 0, status: 'not_owner_or_busy' }
     }
     if (!release) return { processed: 0, status: 'not_owner_or_busy' }
     busy = true
     rescanRequested = true
+    fullRescanRequested ||= full
+    drainFinished = new Promise(resolve => { finishDrain = resolve })
     let processed = 0, launched = 0, failure = null
     let lastYieldAt = performance.now()
     const backlog = new Map(), inFlight = new Map(), activeScopes = new Set(), terminal = new Set()
@@ -406,6 +652,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     const launch = entry => {
       const scope = entry.event.scope
       activeScopes.add(scope)
+      inFlightCount = activeScopes.size
       backlog.delete(entry.name)
       const task = processEntry(entry).then(count => {
         processed += count
@@ -414,6 +661,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       }, error => { failure ||= error }).finally(() => {
         inFlight.delete(entry.name)
         activeScopes.delete(scope)
+        inFlightCount = activeScopes.size
         wake()
       })
       inFlight.set(entry.name, task)
@@ -424,11 +672,13 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           rescanRequested = false
           backlog.clear()
           scanInProgress = true
+          reportScanner('scanning')
           try {
-            ordinaryDirectories(pending, true)
-            ordinaryDirectories(done)
-            const names = [...new Set([...fs.readdirSync(pending), ...fs.readdirSync(done)])].filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+            const audit = fullRescanRequested
+            fullRescanRequested = false
+            const names = await scanner.call('list', { full: audit, at: now() })
             for (const [index, name] of names.entries()) {
+              if (performance.now() - lastReportAt >= 1000) reportScanner('scanning')
               // Check real monotonic work time: one complete evidence read stays
               // synchronous, but cheap or costly histories both yield to I/O.
               if (index > 0 && performance.now() - lastYieldAt >= 10) {
@@ -438,15 +688,18 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
               }
               try {
                 if (inFlight.has(name)) continue
-                const read = readObservationEvidence(base, name.slice(0, -5))
+                const read = await scanner.call('read', { key: name.slice(0, -5) })
+                if (stopped) break
+                read.raw = Buffer.from(read.raw)
                 const event = validateObservation(read.value)
                 if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
                 if (read.completion) {
                   const completed = read.completion
                   // A crash after durable completion but before core acknowledgement
                   // is recovered here, without running the model or sending again.
-                  await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
-                  const review = scheduleReview(event, completed)
+                  const acknowledged = await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
+                  if (acknowledged) unsettledWrites.delete(name)
+                  const review = await scheduleReview(event, completed, read, acknowledged)
                   if (review) backlog.set(review.name, review)
                   invalidEvidence.delete(name)
                   continue
@@ -461,7 +714,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 invalidEvidence.add(name)
               }
             }
-          } finally { scanInProgress = false }
+          } finally { scanInProgress = false; reportScanner(inFlight.size ? 'waiting_turns' : 'ready') }
         }
         if (failure) throw failure
         const ordered = [...backlog.values()].sort((a, b) => a.event.created_at - b.event.created_at || a.name.localeCompare(b.name))
@@ -497,17 +750,26 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           break
         }
         if (rescanRequested) continue
+        reportScanner('waiting_turns')
         // Completion frees one scope; polling requests a new immutable scan.
         // Neither wait holds up a different scope's live native inbox.
         await new Promise(resolve => { wakeDrain = resolve })
       }
+    } catch (error) {
+      reportScanner('error', error.name)
+      throw error
     } finally {
       wakeDrain = null
       // Even a scan/ack failure must not release the unique lease while another
       // scope may still be producing a terminal receipt or uncertain delivery.
       await Promise.allSettled([...inFlight.values()])
       busy = false
-      if (stopped && release) { release(); release = null }
+      if (stopped) {
+        await scanner?.close()
+        reportScanner('stopped')
+        if (release) { release(); release = null }
+      }
+      finishDrain?.(); finishDrain = null
     }
     if (failure) throw failure
     return { processed, status: 'drained' }
@@ -515,18 +777,29 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
 
   return {
     async start({ poll = true } = {}) {
+      if (stopping) await stopping
       if (!stopped || busy) return false
       stopped = false
+      fullRescanRequested = true
+      scanner = scanMode === 'worker' ? backgroundScanner(base) : inlineScanner(base)
       try {
-        if (!takeClaim()) { stopped = true; return false }
-      } catch (error) { stopped = true; throw error }
+        await scanner.start()
+        if (stopped) { await scanner.close(); return false }
+        if (!takeClaim()) { stopped = true; await scanner.close(); return false }
+      } catch (error) {
+        const canceled = stopped
+        stopped = true; await scanner.close()
+        if (canceled) return false
+        throw error
+      }
+      reportScanner('ready')
       if (poll) {
         const tick = () => {
           // A slow full scan must not schedule another full scan of itself.
           // Explicit drain() still requests a rescan, and polls while awaiting
           // in-flight turns still discover new work in other scopes.
           if (scanInProgress) return
-          void drain().catch((error) => log('error', 'observation_pump_failed:' + error.name))
+          void drain(false).catch((error) => log('error', 'observation_pump_failed:' + error.name))
         }
         timer = setInterval(tick, intervalMs)
         timer.unref?.()
@@ -535,12 +808,39 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       return true
     },
     drain,
+    status: () => ({ running: !stopped, scanning: scanInProgress, ...scanner?.status() }),
     stop() {
       stopped = true
+      reportScanner('stopping')
       wakeDrain?.()
       if (timer) { clearInterval(timer); timer = null }
       // Retain the ownership lock until any in-flight decision settles.
-      if (!busy && release) { release(); release = null }
+      if (stopping) return stopping
+      if (!busy && scanMode === 'inline') { scanner?.close(); if (release) { release(); release = null } }
+      const finished = busy ? drainFinished : Promise.resolve().then(async () => {
+        await scanner?.close()
+        reportScanner('stopped')
+        if (release) { release(); release = null }
+      })
+      stopping = finished.finally(() => { stopping = null })
+      return stopping
     },
   }
+}
+
+if (!isMainThread && workerData?.protocol === SCANNER_PROTOCOL) {
+  const files = fileScanner(workerData.directory)
+  const methods = new Set(['list', 'read', 'review', 'verify', 'complete'])
+  files.start()
+  parentPort.on('message', message => {
+    if (!message || !Number.isSafeInteger(message.id) || !methods.has(message.method)) return
+    try {
+      const value = files[message.method](message.args)
+      parentPort.postMessage({ id: message.id, value, stats: files.stats() })
+    } catch (error) {
+      parentPort.postMessage({ id: message.id, error: { message: String(error.message).slice(0, 4096), code: error.code } })
+    }
+  })
+  parentPort.on('close', () => files.close())
+  parentPort.postMessage({ ready: SCANNER_PROTOCOL })
 }
