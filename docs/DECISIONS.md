@@ -8,6 +8,8 @@
 
 ## 一个决策者
 
+连续来信不会启动另一套聊天模型。原生聊天轮次若已有同范围、同归属、实际排在队首且指纹完整的更新 live 输入，可在安全步骤边界以 `superseded_live_input` 结束失效轮次，再待原轮次记账结束、原生 driver 空闲后唤醒既有输入。唤醒前再次核对实际队首、归属、SDK 方法、轮次身份和取消状态；不把“已接收但尚未入队”或任意 foreign 输入当作可续行证据，不重插消息、不把旧票或预留交给新轮次。已开始的模型、压缩、HTTP 和工具调用不会因此被强行取消。
+
 `decisions.mode` 默认 `unified`。QQ 真实消息由 OneBot WebSocket 入站，沿用原 DSH 聊天 agent、模型、人设和最近会话。没有额外的分类模型。群轮询、计划、问候、提醒、娱乐和维护作业只提供证据，不能直接生成并发送一段角色台词。
 
 主 agent 用 `qq_decide` 选择 `reply / idle / defer / silence / resume / tool_action`。工具参数不含会话范围、发送者、revision 或许可 nonce；这些来自真实传输与当前 turn 绑定。`reply` 允许发送，也可以安静结束。`idle/defer` 不产生确认消息，不改变持久静默状态。

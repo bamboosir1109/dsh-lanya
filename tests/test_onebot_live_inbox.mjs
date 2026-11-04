@@ -622,6 +622,72 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   assert.fail('native fixture did not settle')
 }
 
+test('native burst preserves the first claimed context then yields stale steps and wakes the newest input once', async t => {
+  for (const group of [false, true]) await t.test(group ? 'group' : 'private', async t => {
+    const entered=defer(), gate=defer();let assemblies=0
+    const h=await nativeDriverFixture(t,{assemble:async()=>{if(++assemblies===1){entered.resolve();await gate.promise}}})
+    const step=h.agent.step;let enteredSteps=0
+    h.agent.step=async()=>{const result=await step();return ++enteredSteps===1?null:result}
+    let args={}
+    if(group){
+      const scope='group:303';h.bridge.chats.delete(h.chat.chatId);h.chat.chatId=scope
+      h.bridge.chats.set(scope,h.chat);h.bridge.bySession.set(h.agent.session.id,scope)
+      args={message_type:'group',group_id:303,user_id:202}
+    }
+    await h.receive('first burst input',args);await entered.promise
+    for(let i=0;i<12;i++)await h.receive('new burst input '+i,args)
+    const newest=h.agent.inbox.nextTurn[0]
+    assert.equal(h.agent.inbox.nextTurn.length,1)
+    const historyBefore=structuredClone(h.nativeEvents)
+    gate.resolve()
+    await driverSettled(h,()=>h.steps.length===2&&h.agent.status==='idle')
+    assert.notEqual(h.steps[0].claimedId,newest.id,'first input enters native history before yielding')
+    assert.equal(h.steps[1].claimedId,newest.id)
+    assert.equal(h.steps[1].role,group?'member':'admin')
+    assert.deepEqual(h.nativeEvents.slice(0,historyBefore.length),historyBefore,'raw insertions remain intact')
+    assert.deepEqual(h.nativeEvents.filter(e=>e.type==='turn/end').map(e=>e.data.reason.kind),['blocked','completed'])
+    assert.equal(h.requests.filter(r=>r.operation==='reserve').length,2)
+    assert.equal(h.agent.inbox.hasPending,false)
+    assert.equal(h.calls.filter(c=>/^(send_|upload_)/.test(c.action)).length,0)
+  })
+})
+
+test('native burst stops stale model steps and waits for old accounting before waking its successor', async t => {
+  const h=await nativeDriverFixture(t),entered=defer(),modelGate=defer(),settling=defer(),settleGate=defer()
+  const step=h.agent.step;let count=0
+  h.agent.step=async()=>{const result=await step();if(++count===1){entered.resolve();await modelGate.promise;return null}return result}
+  const adapter=h.bridge.lanyaPolicy,provider=adapter.budgetProvider
+  adapter.budgetProvider=async request=>{
+    const result=await provider(request)
+    if(request.operation==='settle'&&count===1){settling.resolve();await settleGate.promise}
+    return result
+  }
+  await h.receive('active burst input');await entered.promise
+  await h.receive('new burst input one');await h.receive('new burst input two')
+  const newest=h.agent.inbox.nextTurn[0],original=structuredClone(h.agent.inbox.nextTurn)
+  modelGate.resolve();await settling.promise;await h.agent.whenIdle()
+  assert.equal(h.steps.length,1,'no stale second model step')
+  assert.deepEqual(h.agent.inbox.nextTurn,original,'successor stays durably pending until accounting ends')
+  settleGate.resolve()
+  await driverSettled(h,()=>h.steps.length===2&&h.agent.status==='idle')
+  assert.equal(h.steps[1].claimedId,newest.id)
+  assert.deepEqual(h.requests.map(r=>r.operation),['reserve','settle','reserve','settle'])
+  assert.deepEqual(h.nativeEvents.filter(e=>e.type==='turn/end').map(e=>e.data.reason.kind),['blocked','completed'])
+  assert.equal(h.agent.inbox.hasPending,false)
+})
+
+test('canceling a superseded native turn does not cause an automatic wake or replay', async t => {
+  const entered=defer(),gate=defer();let assemblies=0
+  const h=await nativeDriverFixture(t,{assemble:async()=>{if(++assemblies===1){entered.resolve();await gate.promise}},
+    onEvent:(event,host)=>{if(event.type==='turn/end'&&event.data.reason.kind==='blocked')host.agent.cancel({kind:'user'},{keepInbox:true})}})
+  const step=h.agent.step;h.agent.step=async()=>{await step();return null}
+  await h.receive('old fixture');await entered.promise;await h.receive('new fixture')
+  const pending=structuredClone(h.agent.inbox.nextTurn);gate.resolve();await h.agent.whenIdle()
+  await new Promise(resolve=>setTimeout(resolve,20))
+  assert.equal(h.steps.length,1);assert.deepEqual(h.agent.inbox.nextTurn,pending)
+  assert.equal(h.requests.filter(r=>r.operation==='reserve').length,1)
+})
+
 async function primaryEvent(h, eventId) {
   const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
   adapter.runtimeCapabilities = async (conversation, owner) => ({

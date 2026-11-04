@@ -616,6 +616,21 @@ export class OneBotDecisionAdapter {
     return record.binding.capabilityContext || ''
   }
 
+  supersedingLiveInput(chat, record) {
+    // A claimed input is added to model history only by the first native
+    // step. Let it enter once so its meaning is available to the successor;
+    // keeping its inbox insertion alone would preserve bytes but lose context.
+    if (record?.binding?.origin !== 'live' || !record.nativeStepEntered || record.claimConflict || record.ended ||
+        record.inFlight.size) return null
+    const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
+    if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
+        entry.binding.scope !== record.binding.scope || entry.binding.revision <= record.binding.revision ||
+        !['admin', 'member'].includes(entry.role) || message.source?.kind !== 'plugin:dsh-onebot' ||
+        entry.fingerprint !== identity(JSON.stringify(message)) || !entry.binding.owner || !record.binding.owner ||
+        !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === record.binding.owner[key])) return null
+    return entry
+  }
+
   installNativeScope(ctx) {
     if (this.nativeScopes.has(ctx)) return
     if (typeof ctx?.on !== 'function' || typeof ctx.tools?.guard !== 'function' ||
@@ -677,6 +692,13 @@ export class OneBotDecisionAdapter {
             turn: request.turn, epoch: this.startEpoch })
         }
         return { kind: 'reject', reason: 'unbound_native_input' }
+      }
+      // A physically queued owned successor can replace a stale live turn at
+      // a step boundary. An admission still in progress cannot trigger this.
+      if (this.supersedingLiveInput(chat, record)) {
+        record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+          turn: request.turn, epoch: this.startEpoch, binding: record.binding })
+        return { kind: 'reject', reason: 'superseded_live_input' }
       }
       const restAt = this.now(), restReason = this.autonomyBlockReason(record.binding, restAt)
       if (restReason) {
@@ -748,8 +770,10 @@ export class OneBotDecisionAdapter {
   }
 
   async wakeOwnedPendingAfterUnbound(chat, record, event) {
-    const marker = record.unboundIdleWake
+    const marker = record.supersededIdleWake || record.unboundIdleWake
     if (!marker || record.unboundIdleWakeConsumed || event.data.reason?.kind !== 'blocked') return
+    const superseded = Boolean(record.supersededIdleWake)
+    if (superseded && (record.binding !== marker.binding || record.binding?.origin !== 'live')) return
     record.unboundIdleWakeConsumed = true
     const agent = marker.agent, state = this.state(chat), scope = chat.chatId
     const refuse = reason => this.log('warn', 'native_internal_idle_wake_refused:' + reason)
@@ -772,6 +796,8 @@ export class OneBotDecisionAdapter {
           !['live', 'observation'].includes(entry.binding.origin) || entry.binding.scope !== scope ||
           !entry.binding.owner || entry.fingerprint !== identity(JSON.stringify(message)) ||
           message.source?.kind !== (entry.binding.origin === 'live' ? 'plugin:dsh-onebot' : 'plugin:dsh-lanya-observation')) return null
+      if (superseded && (entry.binding.origin !== 'live' || entry.binding.revision <= marker.binding.revision ||
+          !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === marker.binding.owner[key]))) return null
       return { message, entry }
     }
     const selected = front()
@@ -785,7 +811,7 @@ export class OneBotDecisionAdapter {
     // No async gap after the final guards. This only starts the existing SDK
     // driver; normal native claim, budget admission and output guards still run.
     wake.call(agent)
-    this.log('info', 'native_internal_idle_wake_started:unbound_native_input')
+    this.log('info', 'native_internal_idle_wake_started:' + (superseded ? 'superseded_live_input' : 'unbound_native_input'))
   }
 
   autonomyBlockReason(binding, at = this.now()) {
@@ -1108,12 +1134,10 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     record.ended = true
     if (state.active === record) state.active = null
-    void this.wakeOwnedPendingAfterUnbound(chat, record, event)
-      .catch(error => this.log('warn', 'native_internal_idle_wake_unavailable:' + error.name))
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
-    if (memeOnlyReply(record)) record.shadow.loopPending = null
+    if (record.supersededIdleWake || memeOnlyReply(record)) record.shadow.loopPending = null
     else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
-    void (async () => {
+    const settled = (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
       try { await this.settleBudget(chat, record, event) }
       catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
@@ -1177,6 +1201,10 @@ export class OneBotDecisionAdapter {
         : record.outcomes.some((item) => ['suppressed', 'duplicate'].includes(item)) ? 'suppressed' : 'decided'
       completion.resolve({ completed: true, status, decision_id: record.decisionId, next_review_at: record.decision.next_review_at })
     })().catch((error) => this.log('error', 'policy_turn_settlement_failed:' + error.name))
+    // Rejected turns stop the SDK driver. Continue the owned input only after
+    // accounting; never replay it or transfer the old turn's reservation.
+    void settled.then(() => this.wakeOwnedPendingAfterUnbound(chat, record, event))
+      .catch(error => this.log('warn', 'native_internal_idle_wake_unavailable:' + error.name))
   }
 
   attachOutbound(outbound) {
