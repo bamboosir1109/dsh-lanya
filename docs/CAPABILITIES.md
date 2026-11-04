@@ -1,6 +1,8 @@
 # 主 agent 的本机能力上下文
 
-本页描述未发布源码。OneBot adapter 在普通 QQ 入站和后台观察共用的 `enrichContext` 中注入 `trusted_runtime_capabilities`，交给原有聊天 agent、模型、人设与会话；不再依赖只有旧 `mind.build_prompt` 才读取的活动菜单，也不另外启动分类模型。
+本页描述未发布源码。OneBot adapter 在普通 QQ 入站和后台观察共用的 `enrichContext` 中读取 `trusted_runtime_capabilities`，交给原有聊天 agent、模型、人设与会话，不另外启动分类模型。
+
+原生领取模式把指南保存在该输入的进程内绑定中，在 `channel:dsh-lanya-runtime` 提示节装配；不把同一份长协议重复写入每条用户消息。装配发生在实际领取之后，只能读取当前 agent、会话及未结束、无冲突的活动轮。排队来信不能覆盖在途指南，结束后不再暴露它；非原生离线诊断仍在输入中附带说明。helper 每次重新读取配置，提示节省略单纯的读取时间 `generated_at`，避免仅时间变化就破坏模型前缀缓存；实际配置及状态变化仍进入下一轮。完整指南继续包含自主活动、记忆、语音和真实设备协议，所有动作仍独立核验当前权限；提示节本身不产生许可。
 
 `runtime_capabilities.py --stdin-json` 只接受可信 `cwd`、`agent_preset`、`conversation_key`。这些来自 adapter 的 `trustedOwner` 与规范聊天范围，不取观察 payload、网页、模型参数或进程碰巧所在的 cwd。返回 `dsh-runtime-capabilities/v1`，包含 `read_only=true`、精确 owner 和 conversation_key；adapter 校验后才注入。获取失败时明确报告能力状态未知，不从另一个工作区补齐。
 

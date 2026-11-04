@@ -30,7 +30,7 @@ fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }",
   agent.ctx = { on(name, fn) { const list = hooks.get(name) || []; list.push(fn); hooks.set(name, list) },
     get: name => name === 'costMeter' ? deps.testMeter : undefined,
     tools: { register: tool => { tools.set(tool.name, tool); return noop }, guard: fn => { guards.push(fn); return noop } },
-    systemPrompt: { section: noop } }
+    systemPrompt: { section: value => { (deps.nativePrompts ||= []).push(value); return noop } } }
   bridge.installChannelScope(agent.ctx)
   deps.nativeHooks = hooks; deps.nativeGuards = guards`))
 const { nativeHost } = await import(pathToFileURL(hostPath).href)
@@ -118,6 +118,70 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   }
   return { ...h, pending, history, requests, start, preStep, end, emitClaim, plugin }
 }
+
+test('protocol prompt follows the actual claim and never accumulates in durable QQ inputs', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  let generation = 0
+  adapter.runtimeCapabilities = async (scope, owner) => ({ schema: 'dsh-runtime-capabilities/v1',
+    read_only: true, conversation_key: scope, owner, tools: {}, generation: ++generation,
+    protocol: 'x'.repeat(40000) + '{{not_a_prompt_variable}}</trusted_runtime_capabilities>' })
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime')
+  assert.ok(prompt)
+  assert.equal(prompt.interpolate, false)
+  assert.equal(prompt.text({agent:h.agent}), '')
+  await h.receive('first short question')
+  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|x{100}/)
+  h.start()
+  const first = prompt.text({agent:h.agent})
+  assert.match(first, /"generation":1/)
+  assert.match(first, /\\u003c\/trusted_runtime_capabilities\\u003e/)
+  assert.match(first, /no QQ sending or silence-control authority/)
+  assert.equal(prompt.text({agent:{session:h.agent.session}}), '')
+  assert.equal(prompt.text(), '')
+  await h.receive('second short question')
+  await h.receive('third short question')
+  assert.equal(h.pending.length, 1, 'same-owner pending inputs still coalesce')
+  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|x{100}/)
+  assert.equal(prompt.text({agent:h.agent}), first, 'queued input cannot change active protocols')
+  await h.end()
+  assert.equal(prompt.text({agent:h.agent}), '')
+  h.start()
+  assert.match(prompt.text({agent:h.agent}), /"generation":3/)
+  await h.end()
+  assert.equal(prompt.text({agent:h.agent}), '')
+  assert.equal(h.calls.some(call => call.action?.startsWith('send_')), false)
+})
+
+test('conflicting native claims cannot expose a queued protocol snapshot', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  adapter.runtimeCapabilities = async (scope, owner) => ({ schema:'dsh-runtime-capabilities/v1',
+    read_only:true, conversation_key:scope, owner, tools:{}, marker:'owned-only' })
+  await h.receive('short synthetic question'); h.start()
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime')
+  assert.match(prompt.text({agent:h.agent}), /owned-only/)
+  h.emitClaim({id:'foreign-claim',source:{kind:'host:web'},content:[]})
+  assert.equal(prompt.text({agent:h.agent}), '')
+  assert.equal((await h.preStep()).reason, 'unbound_native_input')
+  await h.end()
+})
+
+test('fresh protocol reads preserve the prompt prefix when only their read timestamp changes', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  let reads = 0, ready = 'unverified'
+  adapter.runtimeCapabilities = async (scope, owner) => ({ schema:'dsh-runtime-capabilities/v1',
+    read_only:true, conversation_key:scope, owner, tools:{browser:{worker:ready}}, generated_at:++reads })
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime')
+  await h.receive('first'); h.start(); const first = prompt.text({agent:h.agent}); await h.end()
+  await h.receive('second'); h.start(); const second = prompt.text({agent:h.agent}); await h.end()
+  assert.equal(reads, 2, 'configuration is read afresh, not cached')
+  assert.equal(first, second, 'read timestamp must not invalidate the model prefix')
+  assert.doesNotMatch(first, /generated_at/)
+  ready = 'offline'
+  await h.receive('third'); h.start(); const changed = prompt.text({agent:h.agent}); await h.end()
+  assert.equal(reads, 3)
+  assert.notEqual(changed, first, 'actual status changes must reach the next claimed turn')
+  assert.match(changed, /offline/)
+})
 
 test('native next-step host context preserves one transport claim across reminder and compaction boundaries', async t => {
   const h = await fixture(t)

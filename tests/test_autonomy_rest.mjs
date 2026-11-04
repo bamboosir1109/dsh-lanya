@@ -27,7 +27,8 @@ function fixture(t, at = DAY) {
     { stateFile: path.join(root, 'policy.json'), now: () => clock, memoryContext: async () => null, runtimeCapabilities: async () => null })
   adapter.trustedOwner = async () => owner
   const hooks = new Map(), guards = []
-  const ctx = { on(name, hook) { hooks.set(name, hook) }, tools: { guard(fn) { guards.push(fn); return () => {} } } }
+  const ctx = { on(name, hook) { hooks.set(name, hook) }, tools: { guard(fn) { guards.push(fn); return () => {} } },
+    systemPrompt: { section() { return () => {} } } }
   adapter.installNativeScope(ctx)
   chat.agent.ctx = ctx
   t.after(async () => {

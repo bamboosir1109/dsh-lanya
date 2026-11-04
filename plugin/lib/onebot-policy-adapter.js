@@ -610,10 +610,23 @@ export class OneBotDecisionAdapter {
     return chat?.agent === agent ? chat : null
   }
 
+  nativeCapabilityContext(agent) {
+    const chat = this.nativeChat(agent), record = chat && this.state(chat).active
+    if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
+    return record.binding.capabilityContext || ''
+  }
+
   installNativeScope(ctx) {
     if (this.nativeScopes.has(ctx)) return
-    if (typeof ctx?.on !== 'function' || typeof ctx.tools?.guard !== 'function') throw new Error('Native claims require scoped agent and tool guards')
+    if (typeof ctx?.on !== 'function' || typeof ctx.tools?.guard !== 'function' ||
+        typeof ctx.systemPrompt?.section !== 'function') throw new Error('Native claims require scoped agent, prompt and tool guards')
     this.nativeScopes.add(ctx)
+    // Current protocols belong to this claimed turn's prompt, not to every
+    // durable user input. Repeating the full guide in history made ordinary
+    // chat trigger frequent synchronous compactions. Assembly occurs AFTER
+    // native claims; queued inputs therefore cannot replace the active guide.
+    ctx.systemPrompt.section({ name: 'channel:dsh-lanya-runtime', order: 91, interpolate: false,
+      text: ({ agent } = {}) => this.nativeCapabilityContext(agent) })
     // A monotonic synchronous SDK guard also covers browsing, Bili and other
     // non-QQ tools. Budget configuration is not an exception to nightly rest.
     ctx.tools.guard(exec => {
@@ -1392,8 +1405,20 @@ export class OneBotDecisionAdapter {
     try {
       if (capabilitiesRead.status === 'rejected') throw capabilitiesRead.reason
       const guide = capabilitiesRead.value
-      if (guide) enriched += '\n<trusted_runtime_capabilities>\n' + JSON.stringify(guide) + '\n</trusted_runtime_capabilities>\n'
-        + 'Use this local protocol guide in this same agent. Check fresh tool results; it grants no QQ sending or silence-control authority.'
+      if (guide) {
+        // Read and validate afresh above, but do not invalidate the entire
+        // model prefix cache merely because this read has a new wall clock.
+        // Actual configuration/readiness changes still change the prompt.
+        const promptGuide = this.nativeClaims ? { ...guide, generated_at: undefined } : guide
+        const capabilityContext = '\n<trusted_runtime_capabilities>\n' + JSON.stringify(promptGuide)
+          .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</trusted_runtime_capabilities>\n'
+          + 'Use this local protocol guide in this same agent. Check fresh tool results; it grants no QQ sending or silence-control authority.'
+        if (this.nativeClaims) {
+          const current = this.context.getStore()
+          if (!current?.binding || current.binding.scope !== canonicalScope(scope)) throw new Error('Native capability binding unavailable')
+          current.binding = Object.freeze({ ...current.binding, capabilityContext })
+        } else enriched += capabilityContext
+      }
     } catch (error) {
       this.log('warn', 'runtime_capabilities_unavailable:' + error.name)
       enriched += '\nTrusted runtime capability status is unavailable. Do not assume browser, Android or voice workers are running, or treat cached media as a fresh observation.'
