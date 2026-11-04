@@ -9,6 +9,7 @@ comments. Private-message text is never projected.
 This is a local runtime record, not proof of playback or recipient visibility.
 """
 import hashlib
+import contextlib
 import datetime as dt
 import io
 import json
@@ -18,9 +19,11 @@ from pathlib import Path
 import re
 import stat
 import time
+import tempfile
 
 MAX_SOURCE = 32 * 1024 * 1024
-MAX_EXPANDED = 64 * 1024 * 1024
+MAX_NATIVE_SOURCE = 256 * 1024 * 1024
+MAX_EXPANDED = 1024 * 1024 * 1024
 MAX_LINE = 4 * 1024 * 1024
 MAX_ROWS = 200000
 MAX_RESULT = 2 * 1024 * 1024
@@ -387,24 +390,78 @@ def _result_header(data):
     return json.dumps(rest, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
 
 
+@contextlib.contextmanager
+def _native_snapshot(path):
+    """Copy one stable bounded source, spilling past 1MiB to a temporary file.
+
+    The live handle closes before JSON parsing, so later appends do not require
+    an otherwise active conversation to stay idle throughout the projection.
+    The temporary snapshot is private to this read and closes on every exit.
+    """
+    path = ordinary(path)
+    before = path.stat()
+    _require(stat.S_ISREG(before.st_mode) and before.st_size <= MAX_NATIVE_SOURCE, 'source_limit')
+    signature = lambda row: (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns)
+    with tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode='w+b') as snapshot:
+        with path.open('rb') as raw:
+            _require(signature(os.fstat(raw.fileno())) == signature(before), 'source_changing')
+            remaining = before.st_size
+            while remaining:
+                chunk = raw.read(min(64 * 1024, remaining))
+                _require(chunk, 'source_changing')
+                snapshot.write(chunk)
+                remaining -= len(chunk)
+            _require(signature(os.fstat(raw.fileno())) == signature(before)
+                     and signature(ordinary(path).stat()) == signature(before), 'source_changing')
+        snapshot.seek(0)
+        yield snapshot
+
+
+@contextlib.contextmanager
+def _native_lines(path):
+    """Stream lines of a captured source, including concatenated zstd frames."""
+    with _native_snapshot(path) as snapshot, contextlib.ExitStack() as stack:
+        stream = snapshot
+        if path.suffix == '.zstd':
+            try:
+                import zstandard
+            except ImportError:
+                raise ActivityUnavailable('compression_unavailable') from None
+            stream = stack.enter_context(io.BufferedReader(
+                zstandard.ZstdDecompressor().stream_reader(snapshot, read_across_frames=True, closefd=False)))
+
+        def lines():
+            total, count = 0, 0
+            while True:
+                try:
+                    line = stream.readline(MAX_LINE + 2)
+                except Exception as error:
+                    raise ActivityUnavailable('malformed_source') from error
+                if not line:
+                    break
+                total += len(line); count += 1
+                _require(total <= MAX_EXPANDED and count <= MAX_ROWS + 1, 'source_limit')
+                _require(len(line) <= MAX_LINE + 2, 'source_limit')
+                _require(line.endswith(b'\n'), 'source_limit' if len(line) > MAX_LINE else 'malformed_source')
+                line = line[:-1]
+                if line.endswith(b'\r'):
+                    line = line[:-1]
+                _require(len(line) <= MAX_LINE, 'source_limit')
+                yield line
+
+        yield iter(lines())
+
+
 def _native(path, session, cwd, preset, role, cutoff, now, *, window_end=None, metadata=None):
-    raw = read_bytes(path)
-    if path.suffix == '.zstd':
-        try:
-            import zstandard
-        except ImportError:
-            raise ActivityUnavailable('compression_unavailable') from None
-        try:
-            with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(raw), read_across_frames=True) as stream:
-                raw = stream.read(MAX_EXPANDED + 1)
-        except Exception:
-            raise ActivityUnavailable('malformed_source') from None
-    _require(len(raw) <= MAX_EXPANDED, 'source_limit')
-    _require(raw.endswith(b'\n'))
-    lines = raw.splitlines()
-    _require(1 <= len(lines) <= MAX_ROWS + 1, 'source_limit')
-    _require(all(len(line) <= MAX_LINE for line in lines), 'source_limit')
-    header = _json(lines[0])
+    with _native_lines(path) as lines:
+        return _native_events(lines, session, cwd, preset, role, cutoff, now,
+                              window_end=window_end, metadata=metadata)
+
+
+def _native_events(lines, session, cwd, preset, role, cutoff, now, *, window_end=None, metadata=None):
+    first = next(lines, None)
+    _require(first is not None)
+    header = _json(first)
     _require(isinstance(header, dict) and header.get('type') == 'session' and header.get('version') == 4
              and type(header.get('isSeeded')) is bool)
     _require(header.get('id') == session and _workspace(header.get('cwd')) == _workspace(cwd), 'owner_mismatch')
@@ -412,7 +469,7 @@ def _native(path, session, cwd, preset, role, cutoff, now, *, window_end=None, m
     calls, records, markers = {}, [], 0
     active_turn = None
     available_from = None
-    for index, line in enumerate(lines[1:]):
+    for index, line in enumerate(lines):
         event = _json(line)
         _require(isinstance(event, dict) and isinstance(event.get('type'), str) and event.get('seq') == index and _integer(event.get('seq'))
                  and _integer(event.get('time')) and isinstance(event.get('data'), dict))

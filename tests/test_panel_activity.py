@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import tracemalloc
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -370,12 +371,8 @@ class PanelActivityTests(unittest.TestCase):
         self.assertEqual(get()['status'], 'unavailable')
         self.path.unlink(); self.assertEqual(get()['status'], 'unavailable')
         self.write()
-        with mock.patch.object(activity, 'MAX_SOURCE', 2):
-            # read_bytes receives its explicit native bound below; cap that path.
-            original = activity.read_bytes
-            with mock.patch.object(activity, 'read_bytes', side_effect=lambda path, maximum=activity.MAX_SOURCE:
-                    original(path, 2 if Path(path) == self.path else maximum)):
-                self.assertEqual(get()['status'], 'unavailable')
+        with mock.patch.object(activity, 'MAX_NATIVE_SOURCE', 2):
+            self.assertEqual(get()['status'], 'unavailable')
 
     def test_zstd_native_log_uses_the_same_owner_and_result_pair_validation(self):
         try: import zstandard
@@ -386,6 +383,122 @@ class PanelActivityTests(unittest.TestCase):
         result = activity.activity_snapshot(workspace=str(self.work), agent_preset='Fixture',
             identity_file=self.identity, dsh_home=self.home, now=NOW)
         self.assertEqual(result['mainAgent']['counts']['recommendation'], 1)
+
+    def large_native(self):
+        """A real file larger than both former whole-log ceilings."""
+        padding = SECRET * 2048
+        with self.path.open('wb') as stream:
+            stream.write((json.dumps(self.header) + '\n').encode())
+            index = 0
+            while stream.tell() < 68 * 1024 * 1024:
+                stream.write((json.dumps({'type': 'assistant/message', 'seq': index,
+                    'time': NOW - 2000, 'data': {'message': {'content': padding}}}) + '\n').encode())
+                index += 1
+            call = {'type': 'tool/call', 'seq': index, 'time': NOW - 1000,
+                    'data': {'name': 'bili_video_info', 'callId': 'large-call', 'turn': 1, 'step': 1,
+                             'arguments': json.dumps({'bvid': BV})}}
+            result = {'type': 'tool/result', 'seq': index + 1, 'time': NOW - 900,
+                'surfaceOp': 'append', 'sourceEventSeqs': [index],
+                'data': {'turn': 1, 'step': 1, 'message': {'source': {'callId': 'large-call'},
+                    'toolCallId': 'large-call', 'content': [{'type': 'text', 'text': json.dumps({'bvid': BV, 'title': 'Public large-source video'})}]}}}
+            for row in (call, result): stream.write((json.dumps(row) + '\n').encode())
+
+    def read_current(self):
+        return activity.activity_snapshot(workspace=str(self.work), agent_preset='Fixture',
+            identity_file=self.identity, dsh_home=self.home, now=NOW)['mainAgent']
+
+    def test_large_plain_native_stream_does_not_materialize_whole_log(self):
+        self.large_native()
+        self.assertGreater(self.path.stat().st_size, 64 * 1024 * 1024)
+        tracemalloc.start()
+        try:
+            result = self.read_current()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['counts']['details'], 1)
+        self.assertLess(peak, 8 * 1024 * 1024)
+        self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_large_expanded_zstd_stream_retains_original_pair_and_final_owner(self):
+        try: import zstandard
+        except ImportError: self.skipTest('optional zstandard not installed')
+        self.large_native()
+        compressed = self.path.with_suffix('.jsonl.zstd')
+        with self.path.open('rb') as source, compressed.open('wb') as target:
+            with zstandard.ZstdCompressor().stream_writer(target, closefd=False) as writer:
+                while chunk := source.read(64 * 1024): writer.write(chunk)
+        self.path.unlink()
+        self.assertLess(compressed.stat().st_size, 32 * 1024 * 1024)
+        self.assertEqual(self.read_current()['counts']['details'], 1)
+        # A later frame changing the actual owner invalidates the projection.
+        with compressed.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:
+            count = sum(chunk.count(b'\n') for chunk in iter(lambda: stream.read(64 * 1024), b'')) - 1
+        event = {'type': 'agent-preset/selected', 'seq': count, 'time': NOW,
+                 'data': {'agentPreset': 'foreign'}}
+        with compressed.open('ab') as target:
+            target.write(zstandard.ZstdCompressor().compress((json.dumps(event) + '\n').encode()))
+        result = self.read_current()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('owner_mismatch', result['coverage']['reasons'])
+
+    def test_stream_limits_and_incomplete_tail_remain_unknown(self):
+        self.call('bili_video_info', {'bvid': BV}, args={'bvid': BV}); raw = self.write()
+        for name, ceiling in [('MAX_EXPANDED', len(raw) - 1), ('MAX_LINE', 20), ('MAX_ROWS', 1)]:
+            with self.subTest(name=name), mock.patch.object(activity, name, ceiling):
+                result = self.read_current()
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertIn('source_limit', result['coverage']['reasons'])
+        self.path.write_bytes(raw[:-1])
+        self.assertEqual(self.read_current()['status'], 'unavailable')
+
+    def test_later_append_or_replacement_does_not_change_the_captured_projection(self):
+        self.call('bili_video_info', {'bvid': BV, 'title': 'Public fixture'}, args={'bvid': BV}); raw = self.write()
+        original = activity._native_events
+        for replace in (False, True):
+            self.path.write_bytes(raw)
+            def changing(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if replace:
+                    self.path.unlink(); self.path.write_bytes(raw.replace(b'"Fixture"', b'"foreign"'))
+                else:
+                    with self.path.open('ab') as stream: stream.write(b'{}\n')
+                return result
+            with self.subTest(replace=replace), mock.patch.object(activity, '_native_events', side_effect=changing):
+                result = self.read_current()
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['counts']['details'], 1)
+            self.assertEqual(self.read_current()['status'], 'unavailable')
+
+    def test_source_changing_during_capture_discards_the_projection(self):
+        self.call('bili_video_info', {'bvid': BV}, args={'bvid': BV}); self.write()
+        factory = activity.tempfile.SpooledTemporaryFile
+        target = self.path
+        class ChangingSnapshot:
+            def __init__(self, *args, **kwargs): self.file = factory(*args, **kwargs); self.changed = False
+            def __enter__(self): return self
+            def __exit__(self, *args): self.file.close()
+            def __getattr__(self, name): return getattr(self.file, name)
+            def write(self, value):
+                result = self.file.write(value)
+                if not self.changed:
+                    self.changed = True
+                    with target.open('ab') as stream: stream.write(b'{}\n')
+                return result
+        with mock.patch.object(activity.tempfile, 'SpooledTemporaryFile', ChangingSnapshot):
+            result = self.read_current()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertIn('source_changing', result['coverage']['reasons'])
+
+    def test_corrupt_compression_is_reported_without_raising_out_of_the_snapshot(self):
+        try: import zstandard
+        except ImportError: self.skipTest('optional zstandard not installed')
+        self.path.with_suffix('.jsonl.zstd').write_bytes(b'invalid compressed fixture')
+        result = self.read_current()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('malformed_source', result['coverage']['reasons'])
 
     def test_linked_native_source_is_refused_without_following_it(self):
         raw = self.write(); target = self.root / 'foreign-log'; target.write_bytes(raw); self.path.unlink()
