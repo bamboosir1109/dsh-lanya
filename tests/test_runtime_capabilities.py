@@ -591,6 +591,39 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(second.returncode, 1)
         self.assertNotIn("untrusted fixture", second.stdout + second.stderr)
 
+    def test_live_chat_skips_process_and_lock_probes_and_keeps_fresh_owner_and_media_guards(self):
+        self.install('browserd.py', 'androidd.py', 'voice_executor.py')
+        def forbidden(*_):
+            self.fail('Incoming chat must not wait for a process or lock probe')
+        before = self.snapshot()
+        value = self.module.build_context(str(self.root), 'fixture', 'private:101',
+            context_mode='live_chat', process_probe=forbidden, lock_probe=forbidden)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(value['context_mode'], 'live_chat')
+        self.assertEqual(value['conversation_key'], 'private:101')
+        self.assertEqual(value['tools']['browser']['worker'], 'unverified')
+        self.assertEqual(value['tools']['android']['worker'], 'unverified')
+        self.assertFalse(value['tools']['browser']['cached_screenshot_is_current'])
+        self.assertIn('exact submitted seq', value['tools']['browser']['protocol']['verify'])
+        self.assertIn('expected_shot_id', value['tools']['android']['protocol']['action_example'])
+        self.assertIn('qq_send_voice', value['tools']['voice']['protocol']['send'])
+        self.assertIn('qq_send_image', value['tools']['qq_expression']['meme_delivery'])
+        self.assertIn('current reply ticket', value['tools']['qq_expression']['meme_delivery'])
+        full = self.context()
+        self.assertLess(len(json.dumps(value)), len(json.dumps(full)) * .5)
+        # New configuration is still checked on every request, without caching.
+        self.config.write_text('{damaged', encoding='utf-8')
+        with self.assertRaises(self.module.CapabilityError):
+            self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode='live_chat')
+
+    def test_live_mode_never_enables_primary_tools_for_another_chat_or_accepts_unknown_modes(self):
+        value = self.module.build_context(str(self.root), 'fixture', 'group:202', context_mode='live_chat')
+        self.assertFalse(value['tools']['qq_autonomy']['primary'])
+        self.assertFalse(value['tools']['entertainment']['primary_internal_leisure'])
+        for mode in ('fast_unchecked', None, True):
+            with self.assertRaises(self.module.CapabilityError):
+                self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode=mode)
+
 
 if __name__ == "__main__":
     unittest.main()

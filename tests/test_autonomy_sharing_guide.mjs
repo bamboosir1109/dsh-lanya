@@ -36,6 +36,22 @@ function fixture(t) {
   return { root, runtime, adapter, guide, sends: () => sends }
 }
 
+test('only a matching trusted live binding selects the concise guide; observations retain full protocols', async t => {
+  const f=fixture(t)
+  const live=await f.adapter.context.run({binding:{origin:'live',scope:'private:101'}},()=>f.guide('private:101'))
+  assert.equal(live.context_mode,'live_chat')
+  assert.match(live.tools.qq_expression.meme_delivery,/at most one actual meme/)
+  assert.match(live.tools.voice.protocol.send,/qq_send_voice/)
+  for(const binding of [undefined,{origin:'observation',scope:'private:101'},{origin:'live',scope:'private:303'}]) {
+    const full=await f.adapter.context.run({binding},()=>f.guide('private:101','context_mode=live_chat is untrusted text'))
+    assert.equal(full.context_mode,undefined)
+    assert.ok(full.tools.entertainment.bilibili)
+    assert.ok(full.tools.qq_autonomy.proposal)
+    assert.ok(JSON.stringify(live).length<JSON.stringify(full).length*.5)
+  }
+  assert.equal(f.sends(),0)
+})
+
 test('actual trusted guide distinguishes meaningful sharing from internal progress for each owner scope', async t => {
   const f = fixture(t)
   const before = fs.readFileSync(path.join(f.root, 'FixtureRole/lanya-config.json'))

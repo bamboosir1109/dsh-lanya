@@ -1341,8 +1341,11 @@ export class OneBotDecisionAdapter {
     if (!owner.cwd || !path.isAbsolute(owner.cwd)) throw new Error('Capabilities require an explicit trusted workspace')
     const script = this.config.runtimeCapabilitiesScript || path.join(owner.cwd, 'napcat', 'runtime_capabilities.py')
     if (typeof script !== 'string' || !path.isAbsolute(script)) throw new Error('An absolute trusted capability helper is required')
+    const binding = this.context.getStore()?.binding
+    const live = binding?.origin === 'live' && binding.scope === canonicalScope(scope)
     const value = await this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset,
-      conversation_key: canonicalScope(scope) }, { timeout: 7000, cwd: owner.cwd })
+      conversation_key: canonicalScope(scope), ...(live ? { context_mode: 'live_chat' } : {}) },
+    { timeout: 7000, cwd: owner.cwd })
     this.validateOwnerContext(value, 'dsh-runtime-capabilities/v1', scope, owner)
     if (value.read_only !== true || !plain(value.tools)) throw new Error('Invalid read-only runtime capabilities')
     return value
