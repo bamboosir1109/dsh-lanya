@@ -70,6 +70,17 @@ class FullcheckTests(unittest.TestCase):
             self.assertEqual(module.main(["--quiet"]), 0)
         self.assertEqual(module.REPORT_ROOT, str(self.root / "checkout"))
 
+    def test_preserved_originals_are_separate_from_current_programs_but_can_be_audited(self):
+        recovery=self.root/('.fixture-original-'+'a'*32+'.py')
+        recovery.write_text('synthetic invalid python !!!',encoding='utf-8')
+        hidden=self.root/'.current-worker.py';hidden.write_text('pass\n',encoding='utf-8')
+        self.assertEqual(self.check.walk(str(self.root),('.py',)),[str(hidden)])
+        self.assertIn(str(recovery),self.check.walk(str(self.root),('.py',),include_recovery=True))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.check.main(['--root',str(self.root),'--include-recovery','--quiet']),1)
+        hidden.write_text('synthetic invalid python !!!',encoding='utf-8')
+        self.assertEqual(self.run_check()[0],1)
+
     def test_installed_default_enforces_runtime_placeholder_rule(self):
         live = self.root / "napcat"
         live.mkdir()

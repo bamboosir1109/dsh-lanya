@@ -1198,7 +1198,7 @@ function recordPage(path){
   if(bare === '/state') return currentPage === 'system' ? 'system' : 'overview';
   if(bare === '/files') return /[?&]dir=(made|archive)(&|$)/.test(path) ? 'works' : 'memory';
   return ({'/bili':'bili','/live':'activity','/activity/journal':'activity','/autonomy/settings':currentPage === 'talk' ? 'talk' : 'activity','/memes':'memes',
-    '/budget':['activity','overview','system'].includes(currentPage) ? currentPage : 'money','/schedule':'schedule','/memory':'memory','/works':'works',
+    '/budget':['activity','overview','system'].includes(currentPage) ? currentPage : 'money','/budget/summary':['activity','overview','system'].includes(currentPage) ? currentPage : null,'/schedule':'schedule','/memory':'memory','/works':'works',
     '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'napcat'})[bare];
 }
 function noteRecord(path, state, at){
@@ -1251,10 +1251,10 @@ async function refreshCurrentPage(manual){
     const editing = dirtyPages.has(page) || (page === 'memory' && !!document.querySelector('#memPropList textarea'));
     const loaders = {
       overview:refreshOverview, system:refreshOverview, bili:loadBili,
-      activity:async () => { await loadLive(); await loadAutonomySettings(editing); },
+      activity:async () => { await Promise.all([loadLive(), loadAutonomySettings(editing)]); },
       money:() => loadBudget(true), tools:loadTools,
       memes:() => editing ? null : loadMemes(true),
-      memory:async () => { if(!editing) { await loadMemoryOverview(true); await loadMemoryDiary(); if(!searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open')) await loadFiles(currentDir, true); } },
+      memory:async () => { if(!editing) await Promise.all([loadMemoryOverview(true), loadMemoryDiary(), !searchOn && !Object.keys(selected).length && !document.querySelector('#fileList .open') ? loadFiles(currentDir, true) : null]); },
       works:() => editing || Object.keys(workSel).length || $('worksViewer')?.classList.contains('on') ? null : loadWorks(true),
       schedule:() => editing ? null : loadSchedule(),
       talk:loadConversationPolicy,
@@ -1342,6 +1342,17 @@ function staticFor(path){
 }
 // Live data wins; a recent, timestamped snapshot is an explicit offline fallback.
 // Mutations use one request only, with no automatic retry or snapshot fallback.
+function recordReadFailed(path,data){
+  if(data?.ok === false) return true;
+  const bare = path.split('?')[0];
+  if(bare === '/budget') return data?.budget?.availability !== 'available' || data?.budget?.daily_spending?.availability !== 'available';
+  if(bare === '/budget/summary') return data?.budget?.availability !== 'available';
+  if(bare === '/bili') return !['ok','partial'].includes(data?.bili?.mainAgent?.status);
+  if(bare === '/live') return data?.live?.autonomy?.mode === 'unified' && !['ok','partial'].includes(data?.live?.recentActivity?.status);
+  if(bare === '/memory') return data?.memory?.availability?.status === 'error';
+  return false;
+}
+
 async function api(path, opts, live){
   const isGet = !opts || !opts.method || opts.method === 'GET';
   if(!isGet){
@@ -1397,7 +1408,7 @@ async function api(path, opts, live){
   const pending = recordRequests.get(key);
   try{
     const result = await pending;
-    if(!pending.invalidated) noteRecord(path, result.data.ok === false ? 'error' : result.source, result.at);
+    if(!pending.invalidated) noteRecord(path, recordReadFailed(path,result.data) ? 'error' : result.source, result.at);
     return result.data;
   }catch(error){ if(!pending.invalidated) noteRecord(path, 'error'); throw error; }
 }
@@ -1505,6 +1516,7 @@ function renderVoiceStatus(value){
 }
 
 async function refreshOverview(){
+  const budgetRead = loadActivityBudget();
   try{
     const s = await api('/state', null, true);
     renderVoiceStatus(s.voice);
@@ -1608,7 +1620,7 @@ async function refreshOverview(){
       setText('bannerTitle', '还有 ' + tasks.redundant + ' 个重复的计划任务');
       setText('bannerText', '检测到 ' + tasks.redundant + ' 个计划任务与插件功能重叠。请在定时页面核对实际任务状态，避免重复执行。');
     }else{ $('banner').classList.remove('show'); }
-      await loadActivityBudget();
+      await budgetRead;
     }catch(e){ renderVoiceStatus(null); setText('footStamp', '读取失败：' + e.message); }
 }
 
@@ -2010,7 +2022,7 @@ async function loadActivityBudget(){
   if(budgetSettingsSaving) return;
   const epoch = budgetSettingsEpoch;
   try{
-    const result = await api('/budget', null, true);
+    const result = await api('/budget/summary', null, true);
     if(epoch !== budgetSettingsEpoch) return;
     if(!result.ok) throw new Error('预算暂不可用');
     renderBudgetSummary(result.budget);
@@ -2424,8 +2436,7 @@ async function loadLive(){
     }
     renderActivityHistory(live.recentActivity);
     renderAutonomyPlans(live.plans);
-    await loadActivityBudget();
-    await loadActivityJournal();
+    await Promise.all([live.budget ? Promise.resolve(renderBudgetSummary(live.budget)) : loadActivityBudget(), loadActivityJournal()]);
   }catch(error){
     setText('liveLast','刷新失败，状态未确认'); setText('liveLastAt','无法读取最新调度状态，请稍后刷新。');
     setText('liveWatch','看护状态未确认'); setText('liveWatchAt','最新状态读取失败');
@@ -2559,7 +2570,7 @@ function renderMainBili(history){
   setText('bMainReplies', available && projectionReady ? replies.length : '—');
   const coverage = data.coverage || {};
   setText('bMainCoverage', available ? '已核验 ' + (coverage.owner_verified_scopes || 0) + ' 个绑定范围' : '无法确认当前记录');
-  setText('bMainNote', data.status === 'partial' ? '部分来源缺失或达到读取上限。下方只显示已核验记录，读取方式不代表完整播放。'
+  setText('bMainNote', data.status === 'partial' ? (coverage.reasons?.includes('native_turn_interrupted') ? '有宿主中断的轮次，缺少结束回执；后续有效记录继续显示，读取不等于完整播放。' : '部分来源缺失或达到读取上限。下方只显示已核验记录，读取方式不代表完整播放。')
     : available ? '按视频归并近期读取，区分分P、时间轴片段、字幕和画面；推荐候选不计入，读取不等于完整播放。' : '记录源暂不可用，不能据此判断她没有浏览。');
   const kinds = {recommendation:'获取推荐',details:'视频资料',subtitle:'字幕',frames:'视频帧',cover:'封面',action:'平台操作',observation:'视频片段内容',social_inbox:'回复与提及',comment_thread:'评论线程'};
   const statuses = {succeeded:'成功',failed:'失败',unknown:'结果未知',pending:'待完成'};

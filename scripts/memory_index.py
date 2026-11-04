@@ -114,8 +114,8 @@ def timestamp(value):
     return None
 
 
-def _fact_times(row):
-    """A newly created lossless capsule must not rejuvenate old originals."""
+def _recorded_times(row):
+    """Container creation is maintenance time, not an original memory date."""
     if row.get('source') == 'memory_plastic:derived' and row.get('text', '').startswith('dsh-memory-capsule/v1\n'):
         raw = row['text'].encode('utf-8'); pos = len(b'dsh-memory-capsule/v1\n'); values = []
         _search_text(row)  # Validate all lengths/hashes before reading metadata.
@@ -126,9 +126,15 @@ def _fact_times(row):
                     value = timestamp(entry.get(key))
                     if value is not None: values.append(value)
             pos = boundary + 1 + header['text_bytes'] + 1
-        return (min(values), max(values)) if values else (None, None)
+        return values
     values = [timestamp(row.get(key)) for key in ('created_at', 'updated_at')]
     values = [value for value in values if value is not None]
+    return values
+
+
+def _fact_times(row):
+    """A newly created lossless capsule must not rejuvenate old originals."""
+    values = _recorded_times(row)
     return (min(values), max(values)) if values else (None, None)
 
 
@@ -231,7 +237,8 @@ class Index:
         for row in self.entries:
             search_text = _search_text(row)
             row['_body'] = search_text
-            row['_fact_times'] = _fact_times(row)
+            recorded_times = _recorded_times(row)
+            row['_fact_times'] = (min(recorded_times), max(recorded_times)) if recorded_times else (None, None)
             row["tok"] = tokens(search_text[:32768])
             row["ent"] = entities(search_text)
             try:
@@ -247,8 +254,7 @@ class Index:
             declared_dates = [value for key in ('occurred_at', 'valid_from', 'valid_until')
                               for value in (metadata.get(key),) if isinstance(value, str)]
             recorded_dates = []
-            for key in ('created_at', 'updated_at'):
-                value = timestamp(row.get(key))
+            for value in recorded_times:
                 if value is not None:
                     try: recorded_dates.append(datetime.datetime.fromtimestamp(value / 1000).date().isoformat())
                     except (ValueError, OverflowError, OSError): pass

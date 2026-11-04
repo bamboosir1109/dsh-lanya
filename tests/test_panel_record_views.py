@@ -48,6 +48,31 @@ class PanelRecordViewTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(result['live']['recentActivity'], expected)
 
+    def test_budget_summary_never_invokes_native_cost_projection(self):
+        import budget_runtime, budget_reports
+        budget={'schema':'unified-budget/v2','availability':'available','enforcement':{},'usage':{'date':'fixture'}}
+        with mock.patch.object(budget_runtime,'get_snapshot',return_value=budget), \
+             mock.patch.object(budget_reports,'native_daily_spending',side_effect=AssertionError('daily scan forbidden')):
+            value=self.panel.unified_budget_snapshot(include_daily=False)
+        self.assertEqual(value['gate_usage'],budget['usage'])
+        self.assertNotIn('daily_spending',value)
+
+    def test_growing_log_preview_reads_only_a_bounded_tail(self):
+        path=self.base.root/'large.log'
+        with path.open('wb') as stream:
+            stream.write(b'x'*1024*1024*10);stream.write(b'\nlast fixture line\n')
+        original=open;reads=[]
+        class Reader:
+            def __init__(self,handle):self.handle=handle
+            def __enter__(self):return self
+            def __exit__(self,*args):self.handle.close()
+            def seek(self,*args):return self.handle.seek(*args)
+            def tell(self):return self.handle.tell()
+            def read(self,size=-1):reads.append(size);return self.handle.read(size)
+        with mock.patch('builtins.open',side_effect=lambda *args,**kwargs:Reader(original(*args,**kwargs))):
+            self.assertTrue(self.panel.tail_file(path,lines=1).endswith('last fixture line'))
+        self.assertEqual(reads,[80000])
+
     def test_explicit_broken_record_configuration_is_unavailable_without_fallback(self):
         with mock.patch.object(self.panel.project_conf, 'load',
                 side_effect=self.panel.project_conf.ConfigError('fixture unavailable')):

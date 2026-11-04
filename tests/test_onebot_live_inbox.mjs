@@ -119,6 +119,43 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   return { ...h, pending, history, requests, start, preStep, end, emitClaim, plugin }
 }
 
+test('native next-step host context preserves one transport claim across reminder and compaction boundaries', async t => {
+  const h = await fixture(t)
+  await h.receive('synthetic question')
+  h.start(); assert.equal((await h.preStep()).kind,'enter')
+  const original = h.bridge.lanyaPolicy.state(h.chat).active.binding
+  for(const kind of ['repeat-tool-reminder','agent-instructions','runtime-context','compact-checkpoint']) {
+    h.emitClaim({id:'native-'+kind,role:'user',source:{kind},content:[{type:'text',text:'synthetic host context'}]})
+    assert.equal((await h.preStep()).kind,'enter')
+    assert.equal(h.bridge.lanyaPolicy.state(h.chat).active.binding,original)
+  }
+  assert.equal(h.requests.filter(row=>row.operation==='reserve').length,1)
+  await h.end()
+})
+
+test('host context before a queued live claim is neutral but cannot authorize a host-only turn', async t => {
+  const h = await fixture(t)
+  await h.receive('synthetic new question')
+  const input=h.pending.splice(0,1)[0]
+  const host={id:'native-instructions',role:'user',source:{kind:'agent-instructions'},content:[{type:'text',text:'fixture'}]}
+  h.start([host,input]);assert.equal((await h.preStep()).kind,'enter');await h.end()
+  h.start([host]);assert.equal((await h.preStep()).reason,'unbound_native_input')
+  assert.equal(h.requests.filter(row=>row.operation==='reserve').length,1)
+  await h.end()
+})
+
+test('unknown source or a changed registered transport ID cannot borrow the host-context exception', async t => {
+  for(const changedId of [false,true]) {
+    const h=await fixture(t);await h.receive('synthetic question');const input=h.start()[0]
+    assert.equal((await h.preStep()).kind,'enter')
+    const record=h.bridge.lanyaPolicy.state(h.chat).active
+    if(changedId) h.bridge.lanyaPolicy.state(h.chat).pending.set(input.id,{agent:h.agent,fingerprint:'wrong',binding:record.binding,role:'member'})
+    h.emitClaim({id:changedId?input.id:'unknown-input',role:'user',source:{kind:changedId?'agent-instructions':'unreviewed-plugin'},content:[]})
+    assert.equal((await h.preStep()).reason,'unbound_native_input')
+    await h.end()
+  }
+})
+
 test('legacy early admission reproduces rate-drop revoking the only queued answer', async t => {
   const h = await fixture(t, { admission: false })
   h.deps.config.rateLimitPerMinute = 1
@@ -534,6 +571,23 @@ async function primaryEvent(h, eventId) {
     kind: 'activity.opportunity', producer: 'mind', created_at: adapter.now(), payload: {},
     origin: 'observation', control_allowed: false }
 }
+
+test('actual native inbox keeps host instructions and repeated-tool context separate from transport authority', async t => {
+  const h = await nativeDriverFixture(t, {onEvent(event,host) {
+    if(event.type==='step/end' && event.data.step===1) host.agent.inbox.append('next-step',
+      {id:'sdk-repeat-reminder',role:'user',source:{kind:'repeat-tool-reminder'},content:[{type:'text',text:'fixture reminder'}]})
+  }})
+  h.agent.inbox.append('next-step',{id:'sdk-compaction-instructions',role:'user',source:{kind:'agent-instructions'},
+    content:[{type:'text',text:'fixture reassembled context'}]})
+  await h.receive('synthetic directed question')
+  await driverSettled(h,()=>h.nativeEvents.some(item=>item.type==='turn/end') && h.agent.status==='idle')
+  assert.equal(h.steps.length,2)
+  assert.equal(h.steps[0].claimedId,h.steps[1].claimedId)
+  assert.equal(h.requests.filter(item=>item.operation==='reserve').length,1)
+  assert.deepEqual(h.nativeEvents.filter(item=>item.type==='turn/end').map(item=>item.data.reason.kind),['completed'])
+  assert.equal(h.agent.inbox.hasPending,false)
+  assert.equal(h.calls.filter(call=>/^(send_|upload_)/.test(call.action)).length,0)
+})
 
 test('native mixed restored and owned observation claim rejects the consumed completion instead of hanging', async t => {
   const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId

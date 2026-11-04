@@ -455,7 +455,7 @@ def autonomy_settings_snapshot():
     return result
 
 
-def unified_budget_snapshot():
+def unified_budget_snapshot(*, include_daily=True):
     try:
         import budget_runtime
         value = budget_runtime.get_snapshot()
@@ -489,16 +489,17 @@ def unified_budget_snapshot():
         enforcement.pop("gate_pid", None)
         enforcement.update(runtime_gate_bound=bool(bound), runtime_owner_verified=bool(bound))
         value = dict(value, enforcement=enforcement)
-        try:
-            from budget_reports import native_daily_spending
-            options = _panel_native_record_options()
-            node = next((path for path in _executable_paths("NODE_EXE", "tools.nodeExecutable", "node", (
-                [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe")] if DSH_ROOT else []))
-                if os.path.isabs(path) and os.path.isfile(path)), None)
-            value["daily_spending"] = native_daily_spending(**options, node_executable=node)
-        except Exception:
-            # Reporting failures never become zero spending or weaken the gate.
-            value["daily_spending"] = None
+        if include_daily:
+            try:
+                from budget_reports import native_daily_spending
+                options = _panel_native_record_options()
+                node = next((path for path in _executable_paths("NODE_EXE", "tools.nodeExecutable", "node", (
+                    [os.path.join(DSH_ROOT, "resources", "runtime", "node", "node.exe")] if DSH_ROOT else []))
+                    if os.path.isabs(path) and os.path.isfile(path)), None)
+                value["daily_spending"] = native_daily_spending(**options, node_executable=node)
+            except Exception:
+                # Reporting failures never become zero spending or weaken the gate.
+                value["daily_spending"] = None
         # Reporting can cover earlier native turns; quota enforcement retains
         # its own recorded usage and is never reconstructed from the report.
         value["gate_usage"] = value.get("usage")
@@ -1096,11 +1097,13 @@ def _bili_cached_covers(bvids):
 
 def tail_file(path, lines=40, limit=20000):
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            data = fh.read()
-        rows = data.splitlines()
-        return "\n".join(rows[-lines:])[:limit]
-    except Exception as e:
+        # A log preview must not allocate the entire growing file.
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - max(65536, limit * 4)))
+            data = fh.read(max(65536, limit * 4)).decode("utf-8", "replace")
+        return "\n".join(data.splitlines()[-lines:])[-limit:]
+    except (OSError, ValueError, TypeError):
         return ""
 
 
@@ -2410,7 +2413,7 @@ class Handler(SimpleHTTPRequestHandler):
                 out["autonomy"] = autonomy
                 out["statusLabel"] = autonomy_label(autonomy)
                 out["recentActivity"] = panel_main_activity()["recentActivity"]
-                out["budget"] = unified_budget_snapshot()
+                out["budget"] = unified_budget_snapshot(include_daily=False)
                 out["settings"] = autonomy_settings_snapshot()
                 return self._json(200, {"ok": True, "live": out})
             try:
@@ -2426,7 +2429,7 @@ class Handler(SimpleHTTPRequestHandler):
                 out["lastAt"] = st2.get("lastAt", "")
             except Exception:
                 pass
-            out["budget"] = unified_budget_snapshot()
+            out["budget"] = unified_budget_snapshot(include_daily=False)
             out["settings"] = autonomy_settings_snapshot()
             return self._json(200, {"ok": True, "live": out})
 
@@ -2469,8 +2472,8 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/tools":
             return self._json(200, {"ok": True, "tools": tools_snapshot()})
 
-        if path == "/api/budget":
-            budget = unified_budget_snapshot()
+        if path in ("/api/budget", "/api/budget/summary"):
+            budget = unified_budget_snapshot() if path == "/api/budget" else unified_budget_snapshot(include_daily=False)
             return self._json(200, {"ok": budget.get("availability") in ("available", "not_started"), "budget": budget})
 
         if path == "/api/memes/config":

@@ -105,7 +105,7 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
     run(code) { return vm.runInContext(code, context) } }
 }
 
-const API_FUNCTIONS = ['recordPage', 'noteRecord', 'renderRecordSync', 'staticFor', 'api']
+const API_FUNCTIONS = ['recordPage', 'noteRecord', 'renderRecordSync', 'staticFor', 'recordReadFailed', 'api']
 
 test('voice status separates demand-based synthesis, process evidence and delivery', () => {
   const h = harness({ functions: ['renderVoiceStatus'] })
@@ -216,7 +216,7 @@ test('voice status never renders untrusted service claims or HTML as readiness',
 test('actual API prefers same-origin live GET and never reads an old snapshot on success', async () => {
   const h = harness({ functions: API_FUNCTIONS, fetch: async url => {
     assert.equal(url, '/api/bili')
-    return response({ ok: true, bili: { activity_count: 2 } })
+    return response({ ok: true, bili: { activity_count: 2, mainAgent:{status:'ok'} } })
   } })
   const value = await h.context.api('/bili')
   assert.equal(value.bili.activity_count, 2)
@@ -240,7 +240,7 @@ test('recent schema-one snapshot is an explicit offline fallback after both HTTP
   const now = Date.UTC(2026, 10, 1, 12)
   const h = harness({ now, functions: API_FUNCTIONS, fetch: async (url, _opts, number) => number < 3
     ? response({ error: 'synthetic unavailable' }, 503)
-    : response({ ok: true, bili: { activity_count: 1 }, _snapshot: { schema: 1, generated_at: new Date(now - 60000).toISOString() } }) })
+    : response({ ok: true, bili: { activity_count: 1, mainAgent:{status:'ok'} }, _snapshot: { schema: 1, generated_at: new Date(now - 60000).toISOString() } }) })
   const value = await h.context.api('/bili')
   assert.equal(value.bili.activity_count, 1)
   assert.equal(h.calls.length, 3)
@@ -270,6 +270,20 @@ test('live application error is returned and marked without hiding it behind ano
   assert.equal(result.ok, false)
   assert.equal(h.calls.length, 1)
   assert.equal(h.node('recordSync').dataset.state, 'error')
+})
+
+test('HTTP success cannot mark unavailable nested page sources as fresh records', async () => {
+  for(const [route,currentPage,data] of [
+    ['/bili','bili',{ok:true,bili:{mainAgent:{status:'unavailable'}}}],
+    ['/budget','money',{ok:true,budget:{availability:'available',daily_spending:{availability:'unavailable'}}}],
+    ['/live','activity',{ok:true,live:{autonomy:{mode:'unified'},recentActivity:{status:'unavailable'}}}],
+    ['/memory','memory',{ok:true,memory:{availability:{status:'error'}}}]
+  ]){
+    const h=harness({functions:API_FUNCTIONS,extra:{currentPage},fetch:async()=>response(data)})
+    assert.equal((await h.context.api(route,null,true)).ok,true)
+    assert.equal(h.node('recordSync').dataset.state,'error',route)
+    assert.equal(h.calls.length,1,'A source failure must not be hidden behind another service or snapshot')
+  }
 })
 
 test('budget read failures mark the actual visible activity overview and system pages', async () => {
@@ -352,6 +366,16 @@ test('visible-page refresh is deduplicated until the actual loader completes', a
   waiting.resolve(); await Promise.all([one, two])
   assert.equal(h.context.refreshingPages.size, 0)
   assert.equal(h.node('recordRefresh').disabled, false)
+})
+
+test('independent memory readers start together rather than waiting for a slow overview',async()=>{
+  const h=refreshHarness({currentPage:'memory'}),waiting=deferred(),started=[]
+  h.context.loadMemoryOverview=()=>{started.push('overview');return waiting.promise}
+  h.context.loadMemoryDiary=async()=>{started.push('diary')}
+  h.context.loadFiles=async()=>{started.push('files')}
+  const refresh=h.context.refreshCurrentPage(false)
+  assert.deepEqual(started,['overview','diary','files'])
+  waiting.resolve();await refresh
 })
 
 test('hidden page refresh is paused and visible page can refresh again', async () => {
@@ -760,7 +784,7 @@ const biliData = overrides => ({ status: 'ok', coverage: { owner_verified_scopes
   records: [], recent_videos: [], replies: [], ...overrides })
 const spendingDay = (date, overrides = {}) => ({ date, autonomy: 0.12, private: 0.34, group: 0.56, total: 1.02,
   status: 'partial', turn_count: 3, settled_count: 3, pending_count: 0, unknown_count: 0, ...overrides })
-const spendingData = days => ({ schema: 'daily-spending/v2', currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, timezone: 'Asia/Shanghai',
+const spendingData = days => ({ schema: 'daily-spending/v2', availability:'available', currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, timezone: 'Asia/Shanghai',
   today: days.at(-1)?.date, days, coverage: { complete_days: false, scope: 'current_mapped_main_agent_native_turns',
     owner_verified_scopes: 2, configured_scopes: 2 } })
 
@@ -1241,6 +1265,15 @@ test('activity budget summary rejects an incompatible unit without replacing the
   assert.match(h.node('liveMoneySub').title, /单位接口不匹配/)
 })
 
+test('background budget summaries request the light gate endpoint without computing daily history',async()=>{
+  const routes=[]
+  const h=harness({functions:['requireCnyBudget','budgetAmount','renderBudgetSummary','loadActivityBudget'],extra:{
+    api:async route=>{routes.push(route);return {ok:true,budget:budgetData()}}
+  }})
+  await h.context.loadActivityBudget()
+  assert.deepEqual(routes,['/budget/summary'])
+})
+
 test('a delayed v1 USD read cannot replace or disable a completed CNY save', async () => {
   const waiting = deferred(), initial = budgetData(), writes = []
   const current = budgetData({ revision: 'c'.repeat(64), effective: { ...initial.effective,
@@ -1443,7 +1476,7 @@ for (const target of ['budget', 'autonomy']) test(target + ' real GET/save/new G
   const load = target === 'budget' ? 'loadBudget' : 'loadAutonomySettings'
   const save = target === 'budget' ? 'saveBudget' : 'saveAutonomySettings'
   const field = target === 'budget' ? 'budget' : 'settings'
-  const saved = target === 'budget' ? budgetData({ revision: 'c'.repeat(64) }) : autonomyData({ revision: 'd'.repeat(64), effective: { opportunity_minutes: 4 } })
+  const saved = target === 'budget' ? budgetData({ revision: 'c'.repeat(64),daily_spending:spendingData([spendingDay('2026-11-01')]) }) : autonomyData({ revision: 'd'.repeat(64), effective: { opportunity_minutes: 4 } })
   let reads = 0
   const h = harness({ functions: API_FUNCTIONS.concat(target === 'budget' ? BUDGET_RENDERERS : AUTONOMY_RENDERERS, load, save),
     extra: { currentPage: page }, fetch: async (_url, options) => {

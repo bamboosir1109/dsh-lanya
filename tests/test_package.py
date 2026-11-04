@@ -60,6 +60,8 @@ class PackageTests(unittest.TestCase):
             "tests/test_qq_inbox_recovery.mjs",
             "scripts/androidd.py", "scripts/android_panel.py", "scripts/memory_context.py",
             "scripts/panel_activity.py", "scripts/panel_record_files.py",
+            "scripts/panel_read_cache.py", "scripts/panel_health.py",
+            "tests/test_panel_read_cache.py", "tests/test_panel_health.py",
             "scripts/activity_journal.py", "tests/test_activity_journal.py",
             "scripts/panel_autonomy.py", "scripts/budget_runtime.py",
             "scripts/budget_reports.py", "scripts/budget-native-report.mjs", "tests/test_budget_reports.py",

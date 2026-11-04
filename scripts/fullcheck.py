@@ -251,7 +251,10 @@ def check_repo_ids(p, s):
 
 
 # ---------------------------------------------------------------------------
-def walk(base, exts):
+RECOVERY_NAME = re.compile(r'^\..+-(?:original|stage)-[0-9a-f]{32}\.(?:ps1|py|js|mjs)$', re.I)
+
+
+def walk(base, exts, include_recovery=False):
     out = []
     if not os.path.isdir(base):
         return out
@@ -261,6 +264,8 @@ def walk(base, exts):
                     "_archive", "_scratch", "_backup", "framework", "shell",
                     "uv-cache", "uv-python")]
         for f in files:
+            if not include_recovery and RECOVERY_NAME.fullmatch(f):
+                continue
             if f.endswith(exts):
                 out.append(os.path.join(root, f))
     return sorted(out)
@@ -272,6 +277,7 @@ def main(argv=None):
     parser.add_argument("--root", help="Explicit tree to scan (repository or installed napcat directory)")
     parser.add_argument("--live", action="store_true", help="Scan installed napcat; reject runtime placeholder values")
     parser.add_argument("--quiet", action="store_true", help="Only print findings and totals")
+    parser.add_argument("--include-recovery", action="store_true", help="Also check named preserved originals/stages as source")
     args = parser.parse_args(argv)
     if args.root:
         base = os.path.abspath(args.root)
@@ -288,7 +294,7 @@ def main(argv=None):
     _PS_AST.clear()
     quiet = args.quiet
     exts = (".ps1", ".py", ".js", ".mjs")
-    targets = walk(base, exts)
+    targets = walk(base, exts, include_recovery=args.include_recovery)
 
     # 跳过模式文件：它们的活就是存这些形状
     skip = {"verify_privacy.py", "privacy-scan.py", "audit_send.py",

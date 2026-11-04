@@ -94,6 +94,10 @@ function verifyVoicePacket(artifact, params) {
 const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
 const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
   'cost_meter_unavailable', 'budget_unavailable'])
+// SDK/plugin context is not another transport input and cannot mint a binding.
+// These kinds are native source metadata, never parsed from quoted/chat text.
+const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
+  'repeat-tool-reminder', 'compact-checkpoint'])
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
@@ -620,6 +624,11 @@ export class OneBotDecisionAdapter {
       const chat = this.nativeChat(agent), state = chat && this.state(chat), record = state?.turns.get(turn)
       if (!record || record.ended) return
       const entry = state.pending.get(message?.id)
+      // The SDK claims next-step context before queued live input, including
+      // reminders and instructions reinserted after compaction. It must neither
+      // revoke an existing verified claim nor stand in for an absent one.
+      // An ID already registered as a transport input still gets full checks.
+      if (!entry && NATIVE_CONTEXT_KINDS.has(message?.source?.kind)) return
       state.pending.delete(message?.id)
       // A native batch may claim restored next-step input before an owned
       // observation. Even a conflicting claim consumes that physical input;

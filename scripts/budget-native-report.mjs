@@ -30,7 +30,7 @@ export function buildNativeDaily(payload, turnCost) {
       buckets: Object.fromEntries(categories.map(key => [key, emptyBucket()])) });
   }
   const sourceStarts = [], seenRoles = new Set(), mismatchDays = new Set();
-  let nativeCalls = 0, unpricedCalls = 0, noCostTurns = 0, unmatchedTurns = 0;
+  let nativeCalls = 0, unpricedCalls = 0, noCostTurns = 0, unmatchedTurns = 0, interruptedTurns = 0;
   for (const session of payload.sessions) {
     requireValue(['private', 'group'].includes(session.role) && !seenRoles.has(session.role) &&
       safeInteger(session.source_start) && session.source_start <= payload.now &&
@@ -51,8 +51,8 @@ export function buildNativeDaily(payload, turnCost) {
       return inputs.length === 1 && ['plugin:dsh-lanya-observation', 'plugin:dsh-onebot'].includes(inputs[0].kind)
         ? (inputs[0].kind === 'plugin:dsh-lanya-observation' ? 'autonomy' : session.role) : null;
     };
-    const markTurn = (start, end, pending = false) => {
-      const category = categoryFor(start.seq, end?.seq ?? Number.MAX_SAFE_INTEGER);
+    const markTurn = (start, end, pending = false, interruption = null) => {
+      const category = categoryFor(start.seq, end?.seq ?? (interruption ? interruption.seq - 1 : Number.MAX_SAFE_INTEGER));
       const touched = new Set();
       const touch = date => {
         const row = days.get(date);
@@ -67,10 +67,15 @@ export function buildNativeDaily(payload, turnCost) {
         const row = touch(date);
         if (row) { row[field]++; if (category) row.buckets[category][field]++; }
       };
-      const spanDays = () => [...days.keys()].filter(date => dayStart(date) <= (end?.time ?? payload.now) &&
+      const spanDays = () => [...days.keys()].filter(date => (interruption ? dayStart(date) < interruption.time : dayStart(date) <= (end?.time ?? payload.now)) &&
         dayStart(date) + 86400_000 > start.time);
       touch(dayOf(start.time));
       if (!category) { unmatchedTurns++; reasons.add('turn_source_unconfirmed'); }
+      if (interruption) {
+        interruptedTurns++; reasons.add('native_turn_interrupted');
+        for (const date of spanDays()) mark(date, 'unknown_count');
+        return;
+      }
       if (pending) {
         for (const date of spanDays()) mark(date, 'pending_count');
         reasons.add('native_turn_pending'); return;
@@ -101,8 +106,12 @@ export function buildNativeDaily(payload, turnCost) {
       lastSeq = event.seq;
       if (event.seq < session.own_start) continue;
       if (event.type === 'turn/start') {
-        // An overlapping lifecycle cannot safely attribute the costs between it.
-        requireValue(active === null && safeInteger(event.data.turn)); active = event;
+        requireValue(safeInteger(event.data.turn));
+        if (active) {
+          requireValue(event.data.turn > active.data.turn && event.time >= active.time);
+          markTurn(active, null, false, event);
+        }
+        active = event;
       } else if (event.type === 'turn/end') {
         requireValue(active && event.data.turn === active.data.turn && event.time >= active.time);
         markTurn(active, event); active = null;
@@ -150,7 +159,8 @@ export function buildNativeDaily(payload, turnCost) {
       owner_verified_scopes: payload.sessions.length, configured_scopes: payload.sessions.length,
       current_mapped_sessions_only: true, historical_backfill: false, complete_days: false,
       reconciled_days: reconciledDays, native_calls: nativeCalls, unpriced_calls: unpricedCalls,
-      no_cost_turns: noCostTurns, unclassified_turns: unmatchedTurns, reasons: [...reasons].sort() } };
+      no_cost_turns: noCostTurns, unclassified_turns: unmatchedTurns, interrupted_turns: interruptedTurns,
+      reasons: [...reasons].sort() } };
 }
 
 async function main() {

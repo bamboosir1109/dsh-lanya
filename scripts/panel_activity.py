@@ -20,6 +20,7 @@ import re
 import stat
 import time
 import tempfile
+from panel_read_cache import ReadCache
 
 MAX_SOURCE = 32 * 1024 * 1024
 MAX_NATIVE_SOURCE = 256 * 1024 * 1024
@@ -31,6 +32,7 @@ MAX_REPLY_TEXT = 2000
 MAX_CONTENT_EXCERPT = 1800
 MAX_EPISODE_EVIDENCE = 40
 SAFE_INTEGER = 9007199254740991
+_TOOL_CACHE = ReadCache()
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
     'bili_video_info': 'details', 'bili_subtitle': 'subtitle',
@@ -452,10 +454,30 @@ def _native_lines(path):
         yield iter(lines())
 
 
+def native_source_key(path, *binding):
+    """Recheck ordinary source identity and current read access on cache hits."""
+    path = ordinary(path)
+    with path.open('rb') as stream:
+        info = os.fstat(stream.fileno())
+        _require(stat.S_ISREG(info.st_mode) and info.st_size <= MAX_NATIVE_SOURCE, 'source_limit')
+        after = ordinary(path).stat()
+        signature = lambda row: (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns, row.st_mode)
+        _require(signature(info) == signature(after), 'source_changing')
+    return (str(path), *signature(info), *binding)
+
+
 def _native(path, session, cwd, preset, role, cutoff, now, *, window_end=None, metadata=None):
-    with _native_lines(path) as lines:
-        return _native_events(lines, session, cwd, preset, role, cutoff, now,
-                              window_end=window_end, metadata=metadata)
+    key = native_source_key(path, session, _workspace(cwd), _preset(preset), role)
+    def build():
+        details = {}
+        with _native_lines(path) as lines:
+            records = _native_events(lines, session, cwd, preset, role, 0, SAFE_INTEGER - 30000, metadata=details)
+        return {'records': records, 'metadata': details}
+    captured = _TOOL_CACHE.get(key, build)
+    if metadata is not None:
+        metadata.update(captured['metadata'])
+    return [row for row in captured['records'] if cutoff <= row['at'] <= now + 30000
+            and (window_end is None or row['at'] < window_end)]
 
 
 def _native_events(lines, session, cwd, preset, role, cutoff, now, *, window_end=None, metadata=None):
@@ -468,6 +490,7 @@ def _native_events(lines, session, cwd, preset, role, cutoff, now, *, window_end
     current = _preset(header.get('agentPreset', ''))
     calls, records, markers = {}, [], 0
     active_turn = None
+    interrupted_turns = 0
     available_from = None
     for index, line in enumerate(lines):
         event = _json(line)
@@ -482,12 +505,19 @@ def _native_events(lines, session, cwd, preset, role, cutoff, now, *, window_end
             calls.clear(); records.clear(); current = _preset(header.get('agentPreset', ''))
             available_from = stamp
             active_turn = None
+            interrupted_turns = 0
         elif kind == 'agent-preset/selected':
             current = _preset(data.get('agentPreset'))
             calls.clear()
             active_turn = None
         elif kind == 'turn/start' and current == _preset(preset):
-            _require(_integer(data.get('turn')) and active_turn is None)
+            _require(_integer(data.get('turn')))
+            if active_turn is not None:
+                # A host exit may leave the previous native turn without an end
+                # event. A later monotonic turn is evidence of interruption,
+                # never a fabricated completion or another tool execution.
+                _require(data['turn'] > active_turn['turn'] and stamp >= active_turn['at'])
+                interrupted_turns += 1
             active_turn = {'turn': data['turn'], 'inputs': [], 'records': [], 'at': stamp}
         elif kind == 'user/message' and active_turn is not None:
             # Origin is native transport metadata only. Never inspect content,
@@ -576,6 +606,7 @@ def _native_events(lines, session, cwd, preset, role, cutoff, now, *, window_end
     _require(current == _preset(preset), 'owner_mismatch')
     if metadata is not None:
         metadata['available_from'] = available_from
+        metadata['interrupted_turns'] = interrupted_turns
         metadata['binding_sha256'] = hashlib.sha256(json.dumps(
             [session, _workspace(cwd), _preset(preset)], ensure_ascii=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -751,6 +782,8 @@ def _activity_projection(*, workspace, agent_preset, identity_file, dsh_home, ma
                 records.extend(_native(paths[0], session, cwd, agent_preset, role, start, now,
                                        window_end=window_end, metadata=source_meta))
                 coverage['source_windows'].append(dict(source=role, **source_meta))
+                if source_meta.get('interrupted_turns'):
+                    reasons.append('native_turn_interrupted')
                 coverage['owner_verified_scopes'] += 1
             except ActivityUnavailable as error: reasons.append(str(error))
             except (OSError, ValueError, TypeError, UnicodeError, OverflowError): reasons.append('source_unavailable')

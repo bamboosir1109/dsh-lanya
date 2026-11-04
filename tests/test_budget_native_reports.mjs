@@ -23,6 +23,28 @@ test('overlapping turn lifecycle is refused',()=>{
   const value=fixture();value.sessions[0].records.splice(1,0,{seq:1,time:now-300000,type:'turn/start',data:{turn:1}});
   assert.throws(()=>buildNativeDaily(value,priced));
 });
+
+test('a monotonic restart boundary keeps interrupted costs unknown and later native costs readable',()=>{
+  const value=fixture(),session=value.sessions[0]
+  session.origins=[{seq:1,kind:'plugin:dsh-lanya-observation'},{seq:4,kind:'plugin:dsh-onebot'}]
+  session.records=[{seq:0,time:now-300000,type:'turn/start',data:{turn:0}},
+    {seq:2,time:now-250000,type:'assistant/message',data:{}},
+    {seq:3,time:now-1000,type:'turn/start',data:{turn:1}},
+    {seq:5,time:now-500,type:'assistant/message',data:{}},
+    {seq:6,time:now-100,type:'turn/end',data:{turn:1}}]
+  session.expected_days['2026-11-02']=0.0323
+  const report=buildNativeDaily(value,(_records,_config,start)=>{
+    assert.equal(start,3,'An absent turn/end cannot be fabricated for pricing')
+    return {found:true,calls:[{atMs:now-500,priced:true,apiCost:0.02}]}
+  })
+  assert.equal(report.availability,'available')
+  assert.equal(report.coverage.interrupted_turns,1)
+  assert.ok(report.coverage.reasons.includes('native_turn_interrupted'))
+  assert.equal(report.coverage.unclassified_turns,0,'The later live origin cannot be attributed to the interrupted turn')
+  assert.equal(report.days[1].unknown_count,1)
+  assert.equal(report.days[1].buckets.private.known_spent_cny,0.02)
+  assert.equal(report.days[1].total,null)
+})
 test('negative or nonfinite cost is refused',()=>{
   for(const value of [-1,Infinity,NaN])assert.throws(()=>buildNativeDaily(fixture(),()=>({found:true,calls:[{atMs:now-2000,priced:true,apiCost:value}]})));
 });

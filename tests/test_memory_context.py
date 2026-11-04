@@ -310,7 +310,10 @@ class MemoryContextTests(unittest.TestCase):
                          ["number-fact"])
         groups = [[dict(target, _src="db"), dict(partner, _src="db")],
                   [dict(unrelated, _src="db"), dict(other_partner, _src="db")]]
-        self.plastic.apply_merges([self.plastic.merge_group(group) for group in groups], dry=False)
+        # Fix the maintenance clock to the queried date: the capsule's own
+        # timestamp must not make the unrelated capsule match that date.
+        with mock.patch.object(self.plastic.time, 'time', return_value=1793764800):
+            self.plastic.apply_merges([self.plastic.merge_group(group) for group in groups], dry=False)
         packet = self.context.build_context(self.cwd, self.preset, date, db_path=str(self.db))
         self.assertEqual(len(packet["memories"]), 1)
         self.assertIn(target["text"], packet["memories"][0]["text"])

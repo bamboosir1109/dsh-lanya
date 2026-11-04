@@ -133,7 +133,9 @@ class AutonomySettingsTests(unittest.TestCase):
         expected = dict(self.budget, gate_usage=self.budget["usage"], daily_spending=self.daily)
         self.assertEqual(self.base.route("/api/budget")[1]["budget"], expected)
         live = self.base.route("/api/live")[1]["live"]
-        self.assertEqual(live["budget"], expected); self.assertNotIn("money", live)
+        summary=dict(expected);summary.pop('daily_spending')
+        self.assertEqual(live["budget"], summary); self.assertNotIn("money", live)
+        self.assertEqual(self.base.route('/api/budget/summary')[1]['budget'],summary)
         request = {"revision": "a"*64, "settings": {"limits": {"autonomy": 2, "private": 0, "group": 0}, "reserve_cny": 0.05}}
         code, result = self.base.route("/api/budget", request)
         self.assertEqual(code, 200); self.assertEqual(result["budget"], expected)

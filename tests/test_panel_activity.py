@@ -65,6 +65,25 @@ class PanelActivityTests(unittest.TestCase):
         return activity.activity_snapshot(workspace=str(self.work), agent_preset='Fixture',
             identity_file=self.identity, dsh_home=self.home, now=NOW, **kwargs)
 
+    def test_host_interruption_preserves_tool_facts_and_new_turns_without_fabricating_completion(self):
+        self.event('turn/start', {'turn': 1})
+        self.event('user/message', {'source': {'kind': 'plugin:dsh-lanya-observation'}})
+        self.call('bili_video_info', {'bvid': BV, 'title': 'Before interruption'}, args={'bvid': BV}, turn=1)
+        self.event('turn/start', {'turn': 2})
+        self.event('user/message', {'source': {'kind': 'plugin:dsh-onebot'}})
+        self.call('bili_video_info', {'bvid': BV, 'title': 'After restart'}, args={'bvid': BV}, turn=2)
+        self.event('turn/end', {'turn': 2})
+        value=self.snapshot();main=value['mainAgent']
+        self.assertEqual(main['status'],'partial')
+        self.assertIn('native_turn_interrupted',main['coverage']['reasons'])
+        self.assertEqual(len(main['records']),2)
+        self.assertEqual(main['records'][0]['trigger_origin'],'live')
+        self.assertEqual(main['records'][1]['trigger_origin'],'unknown')
+        self.assertTrue(all(row['status']=='succeeded' for row in main['records']))
+        # A repeated/lower turn is still a malformed lifecycle.
+        self.rows[4]['data']['turn']=1
+        self.assertEqual(self.snapshot()['mainAgent']['status'],'unavailable')
+
     def test_actual_native_shapes_remain_distinct_and_private_text_is_not_projected(self):
         self.event('user/message', {'content': [{'type': 'text', 'text': SECRET}]})
         self.call('bili_recommend', {'ok': True, 'videos': [{'bvid': BV, 'title': 'Public fixture'}, {'bvid': BV}]})
