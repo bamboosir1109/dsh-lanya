@@ -47,6 +47,9 @@ test('only a matching trusted live binding selects the concise guide; observatio
     assert.equal(full.context_mode,undefined)
     assert.ok(full.tools.entertainment.bilibili)
     assert.ok(full.tools.qq_autonomy.proposal)
+    assert.deepEqual(full.tools.qq_expression.tone,live.tools.qq_expression.tone)
+    assert.match(full.tools.entertainment.self_direction.initiative,/one small next activity/)
+    assert.match(full.tools.entertainment.self_direction.boundaries,/wait-for-live-reply/)
     assert.ok(JSON.stringify(live).length<JSON.stringify(full).length*.5)
   }
   assert.equal(f.sends(),0)

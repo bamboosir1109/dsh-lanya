@@ -624,6 +624,23 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             with self.assertRaises(self.module.CapabilityError):
                 self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode=mode)
 
+    def test_warm_tone_reaches_live_and_full_context_without_widening_autonomy(self):
+        before = self.snapshot()
+        for scope in ('private:101', 'group:202'):
+            full = self.module.build_context(str(self.root), 'fixture', scope, process_probe=lambda _: {})
+            live = self.module.build_context(str(self.root), 'fixture', scope, context_mode='live_chat')
+            self.assertEqual(full['tools']['qq_expression']['tone'], live['tools']['qq_expression']['tone'])
+            self.assertIn('温和', live['tools']['qq_expression']['tone']['voice'])
+            self.assertIn('Expression preference only', live['tools']['qq_expression']['tone']['authority'])
+            initiative = full['tools']['entertainment']['self_direction']
+            self.assertIn('confirmed progress', initiative['initiative'])
+            self.assertIn('one-hour', initiative['boundaries'])
+            self.assertIn('wait-for-live-reply', initiative['boundaries'])
+            self.assertIn('00:00-08:00', initiative['boundaries'])
+            self.assertIn('No additional agent', initiative['boundaries'])
+            self.assertLess(len(json.dumps(live)), 20000)
+        self.assertEqual(self.snapshot(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
