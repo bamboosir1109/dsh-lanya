@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -99,6 +100,49 @@ class NativeDailyReportTests(unittest.TestCase):
         self.assertEqual(result['coverage']['reconciled_days'], 1)
         self.assertIsNone(result['days'][0]['total'])
 
+    def test_large_native_log_streams_without_retaining_conversation(self):
+        path, rows = self.rows['private']
+        # Real input exceeds both previous 32 MiB source and 64 MiB expansion
+        # limits. Irrelevant conversation must not enter the pricing payload.
+        with path.open('ab') as handle:
+            for seq in range(4, 76):
+                row = dict(seq=seq, time=self.now-10000, type='tool/result',
+                           data={'padding': 'x' * 1000000})
+                handle.write((json.dumps(row) + '\n').encode())
+        self.assertGreater(path.stat().st_size, 64 * 1024 * 1024)
+        tracemalloc.start()
+        try:
+            records, origins, _, _ = reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 12 * 1024 * 1024)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(len(origins), 1)
+        self.assertEqual(self.report()['days'][-1]['total'], 0.03)
+
+    def test_compressed_multiframe_pricing_and_later_owner_validation(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest('zstandard required for compressed native fixtures')
+        path, rows = self.rows['private']
+        compressed = path.with_suffix(path.suffix + '.zstd')
+        raw = path.read_bytes(); path.unlink()
+        compressor = zstandard.ZstdCompressor()
+        extra = dict(seq=4, time=self.now-10000, type='agent-preset/selected', data={'agentPreset': 'fixture'})
+        compressed.write_bytes(compressor.compress(raw) + compressor.compress((json.dumps(extra)+'\n').encode()))
+        self.assertEqual(self.report()['days'][-1]['total'], 0.03)
+        extra['data']['agentPreset'] = 'foreign'
+        compressed.write_bytes(compressor.compress(raw) + compressor.compress((json.dumps(extra)+'\n').encode()))
+        self.assertEqual(self.report()['coverage']['reasons'], ['owner_mismatch'])
+
+    def test_truncated_native_line_is_not_an_empty_spending_day(self):
+        path, _ = self.rows['private']; path.write_bytes(path.read_bytes().rstrip(b'\n'))
+        result = self.report()
+        self.assertEqual(result['availability'], 'unavailable')
+        self.assertTrue(all(row['total'] is None for row in result['days']))
+
     def test_stdio_contains_no_conversation_recipients_or_session_ids(self):
         original = reports.subprocess.run; payloads = []
         def capture(*args, **kwargs):
@@ -166,15 +210,43 @@ class NativeDailyReportTests(unittest.TestCase):
         self.assertEqual(result['coverage']['reasons'], ['node_runtime_unsupported'])
         self.assertNotIn('PRIVATE', json.dumps(result))
 
-    def test_source_change_during_projection_refused(self):
+    def test_append_after_capture_does_not_discard_verified_costs_and_next_read_revalidates(self):
         original = reports.subprocess.run
         def change(*args, **kwargs):
             answer = original(*args, **kwargs)
             path = self.rows['private'][0]; path.write_bytes(path.read_bytes() + b'\n')
             return answer
         with mock.patch.object(reports.subprocess, 'run', side_effect=change): result = self.report()
-        self.assertEqual(result['availability'], 'unavailable')
-        self.assertEqual(result['coverage']['reasons'], ['source_changing'])
+        self.assertEqual(result['availability'], 'available')
+        self.assertEqual(result['days'][-1]['total'], 0.03)
+        self.assertEqual(self.report()['availability'], 'unavailable')
+
+    def test_changed_routing_or_pricing_during_projection_is_refused(self):
+        original = reports.subprocess.run
+        for path, patch in [(self.mapping, lambda value: value.update({'private:101': 'foreign'})),
+                            (self.ledger, lambda value: value['config'].update({'prices': {'foreign': 1}}))]:
+            raw = path.read_bytes()
+            def change(*args, **kwargs):
+                answer = original(*args, **kwargs)
+                value = json.loads(raw); patch(value); self.write(path, value)
+                return answer
+            with mock.patch.object(reports.subprocess, 'run', side_effect=change): result = self.report()
+            self.assertEqual(result['coverage']['reasons'], ['source_changing'])
+            path.write_bytes(raw)
+
+    def test_later_usage_settlement_keeps_captured_estimate_without_rewriting_ledger(self):
+        original = reports.subprocess.run
+        def change(*args, **kwargs):
+            answer = original(*args, **kwargs)
+            value = json.loads(self.ledger.read_bytes())
+            value['days'][self.day]['sessions'][0]['apiCost'] = 0.04
+            self.write(self.ledger, value)
+            return answer
+        with mock.patch.object(reports.subprocess, 'run', side_effect=change): result = self.report()
+        self.assertEqual(result['availability'], 'available')
+        self.assertEqual(result['days'][-1]['total'], 0.03)
+        self.assertIsNone(self.report()['days'][-1]['total'])
+        self.assertEqual(json.loads(self.ledger.read_bytes())['days'][self.day]['sessions'][0]['apiCost'], 0.04)
 
     def test_cache_reuses_only_same_date_owner_and_stable_files(self):
         original = reports.subprocess.run

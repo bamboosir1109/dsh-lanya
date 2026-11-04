@@ -7,7 +7,6 @@ An activity count, a session total and a reservation are never spending.
 """
 import datetime as dt
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -141,29 +140,22 @@ def daily_spending(now=None, days=30):
 
 def _native_rows(path, session, workspace, preset):
     import panel_activity as activity
-    raw = activity.read_bytes(path)
-    if path.suffix == '.zstd':
-        try:
-            import zstandard
-        except ImportError:
-            raise activity.ActivityUnavailable('compression_unavailable') from None
-        try:
-            with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(raw), read_across_frames=True) as reader:
-                raw = reader.read(activity.MAX_EXPANDED + 1)
-        except Exception:
-            raise activity.ActivityUnavailable('malformed_source') from None
-    activity._require(len(raw) <= activity.MAX_EXPANDED and raw.endswith(b'\n'), 'source_limit')
-    lines = raw.splitlines()
-    activity._require(1 < len(lines) <= activity.MAX_ROWS + 1 and
-                      all(len(line) <= activity.MAX_LINE for line in lines), 'source_limit')
-    header = activity._json(lines[0])
+    # Share the activity reader's bounded snapshot and streaming decompressor.
+    # Only pricing/routing metadata below survives each decoded source line.
+    with activity._native_lines(path) as lines:
+        return _native_metadata(lines, session, workspace, preset)
+
+
+def _native_metadata(lines, session, workspace, preset):
+    import panel_activity as activity
+    header = activity._json(next(lines, b''))
     activity._require(isinstance(header, dict) and header.get('type') == 'session' and
                       header.get('version') == 4 and type(header.get('isSeeded')) is bool and
                       header.get('id') == session and
                       activity._workspace(header.get('cwd')) == activity._workspace(workspace) and
                       activity._preset(header.get('agentPreset')) == activity._preset(preset), 'owner_mismatch')
     records, origins, markers, own_start, source_start = [], [], 0, 0, None
-    for seq, line in enumerate(lines[1:]):
+    for seq, line in enumerate(lines):
         event = activity._json(line)
         activity._require(isinstance(event, dict) and event.get('seq') == seq and
                           activity._integer(event.get('seq')) and activity._integer(event.get('time')) and event['time'] > 0 and
@@ -324,7 +316,17 @@ def native_daily_spending(*, workspace, agent_preset, identity_file, dsh_home,
                               report.get('today') == today.isoformat()
                               and report.get('generated_at') == sampled and isinstance(report.get('days'), list)
                               and [row.get('date') for row in report['days']] == dates, 'malformed_source')
-            activity._require(_source_signature(paths) == before, 'source_changing')
+            # Live logs and ledger usage can advance after their bounded reads.
+            # The captured native lines retain owner/sequence validation, and
+            # the bridge reconciles them against the captured ledger per day.
+            # New appends belong to the next cache key, not an unavailable UI.
+            # Routing, pricing and code changes must still invalidate this read.
+            fixed_paths = [path for path in paths if path not in [ledger_path, *source_paths]]
+            fixed_before = tuple(row for row in before if row[0] in {str(path) for path in fixed_paths})
+            activity._require(_source_signature(fixed_paths) == fixed_before, 'source_changing')
+            latest_ledger = activity._json(activity.read_bytes(ledger_path, 8 * 1024 * 1024))
+            activity._require(isinstance(latest_ledger, dict) and latest_ledger.get('version') == 1 and
+                              latest_ledger.get('config') == configuration, 'source_changing')
             # The bridge's public output is aggregate-only by construction.
             _NATIVE_CACHE['value'] = (key, sampled, report)
             return json.loads(json.dumps(report))

@@ -741,7 +741,7 @@ test('a previous journal date cannot overwrite the selected date refresh indicat
 })
 
 const MONEY_FORMATTERS = ['requireCnyBudget', 'budgetAmount', 'budgetDecimal', 'renderBudgetInput', 'budgetInputCny']
-const DAILY_RENDERERS = [...MONEY_FORMATTERS, 'spendingDayState', 'spendingAmount', 'nativeSpendingReady', 'renderTodaySpending', 'selectSpendingDate', 'renderDailySpending']
+const DAILY_RENDERERS = [...MONEY_FORMATTERS, 'spendingDayState', 'spendingAmount', 'spendingValue', 'spendingLabel', 'nativeSpendingReady', 'renderTodaySpending', 'selectSpendingDate', 'renderDailySpending']
 const BUDGET_RENDERERS = ['appendPolicyRow', 'renderBudgetSummary', ...DAILY_RENDERERS, 'renderBudget']
 const AUTONOMY_RENDERERS = ['appendPolicyRow', 'renderAutonomySettings']
 const budgetData = overrides => ({ schema: 'unified-budget/v2', currency: 'CNY', basis: 'owner_confirmed_numeric_cny_estimate', numeric_scale: 1, availability: 'available', revision: 'a'.repeat(64),
@@ -818,6 +818,25 @@ test('native whole-day unknown categories stay unpriced in the daily summary', (
   assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*今日已计 待核算/)
   assert.match(treeText(h.node('dailyTodayBuckets')), /1 轮待核算/)
   assert.equal(h.node('mDailyTotal').textContent, '待核算')
+})
+
+test('known native subtotals remain visible without pretending an unreconciled day is complete', () => {
+  const h = harness({ functions: DAILY_RENDERERS })
+  const day = spendingDay('2026-11-01', {autonomy:null,private:null,group:null,total:null,
+    known_total_cny:0.9,unknown_count:1,unclassified_count:1,
+    buckets:{autonomy:{known_spent_cny:0.7},private:{known_spent_cny:0},group:{known_spent_cny:0.2}}})
+  h.context.renderDailySpending(spendingData([day]))
+  assert.equal(h.node('mDailyTotal').textContent, '¥0.9000 + ?')
+  assert.match(h.node('mDailyTotalNote').textContent, /已知小计.*未核算或未归类/)
+  assert.match(treeText(h.node('dailyTodayBuckets')), /自主活动.*¥0\.7000 \+ \?.*对账或归类/)
+  assert.match(treeText(h.node('spendTable')), /¥0\.7000 \+ \?.*¥0\.0000 \+ \?.*¥0\.2000 \+ \?.*¥0\.9000 \+ \?/)
+  const bar = h.node('spendChart').children[0]
+  assert.match(bar['aria-label'], /¥0\.9000 \+ \?/)
+  assert.ok(parseFloat(descendants(bar).find(node => node.className === 'autonomy').style.height)>0)
+  assert.match(treeText(h.node('spendDetail')), /¥0\.9000 \+ \?/)
+  h.context.renderDailySpending(spendingData([{...day,status:'unknown'}]))
+  assert.equal(h.node('mDailyTotal').textContent,'待核算')
+  assert.doesNotMatch(treeText(h.node('spendTable')), /¥0\.9000/)
 })
 
 test('missing daily coverage renders unknown instead of a zero-height zero-cost day, and unsettled cost stays separate', () => {

@@ -1893,6 +1893,19 @@ function spendingAmount(value){
   return budgetAmount(value);
 }
 
+function spendingValue(day,key){
+  const valid = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  if(!day || day.status === 'unknown') return null;
+  if(valid(day[key])) return day[key];
+  const known = key === 'total' ? day.known_total_cny : day.buckets?.[key]?.known_spent_cny;
+  return valid(known) ? known : null;
+}
+
+function spendingLabel(day,key){
+  const value = spendingValue(day,key);
+  return spendingAmount(value) + (value !== null && day[key] == null ? ' + ?' : '');
+}
+
 function nativeSpendingReady(data){
   return data?.schema === 'daily-spending/v2' && data.currency === 'CNY' && data.basis === 'owner_confirmed_numeric_cny_estimate' && data.numeric_scale === 1 && data.timezone === 'Asia/Shanghai' && data.availability !== 'unavailable' && data.coverage?.scope === 'current_mapped_main_agent_native_turns' && Array.isArray(data.days);
 }
@@ -1902,8 +1915,9 @@ function renderTodaySpending(history){
   const row = ready ? history.days.find(day => day.date === today) : null;
   const available = row && row.status !== 'unknown';
   setText('mDate', today || '—');
-  setText('mDailyTotal', available ? budgetAmount(row.total) : '待核算');
-  setText('mDailyTotalNote', available && typeof row.total === 'number' && Number.isFinite(row.total) && row.total >= 0 ? '本机估算：' + String(row.total) + ' 元，未核对服务商实扣' : '人民币费用待核算');
+  setText('mDailyTotal', available ? spendingLabel(row,'total') : '待核算');
+  const subtotal = available && row.total == null && spendingValue(row,'total') !== null;
+  setText('mDailyTotalNote', subtotal ? '已知小计，另有未核算或未归类费用；未核对服务商实扣' : available && typeof row.total === 'number' && Number.isFinite(row.total) && row.total >= 0 ? '本机估算：' + String(row.total) + ' 元，未核对服务商实扣' : '人民币费用待核算');
   setText('mDailyAvailability', !ready ? '来源未确认' : !available ? '费用待核算' : spendingDayState(row));
   const coverage = ready ? history.coverage : {};
   setText('mCoverage', Number.isInteger(coverage.owner_verified_scopes) && Number.isInteger(coverage.configured_scopes) ? '按北京时间归日 · 已核验 ' + coverage.owner_verified_scopes + '/' + coverage.configured_scopes + ' 个绑定范围' : '等待核验当前费用来源');
@@ -1912,9 +1926,9 @@ function renderTodaySpending(history){
   for(const [key,name] of [['autonomy','自主活动'],['private','私聊'],['group','群聊']]){
     const card = document.createElement('div'); card.className = 'policy-item';
     const title = document.createElement('b'); title.textContent = name; card.appendChild(title);
-    const amount = document.createElement('p'); amount.textContent = '今日已计 ' + spendingAmount(available ? row[key] : null); card.appendChild(amount);
+    const amount = document.createElement('p'); amount.textContent = '今日已计 ' + (available ? spendingLabel(row,key) : spendingAmount(null)); card.appendChild(amount);
     const bucket = available ? row.buckets?.[key] : null;
-    const state = document.createElement('p'); state.textContent = !available ? '缺少可核验的当天费用' : bucket?.unknown_count ? bucket.unknown_count + ' 轮待核算，已计金额为已知小计' : bucket?.pending_count ? bucket.pending_count + ' 轮计费中' : '来自实际模型轮次计价记录'; card.appendChild(state);
+    const state = document.createElement('p'); state.textContent = !available ? '缺少可核验的当天费用' : bucket?.unknown_count ? bucket.unknown_count + ' 轮待核算，已计金额为已知小计' : bucket?.pending_count ? bucket.pending_count + ' 轮计费中' : row[key] == null ? '已知小计，当天对账或归类尚未完成' : '来自实际模型轮次计价记录'; card.appendChild(state);
     box.appendChild(card);
   }
 }
@@ -1949,29 +1963,29 @@ function renderDailySpending(data){
   root.dataset.date = selected.date;
   const keys = [['autonomy','自主'],['private','私聊'],['group','群聊']];
   const known = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
-  const sum = day => keys.reduce((total,[key]) => total + (known(day[key]) ? day[key] : 0), 0);
+  const sum = day => keys.reduce((total,[key]) => total + (spendingValue(day,key) ?? 0), 0);
   const ceiling = Math.max(0.0001, ...visible.map(sum));
   visible.forEach(day => {
     const option = document.createElement('option'); option.value = day.date; option.textContent = day.date; select.appendChild(option);
     const button = document.createElement('button'); button.type = 'button'; button.className = 'spend-day'; button.dataset.date = day.date;
     button.setAttribute('aria-pressed', String(day.date === selected.date));
-    const description = day.date + '，已计合计 ' + spendingAmount(day.total) + '，' + keys.map(([key,name]) => name + ' ' + spendingAmount(day[key])).join('，') + '，' + spendingDayState(day);
+    const description = day.date + '，已计合计 ' + spendingLabel(day,'total') + '，' + keys.map(([key,name]) => name + ' ' + spendingLabel(day,key)).join('，') + '，' + spendingDayState(day);
     button.setAttribute('aria-label', description); button.title = description; button.onclick = () => selectSpendingDate(day.date);
-    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = known(day.total) ? budgetAmount(day.total) + (day.pending_count || day.unknown_count ? ' + ?' : '') : '—'; button.appendChild(total);
+    const total = document.createElement('span'); total.className = 'spend-total'; total.textContent = spendingValue(day,'total') !== null ? spendingLabel(day,'total') + (known(day.total) && (day.pending_count || day.unknown_count) ? ' + ?' : '') : '—'; button.appendChild(total);
     const stack = document.createElement('span'); stack.className = 'spend-stack'; stack.setAttribute('aria-hidden','true');
-    stack.dataset.state = keys.every(([key]) => !known(day[key])) ? 'unknown' : 'measured';
-    keys.forEach(([key]) => { const piece = document.createElement('i'); piece.className = key; piece.style.height = (known(day[key]) ? day[key] / ceiling * 140 : 0) + 'px'; stack.appendChild(piece); });
+    stack.dataset.state = keys.every(([key]) => spendingValue(day,key) === null) ? 'unknown' : 'measured';
+    keys.forEach(([key]) => { const piece = document.createElement('i'); piece.className = key; piece.style.height = ((spendingValue(day,key) ?? 0) / ceiling * 140) + 'px'; stack.appendChild(piece); });
     button.appendChild(stack);
     const date = document.createElement('span'); date.className = 'spend-date'; date.textContent = day.date.slice(5); button.appendChild(date); chart.appendChild(button);
     const row = document.createElement('tr'); if(day.date === selected.date) row.setAttribute('aria-current','date');
-    [day.date, ...keys.map(([key]) => spendingAmount(day[key])), spendingAmount(day.total), spendingDayState(day)].forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); }); table.appendChild(row);
+    [day.date, ...keys.map(([key]) => spendingLabel(day,key)), spendingLabel(day,'total'), spendingDayState(day)].forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); }); table.appendChild(row);
   });
   select.value = selected.date;
-  const date = document.createElement('strong'); date.textContent = selected.date + ' · 已计合计 ' + spendingAmount(selected.total); detail.appendChild(date);
-  keys.forEach(([key,name]) => { const item = document.createElement('span'); item.textContent = name + ' '; const amount = document.createElement('b'); amount.textContent = spendingAmount(selected[key]); item.appendChild(amount); detail.appendChild(item); });
+  const date = document.createElement('strong'); date.textContent = selected.date + ' · 已计合计 ' + spendingLabel(selected,'total'); detail.appendChild(date);
+  keys.forEach(([key,name]) => { const item = document.createElement('span'); item.textContent = name + ' '; const amount = document.createElement('b'); amount.textContent = spendingLabel(selected,key); item.appendChild(amount); detail.appendChild(item); });
   const status = document.createElement('span'); status.textContent = spendingDayState(selected); detail.appendChild(status);
   note.dataset.state = visible.some(day => day.status !== 'complete' || day.pending_count || day.unknown_count) ? 'partial' : 'live';
-  note.textContent = '按北京时间每日归集，单位人民币元，费用为当前绑定范围内的本机估算，未核对服务商实扣；+ ? 表示另有计费中或待核算轮次。未覆盖记录不能当作零费用，预算预留不计入此图。';
+  note.textContent = '按北京时间每日归集，单位人民币元，费用为当前绑定范围内的本机估算，未核对服务商实扣；+ ? 表示已知小计，另有计费中、待核算、未归类或未完成对账的费用。未覆盖记录不能当作零费用，预算预留不计入此图。';
 }
 
 async function loadBudget(background){
