@@ -322,7 +322,7 @@ def _queued_review(event):
 def _review_anchor(base, event, depth=0, seen=None):
     key = event_key(event["scope"], event["event_id"])
     seen = set() if seen is None else seen
-    if depth >= 64 or key in seen:
+    if depth >= 128 or key in seen:
         raise ObservationError("Review freshness ancestry is not bounded and acyclic")
     seen.add(key)
     if not _queued_review(event):

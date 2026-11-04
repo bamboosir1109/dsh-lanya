@@ -470,17 +470,19 @@ test('terminal child shortcuts still reject conflicting contents and malformed c
   }
 })
 
-test('new legacy reviews retain the 64-node ancestry boundary and reject self-parent metadata', async (t) => {
-  const bounded = legacyHistory(t, 64)
+test('legacy reviews migrate within 128 nodes and still reject overlong or self-parent ancestry', async (t) => {
+  const recovered = legacyHistory(t, 82)
+  assert.equal(observationFreshness(recovered.root, recovered.rows.at(-1).value), 1)
+  const bounded = legacyHistory(t, 128)
   assert.equal(observationFreshness(bounded.root, bounded.rows.at(-1).value), 1)
-  const tooDeep = legacyHistory(t, 65)
+  const tooDeep = legacyHistory(t, 129)
   assert.throws(() => observationFreshness(tooDeep.root, tooDeep.rows.at(-1).value), /bounded and acyclic/)
   let now = 1000
   const deepPump = await pump(t, tooDeep.root, () => assert.fail('overlong ancestry must not dispatch'), { now: () => now })
   await deepPump.drain()
   now = 10000
   assert.equal((await deepPump.drain()).processed, 0)
-  assert.equal(readEvents(tooDeep.root).length, 65)
+  assert.equal(readEvents(tooDeep.root).length, 129)
 
   const cyclic = legacyHistory(t, 5), forged = cyclic.rows[2]
   const value = { ...forged.value, payload: { ...forged.value.payload, review_context: {

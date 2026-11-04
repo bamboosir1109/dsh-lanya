@@ -8,12 +8,12 @@ import { autonomousRestState, createDecisionPolicy } from '../plugin/lib/decisio
 const hour = 3600_000
 const local = text => Date.parse('2026-11-03T' + text + '+08:00')
 const privateScope = 'private:101'
-function fixture(t, initial = local('09:00:00')) {
+function fixture(t, initial = local('09:00:00'), options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lanya-contact-rhythm-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const file = path.join(directory, 'policy.json')
   let at = initial, serial = 0, calls = 0
-  const make = () => createDecisionPolicy({ stateFile: file, now: () => at, maxInbound: 1 })
+  const make = () => createDecisionPolicy({ stateFile: file, now: () => at, maxInbound: 1, ...options })
   const policy = make()
   const metadata = (id, scope = privateScope, createdAt = at) => ({ scope, eventId: id,
     kind: 'activity.opportunity', producer: 'mind', createdAt })
@@ -77,6 +77,39 @@ test('no human reply means no further autonomous contact even after the hour or 
   assert.equal((await restarted.proactiveStatus(privateScope)).waiting_for_live_reply, false)
   assert.equal((await f.send(await f.observed('after-real-answer'))).status, 'sent')
   assert.equal(f.calls(), 2)
+})
+
+test('explicit personal autonomy permits a new topic after an hour without imposing a daily quota', async t => {
+  const f=fixture(t,local('09:00:00'),{autonomousPrivateScope:privateScope})
+  await f.send(await f.observed('first-topic'))
+  f.time(local('09:59:59.999'))
+  assert.equal((await f.send(await f.observed('too-soon'))).reason,'proactive_contact_interval')
+  f.time(local('10:00:00'))
+  const status=await f.make().proactiveStatus(privateScope)
+  assert.equal(status.allowed,true)
+  assert.equal(status.wait_for_live_reply,false)
+  assert.equal(status.waiting_for_live_reply,true,'absence of a human reply remains factual context')
+  assert.equal(status.contact_choice,'main_llm_no_daily_quota')
+  assert.equal(f.calls(),1,'a timer or status query never sends anything')
+  assert.equal((await f.send(await f.observed('fresh-new-topic'))).status,'sent')
+  await f.send(await f.observed('other-person-first','private:303'))
+  f.time(local('11:00:00'))
+  assert.equal((await f.send(await f.observed('other-person-second','private:303'))).reason,'proactive_contact_unanswered')
+  assert.equal((await f.send(await f.live('actual-live-answer'))).status,'sent')
+})
+
+test('personal autonomous choice preserves uncertain receipts and still rests at midnight', async t => {
+  const f=fixture(t,local('09:00:00'),{autonomousPrivateScope:privateScope})
+  assert.equal((await f.send(await f.observed('uncertain'),()=>{throw new Error('unknown')})).status,'unknown')
+  const original=(await f.policy.snapshot(privateScope)).deliveries[0]
+  f.time(local('10:00:00'))
+  assert.equal((await f.send(await f.observed('different-new-topic'))).status,'sent')
+  assert.deepEqual((await f.policy.snapshot(privateScope)).deliveries[0],original)
+  f.time(local('23:59:59.999'));const ticket=await f.observed('late-opportunity')
+  f.time(Date.parse('2026-11-04T00:00:00+08:00'))
+  assert.equal((await f.send(ticket)).reason,'autonomy_rest')
+  assert.throws(()=>createDecisionPolicy({stateFile:'synthetic',autonomousPrivateScope:'group:202'}))
+  assert.throws(()=>createDecisionPolicy({stateFile:'synthetic',autonomousPrivateScope:true}))
 })
 
 test('unknown first contact retains the interval and unanswered state without rewriting its receipt', async t => {

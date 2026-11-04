@@ -35,7 +35,7 @@ function latestLiveRevision(current) {
     ...(current?.seen || []).filter(item => (item.origin || 'live') === 'live').map(item => item.revision))
 }
 
-function privateContactState(current, at, ticketId) {
+function privateContactState(current, at, ticketId, autonomousChoice = false) {
   const contact = current?.proactiveContact
   if (contact?.ticketId === ticketId && ticketId !== undefined) return { allowed: true, reason: 'same_contact_turn' }
   // Existing deliveries have no trusted origin. Use their real time only as a
@@ -46,9 +46,10 @@ function privateContactState(current, at, ticketId) {
   const next = previous ? previous + CONTACT_INTERVAL_MS : null
   const waiting = Boolean(contact && latestLiveRevision(current) <= contact.lastLiveRevision)
   const reason = next !== null && at < next ? 'proactive_contact_interval'
-    : waiting ? 'proactive_contact_unanswered' : 'proactive_contact_available'
+    : waiting && !autonomousChoice ? 'proactive_contact_unanswered' : 'proactive_contact_available'
   return { allowed: reason === 'proactive_contact_available', reason,
-    minimum_interval_minutes: 60, wait_for_live_reply: true,
+    minimum_interval_minutes: 60, wait_for_live_reply: !autonomousChoice,
+    contact_choice: autonomousChoice ? 'main_llm_no_daily_quota' : 'wait_for_live_reply',
     last_contact_at: previous || null, next_allowed_at: next, waiting_for_live_reply: waiting,
     history_basis: contact ? 'trusted_proactive_reservation' : 'legacy_delivery_time_only' }
 }
@@ -387,8 +388,11 @@ export function createJsonPolicyStorage({ stateFile, lockTimeoutMs = 2500, retry
  * sends MUST be classified media/forward/api, even when invoked by a tool.
  */
 export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxInbound = 512,
-  maxDeliveries = 512, maxScopes = 256, maxObservations = 256, ticketTtlMs = 300_000 } = {}) {
+  maxDeliveries = 512, maxScopes = 256, maxObservations = 256, ticketTtlMs = 300_000,
+  autonomousPrivateScope } = {}) {
   if (typeof stateFile !== 'string' || !stateFile.trim()) throw new PolicyStateError('stateFile is required')
+  if (autonomousPrivateScope !== undefined &&
+      (!canonicalScope(autonomousPrivateScope).startsWith('private:'))) throw new PolicyStateError('Autonomous contact needs one explicit private scope')
   for (const value of [maxInbound, maxDeliveries, maxScopes, maxObservations, ticketTtlMs]) {
     if (!Number.isSafeInteger(value) || value < 1) throw new PolicyStateError('Policy limits must be positive integers')
   }
@@ -423,7 +427,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     if (permit.verdict === 'tool_action' && kind !== 'tool_action') return { allowed: false, reason: 'not_a_speech_ticket' }
     if (current.mode === 'silent' && kind !== 'tool_action') return { allowed: false, reason: 'silent' }
     if (current.current.origin === 'observation' && ticket.scope.startsWith('private:') && kind !== 'tool_action') {
-      const contact = privateContactState(current, now(), ticket.id)
+      const contact = privateContactState(current, now(), ticket.id, ticket.scope === autonomousPrivateScope)
       if (!contact.allowed) return { allowed: false, reason: contact.reason }
     }
     return { allowed: true, reason: 'permitted', revision: current.revision }
@@ -433,7 +437,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     async proactiveStatus(scope) {
       canonicalScope(scope)
       return transaction(state => ({ ...autonomousRestState(now()),
-        ...(scope.startsWith('private:') ? privateContactState(scopeState(state, scope), now())
+        ...(scope.startsWith('private:') ? privateContactState(scopeState(state, scope), now(), undefined, scope === autonomousPrivateScope)
           : { allowed: true, reason: 'group_not_private_contact_limited' }) }))
     },
     async recordInbound(event) {

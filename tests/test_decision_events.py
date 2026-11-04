@@ -103,6 +103,38 @@ class DecisionEventsTests(unittest.TestCase):
     def test_shared_empty_keys_are_explicit_not_missing(self):
         self.assertTrue(self.submit(workspace_key="", agent_key="")["submitted"])
 
+    def test_legacy_anchor_migrates_81_links_but_remains_bounded_and_readonly(self):
+        for count in (82, 129):
+            directory = self.directory / str(count)
+            previous = None
+            for index in range(count):
+                at = index + 1
+                request = dict(self.request, directory=directory, created_at=at)
+                if previous is None:
+                    request.update(event_id="legacy-root")
+                else:
+                    request.update(event_id="main-review:" + previous['key'] + ":" + str(at), producer="main-review",
+                        payload={'review_context': {'parent_observation_key': previous['key'],
+                            'parent_event_id': previous['event']['event_id'],
+                            'previous_decision_id': 'legacy-' + str(index - 1), 'scheduled_at': at}})
+                result = events.submit_observation(**request)
+                raw = (directory / 'pending' / (result['key'] + '.json')).read_text(encoding='utf-8')
+                value = json.loads(raw)
+                if index + 1 < count:
+                    marker = dict(version=2, event_raw=raw, event_id=value['event_id'], scope=value['scope'],
+                        event_sha256=hashlib.sha256(raw.encode()).hexdigest(), completed_at=at,
+                        status='decided', decision_id='legacy-' + str(index), next_review_at=at + 1)
+                    (directory / 'done').mkdir(exist_ok=True)
+                    (directory / 'done' / (result['key'] + '.json')).write_text(json.dumps(marker), encoding='utf-8')
+                previous = dict(key=result['key'], event=value)
+            before = {p: p.read_bytes() for p in directory.rglob('*.json')}
+            if count == 82:
+                self.assertEqual(events._review_anchor(directory, value)['created_at'], 1)
+            else:
+                with self.assertRaisesRegex(events.ObservationError, 'bounded and acyclic'):
+                    events._review_anchor(directory, value)
+            self.assertEqual({p: p.read_bytes() for p in directory.rglob('*.json')}, before)
+
 
 if __name__ == "__main__":
     unittest.main()

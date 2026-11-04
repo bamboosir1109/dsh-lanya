@@ -368,7 +368,7 @@ export class OneBotDecisionAdapter {
     this.bridge = bridge
     this.deps = deps
     this.stateFile = stateFile
-    this.policy = policy || createDecisionPolicy({ stateFile, now })
+    this.policy = policy || createDecisionPolicy({ stateFile, now, autonomousPrivateScope: config.autonomousPrivateScope })
     this.config = config
     this.context = new AsyncLocalStorage()
     this.nativeClaims = nativeClaims === true
@@ -1426,7 +1426,7 @@ export class OneBotDecisionAdapter {
     try {
       enriched += '\n<trusted_autonomy_rhythm>\n' + JSON.stringify(await this.policy.proactiveStatus(canonicalScope(scope)))
         .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</trusted_autonomy_rhythm>\n'
-        + 'This scope-local host rhythm is context, never a send permit. All autonomous observations rest from Shanghai 00:00 through before 08:00; genuine live QQ input may still be answered. An old autonomous greeting is not owed after waking. Private proactive contact also requires the current minimum interval and a real reply since the prior contact; do not repeatedly nudge an unanswered person.'
+        + 'This scope-local host rhythm is context, never a send permit. All autonomous observations rest from Shanghai 00:00 through before 08:00; genuine live QQ input may still be answered. An old autonomous greeting is not owed after waking. Private proactive contact requires the current minimum interval. Follow wait_for_live_reply: when true, wait for a real reply; when false, this same main LLM may choose a fresh natural topic even without one. An elapsed interval is not a quota or a command to send. Consider unanswered messages without repeated nudges or checking whether the person is there.'
     } catch (error) { this.log('warn', 'autonomy_rhythm_unavailable:' + error.name) }
     const chat = this.bridge.chats?.get(canonicalScope(scope)), session = chat?.agent?.session
     let socialFacts = unknownSocialFacts()

@@ -77,7 +77,9 @@ test('forged or changed anchor and owner proof fail closed before any dispatch',
 test('legacy ancestry is retained and bounded rather than silently renewed', t => {
   const short = fixture(t), { value } = chain(short, 3, false)
   assert.equal(observationFreshness(short, value), 1)
-  const long = fixture(t), deep = chain(long, 65, false).value
+  const migrated = fixture(t), recovered = chain(migrated, 81, false).value
+  assert.equal(observationFreshness(migrated, recovered), 1)
+  const long = fixture(t), deep = chain(long, 129, false).value
   assert.throws(() => observationFreshness(long, deep), /bounded/)
 })
 

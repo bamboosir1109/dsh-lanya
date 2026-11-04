@@ -149,7 +149,7 @@ function sameReviewOwner(left, right) {
 }
 function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
   const key = observationKey(event.scope, event.event_id)
-  if (depth >= 64 || seen.has(key)) throw new ObservationQueueError('Review freshness ancestry is not bounded and acyclic')
+  if (depth >= 128 || seen.has(key)) throw new ObservationQueueError('Review freshness ancestry is not bounded and acyclic')
   seen.add(key)
   if (!queuedReview(event)) {
     const original = readObservationEvidence(directory, key)

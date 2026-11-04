@@ -178,7 +178,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertIn("fresh user question", guide["delivery_state_boundary"]["later_question"])
                 self.assertEqual(tools["entertainment"]["rest_window"]["timezone"], "Asia/Shanghai")
                 self.assertEqual(tools["entertainment"]["proactive_sharing"]["private_contact"]["minimum_interval_minutes"], 60)
-                self.assertTrue(tools["entertainment"]["proactive_sharing"]["private_contact"]["wait_for_live_reply"])
+                self.assertEqual(tools["entertainment"]["proactive_sharing"]["private_contact"]["wait_for_live_reply"], "use_trusted_autonomy_rhythm")
         self.assertEqual(self.snapshot(), before)
 
     def test_intent_protocol_preserves_real_candidates_and_recipient_authority_without_io(self):
@@ -341,7 +341,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 rhythm = sharing["private_contact"]
                 self.assertEqual(rhythm["scope"], "unsolicited_private_contact_per_recipient")
                 self.assertEqual(rhythm["minimum_interval_minutes"], 60)
-                self.assertIs(rhythm["wait_for_live_reply"], True)
+                self.assertEqual(rhythm["wait_for_live_reply"], "use_trusted_autonomy_rhythm")
                 self.assertIn("do not start another, even after an hour", rhythm["choice"])
                 self.assertIn("a first suitable contact remains possible", rhythm["choice"])
                 self.assertIn("a minimum, not a quota", rhythm["choice"])
@@ -353,7 +353,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertIn("unanswered proactive contact", tools["qq_expression"]["meme_preference"])
                 self.assertIn("no follow-up until an actual live reply", tools["qq_autonomy"]["proposal"])
         primary = self.context()["tools"]["entertainment"]
-        self.assertIn("do not favor contacting the administrator", primary["proactive_sharing"]["primary_choice"])
+        self.assertIn("rather than a fixed daily message target", primary["proactive_sharing"]["primary_choice"])
         self.assertNotIn("prefer a concrete social choice", primary["proactive_sharing"]["primary_choice"])
         self.assertNotIn("Do not wait for a person to speak first", primary["continuity"])
         self.assertIn("not a reason to skip daytime internal leisure", primary["cadence"]["preference"])

@@ -128,6 +128,34 @@ test('quiet-hour closure still verifies the actual scope owner', async t => {
   assert.equal(h.counts().dispatches, 0)
 })
 
+test('an 81-link legacy review can expire without replaying old activity or rewriting its evidence', async t => {
+  const h = fixture(t, WAKE), inbox = path.join(h.root, 'decision-inbox')
+  for (const sub of ['pending','done']) fs.mkdirSync(path.join(inbox, sub), {recursive:true})
+  let previous, last
+  const originals = new Map()
+  for (let i=0;i<82;i++) {
+    const at=WAKE-100000+i, value=i===0 ? h.event('legacy-root',{created_at:at}) : {
+      ...h.event('unused',{created_at:at}), producer:'main-review',
+      event_id:'main-review:'+previous.key+':'+at,
+      payload:{review_context:{parent_observation_key:previous.key,parent_event_id:previous.value.event_id,
+        previous_decision_id:'legacy-decision-'+(i-1),scheduled_at:at}} }
+    const raw=JSON.stringify(value)+'\n', key=observationKey(scope,value.event_id)
+    const file=path.join(inbox,'pending',key+'.json');fs.writeFileSync(file,raw);originals.set(file,raw)
+    if(i<81) {
+      const marker=JSON.stringify({version:2,event_raw:raw,event_id:value.event_id,scope,
+        event_sha256:createHash('sha256').update(raw).digest('hex'),completed_at:at,
+        status:'decided',decision_id:'legacy-decision-'+i,next_review_at:at+1})+'\n'
+      const done=path.join(inbox,'done',key+'.json');fs.writeFileSync(done,marker);originals.set(done,marker)
+    }
+    previous={key,value};last=value
+  }
+  const result=await h.adapter.dispatchObservation(last)
+  assert.equal(result.reason,'observation_expired')
+  assert.equal(result.native_turn_completed,false)
+  assert.deepEqual(h.counts(),{dispatches:0,transports:0})
+  for(const [file,raw] of originals) assert.equal(fs.readFileSync(file,'utf8'),raw)
+})
+
 test('the synchronous native tool guard denies new autonomous tools at midnight even without a budget gate', async t => {
   const h = fixture(t, MIDNIGHT - 1), value = h.event('active-tools'), active = await h.start(value)
   assert.equal(h.guards[0](active.exec), undefined)

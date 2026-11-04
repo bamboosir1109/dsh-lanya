@@ -639,7 +639,7 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                     "private route; refusal or unknown delivery stops without retry or group fallback. "
                     "Actual group search and applying to join are unavailable; do not treat handling an inbound "
                     "join request or opening a share link as applying to a new group. " if primary else
-                   "This group opportunity is for this conversation's social context and interests. "
+                   "This group opportunity is for this conversation's social context and interests. Review the actual recent group conversation and choose for yourself whether to join with a relevant thought, a brief joke, a question or one fitting real meme; a personal mention is not required. Do not force participation or interpret every group sentence as directed to you. "
                    "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
                    "browsing and creative work are owned by the primary private opportunity; do not start "
                    "a second copy of that activity here or borrow its private plan or notes. ") +
