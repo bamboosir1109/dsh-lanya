@@ -36,7 +36,7 @@ fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }",
 const { nativeHost } = await import(pathToFileURL(hostPath).href)
 let serial = 0
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-async function fixture(t, { admission = true, mislabeledImage = false, contextualGroupScope } = {}) {
+async function fixture(t, { admission = true, mislabeledImage = false, contextualGroupScope, burst = true } = {}) {
   const root = path.join(temporary, 'case-' + ++serial), plugin = path.join(root, 'plugin')
   fs.mkdirSync(root)
   const prepare = String.raw`
@@ -54,6 +54,9 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
   raw=q.transform(name,raw)
   import patch_onebot_group_context as g
   raw=g.transform(name,raw)
+  if sys.argv[4]=='1':
+   import patch_onebot_burst_intake as b
+   raw=b.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
@@ -62,6 +65,9 @@ if sys.argv[3]=='1':
  raw=admission.transform(raw)
  import patch_onebot_group_context as g
  raw=g.transform('inbound.js',raw)
+ if sys.argv[4]=='1':
+  import patch_onebot_burst_intake as b
+  raw=b.transform('inbound.js',raw)
 f.write_bytes(raw)
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
@@ -69,7 +75,7 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
 (out/e.GENERATED).write_bytes((repo/'plugin/lib/qq-egress.js').read_bytes())
 (out/'lib/qq-inbox-recovery.js').write_bytes((repo/'plugin/lib/qq-inbox-recovery.js').read_bytes())
 `
-  const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin, admission ? '1' : '0'], { encoding: 'utf8', windowsHide: true })
+  const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin, admission ? '1' : '0', burst && admission ? '1' : '0'], { encoding: 'utf8', windowsHide: true })
   assert.equal(built.status, 0, built.stderr)
   fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py'), contextualGroupScope }))
   let nativeMedia
@@ -269,6 +275,7 @@ test('legacy early admission reproduces rate-drop revoking the only queued answe
 for (const dropped of ['rate', 'empty', 'command']) {
   test('rejected ' + dropped + ' input cannot revoke the valid active answer', async t => {
     const h = await fixture(t)
+    if(dropped==='rate')h.bridge.inbound.ctx.nativeBurstEnabled=()=>false
     h.deps.config.rateLimitPerMinute = dropped === 'rate' ? 1 : 0
     await h.receive('synthetic first question')
     h.start(); await h.preStep()
@@ -408,12 +415,103 @@ test('late enrichment cannot replace a newer revision and no pending budget is l
   await entered.promise
   await h.receive('fast newer')
   const latest = h.pending[0].id
+  assert.match(h.pending[0].content[0].text,/slow older/,'earlier admitted text survives slow enrichment')
+  const freshMetadata={lastFollowup:h.chat.lastFollowup,lastNickname:h.chat.lastNickname}
   gate.resolve(); await slow
   assert.equal(h.pending.length, 1)
   assert.equal(h.pending[0].id, latest)
+  assert.deepEqual({lastFollowup:h.chat.lastFollowup,lastNickname:h.chat.lastNickname},freshMetadata,
+    'stale completion cannot overwrite retry metadata or reset the current conversation')
   assert.equal(h.requests.length, 0)
   h.start(); await h.preStep()
   assert.equal((await h.decide()).accepted, true)
+})
+
+test('native private and group bursts preserve the newest input beyond the old thirty-message cutoff', async t => {
+  for(const group of [false,true])await t.test(group?'group':'private',async t=>{
+    const h=await fixture(t),scope=group?'group:303':h.chat.chatId
+    h.deps.config.rateLimitPerMinute=30
+    if(group){h.bridge.chats.delete(h.chat.chatId);h.chat.chatId=scope;h.bridge.chats.set(scope,h.chat);h.bridge.bySession.set(h.agent.session.id,scope)}
+    const extra=group?{message_type:'group',group_id:303,user_id:202}:{}
+    for(let i=0;i<80;i++)await h.receive('synthetic burst '+i,extra)
+    assert.equal(h.pending.length,1,'same-role native suffix coalesces rather than dropping the final message')
+    assert.match(h.pending[0].content[0].text,/synthetic burst 79/)
+    assert.equal((await h.bridge.lanyaPolicy.policy.snapshot(scope)).revision,80)
+    assert.equal(h.requests.length,0,'pending inputs have no individual model reservations')
+    assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,0)
+    const log=fs.readFileSync(path.join(h.directory,'interaction-health.jsonl'),'utf8')
+    assert.doesNotMatch(log,/synthetic burst|private:|group:|user_message/)
+    const rows=log.trim().split('\n').map(JSON.parse)
+    assert.equal(rows.filter(x=>x.phase==='queued').length,80)
+    assert.equal(rows.filter(x=>x.phase==='not_admitted').length,0)
+  })
+})
+
+test('accepted quiet decisions use the actual SDK conclusion hook, rejected controls never do', async t => {
+  for(const verdict of ['idle','defer','silence','reply'])await t.test(verdict,async t=>{
+    const h=await fixture(t);await h.receive('synthetic current question');h.start();await h.preStep()
+    let concluded=0;const exec={...h.exec(),concludeTurn:()=>{concluded++}}
+    const result=await h.tools.get('qq_decide').execute({verdict,...(verdict==='silence'?{control_update:true}:{})},exec)
+    assert.equal(result.accepted,true)
+    assert.equal(concluded,verdict==='reply'?0:1)
+    assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,0)
+    await h.end()
+  })
+  const h=await fixture(t);await h.receive('synthetic question');h.start();await h.preStep()
+  let concluded=0
+  const result=await h.tools.get('qq_decide').execute({verdict:'silence'},{...h.exec(),concludeTurn:()=>{concluded++}})
+  assert.equal(result.accepted,false);assert.equal(concluded,0);await h.end()
+})
+
+test('native quiet decision ends before another model preparation or pressure compaction', async t => {
+  let preparations=0,steps=0
+  const h=await nativeDriverFixture(t,{assemble:async()=>{preparations++}})
+  h.agent.step=async()=>{
+    steps++;let concluded=false
+    const result=await h.tools.get('qq_decide').execute({verdict:'idle'},
+      {...h.exec(),concludeTurn:()=>{concluded=true}})
+    assert.equal(result.accepted,true)
+    return concluded||steps>2?{kind:'completed'}:null
+  }
+  await h.receive('synthetic unaddressed observation');await driverSettled(h)
+  assert.equal(steps,1);assert.equal(preparations,1)
+  assert.equal(h.nativeEvents.findLast(e=>e.type==='turn/end').data.reason.kind,'completed')
+  assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,0)
+})
+
+test('preparing administrator context cannot give a later group member control authority', async t => {
+  const h=await fixture(t),gate=defer(),entered=defer(),scope='group:303'
+  h.bridge.chats.delete(h.chat.chatId);h.chat.chatId=scope;h.bridge.chats.set(scope,h.chat);h.bridge.bySession.set(h.agent.session.id,scope)
+  h.bridge.lanyaPolicy.memoryContext=async(_scope,text)=>{if(text.includes('earlier administrator')){entered.resolve();await gate.promise}return null}
+  const old=h.receive('earlier administrator silence request',{message_type:'group',group_id:303,user_id:101})
+  await entered.promise
+  await h.receive('current member follow-up',{message_type:'group',group_id:303,user_id:202})
+  assert.match(h.pending[0].content[0].text,/earlier administrator/)
+  h.start();assert.equal((await h.preStep()).kind,'enter');assert.equal(h.chat.activeTurnRole,'member')
+  assert.equal((await h.decide('silence',{control_update:true})).reason,'unauthorized_control')
+  gate.resolve();await old;await h.end()
+})
+
+test('slow preparation in one conversation cannot block other private and group conversations', async t => {
+  const h=await fixture(t),held=defer(),entered=defer(),queues=new Map()
+  for(const scope of ['private:202','private:404','group:303']){
+    const pending=[];queues.set(scope,pending)
+    const agent={...h.agent,session:{...h.agent.session,id:'parallel-'+scope},
+      inbox:{get nextTurn(){return pending.slice()},replace(id,message){const index=pending.findIndex(x=>x.id===id);if(index<0)return false;pending.splice(index,1,structuredClone(message));return true}},
+      followup:message=>pending.push(structuredClone(message))}
+    const chat=h.bridge.registry.createChatAgent(scope,{agent,dispose:()=>{}},{},'synthetic peer')
+    h.bridge.chats.set(scope,chat);h.bridge.bySession.set(agent.session.id,scope)
+  }
+  h.bridge.lanyaPolicy.memoryContext=async scope=>{if(scope==='private:202'){entered.resolve();await held.promise}return null}
+  const blocked=h.receive('synthetic held input',{user_id:202});await entered.promise
+  await Promise.all([h.receive('other private current',{user_id:404}),
+    h.receive('group current',{message_type:'group',group_id:303,user_id:202}),h.receive('primary current')])
+  assert.equal(queues.get('private:202').length,0)
+  assert.equal(queues.get('private:404').length,1)
+  assert.equal(queues.get('group:303').length,1)
+  assert.equal(h.pending.length,1)
+  held.resolve();await blocked;assert.equal(queues.get('private:202').length,1)
+  assert.equal(h.requests.length,0);assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,0)
 })
 
 test('late partially resolved quoted images cannot supersede a newer native input or borrow its authority', async t => {

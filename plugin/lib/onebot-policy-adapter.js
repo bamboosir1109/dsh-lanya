@@ -481,8 +481,36 @@ export class OneBotDecisionAdapter {
 
   state(chat) {
     let state = this.chats.get(chat)
-    if (!state) { state = { queue: [], turns: new Map(), active: null, pending: new Map(), liveRevision: 0 }; this.chats.set(chat, state) }
+    if (!state) { state = { queue: [], turns: new Map(), active: null, pending: new Map(), preparing: new Map(), liveRevision: 0 }; this.chats.set(chat, state) }
     return state
+  }
+
+  diagnose(scope, messageId, phase, detail = {}) {
+    if (!this.nativeClaims || !path.isAbsolute(this.stateFile)) return
+    // Local metadata only. No bodies, account IDs, paths, tokens or arbitrary
+    // exception text. Failure/capacity of diagnostics cannot authorize a send.
+    try {
+      const directory = path.dirname(this.stateFile), file = path.join(directory, 'interaction-health.jsonl')
+      const parent = fs.lstatSync(directory)
+      if (!parent.isDirectory() || parent.isSymbolicLink()) return
+      try {
+        const info = fs.lstatSync(file)
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size >= 8 * 1024 * 1024) return
+      } catch (error) { if (error.code !== 'ENOENT') return }
+      const fields = Object.fromEntries(Object.entries(detail).filter(([key, value]) =>
+        ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status'].includes(key) &&
+        (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
+      fs.appendFileSync(file, JSON.stringify({ schema: 'qq-interaction/v1', at: this.now(),
+        scope: identity(scope).slice(0, 16), input: identity(scope, messageId).slice(0, 24), phase, ...fields }) + '\n', { mode: 0o600 })
+    } catch { /* A diagnostic write never changes delivery or business state. */ }
+  }
+
+  nativeBurstEnabled(scope) {
+    if (!this.nativeClaims || !this.context.getStore()?.inbound || this.bridge.stopping) return false
+    const chat = this.bridge.chats.get(scope)
+    // A native pending suffix is bounded and coalesced in dispatchNative.
+    // Legacy/replay paths retain their original intake limiter.
+    return Boolean(chat && this.nativeScopes.has(chat.agent?.ctx) && this.state(chat).pending.size < 64)
   }
 
   registerIntentTools(ctx, defineTool) {
@@ -561,8 +589,12 @@ export class OneBotDecisionAdapter {
     if (!Number.isSafeInteger(this.inboundSequence + 1)) throw new Error('Inbound sequence exhausted')
     const arrival = ++this.inboundSequence
     this.incoming.set(scope, (this.incoming.get(scope) || 0) + 1)
-    try { return await this.context.run({ inbound, arrival, binding: null }, run) }
+    const current = { inbound, arrival, binding: null }
+    this.diagnose(scope, inbound.messageId, 'received')
+    try { return await this.context.run(current, run) }
+    catch (error) { this.diagnose(scope, inbound.messageId, 'preparation_failed', { reason: error?.code || 'inbound_error' }); throw error }
     finally {
+      if (!current.binding) this.diagnose(scope, inbound.messageId, 'not_admitted')
       const left = this.incoming.get(scope) - 1
       if (left) this.incoming.set(scope, left)
       else this.incoming.delete(scope)
@@ -604,6 +636,7 @@ export class OneBotDecisionAdapter {
       controlAllowed: this.deps.policy.adminUsers.includes(inbound.userId) })
     if (observed.accepted) this.latestInbound.set(scope, context.arrival)
     if (observed.accepted) context.binding = Object.freeze({ ...observed, origin: 'live' })
+    this.diagnose(scope, inbound.messageId, observed.accepted ? 'admitted' : 'admission_refused', { reason: observed.reason, revision: observed.revision })
     return observed
     } finally {
       release()
@@ -618,6 +651,15 @@ export class OneBotDecisionAdapter {
 
   queueTurn(chat) { this.state(chat).queue.push(this.captureInbound(chat.chatId)) }
 
+  preparedDispatchCurrent(chat) {
+    const binding = this.captureInbound(chat.chatId), state = this.state(chat)
+    if (!binding?.owner) return false
+    if (binding.origin !== 'live' || binding.revision > state.liveRevision) return true
+    state.preparing.delete(binding.messageId)
+    this.diagnose(binding.scope, binding.messageId, 'superseded_preparation')
+    return false
+  }
+
   // This synchronous section follows all enrichment awaits. Only entries made
   // by this adapter instance and still physically pending may be replaced.
   // Native replace writes a durable canceled splice. The original input
@@ -625,12 +667,16 @@ export class OneBotDecisionAdapter {
   dispatchNative(chat, message, role, originalText) {
     if (!this.nativeClaims) throw new Error('Native claim mode is required')
     const binding = this.captureInbound(chat.chatId), state = this.state(chat)
+    if (binding) state.preparing.delete(binding.messageId)
     if (!binding?.owner || !['admin', 'member'].includes(role) || typeof message?.id !== 'string' ||
         message.source?.kind !== (binding.origin === 'live' ? 'plugin:dsh-onebot' : 'plugin:dsh-lanya-observation') ||
         !Array.isArray(chat.agent?.inbox?.nextTurn) || typeof chat.agent.inbox.replace !== 'function') {
       throw new Error('Native dispatch binding unavailable')
     }
-    if (binding.origin === 'live' && binding.revision <= state.liveRevision) return { dispatched: false, reason: 'superseded_before_dispatch' }
+    if (binding.origin === 'live' && binding.revision <= state.liveRevision) {
+      this.diagnose(binding.scope, binding.messageId, 'superseded_preparation')
+      return { dispatched: false, reason: 'superseded_before_dispatch' }
+    }
     if (binding.origin === 'live' && this.pendingRecovery) {
       const result = this.pendingRecovery({ config: this.config, chat, binding, log: this.log })
       if (result && typeof result.then === 'function') throw new Error('Pending recovery must be synchronous')
@@ -645,7 +691,11 @@ export class OneBotDecisionAdapter {
       previous.binding.origin === 'live' && previous.role === role && sameOwner &&
       previous.binding.scope === binding.scope && previous.fingerprint === identity(JSON.stringify(previousMessage)) &&
       previous.binding.revision < binding.revision
-    const history = merge ? [...previous.history, previous.originalText] : []
+    const preparing = [...state.preparing.values()].filter(entry => entry.revision < binding.revision &&
+      ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.owner[key] === binding.owner[key]))
+    const chunks = preparing.map(entry => ({ revision: entry.revision, texts: [entry.text] }))
+    if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
+    const history = [...new Set(chunks.sort((a, b) => a.revision - b.revision).flatMap(entry => entry.texts))]
     // Bound model context; canceled originals remain intact in native history.
     const recent = history.slice(-20), excerpt = recent.join('\n\n').slice(-16000)
     const finalMessage = history.length ? { ...message, content: [{ type: 'text', text:
@@ -659,9 +709,11 @@ export class OneBotDecisionAdapter {
     try {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
+        this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: true, revision: binding.revision })
         return { dispatched: true, coalesced: true }
       }
       chat.agent.followup(finalMessage)
+      this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: false, revision: binding.revision })
       return { dispatched: true, coalesced: false }
     } catch (error) {
       state.pending.delete(message.id)
@@ -742,6 +794,7 @@ export class OneBotDecisionAdapter {
       record.completion = entry.binding.completion
       record.claimedId = message.id
       chat.activeTurnRole = entry.role
+      this.diagnose(record.binding.scope, record.binding.messageId, 'claimed', { turn, revision: record.binding.revision })
     })
     // Claimed listeners are synchronous notifications, not awaited guards.
     // The native pre-step waterfall is awaited before entering the model.
@@ -765,6 +818,7 @@ export class OneBotDecisionAdapter {
       if (this.supersedingLiveInput(chat, record)) {
         record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
           turn: request.turn, epoch: this.startEpoch, binding: record.binding })
+        this.diagnose(record.binding.scope, record.binding.messageId, 'blocked', { reason: 'superseded_live_input', turn: request.turn })
         return { kind: 'reject', reason: 'superseded_live_input' }
       }
       const restAt = this.now(), restReason = this.autonomyBlockReason(record.binding, restAt)
@@ -785,6 +839,7 @@ export class OneBotDecisionAdapter {
           const reason = error instanceof PolicyDeliveryError && error.status === 'suppressed' &&
             NATIVE_BUDGET_REFUSALS.has(error.reason) ? error.reason : null
           this.log('warn', 'native_budget_admission_refused:' + (reason || 'unavailable_or_invalid_receipt'))
+          this.diagnose(binding.scope, binding.messageId, 'blocked', { reason: reason || 'budget_admission_refused', turn: request.turn })
           if (reason === 'previous_turn_unresolved' && request.step === 1 &&
               record === this.state(chat).active && record.turn === request.turn && !record.ended &&
               !request.signal?.aborted && !record.claimConflict && record.binding === binding &&
@@ -811,6 +866,7 @@ export class OneBotDecisionAdapter {
         return { kind: 'reject', reason: afterAdmissionRest }
       }
       record.nativeStepEntered = true
+      this.diagnose(record.binding.scope, record.binding.messageId, 'step_ready', { turn: request.turn, step: request.step })
       return next()
     })
     ctx.on('agent/turn-stopping', request => this.remindUndecidedLiveTurn(request))
@@ -1077,6 +1133,10 @@ export class OneBotDecisionAdapter {
       ? await this.policy.check(result.ticket, { kind: 'text' }) : null
     if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_decision_turn')
     const canSend = sendPermission?.allowed === true
+    this.diagnose(record.binding.scope, record.binding.messageId, 'decision', { verdict: args.verdict, reason: result.reason, turn: record.turn })
+    // The real SDK concludes this native turn after committing the tool result.
+    // No second model/compaction step is needed to narrate an idle decision.
+    if (result.accepted && ['idle', 'defer', 'silence'].includes(args.verdict) && typeof exec.concludeTurn === 'function') exec.concludeTurn()
     // Do not expose nonce, sender, scope, or authority knobs as model arguments.
     return { accepted: result.accepted, reason: result.reason || (sendPermission && !canSend ? sendPermission.reason : null), mode: result.mode || null,
       next_review_at: result.next_review_at ?? null, can_send: canSend,
@@ -1228,6 +1288,7 @@ export class OneBotDecisionAdapter {
     const record = state.turns.get(event.data.turn)
     if (!record || record.ended) return
     record.ended = true
+    if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
     if (record.supersededIdleWake || memeOnlyReply(record)) record.shadow.loopPending = null
@@ -1313,7 +1374,11 @@ export class OneBotDecisionAdapter {
         // Public forwards join the same per-chat queue; the nested passive
         // sendForwardNodes path is already inside it and must not enqueue twice.
         const result = adapter.runEnvelope(envelope, () => name === 'sendForward' ? this.enqueue(scope, run) : run())
-        return adapter.track(envelope.record, result)
+        return adapter.track(envelope.record, Promise.resolve(result).catch(error => {
+          if (error instanceof PolicyDeliveryError && error.status === 'suppressed')
+            adapter.diagnose(envelope.scope, envelope.record?.binding?.messageId, 'delivery_refused', { reason: error.reason })
+          throw error
+        }))
       }
     }
     const settle = this.bridge.interim.settleLoop
@@ -1410,6 +1475,7 @@ export class OneBotDecisionAdapter {
       throw error
     }
     envelope.record?.outcomes.push(result.status)
+    if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId, 'delivery', { status: result.status, reason: result.reason })
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
@@ -1506,6 +1572,14 @@ export class OneBotDecisionAdapter {
       const current = this.context.getStore()
       if (!current?.binding || current.binding.scope !== canonicalScope(scope)) throw new Error('Native owner binding unavailable')
       current.binding = Object.freeze({ ...current.binding, owner: Object.freeze({ ...owner }) })
+      if (current.binding.origin === 'live') {
+        const chat = this.bridge.chats.get(scope), state = chat && this.state(chat)
+        if (state) {
+          while (state.preparing.size >= 20) state.preparing.delete(state.preparing.keys().next().value)
+          state.preparing.set(current.binding.messageId, { owner: current.binding.owner, revision: current.binding.revision,
+            text: String(text).slice(-16000) })
+        }
+      }
     }
     const budget = this.nativeClaims ? null : await this.reserveBudget(scope, owner)
     if (this.nativeClaims && this.budgetEnabled) enriched += '\nBudget admission is checked by the host before this native turn enters the model. Pending input has no reservation yet. Tool checks remain authoritative; no account balance or verified supplier charge is implied.\n'
