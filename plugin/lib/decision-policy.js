@@ -18,6 +18,22 @@ const plain = (value) => value !== null && typeof value === 'object' && !Array.i
 const identifier = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value)
 const CONTACT_INTERVAL_MS = 60 * 60_000
 const REST_REASONS = new Set(['autonomy_rest', 'observation_expired'])
+const REPLY_REVIEW_AGE = 60_000
+const REPLY_REVIEW_LIFETIME = 24 * 60 * 60_000
+const replyOwnerValid = owner => plain(owner) && ['cwd', 'preset', 'workspace_key', 'agent_key']
+  .every(key => typeof owner[key] === 'string' && owner[key].length > 0 && owner[key].length <= 4096)
+const replyOwnerSame = (a, b) => replyOwnerValid(a) && replyOwnerValid(b) &&
+  ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => a[key] === b[key])
+const replyReviewable = (scope, at) => {
+  const event = scope?.current, input = event?.replyReview
+  return Boolean(scope?.mode === 'open' && event?.origin === 'live' && input && !input.attempted &&
+    at >= input.at && at - input.at <= REPLY_REVIEW_LIFETIME &&
+    (!event.decided || event.ticket?.verdict === 'reply') &&
+    // Even a suppressed/partial send attempt is not proof that nothing left
+    // this turn. Never turn a timeout, negative ack or old reservation into a
+    // second external operation. Only turns with NO egress entries qualify.
+    !scope.deliveries.some(item => item.revision === scope.revision))
+}
 
 /** Owner-selected daily rest, independent of the host/browser timezone. */
 export function autonomousRestState(at = Date.now()) {
@@ -124,6 +140,11 @@ function validateState(state) {
           typeof current.decided !== 'boolean') {
         throw new PolicyStateError('Corrupt current inbound state')
       }
+      if (current.replyReview !== undefined && (!plain(current.replyReview) || current.origin !== 'live' ||
+          !replyOwnerValid(current.replyReview.owner) || typeof current.replyReview.text !== 'string' ||
+          !current.replyReview.text.trim() || current.replyReview.text.length > 32_000 ||
+          !Number.isSafeInteger(current.replyReview.at) || current.replyReview.at < 0 ||
+          typeof current.replyReview.attempted !== 'boolean')) throw new PolicyStateError('Corrupt reply review evidence')
       if (current.ticket !== null && (!plain(current.ticket) || !identifier(current.ticket.id) ||
           !['reply', 'resume', 'tool_action'].includes(current.ticket.verdict) || current.decided !== true ||
           !Number.isFinite(current.ticket.expiresAt))) {
@@ -465,6 +486,54 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
+    /** Persist only the verified current live input, not the diagnostic log or
+     * caller-supplied history. Storage is on the existing private policy file;
+     * staging never issues a ticket or changes the live revision. */
+    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text } = {}) {
+      canonicalScope(scope)
+      if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000) {
+        throw new PolicyStateError('Bounded owned reply input required')
+      }
+      const evidence = clone({ owner, text, at: now(), attempted: false })
+      return transaction(state => {
+        const current = scopeState(state, scope)
+        if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
+            current.current.origin !== 'live' || current.current.replyReview) return false
+        current.current.replyReview = evidence
+        return true
+      })
+    },
+
+    async replyReviewCandidates() {
+      return transaction(state => Object.entries(state.scopes).filter(([, value]) =>
+        replyReviewable(value, now()) && now() - value.current.replyReview.at >= REPLY_REVIEW_AGE)
+        .map(([scope, value]) => ({ scope, revision: value.revision, messageId: value.current.messageId,
+          sender: value.current.sender, owner: clone(value.current.replyReview.owner), at: value.current.replyReview.at }))
+        .sort((a, b) => a.at - b.at))
+    },
+
+    /** One fresh decision about a confirmed unsent receipt. The original live
+     * message remains in native history; its control/administrator authority is
+     * NOT replayed. The transaction invalidates any old reply ticket. */
+    async claimReplyReview({ scope, expectedRevision, messageId, owner, canClaim } = {}) {
+      canonicalScope(scope)
+      if (!replyOwnerValid(owner) || typeof canClaim !== 'function') throw new PolicyStateError('Trusted recovery checks required')
+      return transaction(state => {
+        const current = scopeState(state, scope)
+        if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
+            !replyReviewable(current, now()) || now() - current.current.replyReview.at < REPLY_REVIEW_AGE ||
+            !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim() !== true) return { accepted: false }
+        if (!Number.isSafeInteger(current.revision + 1)) throw new PolicyStateError('Revision exhausted')
+        const previous = current.current, evidence = { ...previous.replyReview, attempted: true }
+        current.revision += 1
+        current.updatedAt = now()
+        current.current = { messageId, sender: previous.sender, origin: 'live', controlAllowed: false,
+          quoted: true, decided: false, ticket: null, replyReview: evidence }
+        return { accepted: true, scope, messageId, revision: current.revision, origin: 'live',
+          recoveryRevision: current.revision, text: evidence.text, sender: previous.sender, mode: current.mode }
+      })
+    },
+
     /** Trusted evidence pump only; never impersonates a live QQ user. An
      * undecided observation may be redriven after a crashed/aborted turn. A
      * decided one returns its durable summary and must not generate/send again.
@@ -482,6 +551,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           return { accepted: false, reason: 'foreground_busy', scope }
         }
         const current = scopeState(state, scope, true)
+        if (replyReviewable(current, now())) return { accepted: false, reason: 'unanswered_live_input', scope }
         current.observations ||= []
         const seen = current.observations.find((entry) => entry.eventId === eventId)
         if (seen?.decision) return { accepted: false, reason: 'already_decided', scope, decision: clone(seen.decision) }
@@ -613,6 +683,9 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           return { accepted: false, reason: 'stale_revision' }
         }
         const event = current.current
+        if (event.replyReview?.attempted && !['reply', 'idle', 'defer'].includes(verdict)) {
+          return { accepted: false, reason: 'historical_reply_review_only' }
+        }
         if (event.decided) return { accepted: false, reason: 'already_decided' }
         if (verdict === 'silence' || verdict === 'resume') {
           // Only an explicit LLM control_update about THIS live authorized input

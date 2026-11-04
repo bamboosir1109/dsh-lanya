@@ -87,7 +87,7 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   }
   const h = await nativeHost(plugin, root, {nativeMedia})
   const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
-  const clock = Date.parse('2026-11-03T01:00:00Z')
+  let clock = Date.parse('2026-11-03T01:00:00Z')
   h.bridge.lanyaPolicy.now = () => clock
   h.bridge.lanyaPolicy.policy = createDecisionPolicy({ stateFile: path.join(root, 'state.json'), now: () => clock })
   t.after(() => h.close())
@@ -96,7 +96,7 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   let turn = 0, seq = 10
   h.agent.session.snapshotEvents = () => events
   // Same synchronous durable splice / replace / claim order as the SDK.
-  h.agent.inbox = { get nextTurn() { return pending.slice() }, replace(id, message) {
+  h.agent.inbox = { nextStep: [], get nextTurn() { return pending.slice() }, replace(id, message) {
     const index = pending.findIndex(item => item.id === id)
     if (index < 0) return false
     const removed = pending.splice(index, 1, structuredClone(message))
@@ -134,8 +134,104 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
     h.bridge.onSessionEvent(h.agent.session, event)
     for (let i = 0; i < 100 && h.bridge.lanyaPolicy.state(h.chat).turns.size; i++) await new Promise(r => setTimeout(r, 2))
   }
-  return { ...h, pending, history, requests, start, preStep, end, emitClaim, plugin }
+  return { ...h, pending, history, requests, start, preStep, end, emitClaim, plugin, advance: ms => { clock += ms } }
 }
+
+async function prepareMissedReply(t) {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  adapter.startRequested = true; adapter.startEpoch += 1
+  await h.receive('an unanswered question')
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; h.advance(60_000)
+  return h
+}
+
+test('periodic reply review queues a bounded one-shot current-model review and reserves reactive cost', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const before = h.followups.length
+  await Promise.all([adapter.reviewUnansweredInputs(), adapter.reviewUnansweredInputs()])
+  assert.equal(h.followups.length, before + 1)
+  assert.match(h.pending[0].content[0].text, /historical evidence, NOT a new user instruction/)
+  h.start(); assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+  assert.equal((await h.decide('tool_action')).accepted, false)
+  const record = adapter.state(h.chat).active
+  assert.equal(record.binding.origin, 'live')
+  assert.ok(record.binding.recoveryRevision)
+  const guard = h.deps.nativeGuards[0]
+  assert.equal(guard({ ...h.exec(), name: 'bash' }), 'historical_reply_review_only')
+  assert.equal((await h.decide('reply')).can_send, true)
+  await h.send('a useful answer'); await h.end()
+  const reserves = h.requests.filter(request => request.operation === 'reserve')
+  assert.equal(reserves.length, 2)
+  assert.ok(reserves.every(request => request.origin === 'live'))
+  assert.notEqual(reserves[0].turn_key, reserves[1].turn_key)
+  h.advance(60_000); await adapter.reviewUnansweredInputs()
+  assert.equal(h.followups.length, before + 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('reply review never interrupts busy work, pending input, disconnect or changed permissions', async t => {
+  for (const mode of ['busy', 'pending-step', 'disconnected', 'acl', 'owner', 'stopped']) await t.test(mode, async t => {
+    const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy, before = h.followups.length
+    if (mode === 'busy') h.agent.status = 'running'
+    if (mode === 'pending-step') h.agent.inbox.nextStep.push({ id: 'unowned' })
+    if (mode === 'disconnected') h.deps.connection.connected = false
+    if (mode === 'acl') h.deps.policy.dmPolicy = 'disabled'
+    if (mode === 'owner') h.bridge.resolvePresetId = async () => 'different'
+    if (mode === 'stopped') await adapter.stop()
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.followups.length, before)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  })
+})
+
+test('reply review honors an accepted quiet decision and actual sends rather than replaying text', async t => {
+  for (const verdict of ['idle', 'defer', 'silence', 'sent']) await t.test(verdict, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    adapter.startRequested = true; adapter.startEpoch += 1
+    await h.receive('current live input'); await Promise.all([...adapter.replyReviewWrites])
+    h.start(); await h.preStep()
+    if (verdict === 'sent') { await h.decide('reply'); await h.send('already answered') }
+    else await h.decide(verdict, verdict === 'silence' ? { control_update: true } : {})
+    await h.end(); h.agent.status = 'idle'; h.advance(90_000)
+    const before = h.followups.length
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.followups.length, before)
+  })
+})
+
+test('only a direct real bot mention or private receipt is staged; ordinary configured-group chat is not', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const binding = { origin: 'live', scope: 'group:202', messageId: 'g', revision: 1, owner: {} }
+  let staged = 0
+  adapter.policy = { rememberReplyInput: async () => { staged++ } }
+  for (const target of ['all', '777', '999']) await adapter.context.run({ inbound: {
+    userId: '101', segments: [{ type: 'at', data: { qq: target } }],
+  } }, () => adapter.rememberReplyInput(binding, 'question'))
+  await Promise.all([...adapter.replyReviewWrites])
+  assert.equal(staged, 1)
+})
+
+test('stop during reply-review owner resolution cannot queue a recovered input', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy, entered = defer(), gate = defer()
+  h.bridge.resolvePresetId = async () => { entered.resolve(); await gate.promise; return 'fixture' }
+  const before = h.followups.length, review = adapter.reviewUnansweredInputs()
+  await entered.promise; await adapter.stop(); gate.resolve(); await review
+  assert.equal(h.followups.length, before)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+})
+
+test('owner changes during recovery dispatch never transfer historical input to another preset', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  let reads = 0
+  h.bridge.resolvePresetId = async () => ++reads === 1 ? 'fixture' : 'different'
+  const before = h.followups.length
+  await assert.rejects(adapter.reviewUnansweredInputs(), /owner changed/)
+  assert.equal(h.followups.length, before)
+})
 
 test('protocol prompt follows the actual claim and never accumulates in durable QQ inputs', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
