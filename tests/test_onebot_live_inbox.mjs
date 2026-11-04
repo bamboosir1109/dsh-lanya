@@ -36,7 +36,7 @@ fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }",
 const { nativeHost } = await import(pathToFileURL(hostPath).href)
 let serial = 0
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-async function fixture(t, { admission = true } = {}) {
+async function fixture(t, { admission = true, mislabeledImage = false } = {}) {
   const root = path.join(temporary, 'case-' + ++serial), plugin = path.join(root, 'plugin')
   fs.mkdirSync(root)
   const prepare = String.raw`
@@ -67,7 +67,14 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
   const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin, admission ? '1' : '0'], { encoding: 'utf8', windowsHide: true })
   assert.equal(built.status, 0, built.stderr)
   fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py') }))
-  const h = await nativeHost(plugin, root)
+  let nativeMedia
+  if (mislabeledImage) {
+    fs.mkdirSync(path.join(root,'media'))
+    const file=path.join(root,'media','incoming.jpg')
+    fs.writeFileSync(file,Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64'))
+    nativeMedia={resolve:async ref=>({kind:ref.kind,path:file})}
+  }
+  const h = await nativeHost(plugin, root, {nativeMedia})
   const { createDecisionPolicy } = await import(pathToFileURL(path.join(plugin, 'lib/lanya-decision-policy.js')).href)
   const clock = Date.parse('2026-11-03T01:00:00Z')
   h.bridge.lanyaPolicy.now = () => clock
@@ -163,6 +170,27 @@ test('conflicting native claims cannot expose a queued protocol snapshot', async
   assert.equal(prompt.text({agent:h.agent}), '')
   assert.equal((await h.preStep()).reason, 'unbound_native_input')
   await h.end()
+})
+
+test('direct and quoted inbound GIF bytes with JPG names reach the actual bridge as correct image paths', async t => {
+  for(const quoted of [false,true])await t.test(quoted?'quoted':'direct',async t=>{
+    const h=await fixture(t,{mislabeledImage:true})
+    const image={type:'image',data:{file:'synthetic-hash',sub_type:'1'}}
+    if(quoted)h.deps.connection.call=async()=>({message_id:41,message_type:'private',
+      sender:{user_id:101},message:[image]})
+    await h.receive('look at this image',{message:[{type:'text',data:{text:'look at this image'}},
+      quoted?{type:'reply',data:{id:'41'}}:image]})
+    assert.equal(h.pending.length,1)
+    const text=h.pending[0].content[0].text
+    assert.match(text,/media_format_[a-f0-9]{64}\.gif/)
+    assert.doesNotMatch(text,/incoming\.jpg/)
+    const original=path.join(h.directory,'media','incoming.jpg')
+    const copies=fs.readdirSync(path.dirname(original)).filter(n=>n.startsWith('media_format_'))
+    assert.equal(copies.length,1)
+    assert.deepEqual(fs.readFileSync(path.join(path.dirname(original),copies[0])),fs.readFileSync(original))
+    assert.equal(h.requests.length,0,'format correction does not enter a model or reserve a turn')
+    assert.equal(h.calls.filter(call=>/^(send_|upload_)/.test(call.action)).length,0,'no platform transmission')
+  })
 })
 
 test('fresh protocol reads preserve the prompt prefix when only their read timestamp changes', async t => {

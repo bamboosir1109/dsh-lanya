@@ -29,6 +29,58 @@ const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const identity = (...parts) => createHash('sha256').update(parts.map(String).join('\0')).digest('hex')
 const voiceDigest = bytes => createHash('sha256').update(bytes).digest('hex')
 const sameVoiceFile = (a, b) => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs', 'nlink'].every(key => a[key] === b[key])
+const INBOUND_IMAGE_LIMIT = 8 * 1024 * 1024
+
+function stableInboundImage(file) {
+  const before = fs.lstatSync(file)
+  if (!before.isFile() || before.nlink !== 1 || before.size < 1 || before.size > INBOUND_IMAGE_LIMIT) throw new Error('Unverified inbound image file')
+  const fd = fs.openSync(file, 'r')
+  try {
+    if (!sameVoiceFile(before, fs.fstatSync(fd))) throw new Error('Inbound image changed')
+    const bytes = Buffer.alloc(before.size + 1)
+    let count = 0, read
+    while (count < bytes.length && (read = fs.readSync(fd, bytes, count, bytes.length - count, null)) > 0) count += read
+    if (!sameVoiceFile(before, fs.fstatSync(fd)) || !sameVoiceFile(before, fs.lstatSync(file)) || count !== before.size) throw new Error('Inbound image changed')
+    return bytes.subarray(0, count)
+  } finally { fs.closeSync(fd) }
+}
+
+/** Correct a mislabeled inbound image without changing its bytes or original.
+ * This is only a bounded scratch-file format hint, never an image decoder or
+ * authority to read another directory. The real image tool still validates it.
+ */
+export function normalizeInboundImage(mediaDir, file) {
+  if (typeof mediaDir !== 'string' || !path.isAbsolute(mediaDir) || typeof file !== 'string' || !path.isAbsolute(file) ||
+      !fs.lstatSync(mediaDir).isDirectory()) throw new Error('Trusted media root required')
+  const root = fs.realpathSync.native(mediaDir)
+  const key = value => process.platform === 'win32' ? value.toLowerCase() : value
+  if (key(fs.realpathSync.native(path.dirname(file))) !== key(root)) throw new Error('Inbound image outside media root')
+  const bytes = stableInboundImage(file)
+  const format = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'png'
+    : ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) ? 'gif'
+      : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'jpg'
+        : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'webp' : null
+  const ext = path.extname(file).slice(1).toLowerCase()
+  if (!format || ext === format || format === 'jpg' && ext === 'jpeg') return file
+  const digest = voiceDigest(bytes), target = path.join(root, `media_format_${digest}.${format}`)
+  const verify = () => {
+    const actual = stableInboundImage(target)
+    if (actual.length !== bytes.length || voiceDigest(actual) !== digest) throw new Error('Normalized image changed')
+  }
+  if (fs.existsSync(target)) { verify(); return target }
+  const stage = path.join(root, `.image-format-${randomUUID()}.tmp`)
+  let fd, created = false
+  try {
+    fd = fs.openSync(stage, 'wx', 0o600)
+    created = true
+    fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined
+    try { fs.linkSync(stage, target) } catch (error) { if (error.code !== 'EEXIST') throw error }
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd) } finally { if (created) fs.unlinkSync(stage) }
+  }
+  verify()
+  return target
+}
 const voicePathKey = file => {
   const canonical = fs.realpathSync.native(file)
   return process.platform === 'win32' ? canonical.toLowerCase() : canonical
@@ -381,6 +433,19 @@ export class OneBotDecisionAdapter {
     this.latestInbound = new Map()
     this.log = log
     this.now = now
+    // Direct, quoted and forwarded inbound images share this actual resolver.
+    // QQ URL suffixes can say JPG while the downloaded bytes are GIF/PNG.
+    // Supply a correct scratch path before the model tries read_image, rather
+    // than asking it to inspect headers and copy files with shell tools.
+    if (typeof deps.media?.resolve === 'function') {
+      const resolve = deps.media.resolve, adapter = this
+      deps.media.resolve = async function (...args) {
+        const result = await resolve.apply(this, args)
+        if (result?.kind !== 'image' || typeof result.path !== 'string') return result
+        try { return { ...result, path: normalizeInboundImage(deps.config.mediaDir, result.path) } }
+        catch (error) { adapter.log('warn', 'inbound_image_format_unavailable:' + error.name); return result }
+      }
+    }
     this.memoryContext = memoryContext || ((scope, text, owner) => this.readMemoryContext(scope, text, owner))
     this.runtimeCapabilities = runtimeCapabilities || ((scope, owner) => this.readRuntimeCapabilities(scope, owner))
     this.budgetEnabled = config.budgetRuntimeScript !== undefined || budgetProvider !== undefined

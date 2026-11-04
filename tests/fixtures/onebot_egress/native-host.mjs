@@ -13,6 +13,9 @@ export async function nativeHost(plugin, directory, { nativeMedia = null, peer =
   const contained = (root, file) => { const relative = path.relative(root, file); return !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative) }
   const inside = (file) => {
     if (contained(directory, file)) return true
+    // Windows temporary roots may use an 8.3 alias. New output files have no
+    // realpath yet, but their canonical root denotes this same sandbox.
+    if (contained(fs.realpathSync.native(directory), file)) return true
     try { return contained(fs.realpathSync.native(directory), fs.realpathSync.native(file)) } catch { return false }
   }
   const deny = () => { throw new Error('Synthetic host boundary refused') }
@@ -100,7 +103,7 @@ export async function nativeHost(plugin, directory, { nativeMedia = null, peer =
     requireMention: false, rateLimitPerMinute: 0, actionRatePerMinute: 0, actionRatePerDay: 0, actionAuditEnabled: false,
     textImageThreshold: 0, sensitivePatterns: [], interimMessages: false, typingIndicator: false, maxImageBytes: 1024 * 1024 },
     policy: { dmPolicy: 'open', allowAllUsers: true, adminUsers: ['101'], groupPolicy: 'open', groupAllowFrom: [] },
-    media: { cleanupExpired: async () => {}, resolve: deny }, transcriber: { enabled: false }, log: noop,
+    media: { cleanupExpired: async () => {}, resolve: nativeMedia?.resolve || deny }, transcriber: { enabled: false }, log: noop,
     sessionPersistence: { flush: async () => {} },
     sessions: { flush: async () => {} },
     agentPresets: { defaultId: 'fixture', resolve: async () => ({ id: 'fixture' }) },
