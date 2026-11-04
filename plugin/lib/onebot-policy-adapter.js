@@ -678,7 +678,7 @@ export class OneBotDecisionAdapter {
   nativeCapabilityContext(agent) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
-    return record.binding.capabilityContext || ''
+    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: call qq_decide once for this claimed input before final text or sending. A draft alone is never delivered. Choose reply, idle, defer or authorized silence/resume using the current conversation; do not assume reply permission. Reuse an accepted ticket.\n'
   }
 
   supersedingLiveInput(chat, record) {
@@ -717,6 +717,8 @@ export class OneBotDecisionAdapter {
       const chat = this.nativeChat(agent), state = chat && this.state(chat), record = state?.turns.get(turn)
       if (!record || record.ended) return
       const entry = state.pending.get(message?.id)
+      if (!entry && record.decisionReminder?.id === message?.id &&
+          record.decisionReminder.fingerprint === identity(JSON.stringify(message))) return
       // The SDK claims next-step context before queued live input, including
       // reminders and instructions reinserted after compaction. It must neither
       // revoke an existing verified claim nor stand in for an absent one.
@@ -811,6 +813,27 @@ export class OneBotDecisionAdapter {
       record.nativeStepEntered = true
       return next()
     })
+    ctx.on('agent/turn-stopping', request => this.remindUndecidedLiveTurn(request))
+  }
+
+  contextualGroupEnabled(scope) {
+    return typeof this.config.contextualGroupScope === 'string' &&
+      /^group:[1-9]\d{0,19}$/.test(this.config.contextualGroupScope) && scope === this.config.contextualGroupScope
+  }
+
+  remindUndecidedLiveTurn({ agent, turn, signal }) {
+    const chat = this.nativeChat(agent), record = chat && this.state(chat).active
+    if (!signal || signal.aborted || !record || record.turn !== turn || record.ended ||
+        record.claimConflict || record.binding?.origin !== 'live' || !record.binding.owner ||
+        !record.nativeStepEntered || !record.undecidedDraft || record.decision || record.ticket ||
+        record.decisionReminder || record.inFlight.size || record.outcomes.length ||
+        this.supersedingLiveInput(chat, record) || !Array.isArray(agent.inbox?.nextStep) ||
+        agent.inbox.nextStep.length || typeof agent.inbox.splice !== 'function') return
+    const message = { id: randomUUID(), role: 'user', source: { kind: 'plugin:dsh-lanya-decision-reminder' },
+      content: [{ type: 'text', text: 'Your preceding draft has NOT been sent to QQ: this live turn has no qq_decide decision. In this same turn, decide from the latest conversation: call qq_decide once. If reply is accepted and can_send=true, write the appropriate final answer again; otherwise respect idle, defer, silence and host refusal. This reminder grants no send or control permission. Do not describe this internal check to the user.' }] }
+    record.decisionReminder = Object.freeze({ id: message.id, fingerprint: identity(JSON.stringify(message)) })
+    agent.inbox.splice('next-step', 0, 0, [message])
+    this.log('warn', 'native_live_decision_reminder_queued')
   }
 
   onTurnStart(chat, turn) {
@@ -1185,7 +1208,14 @@ export class OneBotDecisionAdapter {
 
   onAssistantMessage(scope, chat, event) {
     const record = this.state(chat).turns.get(event.data.turn)
-    if (!record?.ticket || record.ended) return
+    if (!record || record.ended) return
+    if (!record.ticket) {
+      const content = event.data.message?.content
+      if (!record.decision && Array.isArray(content) &&
+          content.some(item => item.type === 'text' && typeof item.text === 'string' && item.text.trim()) &&
+          !content.some(item => item.type === 'tool-call')) record.undecidedDraft = true
+      return
+    }
     // The native session keeps the assistant message. A chosen image-only
     // response must not turn its narration or tool receipt into a QQ bubble.
     if (memeOnlyReply(record)) { record.shadow.loopPending = null; return }

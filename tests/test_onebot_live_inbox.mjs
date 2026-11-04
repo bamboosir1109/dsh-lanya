@@ -36,7 +36,7 @@ fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }",
 const { nativeHost } = await import(pathToFileURL(hostPath).href)
 let serial = 0
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-async function fixture(t, { admission = true, mislabeledImage = false } = {}) {
+async function fixture(t, { admission = true, mislabeledImage = false, contextualGroupScope } = {}) {
   const root = path.join(temporary, 'case-' + ++serial), plugin = path.join(root, 'plugin')
   fs.mkdirSync(root)
   const prepare = String.raw`
@@ -50,13 +50,18 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  if name=='bridge.js':raw=r.transform('lib/bridge.js',raw)
  if name in ['bridge.js','outbound.js']:raw=e.transform('lib/'+name,raw)
  if name=='bridge.js':raw=n.transform(raw)
- if name=='bridge.js':raw=q.transform(name,raw)
+ if name=='bridge.js':
+  raw=q.transform(name,raw)
+  import patch_onebot_group_context as g
+  raw=g.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
 if sys.argv[3]=='1':
  import patch_onebot_inbound_admission as admission
  raw=admission.transform(raw)
+ import patch_onebot_group_context as g
+ raw=g.transform('inbound.js',raw)
 f.write_bytes(raw)
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
@@ -66,7 +71,7 @@ for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).ite
 `
   const built = spawnSync('python', ['-B', '-c', prepare, repo, plugin, admission ? '1' : '0'], { encoding: 'utf8', windowsHide: true })
   assert.equal(built.status, 0, built.stderr)
-  fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py') }))
+  fs.writeFileSync(path.join(plugin, 'lib/lanya-policy.config.json'), JSON.stringify({ stateFile: path.join(root, 'state.json'), budgetRuntimeScript: path.join(root, 'inert.py'), contextualGroupScope }))
   let nativeMedia
   if (mislabeledImage) {
     fs.mkdirSync(path.join(root,'media'))
@@ -585,7 +590,7 @@ test('conflicting owned observation batch rejects every consumed completion incl
 })
 
 async function nativeDriverFixture(t, options = {}) {
-  const h = await fixture(t), steps = [], nativeEvents = []
+  const h = await fixture(t, options), steps = [], nativeEvents = []
   const hash = text => createHash('sha256').update(text).digest('hex')
   assert.equal(nativeIdleWake.source_module_sha256, '00c4814d63f3d1e2754eb09144832d19b30499d6ea444730473f740b587948c2')
   for (const [key, value] of Object.entries(nativeIdleWake.agentMethods)) assert.equal(hash(value), nativeIdleWake.snippet_sha256[key])
@@ -649,6 +654,89 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   }
   assert.fail('native fixture did not settle')
 }
+
+test('native terminal draft without a decision gets one same-turn reminder, never automatic send permission', async t => {
+  const h = await nativeDriverFixture(t)
+  const adapter = h.bridge.lanyaPolicy
+  let steps = 0, firstClaim
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    steps++
+    if (steps === 1) firstClaim = record.claimedId
+    assert.equal(record.claimedId, firstClaim, 'reminder must not replace the live claim')
+    h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
+      message: { id: 'draft-' + steps, content: [{ type: 'text', text: 'synthetic unsent draft' }] } })
+    return { kind: 'completed' }
+  }
+  await h.receive('synthetic private question')
+  await driverSettled(h)
+  assert.equal(steps, 2, 'one reminder even when the model ignores it again')
+  const reminders = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
+    .flatMap(e => e.data.inserted).filter(m => m.source?.kind === 'plugin:dsh-lanya-decision-reminder')
+  assert.equal(reminders.length, 1)
+  assert.equal(h.nativeEvents.filter(e => e.type === 'turn/start').length, 1)
+  assert.equal(h.requests.filter(x => x.operation === 'reserve').length, 1)
+  assert.equal(h.calls.filter(x => /^(send_|upload_)/.test(x.action)).length, 0)
+})
+
+test('real decision after a terminal reminder retains the same native claim and may send its fresh final text', async t => {
+  const h = await nativeDriverFixture(t)
+  let steps = 0
+  h.agent.step = async () => {
+    const record = h.bridge.lanyaPolicy.state(h.chat).active
+    if (++steps === 2) assert.equal((await h.decide('reply', {expression:'text'})).can_send, true)
+    h.agent.session.append('assistant/message', {turn:record.turn,step:steps,
+      message:{id:'answer-'+steps,content:[{type:'text',text:steps===1?'undelivered draft':'fresh final answer'}]}})
+    return {kind:'completed'}
+  }
+  await h.receive('synthetic question')
+  await driverSettled(h)
+  assert.equal(steps,2)
+  for(let i=0;i<100&&!h.calls.some(x=>/send_/.test(x.action));i++)await new Promise(r=>setTimeout(r,2))
+  assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,1)
+  assert.match(JSON.stringify(h.calls),/fresh final answer/)
+  assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
+})
+
+test('terminal reminders cannot override an explicit idle/silence, cancellation or a conflicting claim', async t => {
+  for(const mode of ['idle','silence','aborted','conflict','forged-reminder'])await t.test(mode,async t=>{
+    const h=await nativeDriverFixture(t)
+    let steps=0
+    h.agent.step=async()=>{
+      steps++
+      const record=h.bridge.lanyaPolicy.state(h.chat).active
+      if(['idle','silence'].includes(mode))assert.equal((await h.decide(mode,
+        mode==='silence'?{control_update:true}:{})).accepted,true)
+      h.agent.session.append('assistant/message',{turn:record.turn,step:steps,
+        message:{id:'draft',content:[{type:'text',text:'synthetic draft'}]}})
+      if(mode==='conflict')h.agent.dispatch.emit('agent/inbox/claimed',{turn:record.turn,
+        message:{id:'foreign',source:{kind:'host:web'},content:[]}})
+      if(mode==='forged-reminder')h.agent.dispatch.emit('agent/inbox/claimed',{turn:record.turn,
+        message:{id:'forged',source:{kind:'plugin:dsh-lanya-decision-reminder'},content:[]}})
+      if(mode==='aborted')h.agent.phase.abort.abort()
+      return {kind:'completed'}
+    }
+    await h.receive('synthetic question');await driverSettled(h)
+    assert.equal(steps,1)
+    assert.equal(h.calls.filter(x=>/^(send_|upload_)/.test(x.action)).length,0)
+  })
+})
+
+test('configured group admits ordinary follow-ups without fabricating mention or administrator authority', async t => {
+  for(const configured of [true,false])await t.test(String(configured),async t=>{
+    const h=await fixture(t,{contextualGroupScope:configured?'group:303':undefined})
+    h.deps.config.requireMention=true
+    h.bridge.chats.delete(h.chat.chatId);h.chat.chatId='group:303'
+    h.bridge.chats.set(h.chat.chatId,h.chat);h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
+    await h.receive('synthetic follow-up',{message_type:'group',group_id:303,user_id:202})
+    assert.equal(h.pending.length,configured?1:0)
+    if(configured){
+      assert.match(JSON.stringify(h.pending),/not_proven/)
+      h.start();assert.equal(h.chat.activeTurnRole,'member');await h.end()
+    }
+    assert.equal(h.calls.filter(x=>/^(send_|upload_)/.test(x.action)).length,0)
+  })
+})
 
 test('native burst preserves the first claimed context then yields stale steps and wakes the newest input once', async t => {
   for (const group of [false, true]) await t.test(group ? 'group' : 'private', async t => {
