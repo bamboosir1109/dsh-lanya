@@ -832,6 +832,8 @@ async function nativeDriverFixture(t, options = {}) {
     systemPrompt: { assemble: async () => { await options.assemble?.(); return {} } } }
   h.agent.runtimeContext = { project: () => undefined }
   h.agent.inbox = new Inbox({ stateOf: () => nativePending }, h.agent.session, h.agent.dispatch)
+  // A deterministic clock for the native group buffer, without real sleeps.
+  h.bridge.lanyaPolicy.groupBufferPause = async ms => { h.advance(ms) }
   h.agent.step = async () => {
     const active = h.bridge.lanyaPolicy.state(h.chat).active
     assert.ok(active?.binding, 'inert step must still pass native claim and admission')
@@ -848,6 +850,95 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   }
   assert.fail('native fixture did not settle')
 }
+
+async function bufferedGroupFixture(t) {
+  const h = await nativeDriverFixture(t, { contextualGroupScope: 'group:303' })
+  h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
+  h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+  const entered = defer(), release = defer()
+  let first = true
+  h.bridge.lanyaPolicy.groupBufferPause = async (ms, signal) => {
+    if (first) { first = false; entered.resolve(); await release.promise }
+    signal.throwIfAborted(); h.advance(ms)
+  }
+  const receive = (text, user = 202, extra = {}) => h.receive(text,
+    { message_type: 'group', group_id: 303, user_id: user, ...extra })
+  return { ...h, receive, entered, release }
+}
+
+test('native group buffer keeps a burst durable and enters one model turn with the latest passage', async t => {
+  const h = await bufferedGroupFixture(t), model = []
+  h.agent.step = async decision => {
+    model.push(decision.messages)
+    await h.decide('idle'); return { kind: 'completed' }
+  }
+  await h.receive('first part'); await h.entered.promise
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.nativePending['next-turn'].length, 1, 'already persisted, not a memory-only timer queue')
+  await h.receive('second part', 404); await h.receive('latest part', 505)
+  assert.equal(h.nativePending['next-turn'].length, 1)
+  h.release.resolve(); await driverSettled(h)
+  assert.equal(model.length, 1)
+  for (const part of ['first part', 'second part', 'latest part', 'do not comment on every line']) assert.ok(JSON.stringify(model[0]).includes(part))
+  assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+  assert.ok(h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced').length >= 3)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0, 'a buffered passage may still be judged idle')
+})
+
+test('buffered role changes bind only the latest speaker, never historical administrator authority', async t => {
+  for (const latestAdmin of [false, true]) await t.test(String(latestAdmin), async t => {
+    const h = await bufferedGroupFixture(t), roles = []
+    h.agent.step = async () => {
+      roles.push(h.chat.activeTurnRole)
+      assert.equal(h.bridge.canEditFiles(h.agent.session.id), latestAdmin)
+      if (!latestAdmin) assert.equal((await h.decide('resume', {control_update:true,evidenceSource:'current'})).accepted, false)
+      await h.decide('idle'); return {kind:'completed'}
+    }
+    await h.receive('earlier context, not fresh authority', latestAdmin ? 202 : 101); await h.entered.promise
+    await h.receive('latest current statement', latestAdmin ? 101 : 202)
+    h.release.resolve(); await driverSettled(h)
+    assert.deepEqual(roles, [latestAdmin ? 'admin' : 'member'])
+    assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+  })
+})
+
+test('a buffered group cannot delay private chat and verified mentions use the short window', async t => {
+  const h = await bufferedGroupFixture(t), dm = await nativeDriverFixture(t)
+  dm.agent.step = async () => { await dm.decide('idle'); return {kind:'completed'} }
+  await h.receive('group passage'); await h.entered.promise
+  await dm.receive('private question'); await driverSettled(dm)
+  assert.equal(dm.requests.filter(row => row.operation === 'reserve').length, 1)
+  assert.equal(h.requests.length, 0)
+  const before = h.bridge.lanyaPolicy.now()
+  await h.receive('direct mention', 202, {message:[{type:'at',data:{qq:'999'}},{type:'text',data:{text:'direct mention'}}]})
+  h.agent.step = async () => { await h.decide('idle'); return {kind:'completed'} }
+  h.release.resolve(); await driverSettled(h)
+  assert.ok(h.bridge.lanyaPolicy.now() - before <= 600)
+})
+
+test('continuous group input is released within the bounded buffer without a model call per message', async t => {
+  const h = await bufferedGroupFixture(t), adapter = h.bridge.lanyaPolicy, before = adapter.now()
+  let arrivals = 0, models = 0, modelText
+  adapter.groupBufferPause = async ms => { h.advance(ms); await h.receive('burst part ' + ++arrivals, 404) }
+  h.agent.step = async decision => { models++; modelText = JSON.stringify(decision.messages); await h.decide('idle'); return {kind:'completed'} }
+  await h.receive('first part'); await driverSettled(h)
+  assert.equal(arrivals, 20); assert.equal(adapter.now() - before, 5000)
+  assert.equal(models, 1); assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+  assert.ok(modelText.includes('burst part 20'))
+})
+
+test('stopping a group buffer retains the unclaimed durable input and restores the SDK method', async t => {
+  const h = await bufferedGroupFixture(t), adapter = h.bridge.lanyaPolicy
+  let models = 0
+  h.agent.step = async () => { models++; return {kind:'completed'} }
+  await h.receive('preserve this original'); await h.entered.promise
+  const wrapped = h.agent.preStep
+  await adapter.stop(); h.release.resolve(); await driverSettled(h)
+  assert.notEqual(h.agent.preStep, wrapped)
+  assert.equal(models, 0); assert.equal(h.requests.length, 0)
+  assert.equal(h.nativePending['next-turn'].length, 1)
+  assert.ok(JSON.stringify(h.nativeEvents).includes('preserve this original'))
+})
 
 test('native terminal draft without a decision gets one same-turn reminder, never automatic send permission', async t => {
   const h = await nativeDriverFixture(t)
