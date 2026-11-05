@@ -133,6 +133,39 @@ function tool(memes) {
   return value
 }
 
+function fastTool(memes) {
+  const tools = new Map()
+  native.registerSendMemeTool({tools:{register(value){tools.set(value.name,value)}}},memes,null,'http://web.invalid/dsh-memes')
+  return tools.get('qq_send_meme')
+}
+
+test('one or two indexed labels send one blank-caption reaction without a vision or model call', async t => {
+  const p=pack(t,'fast-tag'),scope=bound(t,'fast-tag-media',{live:true}),sent=[]
+  const old=scope.services.get('lanyaQqMemeMedia')
+  scope.services.set('lanyaQqMemeMedia',{forExecution(exec){return {...old.forExecution(exec),
+    sendCandidate:async(candidate,textFollows)=>{sent.push({candidate,textFollows});return {ok:true,sent:true}}}}})
+  const tool=fastTool(sampler(p.store,{packId:'_custom',enabledPacks:['_custom']},[{id:'_custom',path:p.directory}]))
+  assert.equal((await tool.execute({tags:['happy','开心']},scope.exec)).sent,true)
+  assert.equal(sent.length,1);assert.equal(sent[0].candidate.caption,'');assert.equal(sent[0].candidate.tag,'happy')
+  assert.equal(sent[0].textFollows,false);assert.equal(readdirSync(scope.mediaDir).length,1)
+  assert.equal((await tool.execute({tags:['happy']},scope.exec)).sent,false)
+  assert.equal(sent.length,1)
+})
+
+test('tag tool refuses missing semantic metadata, invented subjects, foreign scope and arbitrary path',async t=>{
+  const p=pack(t,'fast-tag-refuse'),scope=bound(t,'fast-tag-refuse-media'),sent=[]
+  const old=scope.services.get('lanyaQqMemeMedia')
+  scope.services.set('lanyaQqMemeMedia',{forExecution(exec){return {...old.forExecution(exec),sendCandidate:async()=>{sent.push(1);return {sent:true}}}}})
+  const tool=fastTool(sampler(p.store,{packId:'_custom',enabledPacks:['_custom']},[{id:'_custom',path:p.directory}]))
+  assert.equal((await tool.execute({tags:['不存在的主题']},scope.exec)).sent,false)
+  await assert.rejects(tool.execute({tags:['happy'],path:'arbitrary'},scope.exec))
+  await assert.rejects(tool.execute({tags:[]},scope.exec))
+  await assert.rejects(tool.execute({tags:['a','b','c']},scope.exec))
+  await assert.rejects(tool.execute({tags:['happy']},{...scope.exec,agent:{...scope.exec.agent}}))
+  scope.end();await assert.rejects(tool.execute({tags:['happy']},scope.exec))
+  assert.equal(sent.length,0)
+})
+
 test('actual Web branch keeps caption placeholder and no stage/service side effect',t=>{
   const p=pack(t,'web','synthetic caption');const picker=tool(p.store)
   const output=picker.execute({query:'猫'}, {agent:{ctx:{get(){return undefined}}}})

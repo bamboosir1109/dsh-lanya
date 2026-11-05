@@ -1,4 +1,4 @@
-// Selection and bounded local staging only. QQ delivery retains its own ticket.
+// Indexed selection and bounded staging. Delivery uses the invoking QQ owner.
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync,
   existsSync, readSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -120,11 +120,43 @@ export function stageIndexedCandidate(memes, row, cap) {
         digest(readStable(path, cap.maxBytes)) !== sha256) fail()
     cap.assertCurrent()
     const caption = typeof row.caption === 'string' ? row.caption.slice(0, 200).trim() : ''
-    return { caption, path, sha256, bytes: bytes.length, requires_visual_review: !caption }
+    const tag = typeof row.tag === 'string' ? row.tag.trim().slice(0, 80) : ''
+    const keywords = typeof row.keywords === 'string' ? row.keywords.trim().slice(0, 512) : ''
+    return { caption, tag, keywords, path, sha256, bytes: bytes.length,
+      requires_visual_review: !caption,
+      metadata_basis: 'enabled_pack_index', content_verified: false }
   } catch (error) {
     if (created && identity(lstatSync(path)) === identity(created)) unlinkSync(path)
     throw error
   }
+}
+
+export function registerTaggedMemeTool(ctx, memes, defineTool) {
+  return ctx.tools.register(defineTool({ name: 'qq_send_meme',
+    description: '按已有索引的1–2个标签直接发一张真实QQ表情，不重新看图。tags如["happy"]或["早安","开心"]。这是你选择回复并发图的一次调用；默认纯表情，只有确实还需独立文字时text_follows=true。只在当前QQ会话生效，未分类图片不使用，不猜图上具体文字。拒绝或未知结果停止，不重试，不复述发送回执。',
+    parameters: { tags: { type: 'array', required: true, items: { type: 'string' } },
+      text_follows: { type: 'boolean', description: '随后是否需要另发有实际内容的文字，默认false' } },
+    output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      const cap = getQqCapability(exec)
+      if (!cap || typeof cap.sendCandidate !== 'function') throw new Error('Bound QQ delivery unavailable')
+      if (!args || Object.keys(args).some(key => !['tags', 'text_follows'].includes(key)) ||
+          !Array.isArray(args.tags) || args.tags.length < 1 || args.tags.length > 2 ||
+          args.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 80 || /[\x00-\x1f]/.test(tag)) ||
+          args.text_follows !== undefined && typeof args.text_follows !== 'boolean') throw new Error('Use one or two meme tags')
+      const tags = args.tags.map(tag => tag.trim().toLowerCase())
+      const result = selectQqCandidates(memes, { query: tags.join(' '), limit: 1 }, exec, cap)
+      const chosen = result.candidates[0]
+      if (!chosen || ![chosen.tag, chosen.keywords, chosen.caption].some(Boolean))
+        return { ok: false, sent: false, reason: 'no_indexed_tag_match', automatic_text: false }
+      // Search may use filenames or a mood fallback. Neither alone proves a
+      // label match; the fast path requires actual indexed semantic metadata.
+      const hay = [chosen.tag, chosen.keywords, chosen.caption].join(' ').toLowerCase()
+      if (!tags.some(tag => hay.includes(tag))) return { ok: false, sent: false, reason: 'no_indexed_tag_match', automatic_text: false }
+      cap.assertCurrent()
+      return cap.sendCandidate(chosen, args.text_follows === true)
+    } }))
 }
 
 export function selectQqCandidates(memes, args, exec, cap) {

@@ -1700,7 +1700,8 @@ def _meme_key(source, tag, name):
 def meme_behavior():
     unified = decision_mode() != "legacy"
     return {"mode": "unified" if unified else "legacy",
-            "collection": "existing-files-only" if unified else "group-history",
+            "collection": "group-history-quarantine" if unified else "group-history",
+            "fast_send": "indexed-tags-current-ticket" if unified else None,
             "managed_by": "main_agent" if unified else "independent_worker",
             "batch_max": 20 if unified else None,
             "independent_classification": not unified}

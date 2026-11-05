@@ -70,3 +70,15 @@ test('newer policy and aborted turn refuse helper; switched owner cannot receive
   changed.a.trustedOwner = async () => count++ ? { ...changed.owner, agent_key: 'other' } : changed.owner
   await assert.rejects(changed.diary.execute({ action: 'read' }, changed.exec), /owner changed/)
 })
+
+test('an empty grounded diary read returns exact write revisions rather than another read-only loop', async () => {
+  const f=fixture()
+  f.a.readTrustedHelper=async()=>({schema:'narrative-diary/v1',owner:f.owner,conversation_key:'private:42',
+    read_only:true,private:true,status:'empty',submission:'none',selected:null,new_facts_available:true,
+    facts:{status:'available',day:'2026-11-05',revision:'a'.repeat(64),items:[{ref:'b'.repeat(64),summary:'实际工具来源'}]}})
+  const value=await f.diary.execute({action:'read'},f.exec)
+  assert.equal(value.write_context.day,'2026-11-05')
+  assert.equal(value.write_context.expected_revision,0)
+  assert.equal(value.write_context.fact_revision,'a'.repeat(64))
+  assert.deepEqual(value.write_context.evidence_refs,['b'.repeat(64)])
+})

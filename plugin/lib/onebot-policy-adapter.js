@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -521,7 +521,7 @@ export class OneBotDecisionAdapter {
     if (this.intentPlanner.scopes.has(ctx)) return []
     const disposers = []
     try {
-      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions()]) disposers.push(ctx.tools.register(defineTool(definition)))
+      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), this.memeReviewDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
     } catch (error) {
       const failures = []
       for (const dispose of disposers.reverse()) try { dispose?.() } catch (cleanup) { failures.push(cleanup) }
@@ -822,7 +822,7 @@ export class OneBotDecisionAdapter {
   nativeCapabilityContext(agent) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
-    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: call qq_decide once for this claimed input before final text or sending. A draft alone is never delivered. Choose reply, idle, defer or authorized silence/resume using the current conversation; do not assume reply permission. Reuse an accepted ticket.\n'
+    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction: this one tool makes the reply decision and sends one real image through current guards. No separate vision or qq_decide is needed for a label-based reaction. It does not prove exact image contents. Otherwise call qq_decide once for this claimed input before final text or sending. A draft alone is never delivered. Choose reply, idle, defer or authorized silence/resume using the current conversation; do not assume reply permission. Reuse an accepted ticket.\n'
       + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
   }
 
@@ -836,6 +836,75 @@ export class OneBotDecisionAdapter {
         record.liveMemeSelectionUsed = true
         return true
       } })
+  }
+
+  memeReviewDefinition() {
+    return { name: 'qq_meme_review',
+      description: '主会话自主空闲时整理刚收的表情。list返回最多4张待审真实图片；实际read_image看过后，review提交candidate_id、sha256、是否表情及标签描述。保留原图，非表情不进入图库。不发送QQ，不启动另一个模型；不要在实时聊天中整理图库。',
+      parameters: { action: { type: 'string', required: true, enum: ['list', 'review'] },
+        candidate_id: { type: 'string' }, sha256: { type: 'string' }, is_meme: { type: 'boolean' },
+        tag: { type: 'string' }, caption: { type: 'string' }, keywords: { type: 'array', items: { type: 'string' } } },
+      output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      isConcurrencySafe: () => false, execute: (args, exec) => this.reviewMemes(args, exec) }
+  }
+
+  async reviewMemes(args, exec) {
+    const record = this.captureExec(exec), scope = record.binding.scope
+    if (!plain(args) || !['list', 'review'].includes(args.action) || record.binding.origin !== 'observation' ||
+        !['activity.opportunity', 'meme.review'].includes(record.binding.observationKind)) throw new Error('Autonomous meme review required')
+    const keys = args.action === 'list' ? ['action'] : ['action', 'candidate_id', 'sha256', 'is_meme', 'tag', 'caption', 'keywords']
+    if (Object.keys(args).some(key => !keys.includes(key)) || keys.some(key => args[key] === undefined)) throw new Error('Invalid meme review fields')
+    const owner = await this.trustedOwner(scope)
+    if (record.binding.owner && !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === record.binding.owner[key])) throw new Error('Meme review owner changed')
+    const guide = await this.runtimeCapabilities(scope, owner)
+    this.validateOwnerContext(guide, 'dsh-runtime-capabilities/v1', scope, owner)
+    if (guide.read_only !== true || guide.tools?.entertainment?.primary_identity_valid !== true ||
+        guide.tools.entertainment.primary_internal_leisure !== true) throw new Error('Primary meme review only')
+    const snapshot = await this.policy.snapshot(scope), budget = await this.checkBudget(record)
+    if (!snapshot?.current || snapshot.revision !== record.binding.revision || budget.allowed !== true ||
+        this.captureExec(exec) !== record || exec.signal?.aborted) throw new Error('Stale meme review')
+    const script = path.join(path.dirname(this.config.memoryContextScript || path.join(owner.cwd, 'napcat', 'memory_context.py')), 'meme_observations.py')
+    const value = await this.readTrustedHelper(script, { ...args, cwd: owner.cwd, agent_preset: owner.preset, conversation_key: scope },
+      { timeout: 10_000, signal: exec.signal, cwd: owner.cwd })
+    this.validateOwnerContext(value, 'qq-meme-review/v1', scope, owner)
+    const fresh = await this.trustedOwner(scope)
+    if (this.captureExec(exec) !== record || exec.signal?.aborted ||
+        !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => fresh[key] === owner[key])) throw new Error('Meme review owner changed')
+    return value
+  }
+
+  async sendSelectedMeme(candidate, textFollows, exec) {
+    const record = this.captureExec(exec)
+    // Called only by the bound indexed picker. No model-supplied destination,
+    // raw URL or arbitrary local path can enter this route.
+    const root = fs.realpathSync.native(this.config.mediaDir || this.bridge.deps?.config?.mediaDir)
+    const file = candidate?.path
+    if (typeof file !== 'string' || !path.isAbsolute(file) ||
+        voicePathKey(path.dirname(file)) !== voicePathKey(root) ||
+        !/^media_meme_[a-f0-9]{64}\.(png|jpg|gif|webp)$/.test(path.basename(file)) ||
+        typeof candidate.sha256 !== 'string' || !path.basename(file).includes(candidate.sha256)) throw new Error('Indexed meme artifact required')
+    const verify = () => {
+      const bytes = stableInboundImage(file)
+      if (voiceDigest(bytes) !== candidate.sha256 || bytes.length !== candidate.bytes) throw new Error('Indexed meme changed')
+      if (this.captureExec(exec) !== record) throw new Error('Meme turn changed')
+    }
+    verify()
+    if (!record.decision) {
+      const choice = await this.decide({ verdict: 'reply', expression: textFollows ? 'text_meme' : 'meme' }, exec)
+      if (!choice.accepted || !choice.can_send) return { ok: false, sent: false, reason: choice.reason || 'reply_refused' }
+    }
+    if (record.decision?.verdict !== 'reply' || record.decision.expression === 'text')
+      return { ok: false, sent: false, reason: 'existing_decision_does_not_allow_meme' }
+    // A previously accepted reply with no chosen medium keeps its same ticket;
+    // this explicit tool call now chooses the medium, not a second permission.
+    if (record.decision.expression === undefined) record.decision = { ...record.decision, expression: textFollows ? 'text_meme' : 'meme' }
+    verify()
+    const messageId = await this.runTool('qq_send_image', { sources: [file] }, exec, () => {
+      verify()
+      return this.bridge.sendSegments(record.binding.scope, [{ type: 'image', data: { file: pathToFileURL(file).href } }])
+    })
+    if (memeOnlyReply(record) && typeof exec.concludeTurn === 'function') exec.concludeTurn()
+    return { ok: true, sent: true, messageId: messageId ?? null, expression: record.decision.expression || 'unspecified' }
   }
 
   supersedingLiveInput(chat, record) {
@@ -870,7 +939,7 @@ export class OneBotDecisionAdapter {
       try {
         const record = this.captureExec(exec)
         if (record.binding.recoveryRevision && !['qq_decide', 'read', 'read_image', 'view',
-          'send_meme', 'qq_send_image', 'qq_synthesize_voice', 'qq_send_voice'].includes(exec.name)) return 'historical_reply_review_only'
+          'send_meme', 'qq_send_meme', 'qq_send_image', 'qq_synthesize_voice', 'qq_send_voice'].includes(exec.name)) return 'historical_reply_review_only'
       }
       catch (error) { return error instanceof PolicyDeliveryError ? error.reason : 'unverified_autonomous_time' }
     })

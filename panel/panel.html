@@ -2675,8 +2675,8 @@ async function loadMemeConfig(){
     const j = await api('/memes/config');
     if(!j.ok) throw new Error(j.error || '读取失败');
     const c = j.config || {};
-    const current = j.behavior?.mode === 'unified' && j.behavior?.managed_by === 'main_agent' && j.behavior?.collection === 'existing-files-only';
-    setText('memeBehaviorNote', current ? '观察现有本机图片并交给主 agent 审阅；不在此抓取群图，不启动独立分类循环。设置供后续观察读取。' : '图片审阅方式尚未确认，先读取当前运行配置。');
+    const current = j.behavior?.mode === 'unified' && j.behavior?.managed_by === 'main_agent' && j.behavior?.collection === 'group-history-quarantine';
+    setText('memeBehaviorNote', current ? '定期从群里收图，先放待审区；主 agent 空闲时看图并保存标签。聊天时按已有标签直接发一张，无需重复看图。未通过审阅的图片不发送。' : '图片审阅方式尚未确认，先读取当前运行配置。');
     $('memeReview').disabled = !current;
     $('mcfgSteal').checked    = c.stealEnabled !== false;
     $('mcfgClassify').checked = c.autoClassify !== false;

@@ -1758,7 +1758,7 @@ test('picture review uses confirmed main-agent observation receipt and makes no 
   const h = harness({ functions: ['loadMemeConfig', 'startClassify'], extra: { api: async (...args) => {
     requests.push(args)
     if(args[0] === '/memes/config') return { ok: true, config: { maxPerRun: 12 },
-      behavior: { mode: 'unified', managed_by: 'main_agent', collection: 'existing-files-only' } }
+      behavior: { mode: 'unified', managed_by: 'main_agent', collection: 'group-history-quarantine' } }
     return { ok: true, managed_by: 'main_agent', queued: true }
   } } })
   await h.context.loadMemeConfig(); await h.context.startClassify()

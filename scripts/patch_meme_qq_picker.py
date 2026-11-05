@@ -51,7 +51,7 @@ RESOLVER = """    resolveIndexed(stored) {
     },
 """
 
-PROVIDER = """        // Selection capability only: no ticket, send method, or broad home root.
+PROVIDER = """        // Owner-bound indexed meme capability; no exposed ticket or destination.
         // A dsh agent scope is an event/fiber scope, not automatically a Cordis
         // service scope. Isolate this one service on the EXISTING agent context.
         const isolateKey = Symbol.for('cordis.isolate');
@@ -66,6 +66,7 @@ PROVIDER = """        // Selection capability only: no ticket, send method, or b
                 return Object.freeze({
                     format: 'lanya-qq-meme-media/v1',
                     selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),
+                    sendCandidate: (candidate, textFollows) => this.lanyaPolicy.sendSelectedMeme(candidate, textFollows, exec),
                     mediaDir: this.deps.config.mediaDir,
                     maxBytes: this.deps.config.maxImageBytes,
                     assertCurrent: () => {
@@ -76,6 +77,34 @@ PROVIDER = """        // Selection capability only: no ticket, send method, or b
             },
         }));
 """
+
+
+def extend_tagged_provider(raw):
+    newline = '\r\n' if b'\r\n' in raw else '\n'
+    text = raw.decode('utf-8').replace('\r\n', '\n')
+    anchor = '                    selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),\n'
+    addition = '                    sendCandidate: (candidate, textFollows) => this.lanyaPolicy.sendSelectedMeme(candidate, textFollows, exec),\n'
+    if text.count(anchor) != 1 or text.count("agentCtx.reflect.provide('lanyaQqMemeMedia'") != 1:
+        raise PatchError('Unreviewed indexed meme provider')
+    if addition in text:
+        if text.count(addition) != 1 or anchor + addition not in text: raise PatchError('Changed indexed meme provider')
+        return raw
+    text = text.replace('// Selection capability only: no ticket, send method, or broad home root.',
+                        '// Owner-bound indexed meme capability; no exposed ticket or destination.')
+    return text.replace(anchor, anchor + addition, 1).replace('\n', newline).encode('utf-8')
+
+
+def extend_tagged_registration(raw):
+    newline = '\r\n' if b'\r\n' in raw else '\n'
+    text = raw.decode('utf-8').replace('\r\n', '\n')
+    old = "import { getQqCapability, selectQqCandidates } from './lanya-qq-meme.mjs'"
+    new = "import { getQqCapability, selectQqCandidates, registerTaggedMemeTool } from './lanya-qq-meme.mjs'"
+    anchor = 'export function registerSendMemeTool(ctx, memes, sendImage, urlPrefix = null) {\n'
+    addition = '  registerTaggedMemeTool(ctx, memes, defineTool)\n'
+    if text.count(anchor) != 1: raise PatchError('Unreviewed native meme registration')
+    if new in text and anchor + addition in text: return raw
+    if text.count(old) != 1 or addition in text: raise PatchError('Changed native meme registration')
+    return text.replace(old, new, 1).replace(anchor, anchor + addition, 1).replace('\n', newline).encode('utf-8')
 
 
 def extend_current_provider(raw):
@@ -125,7 +154,8 @@ def transform(name, raw):
     else:
         text = replace_once(text, '    installChannelScope(agentCtx) {\n',
                             '    installChannelScope(agentCtx) {\n' + PROVIDER)
-    return text.replace('\n', newline).encode('utf-8')
+    result = text.replace('\n', newline).encode('utf-8')
+    return extend_tagged_registration(result) if name == 'memes.js' else result
 
 
 def roots(meme, onebot):

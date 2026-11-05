@@ -101,6 +101,27 @@ test('scoped intentions retain CAS history and agent-report status without writi
   assert.equal(h.sends.length, 0)
 })
 
+test('meme review is deferred out of live replies and binds its helper to primary autonomous ownership', async t => {
+  const h=await fixture(t), exec=h.exec('private:101'), record=h.adapter.state(h.source).active, calls=[]
+  h.adapter.readTrustedHelper=async(script,request)=>{
+    calls.push({script,request})
+    return {schema:'qq-meme-review/v1',owner:{workspace_key:h.owner.workspace_key,agent_key:h.owner.agent_key},
+      conversation_key:'private:101',status:'pending',read_only:true,candidates:[]}
+  }
+  await assert.rejects(h.adapter.reviewMemes({action:'list'},exec),/Autonomous/)
+  assert.equal(calls.length,0)
+  record.binding=Object.freeze({...record.binding,origin:'observation',observationKind:'meme.review',observationCreatedAt:h.now()})
+  h.adapter.checkBudget=async()=>({allowed:true})
+  assert.equal((await h.adapter.reviewMemes({action:'list'},exec)).status,'pending')
+  assert.equal(calls.length,1);assert.equal(path.basename(calls[0].script),'meme_observations.py')
+  assert.equal(calls[0].request.cwd,h.directory);assert.equal(calls[0].request.conversation_key,'private:101')
+  await assert.rejects(h.adapter.reviewMemes({action:'list',path:'foreign'},exec))
+  h.adapter.runtimeCapabilities=async(scope,owner)=>({schema:'dsh-runtime-capabilities/v1',read_only:true,
+    owner,conversation_key:scope,tools:{entertainment:{primary_identity_valid:true,primary_internal_leisure:false}}})
+  await assert.rejects(h.adapter.reviewMemes({action:'list'},exec),/Primary/)
+  assert.equal(calls.length,1);assert.equal(h.sends.length,0)
+})
+
 test('active capacity includes reactivation and foreign binding refusal preserves the existing database', async t => {
   const h = await fixture(t), completed = await h.create('Completed synthetic intention')
   await h.planner.intent({ action: 'update', intent_id: completed.intent_id, expected_revision: 1, status: 'completed' }, h.exec('private:101'))

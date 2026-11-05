@@ -7,6 +7,7 @@ import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
+import { stageIndexedCandidate } from '../plugin/lib/meme-qq-picker.mjs'
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const prefix = path.join(os.tmpdir(), 'lanya-onebot-integration-')
@@ -36,10 +37,49 @@ const deferred = () => { let resolve; const promise = new Promise(yes => { resol
 const workspaceKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd)
 let sequence = 0
 
-async function setup(t) {
+test('tagged send makes one scoped reply decision and uses actual guarded image egress', async t => {
+  const h = await setup(t, true), chat = await h.receive(), turn = h.start(chat)
+  const gallery = path.join(h.dir, 'gallery'); fs.mkdirSync(gallery)
+  const file = path.join(gallery, 'reaction.png')
+  fs.writeFileSync(file, Buffer.from('89504e470d0a1a0a', 'hex'))
+  const candidate = stageIndexedCandidate({ resolveIndexed: () => ({ root: gallery, relativePath: 'reaction.png', file }) },
+    { path: 'reaction.png', tag: 'happy', keywords: '开心', caption: '' },
+    { format: 'lanya-qq-meme-media/v1', mediaDir: h.deps.config.mediaDir, maxBytes: 1024, assertCurrent() {} })
+  let concluded = 0
+  const exec = { ...h.exec(chat), concludeTurn() { concluded++ } }
+  const result = await h.bridge.lanyaPolicy.sendSelectedMeme(candidate, false, exec)
+  assert.equal(result.sent, true); assert.equal(result.expression, 'meme'); assert.equal(concluded, 1)
+  assert.equal(h.calls.length, 1); assert.equal(h.calls[0].params.message[0].type, 'image')
+  h.assistant(chat, turn, '已发出，内部回执不得成为另一条文字')
+  await assert.rejects(h.bridge.lanyaPolicy.sendSelectedMeme(candidate, false, h.exec(chat)))
+  assert.equal(h.calls.length, 1)
+  await h.end(chat, turn)
+})
+
+test('tagged send cannot upgrade an earlier idle decision or send changed image bytes', async t => {
+  const h = await setup(t, true), chat = await h.receive(); h.start(chat)
+  const gallery = path.join(h.dir, 'gallery'); fs.mkdirSync(gallery)
+  const file = path.join(gallery, 'reaction.png'); fs.writeFileSync(file, Buffer.from('89504e470d0a1a0a', 'hex'))
+  const candidate = stageIndexedCandidate({ resolveIndexed: () => ({ root: gallery, relativePath: 'reaction.png', file }) },
+    { path: 'reaction.png', tag: 'happy' }, { format: 'lanya-qq-meme-media/v1', mediaDir: h.deps.config.mediaDir, maxBytes: 1024, assertCurrent() {} })
+  await h.decide(chat, 'idle')
+  assert.equal((await h.bridge.lanyaPolicy.sendSelectedMeme(candidate, false, h.exec(chat))).sent, false)
+  fs.appendFileSync(candidate.path, 'changed')
+  await assert.rejects(h.bridge.lanyaPolicy.sendSelectedMeme(candidate, false, h.exec(chat)), /changed/)
+  assert.equal(h.calls.length, 0)
+})
+
+async function setup(t, stagedEgress = false) {
   const dir = path.join(temporary, 'case-' + ++sequence)
   const plugin = path.join(dir, 'plugin')
   fs.cpSync(template, plugin, { recursive: true })
+  if (stagedEgress) {
+    const build = spawnSync(process.env.PYTHON || 'python', ['-B', '-c',
+      "import sys;from pathlib import Path;sys.path.insert(0,str(Path(sys.argv[1])/'scripts'));import patch_onebot_egress as p;root=Path(sys.argv[2]);names=['lib/lanya-policy-adapter.js','lib/bridge.js'];[(root/n).write_bytes(p.transform(n,(root/n).read_bytes())) for n in names]",
+      repo, plugin], { encoding: 'utf8', windowsHide: true })
+    assert.equal(build.status, 0, build.stderr)
+    fs.copyFileSync(path.join(repo, 'plugin/lib/qq-egress.js'), path.join(plugin, 'lib/lanya-qq-egress.js'))
+  }
   const stateFile = path.join(dir, 'private', 'decision-policy.json')
   fs.mkdirSync(path.dirname(stateFile), { recursive: true })
   fs.writeFileSync(path.join(plugin, 'lib', 'lanya-policy.config.json'), JSON.stringify({ stateFile }))

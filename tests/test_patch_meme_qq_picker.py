@@ -22,6 +22,20 @@ NATIVE=ROOT/'tests/fixtures/meme_qq_picker'
 
 
 class MemeLiveProviderCompilerTests(unittest.TestCase):
+    def test_tagged_incremental_provider_and_registration_are_precise_and_idempotent(self):
+        generated = picker.transform('bridge.js', (NATIVE/'bridge.js').read_bytes())
+        addition = b'                    sendCandidate: (candidate, textFollows) => this.lanyaPolicy.sendSelectedMeme(candidate, textFollows, exec),\n'
+        previous = generated.replace(addition, b'', 1)
+        self.assertEqual(picker.extend_tagged_provider(previous), generated)
+        self.assertEqual(picker.extend_tagged_provider(generated), generated)
+        registration = picker.transform('memes.js', (NATIVE/'memes.js').read_bytes()).replace(b'\r\n', b'\n')
+        previous = registration.replace(b', registerTaggedMemeTool', b'', 1).replace(b'  registerTaggedMemeTool(ctx, memes, defineTool)\n', b'', 1)
+        self.assertEqual(picker.extend_tagged_registration(previous), registration)
+        self.assertEqual(picker.extend_tagged_registration(registration), registration)
+        for transform, body in [(picker.extend_tagged_provider, generated+generated),
+                                (picker.extend_tagged_registration, previous+previous)]:
+            with self.assertRaises(PatchError): transform(body)
+
     def test_incremental_provider_is_exact_idempotent_and_preserves_other_bytes(self):
         addition = b'                    selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),\n'
         generated = picker.transform('bridge.js', (NATIVE/'bridge.js').read_bytes())

@@ -115,6 +115,18 @@ class JournalTests(unittest.TestCase):
             self.assertTrue(view['selected']['coverage']['latest_scan_degraded'])
             self.assertEqual(view['freshness']['status'], 'degraded')
 
+    def test_thirty_decision_display_window_does_not_freeze_growing_daily_facts(self):
+        self.update()
+        grown = facts(episodes=3)
+        grown['counts']['decisions'] = 31
+        grown['coverage']['decisions_truncated'] = True
+        self.current = catalog(grown)
+        self.assertEqual(self.update()['written_count'], 1)
+        selected = self.read()['selected']
+        self.assertEqual(selected['entries'], 3)
+        self.assertTrue(selected['coverage']['decisions_truncated'])
+        self.assertEqual(self.read()['freshness']['status'], 'ok')
+
     def test_unavailable_scan_preserves_existing_and_readers_never_create_files(self):
         self.assertEqual(self.read()['status'], 'empty')
         self.assertFalse(self.root.exists())

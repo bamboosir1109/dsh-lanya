@@ -52,6 +52,11 @@ export class NarrativeDiary {
     if (!current() || !ownerEqual(owner, freshOwner)) throw new Error('Diary result is private and its owner changed')
     if (args.action === 'read' && (value.read_only !== true || value.private !== true)) throw new Error('Read-only private diary result required')
     if (args.action === 'write' && !['committed', 'already_committed'].includes(value.status)) throw new Error('Diary submission not confirmed; read existing')
+    if (args.action === 'read' && value.new_facts_available === true && value.submission === 'none' && value.facts?.status === 'available') {
+      value.write_context = { day: value.facts.day, expected_revision: value.selected?.revision || 0,
+        fact_revision: value.facts.revision, evidence_refs: (value.facts.items || []).map(item => item.ref),
+        next_step: 'In this same autonomous opportunity, write one grounded first-person diary using these exact revisions and actual facts. Supply your own specific title, experiences with refs, feelings and unfinished. Reading alone has not written a diary; no QQ report is needed.' }
+    }
     return value
   }
 }

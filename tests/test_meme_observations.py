@@ -179,7 +179,7 @@ class MemeObservationTests(unittest.TestCase):
             spec.loader.exec_module(module)
         return module
 
-    def test_real_unified_entries_never_call_agent_http_move_or_delete(self):
+    def test_real_unified_entries_collect_readonly_history_but_never_call_model_move_or_delete(self):
         self.image()
         for name in ['stealmemes', 'classify_emotion']:
             module = self.load_entry(name)
@@ -189,10 +189,13 @@ class MemeObservationTests(unittest.TestCase):
                     mock.patch('shutil.move', side_effect=AssertionError('move reached')), \
                     mock.patch('sys.argv', [name]):
                 if name == 'stealmemes':
-                    with mock.patch.object(module, 'api', side_effect=AssertionError('QQ HTTP reached')), \
+                    with mock.patch.object(module, 'api', return_value={'status': 'ok', 'data': {'messages': []}}) as api, \
+                            mock.patch.object(module, 'GROUP', '202'), \
+                            mock.patch.object(module, 'MEMES', str(self.memes)), \
                             mock.patch.object(module, 'place', side_effect=AssertionError('classification reached')):
                         module.run_scan()
                         module.run_recheck()
+                        self.assertEqual([call.args[0] for call in api.call_args_list], ['get_group_msg_history'])
                 else:
                     with mock.patch.object(module, 'classify_batch', side_effect=AssertionError('classifier reached')), \
                             mock.patch.object(module, 'acquire_lock', side_effect=AssertionError('legacy lock reached')):
@@ -212,6 +215,14 @@ class MemeObservationTests(unittest.TestCase):
                     mock.patch.object(module.subprocess, 'run', return_value=mock.Mock(stdout=b'legacy fixture')) as run:
                 self.assertEqual(module.ask_agent('fixture'), 'legacy fixture')
                 self.assertEqual(run.call_count, 1)
+
+    def test_collection_settings_refuse_corruption_and_wrong_types_before_any_http(self):
+        path = self.data / 'lanya-memes-config.json'
+        for raw in ['broken', '[]', '{"stealEnabled":"false"}', '{"maxPerRun":false}', '{"maxPerRun":21}']:
+            path.write_text(raw, encoding='utf-8')
+            with self.subTest(raw=raw), self.assertRaises(RuntimeError): self.load_entry('stealmemes')
+        path.write_text('{"stealEnabled":false}', encoding='utf-8-sig')
+        with self.assertRaises(SystemExit): self.load_entry('stealmemes')
 
 
 if __name__ == '__main__':

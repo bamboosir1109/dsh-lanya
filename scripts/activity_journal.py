@@ -384,7 +384,15 @@ def _commit(root, owner, index, index_before, fact, now, fault=None):
     _need(before == (previous['record'] if previous else None))
     if previous is not None:
         old_coverage = previous['coverage']
-        regressed = (previous['status'] != 'partial' and status == 'partial' or
+        # The UI shows only 30 decision details, while counts and all daily
+        # activity episodes remain available. Reaching that display window
+        # must not freeze a growing day's facts. Other source loss still does.
+        decision_window_only = (fact.get('status') == 'ok' and coverage.get('decisions_truncated') is True and
+                                not coverage.get('truncated') and not coverage.get('journal_text_truncated') and
+                                not coverage.get('reasons'))
+        regressed = (previous['status'] != 'partial' and status == 'partial' and not decision_window_only or
+                     not old_coverage.get('truncated') and coverage.get('truncated') or
+                     not old_coverage.get('journal_text_truncated') and coverage.get('journal_text_truncated') or
                      any(fact['counts'][k] < previous['counts'][k] for k in ('episodes', 'tools', 'decisions')) or
                      any(coverage.get(k, 0) < old_coverage.get(k, 0) for k in ('owner_verified_scopes', 'mapped_scopes')))
         old_sources = {row['source']: row for row in old_coverage.get('source_windows', [])}

@@ -600,6 +600,12 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
             **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
             **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
             "instruction": (
+                "If memory.diary.status=due, read qq_diary with that day and finish one grounded write "
+                "using its fact_revision, expected_revision and actual evidence refs before optional leisure. "
+                "Do not stop after repeatedly reading an unchanged empty diary. A diary is private, not a QQ report. "
+                "During an otherwise idle primary opportunity, qq_meme_review(action=list) can expose at most "
+                "four newly collected images. Inspect real image bytes once and submit each chosen classification "
+                "with reusable tags/caption/keywords; do not do this maintenance during a live human reply. "
                 "This is an optional autonomous opportunity for this conversation, not a request to speak. "
                 "Use this same main agent, its persona, scoped memory and this session's continuing plan. "
                 "A prior_rest_lifecycle is a local rest/expiry closure, not proof that earlier internal work "

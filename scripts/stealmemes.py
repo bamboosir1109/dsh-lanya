@@ -25,22 +25,28 @@
 # --- 表情包行为开关（顶层，最先执行）----------------------------------------
 # 面板上可以关掉「偷表情包」和「自动分类」。这一段必须在任何逻辑之前跑，
 # 否则配置改了不生效。
-from project_conf import data_dir, work_dir
+from project_conf import data_dir, work_dir, get
 import os as _mo
 try:
     import json as _mj
     _mcfg = _mo.path.join(data_dir(), "lanya-memes-config.json")
-    with open(_mcfg, "r", encoding="utf-8") as _mfh:
+    with open(_mcfg, "r", encoding="utf-8-sig") as _mfh:
         _mdata = _mj.load(_mfh)
+    if (not isinstance(_mdata, dict) or
+            any(key in _mdata and type(_mdata[key]) is not bool for key in ('stealEnabled', 'autoClassify')) or
+            'maxPerRun' in _mdata and (type(_mdata['maxPerRun']) is not int or not 1 <= _mdata['maxPerRun'] <= 20)):
+        raise ValueError('Invalid meme settings')
     if _mdata.get("stealEnabled") is False:
         raise SystemExit(0)
     _AUTO_CLASSIFY = _mdata.get("autoClassify") is not False
     _MAX_PER_RUN = int(_mdata.get("maxPerRun") or 12)
 except SystemExit:
     raise
-except Exception:
+except FileNotFoundError:
     _AUTO_CLASSIFY = True
     _MAX_PER_RUN = 12
+except Exception as _merror:
+    raise RuntimeError('Meme collection settings unavailable') from _merror
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -61,7 +67,7 @@ import time
 import urllib.request
 from decision_events import unified_decisions_enabled
 
-NAPCAT = "http://127.0.0.1:8720"
+NAPCAT = "http://127.0.0.1:%d" % int(get('onebotPort', 8720))
 # Neither the token nor the group id belongs in the source. The token was
 # sitting here in plain text, which means every copy of this file carried a live
 # credential; the group id was hardcoded so the script could only ever work
@@ -138,7 +144,7 @@ def api(action, payload):
         headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 
@@ -219,7 +225,6 @@ def classify(paths):
         log("classifying %d-%d of %d" % (start + 1, start + len(chunk), total))
         out.update(_classify_batch(chunk))
     return out
-    return verdict
 
 
 def note(path, name, who, verdict):
@@ -246,8 +251,17 @@ def place(src, name, who, is_meme, verdict):
 
 def run_scan():
     if unified_decisions_enabled():
-        from meme_observations import observe_existing_memes
-        result = observe_existing_memes(limit=_MAX_PER_RUN)
+        from pathlib import Path
+        from meme_observations import collect_group_images, observe_existing_memes
+        roots = [Path(work_dir()) / 'napcat', Path(os.path.expanduser('~')) / '.dsh' / 'media',
+                 Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))) / 'Tencent',
+                 Path(os.path.expanduser('~')) / 'Documents' / 'Tencent Files',
+                 Path(os.path.expanduser('~')) / 'Documents' / 'Tencent Files' / 'nt_qq']
+        collection = collect_group_images(api, GROUP, limit=_MAX_PER_RUN, allowed_roots=roots)
+        result = observe_existing_memes(limit=min(_MAX_PER_RUN, 4))
+        result.update(collection)
+        log('unified collection: +%d pending images, %d unavailable; review=%s' %
+            (collection['collected'], collection['failed'], result['state']))
         print(json.dumps(result, ensure_ascii=True))
         return result
     os.makedirs(OUT, exist_ok=True)
