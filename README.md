@@ -1,6 +1,6 @@
 # dsh-lanya
 
-当前开发版本：**v1.4.0-dev.41**。表情支持按一两个已有标签直接选发，保留当轮决定、单张限制与真实发送回执；恢复群图片采集、后台主 LLM 审阅和索引入库。修复每日决策超过展示上限后事实日记停止更新的问题。逐项核查和验收边界见[功能检查](docs/FUNCTIONAL-AUDIT.md)。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
+当前开发版本：**v1.4.0-dev.42**。群聊根据最新对话和自己刚说过的话判断是否接话，普通短话题抓住一个重点，说清便停，减少附和、复述、总结连发；保留无需反复艾特的自然跟进和必要的详细回答，不设固定句数或强制冷却。表情支持已有标签直接选发、真实收图与主 LLM 审阅。逐项核查和验收边界见[功能检查](docs/FUNCTIONAL-AUDIT.md)。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
 
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 
