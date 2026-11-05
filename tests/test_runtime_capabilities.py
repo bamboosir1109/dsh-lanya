@@ -216,6 +216,15 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertIn("不用等追问", style)
         self.assertNotRegex(style, r"(?:最多|限于|固定)[一二两三123]+(?:句|行|条)")
 
+    def test_live_reaction_uses_one_candidate_without_restricting_user_image_understanding(self):
+        before = self.snapshot()
+        guide = self.context(context_mode='live_chat')['tools']['qq_expression']['meme_delivery']
+        for boundary in ('limit: 1', 'one picker call per live turn', 'do not repeat',
+                         'requires_visual_review=true', 'use concise text',
+                         'necessary inspection of images supplied by the user', 'current reply ticket'):
+            self.assertIn(boundary, guide)
+        self.assertEqual(self.snapshot(), before)
+
     def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
         made = self.root / "FixtureRole" / "made"
         game = made / "2048"

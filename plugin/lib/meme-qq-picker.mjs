@@ -136,13 +136,25 @@ export function selectQqCandidates(memes, args, exec, cap) {
   if (query.length > 512 || tag.length > 80) fail()
   const limit = args.limit === undefined ? 8 : args.limit
   if (!Number.isInteger(limit) || limit < 1 || limit > 20) fail()
+  const policy = cap.selectionPolicy
+  if (policy != null && (policy.format !== 'qq-live-meme-selection/v1' ||
+      !Number.isInteger(policy.maxCandidates) || policy.maxCandidates !== 1 || typeof policy.take !== 'function')) fail()
+  const live = policy != null
+  if (live && policy.take() !== true) {
+    cap.assertCurrent()
+    const visible = { ok: false, mode: 'qq_selection', selected: false, delivered: false, candidates: [],
+      reason: 'live_selection_already_used', next_steps: { choice: 'reuse_previous_candidate_or_reply_with_text' },
+      summary: '本轮已挑过表情，不再重复搜图。已有合适候选就复用；不合适就简短说话，不为可选表情继续等待。未发送任何图片，原有票和发送检查仍生效。' }
+    return { ...visible, message: JSON.stringify(visible, null, 2) }
+  }
+  const effectiveLimit = live ? Math.min(limit, policy.maxCandidates) : limit
   let rows = []
-  if (query) rows = memes.search(query, limit, tag).memes
-  if (!rows.length) rows = memes.sampleMood(tag, query, limit).memes
+  if (query) rows = memes.search(query, effectiveLimit, tag).memes
+  if (!rows.length) rows = memes.sampleMood(tag, query, effectiveLimit).memes
   if (!Array.isArray(rows)) fail()
   const candidates = []
   const seen = new Set()
-  for (const row of rows.slice(0, limit)) {
+  for (const row of rows.slice(0, effectiveLimit)) {
     cap.assertCurrent()
     try {
       const candidate = stageIndexedCandidate(memes, row, cap)
@@ -152,6 +164,8 @@ export function selectQqCandidates(memes, args, exec, cap) {
   cap.assertCurrent()
   const visible = { ok: candidates.length > 0, mode: 'qq_selection', selected: candidates.length > 0,
     delivered: false, candidates, ...(candidates.length ? {} : { reason: 'no_usable_images' }),
+    ...(live ? { live_selection: { requested_limit: limit, candidate_limit: 1,
+      remaining_searches: 0, review_only_chosen_candidate: true, fallback: 'concise_text_if_image_does_not_fit' } } : {}),
     summary: candidates.length
       ? '已选到真实候选，尚未发送。选择贴合当前聊天的图片，也可以略过。空caption候选先用read_image看图；read只读文本，不能代替看图。已有当前有效reply许可就复用，不要再次qq_decide；尚未决策则选图看图后只决定一次。本轮已idle/tool_action等非reply决定时不改票、不发送。最终发送仍必须调用qq_send_image并核对成功回执，未知结果不重发。'
       : '没有可用的真实图片，未选图也未发送。略过图片，不要生成占位表情文字。',
@@ -168,6 +182,7 @@ export function selectQqCandidates(memes, args, exec, cap) {
         requires: 'current_valid_reply_ticket_after_any_required_image_review' })),
       delivery_evidence: 'only_a_successful_qq_send_image_receipt_means_delivered_unknown_is_not_retried',
     } : { choice: 'skip_image' } }
+  if (live && candidates.length) visible.summary += ' 这是正在回复真人：只考虑这一张候选，需要时看一次；不合适就用简短文字，不重复搜图或遍历图库。'
   // The native SDK renders ONLY value.message into model-facing tool content.
   // Include the full selection contract there, not only in structured output.
   return { ...visible, message: JSON.stringify(visible, null, 2) }

@@ -1,6 +1,6 @@
 # dsh-lanya
 
-当前开发版本：**v1.4.0-dev.39**。新增常驻漏答巡检：每 30 秒核对已接收私聊和直接艾特，超过一分钟、会话空闲且无任何发送尝试时，让主 LLM 重新判断是否补答。同条输入至多补查一次，保留静默、未知发送、范围归属和预算保护。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
+当前开发版本：**v1.4.0-dev.40**。真人来信优先：每个实时回复回合最多挑选一张候选表情，避免问候被图库遍历和多轮视觉调用拖慢；必要的用户图片识别保持。保留漏答巡检、静默、未知发送、范围归属和预算保护。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
 
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { getQqCapability } from '../plugin/lib/meme-qq-picker.mjs'
+import { OneBotDecisionAdapter } from '../plugin/lib/onebot-policy-adapter.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let root, native, indexText, bridgeText, Context
@@ -52,15 +53,17 @@ function sampler(store,settings,packs) {
     indexText.slice(start,end)+'\nreturn sampler')(()=>settings,()=>packs,native.MemesStore,store,resolve,join,native.searchRows,native.enabledPackIds)
 }
 
-function bound(t, label) {
+function bound(t, label, { live = false } = {}) {
   const mediaDir=join(root,label);mkdirSync(mediaDir)
   let current=true
   const record={}
+  if (live) record.binding = { origin: 'live' }
   const exec={agent:{session:{id:'synthetic-session'}},signal:new AbortController().signal}
   const services=new Map()
   exec.agent.ctx={get:(key)=>services.get(key)}
   const bridge={deps:{config:{mediaDir,maxImageBytes:8*1024*1024}},lanyaPolicy:{
     captureExec(value){if(!current || value!==exec) throw new Error('not current');return record},
+    memeSelectionPolicy: OneBotDecisionAdapter.prototype.memeSelectionPolicy,
     connectionFacade(){return {}}
   }}
   const start=bridgeText.indexOf('    installChannelScope(agentCtx) {')
@@ -223,4 +226,51 @@ test('QQ caller cannot select arbitrary path or request legacy companion send',t
   assert.throws(()=>picker.execute({query:'猫',limit:1.5},scope.exec))
   assert.equal(getQqCapability(scope.exec).mediaDir,scope.mediaDir)
   assert.equal(readdirSync(scope.mediaDir).length,0)
+})
+
+test('a live greeting asking for four candidates stages one and cannot turn into repeated image hunting', t => {
+  const p=pack(t,'live-greeting'), scope=bound(t,'live-greeting-media',{live:true})
+  const db=new DatabaseSync(join(p.directory,'index.db'))
+  for (let i=1;i<=3;i++) {
+    const name='stolen/choice-'+i+'.png'
+    writeFileSync(join(p.directory,name),Buffer.concat([png,Buffer.from([i])]))
+    db.prepare('INSERT INTO memes VALUES(?,?,?,?,?,?,?)').run(name,'happy',name,'','猫 开心',i+1,null)
+  }
+  db.close()
+  const m=sampler(p.store,{packId:'_custom',enabledPacks:['_custom']},[{id:'_custom',path:p.directory}])
+  let searches=0
+  const original=m.search.bind(m);m.search=(...args)=>{searches++;return original(...args)}
+  const picker=tool(m),output=picker.execute({query:'猫',limit:4},scope.exec)
+  const visible=JSON.parse(picker.output.render({},output)[0].text)
+  assert.equal(visible.candidates.length,1)
+  assert.equal(visible.next_steps.inspect.length,1)
+  assert.equal(visible.live_selection.requested_limit,4)
+  assert.equal(visible.live_selection.remaining_searches,0)
+  assert.equal(visible.delivered,false)
+  assert.equal(readdirSync(scope.mediaDir).length,1)
+  assert.equal(searches,1)
+  const again=picker.execute({query:'猫',limit:20},scope.exec)
+  assert.equal(again.reason,'live_selection_already_used')
+  assert.equal(again.selected,false)
+  assert.equal(again.delivered,false)
+  assert.deepEqual(again.candidates,[])
+  assert.equal(searches,1)
+  assert.equal(readdirSync(scope.mediaDir).length,1)
+  assert.match(again.message,/reuse_previous_candidate_or_reply_with_text/)
+})
+
+test('live selection is per claimed turn and a caption does not require a second vision call', t => {
+  const p=pack(t,'live-caption','a clear fixture reaction')
+  const first=bound(t,'live-caption-first',{live:true}), second=bound(t,'live-caption-second',{live:true})
+  const m=sampler(p.store,{packId:'_custom',enabledPacks:['_custom']},[{id:'_custom',path:p.directory}])
+  const picker=tool(m)
+  for (const scope of [first,second]) {
+    const output=picker.execute({query:'猫'},scope.exec)
+    assert.equal(output.candidates.length,1)
+    assert.equal(output.candidates[0].requires_visual_review,false)
+    assert.deepEqual(output.next_steps.inspect,[])
+    assert.equal(picker.execute({tag:'happy'},scope.exec).selected,false)
+  }
+  first.end()
+  assert.throws(()=>picker.execute({tag:'happy'},first.exec))
 })

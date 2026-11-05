@@ -21,6 +21,23 @@ fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 NATIVE=ROOT/'tests/fixtures/meme_qq_picker'
 
 
+class MemeLiveProviderCompilerTests(unittest.TestCase):
+    def test_incremental_provider_is_exact_idempotent_and_preserves_other_bytes(self):
+        addition = b'                    selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),\n'
+        generated = picker.transform('bridge.js', (NATIVE/'bridge.js').read_bytes())
+        self.assertEqual(generated.count(addition), 1)
+        previous = generated.replace(addition, b'', 1)
+        patched = picker.extend_current_provider(previous)
+        self.assertEqual(patched, b'// LANYA_BOUND_MEME_SELECTION_V1\n' + generated)
+        self.assertEqual(picker.extend_current_provider(patched), patched)
+        windows = previous.replace(b'\n', b'\r\n')
+        self.assertEqual(picker.extend_current_provider(windows).replace(b'\r\n', b'\n'), patched)
+        for invalid in [generated, previous + previous, patched.replace(addition, b'', 1),
+                        previous.replace(b'if (this.lanyaPolicy.captureExec(exec) !== record)', b'if (false)')]:
+            with self.subTest(invalid_sha=sha256(invalid)), self.assertRaises(PatchError):
+                picker.extend_current_provider(invalid)
+
+
 class MemePickerPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

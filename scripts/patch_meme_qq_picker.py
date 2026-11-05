@@ -65,6 +65,7 @@ PROVIDER = """        // Selection capability only: no ticket, send method, or b
                 const record = this.lanyaPolicy.captureExec(exec);
                 return Object.freeze({
                     format: 'lanya-qq-meme-media/v1',
+                    selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),
                     mediaDir: this.deps.config.mediaDir,
                     maxBytes: this.deps.config.maxImageBytes,
                     assertCurrent: () => {
@@ -75,6 +76,26 @@ PROVIDER = """        // Selection capability only: no ticket, send method, or b
             },
         }));
 """
+
+
+def extend_current_provider(raw):
+    """Add the reviewed live selection fence to an already patched bridge."""
+    newline = '\r\n' if b'\r\n' in raw else '\n'
+    text = raw.decode('utf-8').replace('\r\n', '\n')
+    marker = '// LANYA_BOUND_MEME_SELECTION_V1\n'
+    anchor = "                    format: 'lanya-qq-meme-media/v1',\n"
+    addition = '                    selectionPolicy: this.lanyaPolicy.memeSelectionPolicy?.(exec),\n'
+    required = ["agentCtx.reflect.provide('lanyaQqMemeMedia'", 'const record = this.lanyaPolicy.captureExec(exec);',
+                'if (this.lanyaPolicy.captureExec(exec) !== record)']
+    if any(text.count(part) != 1 for part in required) or text.count(anchor) != 1:
+        raise PatchError('Unreviewed meme capability provider')
+    if text.startswith(marker):
+        if text.count(addition) != 1 or anchor + addition not in text:
+            raise PatchError('Changed live meme capability provider')
+        return raw
+    if addition in text:
+        raise PatchError('Live selection provider already present without marker')
+    return (marker + text.replace(anchor, anchor + addition, 1)).replace('\n', newline).encode('utf-8')
 
 
 def transform(name, raw):

@@ -823,6 +823,19 @@ export class OneBotDecisionAdapter {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
     return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: call qq_decide once for this claimed input before final text or sending. A draft alone is never delivered. Choose reply, idle, defer or authorized silence/resume using the current conversation; do not assume reply permission. Reuse an accepted ticket.\n'
+      + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
+  }
+
+  memeSelectionPolicy(exec) {
+    const record = this.captureExec(exec)
+    if (record.binding?.origin !== 'live') return null
+    return Object.freeze({ format: 'qq-live-meme-selection/v1', maxCandidates: 1,
+      take: () => {
+        if (this.captureExec(exec) !== record) throw new Error('Meme selection turn changed')
+        if (record.liveMemeSelectionUsed) return false
+        record.liveMemeSelectionUsed = true
+        return true
+      } })
   }
 
   supersedingLiveInput(chat, record) {
