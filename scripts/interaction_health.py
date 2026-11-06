@@ -14,7 +14,8 @@ import time
 
 LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
-          'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked'}
+          'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
+          'group_listening', 'group_buffer_wait', 'group_buffer_ready'}
 
 
 def summarize(raw, now_ms):
@@ -67,6 +68,7 @@ def summarize(raw, now_ms):
                   'blocked' if 'blocked' in phases else
                   'delivery_refused' if 'delivery_refused' in phases else
                   'preparation_failed' if 'preparation_failed' in phases else
+                  'group_listening' if 'group_listening' in phases and not phases.intersection({'admitted', 'queued', 'claimed'}) else
                   'not_admitted' if 'not_admitted' in phases and not phases.intersection({'admitted', 'queued', 'claimed'}) else
                   'superseded_preparation' if 'superseded_preparation' in phases else
                   'ended_without_confirmed_transport' if 'turn_end' in phases else

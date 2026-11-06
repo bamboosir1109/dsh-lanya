@@ -149,6 +149,7 @@ DECIDE_TOOL = """    register(defineTool({
         parameters: {
             verdict: { type: 'string', required: true, enum: ['reply', 'idle', 'defer', 'silence', 'resume', 'tool_action'] },
             expression: { type: 'string', enum: ['text', 'meme', 'text_meme'], description: 'Optional expression plan, only with verdict reply. For relaxed reactions, consider a suitable real meme or text with a meme; choose text when it fits better. This plan grants no permission, selects no image and sends nothing.' },
+            group_conversation: { type: 'string', enum: ['continue', 'end'], description: 'For the configured group exchange: end returns to listening, including after a closing reply. idle/defer/silence end by default. continue may retain an already engaged topic while skipping an aside; it never opens participation or grants sending permission.' },
             control_update: { type: 'boolean', description: 'True only for an explicit control request in the current real user message.' },
             evidenceSource: { type: 'string', enum: ['current', 'quote'] },
             next_review_at: { type: 'number', description: 'Optional epoch milliseconds, one minute to seven days ahead. Omit when no timed review is needed.' },

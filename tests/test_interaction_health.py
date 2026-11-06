@@ -9,6 +9,16 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class InteractionHealthTests(unittest.TestCase):
+    def test_listening_is_terminal_and_buffer_metadata_does_not_hide_real_pending_work(self):
+        def row(i,phase):
+            return dict(schema='qq-interaction/v1',scope='c'*16,input=f'{i:024x}',phase=phase,at=1000)
+        rows=[row(1,'received'),row(1,'group_listening'),row(2,'queued'),row(2,'group_buffer_wait'),
+              row(3,'queued'),row(3,'group_buffer_ready'),row(3,'claimed')]
+        value=module.summarize('\n'.join(json.dumps(x) for x in rows).encode(),40000)
+        self.assertEqual(value['status'],'ok');self.assertEqual(value['invalid_records'],0)
+        self.assertEqual(value['scopes'][0]['counts'],{'group_listening':1,'pending':1,'active':1})
+        self.assertEqual(value['scopes'][0]['long_open_inputs'],2)
+
     def test_transport_acceptance_quiet_pending_and_unknown_remain_distinct(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)

@@ -14,6 +14,7 @@ from patch_onebot_policy import PatchError
 
 class GroupContextPatchTests(unittest.TestCase):
     raw = (b'// LANYA_SCOPED_INBOUND_CONTEXT_V1\n// LANYA_INBOUND_ADMISSION_V1\n'
+           b'await this.ctx.observeInbound(inbound);\n'
            b"        if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {\n}\n")
 
     def test_narrow_gate_preserves_unknown_metadata_and_newlines(self):
@@ -21,7 +22,7 @@ class GroupContextPatchTests(unittest.TestCase):
             raw = self.raw.replace(b'\n', newline)
             result = patch.transform('inbound.js', raw)
             expected = patch.MARKER.encode().replace(b'\n', newline) + raw.replace(
-                b'&& !mentioned)', b'&& !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true)')
+                b'&& !mentioned)', b'&& !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true)').replace(b'observeInbound(inbound);', b'observeInbound(inbound, address);')
             self.assertEqual(result, expected)
         for raw in [self.raw + self.raw, self.raw.replace(b'requireMention', b'unknown'),
                     self.raw.replace(b'LANYA_INBOUND_ADMISSION_V1', b'UNKNOWN'),

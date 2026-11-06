@@ -21,13 +21,14 @@ def transform(name, raw):
         raise PatchError('Fresh reviewed scoped inbound layer required')
     if name == 'bridge.js':
         anchor = '            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),\n'
-        text = replace_once(text, anchor, anchor + '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),\n')
+        text = replace_once(text, anchor, anchor.replace('inbound =>', '(inbound, address) =>').replace('observeInbound(inbound)', 'observeInbound(inbound, address)') + '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),\n')
     elif name == 'inbound.js':
         if 'LANYA_INBOUND_ADMISSION_V1' not in text:
             raise PatchError('Reviewed admission order required')
         anchor = "        if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {"
         text = replace_once(text, anchor,
             "        if (kind === 'group' && this.ctx.config.requireMention && !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true) {")
+        text = replace_once(text, 'await this.ctx.observeInbound(inbound);', 'await this.ctx.observeInbound(inbound, address);')
     else:
         raise PatchError('Only bridge.js and inbound.js are supported')
     return (MARKER + text).replace('\n', newline).encode('utf-8')
