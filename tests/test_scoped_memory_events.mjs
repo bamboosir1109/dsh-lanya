@@ -72,3 +72,39 @@ test('missing times remain unknown and excerpts state their truncation', () => {
   assert.equal(facts.events[0].text_truncated, true)
   assert.equal(facts.window.status, 'partial')
 })
+
+const inlineCall = (seq=0,text='confirmed inline answer') => ({seq,time:1000,type:'tool/call',
+  data:{name:'qq_decide',callId:'inline-fixture',turn:1,step:1,arguments:{verdict:'reply',text}}})
+const inlineResult = (seq=1,sent=true) => ({seq,time:2000,type:'tool/result',surfaceOp:'append',sourceEventSeqs:[0],
+  data:{turn:1,step:1,message:{role:'tool',source:{kind:'tool',callId:'inline-fixture'},toolCallId:'inline-fixture',
+    content:[{type:'text',text:JSON.stringify({accepted:true,inline_text:true,sent})}]}}})
+
+test('confirmed inline replies remain same-owner assistant memory surfaces without replaying arbitrary tools',()=>{
+  const result=readScopedMemoryEvents(session([inlineCall(),inlineResult()]),scope,owner)
+  assert.deepEqual(result.events.map(x=>[x.role,x.text]),[['assistant','confirmed inline answer']])
+  assert.equal(result.events[0].created_at,2000)
+  assert.equal(result.events[0].conversation_key,scope)
+})
+
+test('inline memory excludes refused uncertain mismatched rewritten and owner-boundary tool results',()=>{
+  for(const mode of ['unsent','wrong-call','wrong-step','wrong-source','wrong-parent','error','rewrite','boundary','other-tool']){
+    const call=inlineCall(),result=inlineResult()
+    if(mode==='unsent')result.data.message.content[0].text=JSON.stringify({accepted:true,inline_text:true,sent:false,status:'unknown'})
+    if(mode==='wrong-call')result.data.message.toolCallId='foreign'
+    if(mode==='wrong-step')result.data.step=2
+    if(mode==='wrong-source')result.data.message.source.kind='host:web'
+    if(mode==='wrong-parent')result.sourceEventSeqs=[999]
+    if(mode==='error')result.data.message.isError=true
+    if(mode==='rewrite')result.surfaceOp={op:'replace',startSeq:0,endSeq:0}
+    if(mode==='other-tool')call.data.name='some_other_tool'
+    const rows=mode==='boundary'?[call,{seq:1,type:'agent-preset/selected'}, {...result,seq:2}]:[call,result]
+    assert.equal(readScopedMemoryEvents(session(rows),scope,owner).events.length,0,mode)
+  }
+})
+
+test('native compaction cannot count an inline reply twice and long replies retain excerpt limits',()=>{
+  const first=inlineResult(),rewrite=structuredClone(first);rewrite.seq=2;rewrite.surfaceOp={op:'replace',startSeq:1,endSeq:1};rewrite.sourceEventSeqs=[1]
+  const facts=readScopedMemoryEvents(session([inlineCall(0,'x'.repeat(4000)),first,rewrite]),scope,owner)
+  assert.equal(facts.events.length,1);assert.equal(facts.events[0].text.length,1200)
+  assert.equal(facts.events[0].text_truncated,true)
+})

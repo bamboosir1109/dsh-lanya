@@ -352,17 +352,40 @@ export function readScopedMemoryEvents(session, scope, owner) {
         !socialInteger(total) || !socialInteger(inherited) || inherited > total || typeof session.snapshotEvents !== 'function') return unavailable()
     const from = Math.max(inherited, total - 2048), events = session.snapshotEvents(from, total)
     if (!Array.isArray(events) || events.length !== total - from) return unavailable()
-    const surfaces = []
+    const surfaces = [], inlineCalls = new Map(), inlineIds = new Set()
     let boundary = from > 0, textTruncated = false
     for (let index = 0; index < events.length; index++) {
       const event = events[index]
       if (!plain(event) || event.seq !== from + index) return unavailable()
-      if (['agent-preset/selected', 'session/end-seed'].includes(event.type)) { surfaces.length = 0; boundary = true; continue }
+      if (['agent-preset/selected', 'session/end-seed'].includes(event.type)) { surfaces.length = 0; inlineCalls.clear(); inlineIds.clear(); boundary = true; continue }
+      if (event.type === 'tool/call' && event.data?.name === 'qq_decide') {
+        const data = event.data, args = plain(data.arguments) ? data.arguments : socialJson(data.arguments)
+        if (typeof data.callId !== 'string' || !data.callId.length || data.callId.length > 512 ||
+            !socialInteger(data.turn) || !socialInteger(data.step) || data.step < 1) continue
+        if (inlineIds.has(data.callId)) { inlineCalls.delete(data.callId); continue }
+        inlineIds.add(data.callId)
+        if (args?.verdict === 'reply' && typeof args.text === 'string') {
+          inlineCalls.set(data.callId, { seq: event.seq, turn: data.turn, step: data.step, text: args.text.slice(0, 1201) })
+          if (inlineCalls.size > 64) inlineCalls.delete(inlineCalls.keys().next().value)
+        }
+        continue
+      }
       let message, role
       if (event.type === 'user/message' && event.data?.role === 'user' && event.data.source?.kind === 'plugin:dsh-onebot') {
         message = event.data; role = 'user'
       } else if (event.type === 'assistant/message' && event.data?.message?.role === 'assistant') {
         message = event.data.message; role = 'assistant'
+      } else if (event.type === 'tool/result') {
+        if (!inlineCalls.size) continue
+        const data = event.data, resultMessage = data?.message, id = resultMessage?.source?.callId, call = inlineCalls.get(id)
+        if (!call) continue
+        inlineCalls.delete(id)
+        const value = socialJson(socialResultText(resultMessage))
+        if (data.turn !== call.turn || data.step !== call.step || resultMessage?.role !== 'tool' ||
+            resultMessage.source?.kind !== 'tool' || resultMessage.toolCallId !== id || resultMessage.isError === true || data.error != null ||
+            event.surfaceOp !== 'append' || !Array.isArray(event.sourceEventSeqs) || event.sourceEventSeqs.length !== 1 ||
+            event.sourceEventSeqs[0] !== call.seq || value?.accepted !== true || value.inline_text !== true || value.sent !== true) continue
+        message = { content: [{ type: 'text', text: call.text }] }; role = 'assistant'
       } else continue
       if (!Array.isArray(message.content) || message.content.length > 64) continue
       let text = ''
@@ -697,7 +720,7 @@ export class OneBotDecisionAdapter {
     if (!Number.isSafeInteger(this.inboundSequence + 1)) throw new Error('Inbound sequence exhausted')
     const arrival = ++this.inboundSequence
     this.incoming.set(scope, (this.incoming.get(scope) || 0) + 1)
-    const current = { inbound, arrival, binding: null }
+    const current = { inbound, arrival, arrivedAt: this.now(), binding: null }
     this.diagnose(scope, inbound.messageId, 'received')
     try { return await this.context.run(current, run) }
     catch (error) { this.diagnose(scope, inbound.messageId, 'preparation_failed', { reason: error?.code || 'inbound_error' }); throw error }
@@ -853,7 +876,11 @@ export class OneBotDecisionAdapter {
     const botIds = [this.deps.connection?.selfId, this.deps.config.botQQ].filter(value => typeof value === 'string' && /^[1-9][0-9]*$/.test(value))
     const directGroupContact = binding.origin === 'live' && inbound?.segments?.some(segment =>
       segment?.type === 'at' && botIds.includes(String(segment.data?.qq))) === true
+    const now = this.now(), arrivedAt = this.context.getStore()?.arrivedAt
+    const receivedAt = Number.isSafeInteger(arrivedAt) && arrivedAt >= 0 && arrivedAt <= now ? arrivedAt : now
+    const batchFirstAt = merge && Number.isSafeInteger(previous.batchFirstAt) ? Math.min(previous.batchFirstAt, receivedAt) : receivedAt
     const entry = Object.freeze({ binding, role, originalText: String(originalText), history: recent, directGroupContact,
+      receivedAt, batchFirstAt,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
@@ -883,7 +910,7 @@ export class OneBotDecisionAdapter {
   nativeCapabilityContext(agent) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
-    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction: this one tool makes the reply decision and sends one real image through current guards. No separate vision or qq_decide is needed for a label-based reaction. It does not prove exact image contents. Otherwise call qq_decide once for this claimed input before final text or sending. A draft alone is never delivered. Choose reply, idle, defer or authorized silence/resume using the current conversation; do not assume reply permission. Reuse an accepted ticket.\n'
+    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
       + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
   }
 
@@ -1188,8 +1215,10 @@ export class OneBotDecisionAdapter {
     signal.addEventListener('abort', aborted, { once: true })
     if (signal.aborted) aborted()
     state.groupBuffer = buffer; this.groupBuffers.add(buffer)
-    const firstAt = this.now(), owner = selected.binding.owner
-    let latestAt = firstAt, urgent = selected.directGroupContact === true
+    const owner = selected.binding.owner
+    const ageAnchor = (value, now = this.now()) => Number.isSafeInteger(value) && value >= 0 && value <= now ? value : now
+    const firstAt = ageAnchor(selected.batchFirstAt)
+    let latestAt = ageAnchor(selected.receivedAt), urgent = selected.directGroupContact === true
     this.diagnose(chat.chatId, selected.binding.messageId, 'group_buffer_wait')
     try {
       // A bounded number of short sleeps also bounds a backwards wall clock.
@@ -1199,7 +1228,7 @@ export class OneBotDecisionAdapter {
             state.active !== record || record.ended || record.binding) throw new Error('Group buffer owner stopped; durable input retained')
         const current = front()
         if (!current || !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => current.binding.owner[key] === owner[key])) break
-        if (current !== selected) { selected = current; latestAt = this.now(); urgent ||= current.directGroupContact === true }
+        if (current !== selected) { selected = current; latestAt = ageAnchor(current.receivedAt); urgent ||= current.directGroupContact === true }
         const until = Math.min(firstAt + (urgent ? 600 : 5000), latestAt + 2000)
         const remaining = until - this.now()
         if (remaining <= 0) break
@@ -1398,17 +1427,26 @@ export class OneBotDecisionAdapter {
   }
 
   async decide(args, exec) {
-    if (!plain(args) || Object.keys(args).some((key) => !['verdict', 'control_update', 'evidenceSource', 'next_review_at', 'expression', 'group_conversation'].includes(key)) ||
+    if (!plain(args) || Object.keys(args).some((key) => !['verdict', 'control_update', 'evidenceSource', 'next_review_at', 'expression', 'group_conversation', 'text'].includes(key)) ||
         (args.control_update !== undefined && typeof args.control_update !== 'boolean') ||
         (args.evidenceSource !== undefined && !['current', 'quote'].includes(args.evidenceSource)) ||
         (args.group_conversation !== undefined && !['continue', 'end'].includes(args.group_conversation)) ||
-        (args.expression !== undefined && (args.verdict !== 'reply' || !['text', 'meme', 'text_meme'].includes(args.expression)))) {
-      throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at, optional reply expression and group_conversation')
+        (args.expression !== undefined && (args.verdict !== 'reply' || !['text', 'meme', 'text_meme'].includes(args.expression))) ||
+        (args.text !== undefined && (args.verdict !== 'reply' || typeof args.text !== 'string' || !args.text.trim() ||
+          args.expression !== undefined && args.expression !== 'text'))) {
+      throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at, optional reply expression, group_conversation and plain-reply text')
     }
     const record = this.captureExec(exec)
+    if (args.text !== undefined && record.inlineTextAttempted) return { accepted: false, can_send: false, inline_text: true, sent: false, reason: 'inline_reply_already_attempted' }
     if (!['idle', 'defer', 'silence', 'resume'].includes(args.verdict)) {
       const budget = await this.checkBudget(record)
-      if (!budget.allowed) return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null }
+      if (!budget.allowed) {
+        if (args.text !== undefined) {
+          if (typeof exec.concludeTurn === 'function') exec.concludeTurn()
+          return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null, inline_text: true, sent: false }
+        }
+        return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null }
+      }
       if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_budget_turn')
     }
     const requestedReview = args.next_review_at ?? null
@@ -1430,7 +1468,7 @@ export class OneBotDecisionAdapter {
     if (result.accepted) {
       record.ticket = result.ticket
       record.decision = { verdict: args.verdict, mode: result.mode, reason: result.reason, next_review_at: result.next_review_at,
-        ...(args.expression === undefined ? {} : { expression: args.expression }) }
+        ...(args.expression === undefined && args.text === undefined ? {} : { expression: args.expression || 'text' }) }
       record.decisionId = result.decisionId
       record.groupConversationEnd = args.group_conversation === 'end' ||
         ['idle', 'defer', 'silence'].includes(args.verdict) && args.group_conversation !== 'continue'
@@ -1448,6 +1486,29 @@ export class OneBotDecisionAdapter {
     // The real SDK concludes this native turn after committing the tool result.
     // No second model/compaction step is needed to narrate an idle decision.
     if (result.accepted && ['idle', 'defer', 'silence'].includes(args.verdict) && typeof exec.concludeTurn === 'function') exec.concludeTurn()
+    if (args.text !== undefined) {
+      if (!result.accepted || !canSend) {
+        if (typeof exec.concludeTurn === 'function') exec.concludeTurn()
+        return { accepted: result.accepted, can_send: false, inline_text: true, sent: false,
+          reason: result.reason || sendPermission?.reason || 'reply_refused' }
+      }
+      record.inlineTextAttempted = true
+      record.inlineTextOperationId = identity('tool', exec.agent.session.id, exec.callId)
+      record.inlineTextReceiptCount = 0
+      record.shadow.loopPending = null
+      try {
+        await this.runTool('qq_send_inline_text', {}, exec, () => this.bridge.sendToChat(record.binding.scope, args.text))
+        if (!record.inlineTextReceiptCount) return { accepted: true, can_send: false, inline_text: true, sent: false, reason: 'no_confirmed_transport' }
+        return { accepted: true, can_send: true, inline_text: true, sent: true, expression_plan: { choice: 'text' },
+          delivery_boundary: 'transport_accepted_not_client_receipt' }
+      } catch (error) {
+        if (!(error instanceof PolicyDeliveryError)) throw error
+        return { accepted: true, can_send: false, inline_text: true, sent: false, status: error.status, reason: error.reason }
+      } finally {
+        record.shadow.loopPending = null
+        if (typeof exec.concludeTurn === 'function') exec.concludeTurn()
+      }
+    }
     // Do not expose nonce, sender, scope, or authority knobs as model arguments.
     return { accepted: result.accepted, reason: result.reason || (sendPermission && !canSend ? sendPermission.reason : null), mode: result.mode || null,
       next_review_at: result.next_review_at ?? null, can_send: canSend,
@@ -1589,7 +1650,7 @@ export class OneBotDecisionAdapter {
     }
     // The native session keeps the assistant message. A chosen image-only
     // response must not turn its narration or tool receipt into a QQ bubble.
-    if (memeOnlyReply(record)) { record.shadow.loopPending = null; return }
+    if (memeOnlyReply(record) || record.inlineTextAttempted) { record.shadow.loopPending = null; return }
     const envelope = this.envelope(record, identity('assistant', chat.sessionId, event.data.turn, event.data.message.id))
     this.runEnvelope(envelope, () => this.bridge.interim.onAssistantMessage(scope, record.shadow, event.data.message))
   }
@@ -1602,7 +1663,7 @@ export class OneBotDecisionAdapter {
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
-    if (record.supersededIdleWake || memeOnlyReply(record)) record.shadow.loopPending = null
+    if (record.supersededIdleWake || memeOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null
     else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     const settled = (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
@@ -1717,6 +1778,9 @@ export class OneBotDecisionAdapter {
     const scope = targetScope(params, suppliedScope)
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
     if (!envelope.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
+    if (envelope.record?.inlineTextAttempted && envelope.operationId !== envelope.record.inlineTextOperationId) {
+      throw new PolicyDeliveryError('suppressed', 'inline_reply_complete')
+    }
     this.requireAutonomousTime(envelope.record?.binding)
     if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
     await this.intentPlanner.verifyDelivery(envelope.record, scope, action, params)
@@ -1790,6 +1854,7 @@ export class OneBotDecisionAdapter {
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
+    if (envelope.record?.inlineTextAttempted && envelope.operationId === envelope.record.inlineTextOperationId) envelope.record.inlineTextReceiptCount++
     const group = this.groupConversation(scope, envelope.record?.binding?.owner, false)
     if (group && /^send_(?:msg|group_msg|group_forward_msg)$/.test(action) && envelope.record.binding.revision >= group.revision) {
       group.revision = envelope.record.binding.revision

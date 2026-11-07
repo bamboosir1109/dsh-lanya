@@ -145,9 +145,10 @@ def bundle_intent_helper(raw, helper_raw=None, diary_raw=None):
 
 DECIDE_TOOL = """    register(defineTool({
         name: 'qq_decide',
-        description: 'Decide this bound QQ turn before speaking. No scope or authority may be supplied by the model.',
+        description: 'Decide this bound QQ turn. For an ordinary text reply, include the complete final text in this first call with verdict=reply and expression=text: it sends under current guards and ends the turn without a second model step. Omit text for other media/workflows or quiet/control choices. No scope or authority may be supplied by the model. Never repeat a decision or narrate a send receipt.',
         parameters: {
             verdict: { type: 'string', required: true, enum: ['reply', 'idle', 'defer', 'silence', 'resume', 'tool_action'] },
+            text: { type: 'string', description: 'The complete natural text reply, only for verdict=reply with expression=text or omitted. This first decision also sends and ends the turn; do not send or write the same answer again. For image/voice or an existing reply ticket, use the existing media/final-text path instead.' },
             expression: { type: 'string', enum: ['text', 'meme', 'text_meme'], description: 'Optional expression plan, only with verdict reply. For relaxed reactions, consider a suitable real meme or text with a meme; choose text when it fits better. This plan grants no permission, selects no image and sends nothing.' },
             group_conversation: { type: 'string', enum: ['continue', 'end'], description: 'For the configured group exchange: end returns to listening, including after a closing reply. idle/defer/silence end by default. continue may retain an already engaged topic while skipping an aside; it never opens participation or grants sending permission.' },
             control_update: { type: 'boolean', description: 'True only for an explicit control request in the current real user message.' },

@@ -575,6 +575,55 @@ test('native quiet decision ends before another model preparation or pressure co
   assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,0)
 })
 
+test('inline text decides sends and completes in one actual native step with no terminal echo', async t => {
+  let steps=0,preparations=0
+  const h=await nativeDriverFixture(t,{assemble:async()=>{preparations++}})
+  h.agent.step=async()=>{
+    steps++;let concluded=false
+    const result=await h.tools.get('qq_decide').execute({verdict:'reply',expression:'text',text:'one natural answer'},
+      {...h.exec(),concludeTurn:()=>{concluded=true}})
+    assert.equal(result.sent,true);assert.equal(result.inline_text,true)
+    h.agent.session.append('assistant/message',{turn:h.agent.phase.turn,message:{id:'must-not-echo',role:'assistant',content:[{type:'text',text:'receipt narration must stay internal'}]}})
+    return concluded?{kind:'completed'}:null
+  }
+  await h.receive('ordinary question');await driverSettled(h)
+  assert.equal(steps,1);assert.equal(preparations,1)
+  assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,1)
+  assert.match(JSON.stringify(h.calls),/one natural answer/);assert.doesNotMatch(JSON.stringify(h.calls),/receipt narration/)
+})
+
+test('inline text preserves silence stale-budget unknown and no-receipt boundaries without another send',async t=>{
+  for(const mode of ['silent','stale','budget','unknown','no-transport'])await t.test(mode,async t=>{
+    const h=await fixture(t)
+    if(mode==='silent'){
+      await h.receive('quiet request');h.start();await h.preStep();await h.decide('silence',{control_update:true});await h.end()
+    }
+    await h.receive('current question');h.start();await h.preStep()
+    if(mode==='stale')await h.receive('newer question')
+    if(mode==='budget')h.bridge.lanyaPolicy.budgetProvider=async()=>({allowed:false,reason:'budget_exhausted'})
+    if(mode==='unknown')h.deps.onTransmit=()=>{throw new Error('uncertain transport')}
+    if(mode==='no-transport')h.bridge.sendToChat=async()=>undefined
+    let concluded=0
+    const result=await h.tools.get('qq_decide').execute({verdict:'reply',text:'do not duplicate'}, {...h.exec(),concludeTurn:()=>{concluded++}})
+    assert.equal(result.sent,false);assert.equal(concluded,1)
+    if(['unknown','no-transport'].includes(mode)){
+      const again=await h.decide('reply',{text:'do not duplicate'})
+      assert.equal(again.reason,'inline_reply_already_attempted')
+    }
+    assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,mode==='unknown'?1:0)
+    await h.end()
+  })
+})
+
+test('inline closing group reply returns to listening and blocks a second operation in the same turn',async t=>{
+  const h=await listeningGroup(t);await h.mention();h.start();await h.preStep()
+  const result=await h.decide('reply',{text:'closing reply',group_conversation:'end'})
+  assert.equal(result.sent,true);assert.equal((await h.state()).engaged,false)
+  await assert.rejects(h.send('second operation'),/inline_reply_complete/)
+  await h.end();await h.receive('other conversation');assert.equal(h.pending.length,0)
+  assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,1)
+})
+
 test('preparing administrator context cannot give a later group member control authority', async t => {
   const h=await fixture(t),gate=defer(),entered=defer(),scope='group:303'
   h.bridge.chats.delete(h.chat.chatId);h.chat.chatId=scope;h.bridge.chats.set(scope,h.chat);h.bridge.bySession.set(h.agent.session.id,scope)
@@ -927,6 +976,21 @@ test('continuous group input is released within the bounded buffer without a mod
   assert.equal(arrivals, 20); assert.equal(adapter.now() - before, 5000)
   assert.equal(models, 1); assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
   assert.ok(modelText.includes('burst part 20'))
+})
+
+test('native group queue time counts toward the buffer instead of adding a fresh two seconds',async t=>{
+  const h=await nativeDriverFixture(t,{contextualGroupScope:'group:303'}),a=h.bridge.lanyaPolicy
+  h.bridge.chats.delete(h.chat.chatId);h.chat.chatId='group:303';h.bridge.chats.set(h.chat.chatId,h.chat);h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
+  a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId)).engaged=true
+  const entered=defer(),release=defer();let steps=0,pauses=0
+  a.groupBufferPause=async ms=>{pauses+=ms;h.advance(ms)}
+  h.agent.step=async()=>{if(++steps===1){entered.resolve();await release.promise}else await h.decide('idle');return {kind:'completed'}}
+  const extra={message_type:'group',group_id:303,user_id:202}
+  await h.receive('first live passage',extra);await entered.promise
+  await h.receive('queued passage',extra);h.advance(6000)
+  const before=a.now(),waited=pauses;release.resolve();await driverSettled(h,()=>steps===2&&h.agent.status==='idle')
+  assert.equal(a.now()-before,0);assert.equal(pauses,waited,'already aged queue needs no fresh buffer')
+  assert.equal(h.requests.filter(x=>x.operation==='reserve').length,2)
 })
 
 test('stopping a group buffer retains the unclaimed durable input and restores the SDK method', async t => {
