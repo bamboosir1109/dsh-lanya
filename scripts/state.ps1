@@ -19,7 +19,11 @@ if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
   function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
 }
 $worksPort      = [int](Get-ProjectConfValue 'panelStaticPort' 19388)
-$napcatPort     = [int](Get-ProjectConfValue 'onebotPort' 8720)
+$backendStatus = $null
+try {
+  . (Join-Path $PSScriptRoot 'qq_backend.ps1')
+  $backendStatus = Get-QqBackendStatus
+} catch { }
 $ttsPort        = [int](Get-ProjectConfValue 'ttsPort' 9880)
 $autoUpdateMins = [int](Get-ProjectConfValue 'daemon.autoUpdateMinutes' 360)
 $dataDirName    = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C))
@@ -44,7 +48,7 @@ $components = @(
   @{ tag = 'browserd';    match = 'browserd\.py';       desc = 'browser' },
   @{ tag = 'works';       match = '__WORKS__'; desc = ('works server ' + $worksPort) },
   @{ tag = 'tts';         match = 'api_v2\.py';         desc = ('local voice ' + $ttsPort) },
-  @{ tag = 'napcat';      match = ('__PORT__:' + $napcatPort);      desc = 'napcat injection' },
+  @{ tag = 'qq-backend';  match = '__BACKEND__';       desc = 'selected QQ backend' },
   @{ tag = 'headless';    match = '--profile headless'; desc = 'headless agent' }
 )
 
@@ -97,19 +101,13 @@ foreach ($c in $components) {
     $rows += $row; $total += $row.mb
     continue
   }
-  # NapCat is injected into the QQ process, so there is no process name to match.
-  # Looking for napimain always yielded 0 and made the panel look offline. Probe
-  # the port instead - that reflects what is actually reachable.
-  if ($c.match -like '__PORT__:*') {
-    $port = $c.match.Split(':')[1]
-    $alive = (netstat -ano | Select-String (':' + $port + ' .*LISTENING')).Count -gt 0
+  if ($c.match -eq '__BACKEND__') {
+    $verified = ($backendStatus -and $backendStatus.verified -is [bool] -and $backendStatus.verified)
     $rows += [pscustomobject]@{
-      tag   = $c.tag
-      desc  = $c.desc
-      count = if ($alive) { 1 } else { 0 }
-      mb    = 0
-      aging = 0
-      note  = if ($alive) { 'listen ' + $port } else { 'offline' }
+      tag = 'qq-backend'; desc = 'selected QQ backend'
+      count = if ($verified) { 1 } else { $null }
+      mb = 0; aging = 0
+      backend = $backendStatus
     }
     continue
   }
@@ -203,6 +201,7 @@ $state = [pscustomobject]@{
     freeGb  = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
     totalGb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
   }
+  qqBackend = $backendStatus
   components = $rows
   plugins    = $plugins
   tasks      = [pscustomobject]@{ redundant = $stillThere.Count; names = $stillThere }

@@ -103,7 +103,9 @@ class PanelVoiceStatusTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(payload["voice"], state["voice"])
         self.assertEqual([row["tag"] for row in state["components"]],
-                         ["groupwatch", "tts", "browserd", "works", "panel-api"])
+                         ["groupwatch", "tts", "browserd", "qq-backend", "works", "panel-api"])
+        backend = next(row for row in state['components'] if row['tag'] == 'qq-backend')
+        self.assertFalse(backend['backend']['verified']); self.assertIsNone(backend['count'])
         self.assertEqual(state["voice"]["engine"]["process_count"], 1)
         self.assertEqual(state["voice"]["synthesis"]["state"], "not_probed")
         self.assertNotIn(str(self.root), json.dumps(state["voice"]))

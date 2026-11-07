@@ -43,7 +43,7 @@ $jobs = @(
   @{ n = 'settings';   m = 5;      exe = $py; args = @((Join-Path $root 'settings-guard.py')) },
   @{ n = 'chats';      m = 10;     exe = $py; args = @((Join-Path $root 'export-chats.py')) },
   @{ n = 'steal';      m = 10;     exe = $py; args = @((Join-Path $root 'stealmemes.py')) },
-  @{ n = 'bridge';     m = 10;     exe = $ps; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', (Join-Path $root 'napcat-heal.ps1')) },
+  @{ n = 'bridge';     m = 10;     exe = $ps; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', (Join-Path $root 'qq-backend-heal.ps1')) },
   @{ n = 'strays';     m = 5;      exe = $ps; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', (Join-Path $root 'kill-strays.ps1')) },
   @{ n = 'greet';      m = 60;     exe = $py; args = @((Join-Path $root 'greetd.py')) },
   @{ n = 'memory';     m = 360;    exe = $py; args = @((Join-Path $root 'memory-maintenance.py')) },

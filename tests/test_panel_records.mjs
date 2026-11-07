@@ -80,6 +80,7 @@ function harness({ fetch: mockFetch, now = Date.UTC(2026, 10, 1, 12), extra = {}
     currentPage: 'bili', recordStates: new Map(), recordRequests: new Map(),
     refreshingPages: new Set(), dirtyPages: new Set(), pageEdits: new Map(),
     autonomySettingsRevision: null, budgetSettingsRevision: null,
+    qqBackendReadStamp: () => ({}), qqBackendAcceptRead: () => true, qqBackendTrusted: true,
     autonomySettingsEpoch: 0, autonomySettingsSaving: false,
     budgetSettingsEpoch: 0, budgetSettingsSaving: false,
     searchOn: false, selected: {}, workSel: {}, currentDir: 'diary', currentWorkDir: 'made', FILE_LIMIT: 1000,
@@ -346,7 +347,7 @@ test('edits made while a save is waiting remain dirty after its old response', a
 
 const LOADERS = ['refreshOverview', 'loadBili', 'loadLive', 'loadAutonomySettings', 'loadActivityBudget', 'loadBudget', 'loadTools',
   'loadMemes', 'loadMemoryOverview', 'loadMemoryDiary', 'loadFiles', 'loadWorks', 'loadSchedule', 'loadConversationPolicy',
-  'loadNapcat', 'loadPersona', 'loadConfig', 'loadBrand', 'loadSystem', 'loadMemeConfig', 'loadBiliCred']
+  'loadNapcat', 'loadQQBackendPage', 'loadQQBackendSettings', 'loadPersona', 'loadConfig', 'loadBrand', 'loadSystem', 'loadMemeConfig', 'loadBiliCred']
 function refreshHarness(extra = {}) {
   const counts = new Map(), args = new Map()
   const h = harness({ extra: { searchOn: false, selected: {}, workSel: {}, currentDir: 'notes', ...extra },
@@ -356,6 +357,23 @@ function refreshHarness(extra = {}) {
   }
   return Object.assign(h, { counts, args })
 }
+
+test('missing backend asset cannot prevent Bili budget or memory navigation and never enables backend mutation', () => {
+  const h = refreshHarness()
+  delete h.context.loadQQBackendPage; delete h.context.loadQQBackendSettings
+  h.run('window=globalThis')
+  const fallback = h.source.match(/<script id="qqBackendFallback">([\s\S]*?)<\/script>/)
+  assert.ok(fallback); h.run(fallback[1]); h.load('goto')
+  for(const [page,loader] of [['bili','loadBili'],['money','loadBudget'],['memory','loadFiles']]){
+    h.context.goto(page); assert.equal(h.counts.get(loader),1)
+  }
+  h.context.goto('qq-backend')
+  assert.match(h.node('qqBackendPage').textContent,/控件未加载/)
+  assert.equal(h.node('qqBackendApply').disabled,true)
+  assert.equal(h.run('qqBackendTrusted'),false)
+  assert.equal(h.context.qqBackendEscape('<fixture>'),'&lt;fixture&gt;')
+  assert.equal(h.calls.length,0)
+})
 
 test('visible-page refresh is deduplicated until the actual loader completes', async () => {
   const h = refreshHarness(), waiting = deferred(); let calls = 0
@@ -1778,14 +1796,12 @@ test('picture settings reject fractional and out-of-range batches before any mut
   }
 })
 
-test('NapCat refresh loads real profile and waits for its four startup readers', async () => {
-  const waiting = deferred(); let profiles = 0
-  const h = harness({ functions: ['loadNapcat'], extra: { loadNapcat2: () => waiting.promise,
-    loadQQFriends: async () => {}, loadQQGroups: async () => {}, loadNapcatProfile: async () => { profiles++ },
-    api: async () => ({ ok: true, napcat: { found: false } }) } })
+test('old NapCat loader delegates to the selected backend and awaits its readers', async () => {
+  const waiting = deferred(); let reads = 0
+  const h = harness({ functions: ['loadNapcat'], extra: { loadQQBackendPage: () => { reads++; return waiting.promise } } })
   let finished = false
   const loading = h.context.loadNapcat().then(() => { finished = true })
-  await Promise.resolve(); assert.equal(profiles, 1); assert.equal(finished, false)
+  await Promise.resolve(); assert.equal(reads, 1); assert.equal(finished, false)
   waiting.resolve(); await loading; assert.equal(finished, true)
 })
 

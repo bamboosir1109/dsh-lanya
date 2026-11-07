@@ -24,7 +24,7 @@ class RemindersTests(unittest.TestCase):
         self.data = self.root / "Character"
         (self.runtime / "config").mkdir(parents=True)
         self.data.mkdir()
-        for name in ("reminders.ps1", "project_conf.ps1", "qq_observation.ps1", "decision_events.py", "project_conf.py"):
+        for name in ("reminders.ps1", "project_conf.ps1", "qq_observation.ps1", "decision_events.py", "project_conf.py", "qq_backend.py", "qq_backend.ps1"):
             shutil.copyfile(SOURCE / name, self.runtime / name)
         # These fixtures exercise the explicit rollback transport against a
         # loopback mock. Unified mode is covered by test_qq_observation.py.
@@ -58,6 +58,14 @@ class RemindersTests(unittest.TestCase):
         (self.runtime / "balance-alert.config.json").write_text(json.dumps({
             "napcatHttp": "http://127.0.0.1:" + str(self.server.server_port)
         }))
+        (self.runtime / 'framework/config').mkdir(parents=True)
+        (self.runtime / 'framework/config/onebot11.json').write_text(json.dumps({
+            'network': {'httpServers': [{'host': '127.0.0.1', 'port': self.server.server_port, 'token': ''}]}
+        }), encoding='utf-8')
+        (self.runtime / 'config/project.json').write_text(json.dumps({
+            'dataDirName': 'Character', 'decisions': {'mode': 'legacy'},
+            'onebotPort': self.server.server_port
+        }), encoding='utf-8')
 
     def run_once(self):
         env = {**os.environ, "LANYA_WORKDIR": str(self.root)}

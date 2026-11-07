@@ -33,7 +33,7 @@ if (Test-QqUnifiedMode) {
   exit 3
 }
 
-$root    = '<WORKDIR>\napcat'
+$root    = Join-Path (Get-ProjectWorkDir) 'napcat'
 $statePath = Join-Path $root 'agentchat.state.json'
 $logPath   = Join-Path $root 'agentchat.log'
 $promptPath = Join-Path $root 'agentchat.prompt.txt'
@@ -43,7 +43,8 @@ foreach ($d in 'CDEFG') {
   $cand = Join-Path ($d + ':\') ('DSH\resources\runtime\cli\bin\dsh.cmd')
   if (Test-Path $cand) { $dsh = $cand; break }
 }
-$napcat  = Get-Content (Join-Path $root 'balance-alert.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m

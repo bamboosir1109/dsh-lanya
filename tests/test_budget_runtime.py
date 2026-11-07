@@ -251,6 +251,29 @@ class BudgetRuntimeTests(unittest.TestCase):
         self.assertEqual(budget.gate_evidence(self.now)['pid'], os.getpid())
         self.assertEqual(budget.gate_evidence(self.now)['adapter_source_sha256'], 'c' * 64)
 
+    def test_paired_backend_heartbeat_is_typed_fresh_and_does_not_change_limits(self):
+        request = {'budget_contract': budget.CONTRACT, 'operation': 'heartbeat', 'instance_id': 'b' * 64,
+                   'pid': os.getpid(), 'adapter_source_sha256': 'c' * 64}
+        limits = budget.get_snapshot(self.now)['effective']
+        budget.operate(request, self.now)
+        self.assertFalse(budget.gate_evidence(self.now)['backend_transport_bound'])
+        self.assertFalse(budget.gate_evidence(self.now)['backend_quote_bound'])
+        ready = dict(request, backend_transport_bound=True, backend_quote_bound=True)
+        budget.operate(ready, self.now)
+        evidence = budget.gate_evidence(self.now)
+        self.assertTrue(evidence['backend_transport_bound']); self.assertTrue(evidence['backend_quote_bound'])
+        self.assertEqual(budget.get_snapshot(self.now)['effective'], limits)
+        for at in (self.now - 1, self.now + 90001):
+            self.assertFalse(budget.gate_evidence(at)['backend_transport_bound'])
+            self.assertFalse(budget.gate_evidence(at)['backend_quote_bound'])
+        for invalid in (dict(request, backend_transport_bound=True),
+                        dict(ready, backend_transport_bound=1), dict(ready, backend_quote_bound='true')):
+            with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_heartbeat'):
+                budget.operate(invalid, self.now)
+        budget.operate(request, self.now)
+        self.assertFalse(budget.gate_evidence(self.now)['backend_transport_bound'])
+        self.assertFalse(budget.gate_evidence(self.now)['backend_quote_bound'])
+
     @unittest.skipUnless(shutil.which('powershell.exe'), 'Windows PowerShell required')
     def test_actual_unified_legacy_script_gates_use_only_snapshot(self):
         scripts = self.root / 'napcat'; scripts.mkdir()

@@ -10,7 +10,7 @@
 | Node.js 22.13+ | DSH 插件与内置 SQLite 观察队列租约 | 否 |
 | Python 3.10+ | 面板与后台脚本 | 否 |
 | DSH | agent、工具与插件宿主 | 否 |
-| NapCat 与 QQ | QQ 协议连接 | 否 |
+| NapCatQQ 或 SnowLuma，以及 QQ | QQ 协议连接；开发版双后端验收见下文 | 否 |
 | dsh-onebot-qq | 把 OneBot 消息交给 DSH | 否 |
 | dsh-memento | 长期记忆 SQLite 接口 | 否 |
 | dsh-bili-scroll / B 站环境 | B 站工具 | 可选，另装 |
@@ -18,6 +18,8 @@
 | Playwright 及其浏览器 | 独立浏览器 | 可选，另装 |
 
 面板服务主要使用 Python 标准库。视频抽帧、B 站访问和浏览器分别使用额外依赖，例如 `ffmpeg`、`bilibili_api`、`aiohttp`、Pillow、Playwright；按对应服务环境安装。安装器不下载依赖、不登录账号、不注册任务，也不启动进程。
+
+开发版本支持在首次部署时选择 NapCatQQ 或 SnowLuma，接口与进度见 [QQ 后端](QQ-BACKENDS.md)。SnowLuma 另行从官方发行页安装，保留自己的协议确认、WebUI、密码与扫码流程；本库不提供其专有组件或二进制安装器。其 Node 要求独立于 DSH：v2.4.1 完整 Windows 包自带 Node，Lite 包需要官方检查器认可的版本，不能只凭本库的最低 Node 版本判断。
 
 ## 部署源码文件
 
@@ -30,6 +32,10 @@ Set-Location -LiteralPath $repo
 .\install.ps1 -Target $workspace -DataDir 'character'
 ```
 
+首次选择 SnowLuma 时，两条安装命令均加上 `-QQBackend snowluma`；NapCatQQ 用 `-QQBackend napcat`。省略参数保持默认 NapCatQQ 或现有选择。已有安装升级时省略此参数；在线切换需先加载接入保护，再从部件页应用，不能用复制源码改变正在运行的 QQ 账号。角色目录不得与 `napcat`、`snowluma` 或 `config` 同名。
+
+源码安装器不会修改已安装的第三方 OneBot 程序。启用显式双后端前，还须受控部署已审连接、桥与引用增量、主适配器及预算心跳辅助程序，重载并确认实际运行就绪；仅安装本包或复制面板不能满足切换条件。步骤和边界见 [维护](MAINTENANCE.md#qq-后端维护)。
+
 `-Target` 是工作区根目录。省略时使用仓库上一级；从 npm 包目录运行安装器时应明确传入 `-Target`，不要把 `node_modules` 当工作区。`-DataDir` 是单个角色目录名。已有项目配置时，以其中的 `dataDirName` 为准；显式传入不同名字会在复制前失败，需先人工调整配置和迁移数据。
 
 没有本机项目配置的老安装，应明确传入已有角色目录名，避免按公开默认名称另建空目录。
@@ -40,7 +46,7 @@ Set-Location -LiteralPath $repo
 | `server/make_snapshots.py`、`server/meme_sources.py` | `napcat/` 下同名文件 |
 | `scripts/`、`prompts/` | `napcat/` 下平铺，跳过日志和备份等非程序文件 |
 | `panel/panel.html` | `<角色目录>/made/lanya-panel.html` |
-| `panel/theme-light.css`、`panel/phone.html` | `<角色目录>/made/` 下同名文件 |
+| `panel/*.css`、`panel/*.js`、`panel/phone.html` | `<角色目录>/made/` 下同名文件，包括 `qq-backend.js` |
 | `config/project.json` | 新安装的 `config/project.json` |
 | `docs/persona.example.md` | 新安装的 `napcat/persona.md` |
 | 身份与旧群节奏兼容示例 | `<角色目录>/lanya-config.json`、`lanya-tunables.json` |
@@ -97,6 +103,8 @@ dsh plugin --profile desktop add ("link:" + $repo)
 ## 连接外部服务与首次启动
 
 先按 NapCat 自身的安装方式准备 QQ 协议桥，在本机设置 OneBot HTTP 和与 DSH 对接的反向 WebSocket。token 在两边保持一致，实际 QQ 账号、群和管理员必须与身份配置对应；这些值不进入仓库。
+
+选择 SnowLuma 时改用其独立 WebUI 配置 HTTP 与发往 DSH 的反向 WebSocket；账号对应的 `onebot_<account>.json` 可覆盖全局适配器。HTTP 令牌与反向 WebSocket 令牌可以不同，分别与各自调用方一致。先停止另一套接入，不同时向同一 QQ 客户端注入两套后端。切换后核对后端名称、实际登录账号及真实客户端收件，页面已选择不表示账号已上线。
 
 为了先确认面板，可在两个 PowerShell 窗口分别运行：
 

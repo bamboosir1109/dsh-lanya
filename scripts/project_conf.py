@@ -29,6 +29,7 @@ DEFAULTS = {
     "panelPort": 19389,
     "panelStaticPort": 19388,
     "onebotPort": 8720,
+    "qqBackend": {"provider": "napcat", "providers": {}},
     "ttsPort": 9880,
     "panelFile": "panel.html",
     "dataDirName": "\u5927\u80a5\u9c7c",  # "Dafeiyu"

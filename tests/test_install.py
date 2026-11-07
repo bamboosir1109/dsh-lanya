@@ -100,10 +100,26 @@ class InstallTests(unittest.TestCase):
         self.assertTrue((self.target / role / "made" / "lanya-panel.html").is_file())
 
     def test_invalid_data_directory_fails_before_writes(self):
-        for role in ("../outside", "napcat", "config", "CON", "NUL.txt"):
+        for role in ("../outside", "napcat", "snowluma", "SNOWLUMA", "config", "CON", "NUL.txt"):
             with self.subTest(role=role):
                 self.install("-DataDir", role, ok=False)
                 self.assertFalse(self.target.exists())
+
+    def test_explicit_initial_backend_and_whatif_do_not_install_vendor_or_rewrite_local_choice(self):
+        self.install('-QQBackend', 'snowluma', '-WhatIf')
+        self.assertFalse(self.target.exists())
+        self.install('-QQBackend', 'snowluma')
+        project = self.target / 'config/project.json'
+        original = project.read_bytes()
+        self.assertEqual(json.loads(original)['qqBackend']['provider'], 'snowluma')
+        self.assertFalse((self.target / 'snowluma').exists())
+        self.assertTrue((self.target / 'napcat/qq_backend.py').is_file())
+        self.assertTrue((self.target / 'napcat/qq-backend-heal.ps1').is_file())
+        self.assertTrue((self.target / json.loads(original)['dataDirName'] / 'made/qq-backend.js').is_file())
+        self.install('-QQBackend', 'napcat', '-Force', ok=False)
+        self.assertEqual(project.read_bytes(), original)
+        self.install('-Force')
+        self.assertEqual(project.read_bytes(), original)
 
 
 if __name__ == "__main__":

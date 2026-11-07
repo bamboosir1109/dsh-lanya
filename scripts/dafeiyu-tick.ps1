@@ -42,7 +42,7 @@ $jobs = @(
   @{ n = 'settings';   m = 5;    exe = 'python'; args = @((Join-Path $root 'settings-guard.py')) },
   @{ n = 'state';      m = 1;    exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'dafeiyu-state.ps1')) },
   @{ n = 'strays';     m = 5;    exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'kill-strays.ps1')) },
-  @{ n = 'bridge';     m = 10;   exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'napcat-heal.ps1')) },
+  @{ n = 'bridge';     m = 10;   exe = 'powershell.exe'; args = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $root 'qq-backend-heal.ps1')) },
   @{ n = 'chats';      m = 10;   exe = 'python'; args = @((Join-Path $root 'export-chats.py')) },
   @{ n = 'steal';      m = 10;   exe = 'python'; args = @((Join-Path $root 'stealmemes.py')) },
   @{ n = 'greet';      m = 60;   exe = 'python'; args = @((Join-Path $root 'greetd.py')) },

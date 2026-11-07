@@ -73,16 +73,6 @@ function Get-MonitorHttp([int]$Port, [string]$Endpoint) {
     }
 }
 
-function Test-MonitorPort([int]$Port) {
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-        $attempt = $client.ConnectAsync('127.0.0.1', $Port)
-        if (-not $attempt.Wait($script:MonitorTimeoutMs)) { return $false }
-        return $client.Connected
-    } catch { return $false }
-    finally { $client.Dispose() }
-}
-
 function Get-MonitorPort($Config, [string]$Name) {
     $number = $Config.$Name
     if (($number -is [int] -or $number -is [long]) -and $number -ge 1 -and $number -le 65535) {
@@ -116,7 +106,6 @@ function Get-MonitorContext([string]$WorkRoot) {
         Config = $config; Data = $data
         ApiPort = (Get-MonitorPort $config 'panelPort')
         StaticPort = (Get-MonitorPort $config 'panelStaticPort')
-        QqPort = (Get-MonitorPort $config 'onebotPort')
     }
 }
 
@@ -219,9 +208,16 @@ function Get-MonitorSnapshot([string]$WorkRoot) {
             }
         }
     }
-    $qq = if (-not $context.QqPort) { 'unknown (configuration unavailable)' }
-        elseif (Test-MonitorPort $context.QqPort) { 'port reachable; message delivery unverified' }
-        else { 'port unreachable; message delivery unverified' }
+    $qq = 'unknown (configuration unavailable)'
+    if ($context.ApiPort) {
+        $reply = Get-MonitorHttp $context.ApiPort '/api/qq/backend/status'
+        $selectedBackend = $reply.backend
+        if ($reply.ok -is [bool] -and $reply.ok -and $selectedBackend.provider -cin @('napcat', 'snowluma')) {
+            $label = if ($selectedBackend.provider -ceq 'snowluma') { 'SnowLuma' } else { 'NapCatQQ' }
+            $verified = $selectedBackend.verified -is [bool] -and $selectedBackend.verified -and $selectedBackend.status -ceq 'online'
+            $qq = $label + $(if ($verified) { ' account + provider verified; client delivery unverified' } else { ' connection unconfirmed' })
+        }
+    }
     $api = Get-MonitorPanel $context.ApiPort 'api'
     $works = Get-MonitorPanel $context.StaticPort 'works'
     $version = Get-MonitorVersion $WorkRoot

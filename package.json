@@ -1,6 +1,6 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.46",
+  "version": "1.4.0-dev.47",
   "description": "DSH 角色插件与本地控制台：人设、记忆、群聊、自主活动与运行维护。",
   "type": "module",
   "main": "plugin/lib/index.js",
@@ -29,6 +29,7 @@
     "tests/fixtures/**/package.json",
     "tests/fixtures/**/provenance.json",
     "tests/fixtures/bili_video_content/*.json",
+    "tests/fixtures/qq_backend/*.json",
     "tests/fixtures/**/decision-policy.provenance.json",
     "tests/fixtures/**/LICENSE",
     "tests/fixtures/**/*.md",
@@ -54,7 +55,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/INTERACTION-RELIABILITY.md"
+    "docs/INTERACTION-RELIABILITY.md",
+    "docs/QQ-BACKENDS.md"
   ],
   "license": "MIT",
   "engines": {

@@ -8,7 +8,7 @@ import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export async function nativeHost(plugin, directory, { nativeMedia = null, peer = '101' } = {}) {
+export async function nativeHost(plugin, directory, { nativeMedia = null, peer = '101', clock = null } = {}) {
   const loaded = new Map(), calls = [], followups = [], tools = new Map(), timers = new Set()
   const contained = (root, file) => { const relative = path.relative(root, file); return !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative) }
   const inside = (file) => {
@@ -54,7 +54,12 @@ export async function nativeHost(plugin, directory, { nativeMedia = null, peer =
   class OneBotActionError extends Error {}
   class OneBotNotConnectedError extends Error {}
   let message = 0
+  class FixtureDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock()])) }
+    static now() { return clock() }
+  }
   const context = vm.createContext({ Buffer, URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, AbortController,
+    ...(clock ? { Date: FixtureDate } : {}),
     process: { platform: process.platform, pid: process.pid, versions: process.versions, env: {}, cwd: () => directory,
       kill: (pid, signal) => { if (signal !== 0) deny(); return process.kill(pid, signal) } },
     console: { log: noop, warn: noop, error: noop }, fetch: deny,
@@ -107,7 +112,7 @@ export async function nativeHost(plugin, directory, { nativeMedia = null, peer =
     sessionPersistence: { flush: async () => {} },
     sessions: { flush: async () => {} },
     agentPresets: { defaultId: 'fixture', resolve: async () => ({ id: 'fixture' }) },
-    connection: { connected: true, selfId: '999', call: async (action, params) => {
+    connection: { connected: true, selfId: '999', lanyaBackendTransportVersion: 1, call: async (action, params) => {
       calls.push({ action, params: structuredClone(params) })
       if (deps.onTransmit) await deps.onTransmit(action, params)
       return { message_id: 'synthetic-' + calls.length }

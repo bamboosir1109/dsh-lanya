@@ -1,183 +1,110 @@
-# -*- coding: utf-8 -*-
-"""把所有运行部件做成「开机自启」，不靠人记得去点。
+"""Register a hidden launcher for the installed canonical startup script.
 
-问题
-----
-逐个查下来，真正在跑的只有四个：
-
-    DSH-GroupWatch   Running
-    DSH-Lanya-Life   Running
-    DSH-Lanya-Voice  Running
-    DSH-Lanya-Browser Running
-
-剩下的要么没在跑，要么压根没有任务：
-
-    DSH-Lanya-Budget   Ready    而且**只有 Time 触发器，登录不启动**
-    DSH-Lanya-Works    Ready    made 静态站，重启后就没了
-    DSH-Lanya-TTS      Ready    （按需，可以不起）
-    ——                 没有     面板服务器 19388/19389
-    ——                 没有     supervisor（每 5/10/60 分钟的那些活全靠它）
-
-所以机器一重启，面板打不开、B站不刷、表情不偷、余额不提醒，
-全靠人去看一眼再手动点。这就是「要手动」。
-
-为什么不用计划任务
-------------------
-注册计划任务要管理员权限，我这里拿不到：
-
-    Register-ScheduledTask : Access is denied
-
-**启动文件夹不需要管理员权限。** 把启动器丢进
-`%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup` 就行，
-登录时由 explorer 自动执行。
-
-做法
-----
-1. 写一个 `start-all.ps1`，把每个部件都起起来（幂等的：已经在跑就跳过）
-2. 在启动文件夹放一个 `.cmd` 调它
-3. 同时给 `ensure-tasks.ps1` 补上缺的那几个任务，将来有管理员权限时一并注册
+Never regenerates an obsolete duplicate start-all.ps1, installs an injector,
+changes the scheduler mode or overwrites an unknown Windows Startup entry.
 """
-import io
+import argparse
+import json
 import os
+from pathlib import Path
 import subprocess
-
-NAPCAT = r"<WORKDIR>\napcat"
-
-
-def find_python():
-    for p in (r"C:\Python314\python.exe",
-              r"C:\Python313\python.exe",
-              r"C:\Python312\python.exe"):
-        if os.path.isfile(p):
-            return p
-    return "python"
+import stat
+import uuid
 
 
-LAUNCHER = r'''# Start every runtime piece of Lanya. Idempotent: if something is already up it
-# is left alone. Called at logon from the Startup folder, and safe to run by hand.
-#
-# Everything here runs hidden - no console windows popping up at login.
+class StartupError(ValueError):
+    pass
 
-$ErrorActionPreference = 'SilentlyContinue'
-$root = "<NAPCAT>"
-$dataDir = [string][char]0x5c9a + [char]0x5a05          # the character's folder
-$log = Join-Path $root 'start-all.log'
 
-function Note($msg) {
-  $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $msg
-  try { Add-Content -Path $log -Value $line -Encoding UTF8 } catch { }
-}
-
-function Test-Port($p) {
-  return ((netstat -ano | Select-String (':' + $p + ' .*LISTENING')).Count -gt 0)
-}
-
-function Test-Script($name) {
-  $c = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -and $_.CommandLine -like ('*' + $name + '*') -and
-    $_.CommandLine -notlike '*Get-CimInstance*'
-  }
-  return ($c | Measure-Object).Count -gt 0
-}
-
-function Spawn($exe, $args, $label) {
-  try {
-    Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden
-    Note ('started ' + $label)
-  } catch {
-    Note ('FAILED to start ' + $label + ': ' + $_.Exception.Message)
-  }
-}
-
-Note '--- start-all begin ---'
-
-# 1. Panel API (19389) and the static one (19388). Both are the same script.
-if (-not (Test-Port 19389)) {
-  Spawn '<PY>' @('<ROOT>\lanya-panel-server.py') 'panel-api:19389'
-}
-if (-not (Test-Port 19388)) {
-  Spawn '<PY>' @('<ROOT>\lanya-panel-server.py', '--port', '19388') 'panel-static:19388'
-}
-
-# 2. Supervisor - it is what drives budget, chats, steal, greet, memory, bili.
-#    Without it nothing periodic happens at all.
-if (-not (Test-Script 'lanya-supervisor.ps1')) {
-  Spawn 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
-        '-File', (Join-Path $root 'lanya-supervisor.ps1')) 'supervisor'
-}
-
-# 3. The long-running daemons.
-$daemons = @(
-  @{ n = 'groupwatch.ps1';  f = 'groupwatch.ps1' },
-  @{ n = 'lifeloop.ps1';    f = 'lifeloop.ps1' },
-  @{ n = 'voicedaemon.ps1'; f = 'voicedaemon.ps1' },
-  @{ n = 'browserd.py';     f = 'browserd.py'; py = $true },
-  @{ n = 'reminders.ps1';   f = 'reminders.ps1' }
-)
-foreach ($d in $daemons) {
-  if (Test-Script $d.f) { continue }
-  $p = Join-Path $root $d.f
-  if (-not (Test-Path $p)) { Note ('missing: ' + $d.f); continue }
-  if ($d.py) {
-    Spawn '<PY>' @($p) $d.f
-  } else {
-    Spawn 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
-          '-File', $p) $d.f
-  }
-}
-
-Note '--- start-all done ---'
-'''
+def configure(launcher, startup, backups, *, what_if=False):
+    import panel_autonomy as store
+    launcher = store._ordinary(launcher)
+    startup, backups = store._ordinary(startup), store._ordinary(backups)
+    record, raw = store._record(launcher)
+    if b'qq-backend-heal.ps1' not in raw or b"ValidateSet('External', 'Plugin')" not in raw:
+        raise StartupError('Install the current canonical start-all.ps1 before registering startup')
+    command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + str(launcher) + '"'
+    body = ('Set shell = CreateObject("WScript.Shell")\r\n'
+            'shell.Run "' + command.replace('"', '""') + '", 0, False\r\n').encode('utf-16')
+    target = startup / 'lanya-start-all.vbs'
+    previous = startup / 'lanYa-start-all.cmd'
+    current_record = previous_record = None
+    if target.exists():
+        current_record, existing = store._record(target)
+        if existing != body:
+            raise StartupError('An existing Startup entry is not owned by this workspace; no changes made')
+    if previous.exists():
+        previous_record, previous_raw = store._record(previous)
+        if os.name == 'nt' and previous_record['signature'][6] & 1:
+            raise StartupError('The previous Startup command is readonly; no changes made')
+        expected = '@echo off\nstart "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + str(launcher) + '"'
+        try:
+            actual = previous_raw.decode('ascii').replace('\r\r\n', '\n').replace('\r\n', '\n').strip()
+        except UnicodeError:
+            actual = ''
+        if actual != expected:
+            raise StartupError('The previous Startup command is unknown; no changes made')
+    result = dict(registered=current_record is not None, changed=current_record is None or previous_record is not None,
+        what_if=what_if, automatic_run=False, script_rewritten=False, backup_retained=False)
+    result['backup_planned'] = previous_record is not None
+    if what_if:
+        return result
+    backups.mkdir(parents=True, exist_ok=True)
+    with store._write_lock(backups / 'startup-management'):
+        if store._record(launcher)[0] != record:
+            raise StartupError('Canonical startup script changed; no entry installed')
+        if previous_record is not None:
+            if store._record(previous)[0] != previous_record:
+                raise StartupError('Previous Startup command changed')
+            original = backups / ('startup-' + uuid.uuid4().hex + '.cmd.original')
+            with original.open('xb') as output:
+                output.write(previous_raw); output.flush(); os.fsync(output.fileno())
+            os.chmod(original, stat.S_IMODE(previous_record['signature'][4]))
+            store._copy_security(previous, original)
+            saved, saved_raw = store._record(original)
+            if saved_raw != previous_raw or saved['security_sha256'] != previous_record['security_sha256']:
+                raise StartupError('Startup original could not be preserved')
+            result['backup_retained'] = True
+        startup.mkdir(parents=True, exist_ok=True)
+        if current_record is None:
+            with target.open('xb') as output:
+                output.write(body); output.flush(); os.fsync(output.fileno())
+        if store._record(target)[1] != body:
+            raise StartupError('Startup registration could not be verified')
+        if previous_record is not None:
+            if store._record(previous)[0] != previous_record:
+                raise StartupError('Previous Startup command changed; original is preserved')
+            # Exact owned entry only, after a complete byte/ACL-preserved backup
+            # and verified replacement. Unknown entries were refused above.
+            previous.unlink()
+    result['registered'] = True
+    return result
 
 
 def main():
-    py = find_python()
-    body = (LAUNCHER
-            .replace("<ROOT>", NAPCAT.replace("\\", "\\\\"))
-            .replace("<NAPCAT>", NAPCAT)
-            .replace("<PY>", py))
-
-    # 启动器本身
-    lp = os.path.join(NAPCAT, "start-all.ps1")
-    with io.open(lp, "w", encoding="utf-8", newline="\r\n") as fh:
-        fh.write(body)
-    n = sum(1 for b in open(lp, "rb").read() if b > 127)
-    print("  写好 start-all.ps1  非 ASCII: %d" % n)
-    if n:
-        print("  ❌ .ps1 必须纯 ASCII，停下来")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--what-if', action='store_true')
+    parser.add_argument('--run', action='store_true')
+    args = parser.parse_args()
+    try:
+        from project_conf import work_dir, data_dir
+        launcher = Path(work_dir()) / 'napcat/start-all.ps1'
+        startup = Path(os.environ['APPDATA']) / 'Microsoft/Windows/Start Menu/Programs/Startup'
+        result = configure(launcher, startup, Path(data_dir()) / 'maintenance/autostart-originals', what_if=args.what_if)
+        if args.run and not args.what_if:
+            from hidden_task import powershell_executable
+            process = subprocess.Popen([str(powershell_executable()), '-NoLogo', '-NoProfile', '-NonInteractive',
+                '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', str(launcher)], cwd=str(launcher.parent),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            result.update(automatic_run=True, pid=process.pid)
+        print(json.dumps(result, ensure_ascii=True)); return 0
+    except StartupError as error:
+        print(json.dumps(dict(ok=False, error=str(error), automatic_run=False))); return 1
+    except Exception:
+        print(json.dumps(dict(ok=False, status='startup_registration_unconfirmed', automatic_run=False)))
         return 1
 
-    # 启动文件夹里的 .cmd
-    startup = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows",
-                           "Start Menu", "Programs", "Startup")
-    os.makedirs(startup, exist_ok=True)
-    cmd = os.path.join(startup, "lanYa-start-all.cmd")
-    with io.open(cmd, "w", encoding="ascii", newline="\r\n") as fh:
-        fh.write("@echo off\r\n")
-        fh.write('start "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass '
-                 '-WindowStyle Hidden -File "%s"\r\n' % lp)
-    print("  启动文件夹: %s" % cmd)
 
-    # 立刻跑一遍，验证能用
-    print()
-    print("  --- 试跑一次 ---")
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=180)
-    out = (r.stdout or "").strip()
-    if out:
-        for ln in out.splitlines()[:20]:
-            print("    " + ln[:110])
-    lg = os.path.join(NAPCAT, "start-all.log")
-    if os.path.isfile(lg):
-        print()
-        print("  --- start-all.log ---")
-        with io.open(lg, encoding="utf-8", errors="replace") as fh:
-            for ln in fh.readlines()[-14:]:
-                print("    " + ln.rstrip()[:110])
-    return 0
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

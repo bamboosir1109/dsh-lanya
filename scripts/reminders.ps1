@@ -55,19 +55,8 @@ try {
   $groupId = [string]$identity.fanGroupQQ
   if (-not $groupId) { $groupId = [string]$identity.fanGroup }
 } catch { }
-$napcat = @{ napcatHttp = ('http://127.0.0.1:' + (Get-ProjectConfValue 'onebotPort' 8720)); napcatToken = '' }
-$cfgPath = Join-Path $runtimeDir 'balance-alert.config.json'
-try {
-  $localConf = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
-  if ($localConf.napcatHttp) { $napcat.napcatHttp = [string]$localConf.napcatHttp }
-  if ($localConf.napcatToken) { $napcat.napcatToken = [string]$localConf.napcatToken }
-} catch { }
-if (-not $napcat.napcatToken) {
-  try {
-    $onebot = Get-Content -LiteralPath (Join-Path $runtimeDir 'framework\config\onebot11.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
-    $napcat.napcatToken = [string]$onebot.network.httpServers[0].token
-  } catch { }
-}
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 function Confirm-Delivery($Response, $Client) {
   try {

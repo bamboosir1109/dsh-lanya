@@ -40,7 +40,6 @@ $sayScript = Join-Path $root 'say.ps1'
 # her voice never goes silent while the local model server is down.
 $localScript = Join-Path $root 'say-local.ps1'
 $localSpeed = 1.0
-$cfgPath   = Join-Path $root 'balance-alert.config.json'
 # Group id must come from config. It used to be the literal string
 # "YOUR_GROUP_ID" - a placeholder left behind by a sanitising pass - which meant
 # sharing a note or sending a voice message to a group that does not exist.
@@ -86,7 +85,8 @@ if (-not (Test-Path $dafeiyuDir)) { New-Item -ItemType Directory -Path $dafeiyuD
 if (-not (Test-Path $queuePath)) {
   [System.IO.File]::WriteAllText($queuePath, '[]', (New-Object System.Text.UTF8Encoding($false)))
 }
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 function Invoke-NapCat([string]$action, $bodyObj) {
   Assert-QqLegacyAction $action

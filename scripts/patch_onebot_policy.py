@@ -105,13 +105,37 @@ def bundle_diary_helper(raw, diary_raw=None):
     return replace_once(text, anchor, bundled).encode('utf-8')
 
 
-def bundle_intent_helper(raw, helper_raw=None, diary_raw=None):
+def bundle_backend_helper(raw, backend_raw=None):
+    text = raw.decode('utf-8')
+    anchor = "import { createBackendGuard } from './qq-backend.js'"
+    if anchor not in text:
+        if 'qq-backend.js' in text:
+            raise PatchError('Unknown backend helper import')
+        return raw
+    if text.count(anchor) != 1:
+        raise PatchError('Ambiguous backend helper import')
+    if backend_raw is None:
+        backend_raw, _ = read_regular(REPO / 'plugin/lib/qq-backend.js')
+    helper = backend_raw.decode('utf-8').replace('\r\n', '\n')
+    for dependency in ["import fs from 'node:fs'", "import path from 'node:path'", "import { createHash } from 'node:crypto'"]:
+        helper = replace_once(helper, dependency + '\n', '')
+    for declaration in ['function readBackendSelection', 'function resolveOneBotEndpoint', 'function createBackendGuard']:
+        helper = replace_once(helper, 'export ' + declaration, declaration)
+    if re.search(r'(?m)^\s*(?:import|export)\s', helper):
+        raise PatchError('Unreviewed backend helper dependency or export')
+    bundled = '// LANYA_BACKEND_BUNDLE_V1 ' + sha256(backend_raw) + '\n' + \
+        'const { createBackendGuard } = (() => {\n' + helper + '\nreturn { createBackendGuard }\n})()'
+    return replace_once(text, anchor, bundled).encode('utf-8')
+
+
+def bundle_intent_helper(raw, helper_raw=None, diary_raw=None, backend_raw=None):
     """Current aliases are self-contained; legacy adapters stay byte-identical.
 
     The reviewed helper has a closed lexical scope. Its only extra native
     dependency is the same node:sqlite already used by the observation queue.
     No historical parent manifest or module filename is expanded.
     """
+    raw = bundle_backend_helper(raw, backend_raw)
     text = raw.decode('utf-8')
     anchor = "import { AutonomyPlanner } from './autonomy-intents.js'"
     if anchor not in text:

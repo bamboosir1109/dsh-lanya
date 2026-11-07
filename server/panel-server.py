@@ -27,6 +27,7 @@ import sqlite3
 import contextlib
 import hashlib
 import math
+from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -39,6 +40,8 @@ if os.path.basename(HERE).lower() == "server":
 else:
     sys.path.insert(0, HERE)
 import project_conf
+import qq_backend
+import qq_backend_selection
 
 REPO = project_conf.work_dir()
 DATA = project_conf.data_dir()
@@ -87,6 +90,7 @@ SCRIPTS = {
     "voicedaemon": "voicedaemon.ps1",
     "supervisor": "lanya-supervisor.ps1",
     "napcat-heal": "napcat-heal.ps1",
+    "qq-backend-heal": "qq-backend-heal.ps1",
     "kill-strays": "kill-strays.ps1",
     "settings-guard": "settings-guard.py",
     "state": "lanya-state.ps1",
@@ -104,9 +108,20 @@ def start_napcat_elevated():
     The local launcher owns QQ discovery and its preflight checks. Never kill
     QQ from this server, or build a second, divergent injection command here.
     """
-    launcher = _configured_path("LANYA_NAPCAT_LAUNCHER", "napcat.startScript",
-        os.path.join(NAPCAT, "\u542f\u52a8NapCat-\u6b63\u786e.cmd"))
-    for file in (launcher, *(os.path.join(NAPCAT, "framework", name) for name in
+    project = project_conf.load(reload=True)
+    spec, settings, root, _, _, _ = qq_backend.describe(project=project, workspace=REPO)
+    if spec.key != "napcat":
+        raise qq_backend.BackendError("NapCat is not the selected QQ backend")
+    configured = (os.environ.get("LANYA_NAPCAT_LAUNCHER") or settings.get("startScript")
+                  or project.get("napcat", {}).get("startScript"))
+    if configured:
+        if not isinstance(configured, str) or "\x00" in configured:
+            raise qq_backend.BackendError("Invalid NapCat launcher configuration")
+        launcher_path = Path(os.path.expandvars(os.path.expanduser(configured)))
+        launcher = str(launcher_path if launcher_path.is_absolute() else root / launcher_path)
+    else:
+        launcher = str(root.parent / "\u542f\u52a8NapCat-\u6b63\u786e.cmd")
+    for file in (launcher, *(os.path.join(root, name) for name in
                             ("napimain.exe", "napiloader.dll", "nativeLoader.cjs"))):
         if not os.path.isfile(file):
             raise FileNotFoundError("NapCat launcher preflight failed: " + os.path.basename(file))
@@ -115,10 +130,9 @@ def start_napcat_elevated():
     ps = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        # This explicitly requested launcher is interactive: its window must
-        # stay open to keep the injected QQ process alive.
+        # The launcher process may stay alive without showing a new console.
         "Start-Process -FilePath '" + quoted + "' -WorkingDirectory '" + working +
-        "' -Verb RunAs -WindowStyle Normal -PassThru -ErrorAction Stop | Select-Object -ExpandProperty Id"
+        "' -Verb RunAs -WindowStyle Hidden -PassThru -ErrorAction Stop | Select-Object -ExpandProperty Id"
     ]
     p = subprocess.run(ps, capture_output=True, timeout=120,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -545,6 +559,27 @@ def voice_status_snapshot():
     return panel_voice_status_snapshot(value.get("components") or [], value.get("at"))
 
 
+def selected_backend_component(observed=None):
+    """Current configuration plus fresh matching background health, no probe."""
+    facts = dict(provider=None, name="QQ 接入", verified=False, status="unconfirmed")
+    try:
+        project_conf.load(reload=True)
+        spec, _, _, _, _, _ = qq_backend.describe()
+        facts.update(provider=spec.key, name=spec.name)
+        selected = _qq_connection()
+        facts.update(provider=selected.provider, name=selected.name)
+        age = time.time() * 1000 - observed.get("observed_at", -1) if type(observed) is dict else -1
+        if (type(age) in (int, float) and 0 <= age <= 120000 and
+                observed.get("provider") == selected.provider and observed.get("config_fingerprint") == selected.fingerprint and
+                observed.get("verified") is True and all(observed.get(key) is True for key in
+                    ("online", "good", "logged_in", "provider_matches", "account_matches"))):
+            facts.update(verified=True, status="online")
+    except (qq_backend.BackendError, TypeError, ValueError):
+        pass
+    return dict(tag="qq-backend", desc="selected QQ backend", count=1 if facts["verified"] else None,
+        mb=0, aging=0, backend=facts)
+
+
 def panel_state_snapshot():
     value = panel_raw_state_metadata()
     memory = value.setdefault("memory", {})
@@ -553,6 +588,10 @@ def panel_state_snapshot():
     status = autonomy_snapshot()
     value["autonomy"] = status
     value["components"] = decorate_autonomy_components(value.get("components") or [], status)
+    value["components"] = [row for row in value["components"] if row.get("tag") not in ("napcat", "qq-backend")]
+    backend_row = selected_backend_component(value.get("qqBackend"))
+    value["components"].append(backend_row)
+    value["qqBackend"] = backend_row["backend"]
     services = panel_services()
     old = [row for row in value["components"] if row.get("tag") in ("works", "panel-api")]
     value["components"] = [row for row in value["components"] if row.get("tag") not in ("works", "panel-api")]
@@ -793,6 +832,7 @@ def tool_status(item):
 # 每个工具的上游仓库，用来查最新版本。查不到不算错——离线时本来就不通。
 UPSTREAM = {
     "napcat": ("NapNeko/NapCatQQ", "NapCat"),
+    "snowluma": ("SnowLuma/SnowLuma", "SnowLuma"),
 }
 
 
@@ -816,7 +856,20 @@ def check_upstream(key):
 
 
 def tools_snapshot():
-    return [tool_status(x) for x in TOOLS]
+    result = [tool_status(x) for x in TOOLS if x['key'] != 'napcat']
+    facts = selected_backend_component(panel_raw_state_metadata().get('qqBackend'))['backend']
+    try:
+        project_conf.load(reload=True)
+        spec, _, root, _, _, _ = qq_backend.describe()
+        result.insert(0, dict(key=spec.key, name=spec.name, kind="QQ 接入后端",
+            note="部件页选择的后端；在线状态依据近期账号与版本核验，实际消息单独确认。",
+            path=str(root) if qq_backend.installed(spec, root) else '', installed=qq_backend.installed(spec, root),
+            running=True if facts['verified'] else None, update_supported=True, port=None))
+    except qq_backend.BackendError:
+        result.insert(0, dict(key='qq-backend', name='QQ 接入', kind='QQ 接入后端',
+            note='所选接入配置未确认，请在部件页重新读取。', path='', installed=False,
+            running=None, update_supported=False, port=None))
+    return result
 
 
 def decode_task_output(raw, oem_encoding=None):
@@ -1670,17 +1723,50 @@ def activity_suggestions(components, acts):
     return out
 
 def _onebot_token():
-    """From onebot11.json, return the HTTP server token."""
-    try:
-        cfgp = os.path.join(NAPCAT, "framework", "config", "onebot11.json")
-        with open(cfgp, "r", encoding="utf-8") as fh9:
-            cfg9 = json.load(fh9)
-        for x in (cfg9.get("network", {}).get("httpServers") or []):
-            if x.get("token"):
-                return x["token"]
-    except Exception:
-        pass
-    return ""
+    """Compatibility helper; credentials always belong to the selected backend."""
+    return _qq_connection().token
+
+
+def _qq_connection():
+    return qq_backend.resolve(project=project_conf.load(reload=True))
+
+
+def _onebot_call(action, payload=None, connection=None):
+    current = _qq_connection()
+    if connection is not None and current.fingerprint != connection.fingerprint:
+        raise qq_backend.BackendError('Selected backend changed; the earlier operation was refused')
+    return qq_backend.call(action, payload, connection=connection or current)
+
+
+def _qq_profile_account(value):
+    if not isinstance(value, (str, int)) or isinstance(value, bool) or not re.fullmatch(r'[1-9][0-9]{0,19}', str(value)):
+        raise qq_backend.BackendError('Configure a trusted QQ account before editing its profile')
+    return str(value)
+
+
+def _qq_profile_expected():
+    value, _ = qq_backend._read(Path(CONFIG))
+    return _qq_profile_account(value.get('botQQ'))
+
+
+def _qq_profile_paths(connection, account):
+    # Local accepted-value caches must not carry another provider/account's
+    # signature or avatar across a switch. Existing unbound files stay intact.
+    from panel_autonomy import _ordinary
+    account = _qq_profile_account(account)
+    key = connection.provider + '-' + hashlib.sha256(account.encode()).hexdigest()
+    folder = _ordinary(Path(NAPCAT) / 'qq-profile-cache')
+    return _ordinary(folder / (key + '.json')), _ordinary(folder / (key + '.png'))
+
+
+def _write_qq_profile_cache(file, raw):
+    import uuid
+    from panel_autonomy import _ordinary
+    file = _ordinary(file); file.parent.mkdir(parents=True, exist_ok=True)
+    candidate = _ordinary(file.with_name('.' + file.name + '-' + uuid.uuid4().hex))
+    with candidate.open('xb') as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    os.replace(candidate, file)
 
 
 def _extra_tags():
@@ -2309,93 +2395,72 @@ class Handler(SimpleHTTPRequestHandler):
                                     "mtime": int(os.path.getmtime(qr)) if os.path.isfile(qr) else 0,
                                     "state": info})
 
-        if path == "/api/qq/friends":
+        if path == "/api/qq/backend":
             try:
-                import urllib.request as _ur7
-                req = _ur7.Request("http://127.0.0.1:8720/get_friend_list",
-                                   data=b"{}",
-                                   headers={"content-type": "application/json",
-                                            "authorization": "Bearer " + _onebot_token()},
-                                   method="POST")
-                with _ur7.urlopen(req, timeout=30) as r7:
-                    d7 = json.loads(r7.read().decode("utf-8"))
-                return self._json(200, {"ok": True, "friends": d7.get("data") or []})
-            except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:200]})
+                return self._json(200, {"ok": True, "backend": qq_backend_selection.snapshot()})
+            except (qq_backend.BackendError, qq_backend_selection.SelectionError) as error:
+                return self._json(409, {"ok": False, "error": str(error)})
+            except Exception:
+                return self._json(503, {"ok": False, "error": "Backend settings are unavailable"})
 
-        if path == "/api/qq/groups":
+        if path == "/api/qq/backend/health":
             try:
-                import urllib.request as _ur8
-                req = _ur8.Request("http://127.0.0.1:8720/get_group_list",
-                                   data=b"{}",
-                                   headers={"content-type": "application/json",
-                                            "authorization": "Bearer " + _onebot_token()},
-                                   method="POST")
-                with _ur8.urlopen(req, timeout=30) as r8:
-                    d8 = json.loads(r8.read().decode("utf-8"))
-                return self._json(200, {"ok": True, "groups": d8.get("data") or []})
-            except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:200]})
+                expected = {}
+                if os.path.isfile(CONFIG):
+                    expected, _ = qq_backend._read(Path(CONFIG))
+                connection = _qq_connection()
+                health = qq_backend.health(connection, expected_account=expected.get("botQQ"))
+                health['config_fingerprint'] = connection.fingerprint
+                health.pop("account", None)
+                return self._json(200, {"ok": True, "health": health})
+            except qq_backend.BackendError as error:
+                return self._json(200, {"ok": False, "error": str(error), "health": {"online": False}})
 
-        if path == "/api/napcat/profile":
-            prof_file = os.path.join(NAPCAT, "qq-profile.json")
-            saved = {}
-            if os.path.isfile(prof_file):
-                try:
-                    with open(prof_file, "r", encoding="utf-8") as fhp:
-                        saved = json.load(fhp)
-                except Exception:
-                    saved = {}
+        if path == "/api/qq/backend/status":
+            facts = selected_backend_component(panel_raw_state_metadata().get("qqBackend"))["backend"]
+            return self._json(200, {"ok": facts["provider"] is not None, "backend": facts})
+
+        if path in ("/api/qq/friends", "/api/qq/groups"):
+            key = "friends" if path.endswith("friends") else "groups"
+            action = "get_friend_list" if key == "friends" else "get_group_list"
             try:
-                import urllib.request as _ur5
-                req = _ur5.Request(
-                    "http://127.0.0.1:8720/get_login_info",
-                    data=b"{}",
-                    headers={"content-type": "application/json",
-                             "authorization": "Bearer " + _onebot_token()},
-                    method="POST")
-                with _ur5.urlopen(req, timeout=20) as r5:
-                    info = json.loads(r5.read().decode("utf-8"))
-                d = info.get("data") or {}
+                connection = _qq_connection()
+                result = _onebot_call(action, connection=connection)
+                rows = result.get("data")
+                if not isinstance(rows, list):
+                    raise qq_backend.BackendError("OneBot returned an invalid contact list")
+                return self._json(200, {"ok": True, key: rows, "backend": {
+                    "provider": connection.provider, "config_fingerprint": connection.fingerprint}})
+            except qq_backend.BackendError as error:
+                return self._json(200, {"ok": False, "error": str(error)})
+
+        if path in ("/api/qq/profile", "/api/napcat/profile"):
+            try:
+                connection = _qq_connection()
+                info = _onebot_call("get_login_info", connection=connection)
+                d = info.get("data")
+                if not isinstance(d, dict):
+                    raise qq_backend.BackendError('Backend returned an invalid profile')
+                prof_file, avatar_file = _qq_profile_paths(connection, d.get('user_id'))
+                saved, _ = qq_backend._read(prof_file, optional=True)
+                saved = saved or {}; d = dict(d)
                 # OneBot 只能给昵称；签名和头像读不回来，用本地记的最后一次值
                 d["signature"] = saved.get("signature", "")
-                d["avatarFile"] = saved.get("avatarFile", "")
-                d["hasAvatar"] = bool(saved.get("avatarFile"))
-                return self._json(200, {"ok": True, "profile": d})
+                d["hasAvatar"] = avatar_file.is_file()
+                d["avatarFile"] = '/qq-avatar.png' if d['hasAvatar'] else ''
+                return self._json(200, {"ok": True, "profile": d, "backend": {
+                    "provider": connection.provider, "config_fingerprint": connection.fingerprint}})
             except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:200]})
+                return self._json(200, {"ok": False, "error": str(e) if isinstance(e, qq_backend.BackendError) else 'Profile could not be read'})
 
-        if path == "/api/napcat":
-          try:
-            # NapCat 的 onebot11 配置，只读展示（token 打码）
-            cfgp = os.path.join(NAPCAT, "framework", "config", "onebot11.json")
-            out = {"found": False, "path": cfgp}
-            if os.path.isfile(cfgp):
-                try:
-                    with open(cfgp, "r", encoding="utf-8") as fh2:
-                        cfg = json.load(fh2)
-                    out["found"] = True
-                    net = cfg.get("network") or {}
-                    http_s = net.get("httpServers") or []
-                    ws_c = net.get("websocketClients") or []
-                    ws_s = net.get("websocketServers") or []
-                    out["http"] = [{"host": x.get("host", ""), "port": x.get("port", "")}
-                                   for x in http_s]
-                    out["wsClient"] = [{"url": x.get("url", ""),
-                                        "token": x.get("token", "")} for x in ws_c]
-                    out["wsServer"] = [{"host": x.get("host", ""),
-                                        "port": x.get("port", "")} for x in ws_s]
-                    tok = ""
-                    for x in ws_c:
-                        if x.get("token"):
-                            tok = x["token"]
-                            break
-                    out["tokenMasked"] = (tok[:4] + "\u2026" + tok[-4:]) if len(tok) > 8 else ("\u5df2\u8bbe\u7f6e" if tok else "\uff08\u7a7a\uff09")
-                except Exception as e:
-                    out["error"] = str(e)
-            return self._json(200, {"ok": True, "napcat": out})
-          except Exception as _e:
-            return self._json(200, {"ok": True, "napcat": {"found": False, "error": str(_e)}})
+        if path in ("/api/qq/connection", "/api/napcat"):
+            key = "napcat" if path == "/api/napcat" else "backend"
+            try:
+                out = _qq_connection().public()
+                out.update(found=True, tokenMasked="\u5df2\u8bbe\u7f6e" if out["token_configured"] else "\uff08\u7a7a\uff09")
+                return self._json(200, {"ok": True, key: out})
+            except qq_backend.BackendError as error:
+                return self._json(200, {"ok": False, key: {"found": False, "error": str(error)}})
 
         if path == "/api/activities":
             settings = autonomy_settings_snapshot()
@@ -2630,11 +2695,15 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(404, {"ok": False, "error": "no archive file"})
 
         if path == "/qq-avatar.png":
-            ap = os.path.join(NAPCAT, "qq-avatar.png")
-            if os.path.isfile(ap):
-                try:
-                    with open(ap, "rb") as fhav:
-                        dav = fhav.read()
+            try:
+                connection = _qq_connection()
+                query = parse_qs(urlparse(self.path).query)
+                if query.get('backend_fingerprint', [connection.fingerprint]) != [connection.fingerprint]:
+                    raise qq_backend.BackendError('Selected backend changed')
+                _, avatar = _qq_profile_paths(connection, _qq_profile_expected())
+                if avatar.is_file():
+                    from panel_autonomy import _record
+                    _, dav = _record(avatar, 5 * 1024 * 1024)
                     self.send_response(200)
                     self.send_header("content-type", "image/png")
                     self.send_header("content-length", str(len(dav)))
@@ -2642,8 +2711,8 @@ class Handler(SimpleHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(dav)
                     return
-                except Exception:
-                    pass
+            except Exception:
+                pass
             return self._json(404, {"ok": False, "error": "no avatar"})
 
         if path == "/bili-qr.png":
@@ -2692,6 +2761,28 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/qq/backend":
+            try:
+                from qq_backend_selection import select, SelectionError
+                origin = self.headers.get("Origin")
+                if origin:
+                    parsed = urlparse(origin)
+                    ports = {int(project_conf.get("panelPort", 19389)), int(project_conf.get("panelStaticPort", 19388))}
+                    if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or
+                            parsed.port not in ports or parsed.username or parsed.password or parsed.path not in ("", "/") or
+                            parsed.query or parsed.fragment):
+                        raise SelectionError("origin_refused", "Backend selection requires the local console", 403)
+                size = int(self.headers.get("content-length", "0"))
+                if not 0 < size <= 2048:
+                    raise SelectionError("invalid_selection", "Invalid backend selection body", 400)
+                body = json.loads(self.rfile.read(size).decode("utf-8"))
+                return self._json(200, {"ok": True, "backend": select(body)})
+            except (SelectionError, qq_backend.BackendError) as error:
+                return self._json(getattr(error, "status", 409), {"ok": False, "error": str(error), "code": getattr(error, "code", "backend_unavailable")})
+            except (ValueError, UnicodeError):
+                return self._json(400, {"ok": False, "error": "Invalid backend selection body"})
+            except Exception:
+                return self._json(503, {"ok": False, "error": "Backend selection is unconfirmed; refresh before trying another action"})
         if path == "/api/android/job":
             try:
                 return self._android_post()
@@ -2740,6 +2831,14 @@ class Handler(SimpleHTTPRequestHandler):
                     code = "settings_unavailable"
                 message = "Settings changed; refresh before saving" if status == 409 else "Settings update refused"
                 return self._json(status, {"ok": False, "code": code, "error": message})
+        if path in ("/api/qq/profile", "/api/napcat/profile"):
+            did = []; warn = []
+            try:
+                size = int(self.headers.get("content-length", "0"))
+                if not 0 <= size <= 8 * 1024 * 1024:
+                    return self._json(413, {"ok": False, "error": "Profile request exceeds limit"})
+            except ValueError:
+                return self._json(400, {"ok": False, "error": "Invalid profile request size"})
         body = self._read()
 
         if path == "/api/memory/consolidate":
@@ -2932,15 +3031,19 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(body, dict):
                 return self._json(400, {"ok": False, "error": "Invalid component action"})
             target = str(body.get("target") or "")
-            # NapCat 注入必须提权，否则 napimain 什么都不做。与其静默失败，
-            # 不如直接弹 UAC 让用户点一下——这是唯一合法的路径。
-            if target == "napcat-elevated":
+            # Start only the selected provider. Configuration revision prevents
+            # a stale page from launching a newly selected, different runtime.
+            if target in ("qq-backend", "napcat-elevated"):
                 try:
-                    pid = start_napcat_elevated()
-                    return self._json(200, {"ok": True, "pid": pid, "elevated": True,
-                                             "note": "UAC prompt opened - click YES"})
-                except Exception as e:
-                    return self._json(500, {"ok": False, "error": str(e)})
+                    from qq_backend_control import start
+                    if target == "qq-backend" and (type(body.get('provider')) is not str or type(body.get('revision')) is not str):
+                        raise qq_backend.BackendError("Refresh backend settings before starting")
+                    return self._json(200, start(napcat_launcher=start_napcat_elevated,
+                        expected_provider=body.get('provider'), expected_revision=body.get('revision')))
+                except qq_backend.BackendError as error:
+                    return self._json(409, {"ok": False, "error": str(error)})
+                except Exception:
+                    return self._json(503, {"ok": False, "error": "QQ backend start is unconfirmed; inspect the service before retrying"})
             try:
                 result = control_action(body)
                 return self._json(200 if result["ok"] else 409, result)
@@ -3181,96 +3284,82 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
 
-        if path == "/api/napcat/profile":
+        if path in ("/api/qq/profile", "/api/napcat/profile"):
             try:
-                import urllib.request as _ur6
-                _tok6 = _onebot_token()
-
-                def _ob(action, payload):
-                    req = _ur6.Request(
-                        "http://127.0.0.1:8720/" + action,
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={"content-type": "application/json",
-                                 "authorization": "Bearer " + _tok6},
-                        method="POST")
-                    with _ur6.urlopen(req, timeout=30) as r6:
-                        return json.loads(r6.read().decode("utf-8"))
-
-                did = []
-                warn = []
-                # 本地那份档案（页面读的就是它）
-                pf0 = os.path.join(NAPCAT, "qq-profile.json")
-                saved0 = {}
-                if os.path.isfile(pf0):
-                    try:
-                        with open(pf0, "r", encoding="utf-8") as fhr0:
-                            saved0 = json.load(fhr0)
-                    except Exception:
-                        saved0 = {}
-
-                nick = str(body.get("nickname") or "").strip()
-                if nick:
-                    try:
-                        rn = _ob("set_qq_profile", {"nickname": nick})
-                        if rn.get("status") == "failed" or rn.get("retcode") not in (None, 0, 1):
-                            warn.append("nickname: " + str(rn)[:80])
-                    except Exception as e:
-                        warn.append("nickname: " + str(e)[:80])
-                    saved0["nickname"] = nick
-                    did.append("nickname")
-
-                sig = str(body.get("signature") or "").strip()
-                if sig:
-                    # set_self_longnick 经常返回 result=999 / errMsg="set longnick Fail"，
-                    # 不检查就当成功了，页面上看着像没生效。
-                    try:
-                        rs = _ob("set_self_longnick", {"longNick": sig})
-                        bad = (rs.get("result") not in (None, 0)
-                               or rs.get("status") == "failed")
-                        if bad:
-                            warn.append("signature: " + str(rs)[:90])
-                    except Exception as e:
-                        warn.append("signature: " + str(e)[:80])
-                    # 不管 OneBot 认不认，本地先记下来 —— 那个是"最后一次设的值"
-                    saved0["signature"] = sig
-                    did.append("signature")
-
-                if did:
-                    try:
-                        with open(pf0, "w", encoding="utf-8") as fhw0:
-                            json.dump(saved0, fhw0, ensure_ascii=False, indent=1)
-                    except Exception:
-                        pass
-                av = str(body.get("avatarBase64") or "").strip()
+                if not isinstance(body, dict) or any(body.get(key) is not None and not isinstance(body[key], str)
+                        for key in ('nickname', 'signature', 'avatarBase64', 'backend_fingerprint')):
+                    raise qq_backend.BackendError("Invalid profile fields")
+                nick = (body.get("nickname") or "").strip()
+                sig = (body.get("signature") or "").strip()
+                av = (body.get("avatarBase64") or "").strip()
+                if len(nick) > 512 or len(sig) > 4096 or len(av) > 8 * 1024 * 1024:
+                    raise qq_backend.BackendError("Profile fields exceed limit")
+                decoded = None
                 if av:
                     if av.startswith("data:"):
                         av = av.split(",", 1)[-1]
-                    # 同时把图存本地，页面才能显示出来（OneBot 读不回头像）
                     import base64 as _b64
-                    ap = os.path.join(NAPCAT, "qq-avatar.png")
+                    decoded = _b64.b64decode(av, validate=True)
+                    if not 0 < len(decoded) <= 5 * 1024 * 1024:
+                        raise qq_backend.BackendError("Avatar exceeds the supported limit")
+                connection = _qq_connection()
+                if body.get("backend_fingerprint") not in (None, connection.fingerprint):
+                    raise qq_backend.BackendError("Selected backend changed; reload the profile before editing")
+                expected = _qq_profile_expected()
+                verified = qq_backend.health(connection, expected_account=expected)
+                if not all(verified.get(key) is True for key in ('online', 'good', 'logged_in', 'provider_matches', 'account_matches')):
+                    raise qq_backend.BackendError('Backend and QQ account must be verified before editing the profile')
+
+                def _ob(action, payload):
+                    return _onebot_call(action, payload, connection=connection)
+
+                # 本地那份档案（页面读的就是它）
+                pf0, avatar = _qq_profile_paths(connection, expected)
+                saved0, _ = qq_backend._read(pf0, optional=True)
+                saved0 = saved0 or {}
+
+                if nick:
                     try:
-                        with open(ap, "wb") as fha:
-                            fha.write(_b64.b64decode(av))
+                        _ob("set_qq_profile", {"nickname": nick})
+                        saved0["nickname"] = nick
+                        did.append("nickname")
+                    except qq_backend.BackendError:
+                        warn.append("nickname: backend did not confirm the change")
+
+                if sig:
+                    try:
+                        rs = _ob("set_self_longnick", {"longNick": sig})
+                        details = rs.get("data") if isinstance(rs.get("data"), dict) else rs
+                        outcome = details.get("result")
+                        if outcome is not None and (type(outcome) is not int or outcome != 0):
+                            raise qq_backend.BackendError("Signature change was not accepted")
+                        saved0["signature"] = sig
+                        did.append("signature")
+                    except qq_backend.BackendError:
+                        warn.append("signature: backend did not confirm the change")
+
+                if did:
+                    try:
+                        _write_qq_profile_cache(pf0, json.dumps(saved0, ensure_ascii=False).encode())
                     except Exception:
-                        ap = ""
-                    _ob("set_qq_avatar", {"file": "base64://" + av})
+                        warn.append('local profile cache could not be saved')
+                if av:
+                    try:
+                        _ob("set_qq_avatar", {"file": "base64://" + av})
+                    except qq_backend.BackendError:
+                        warn.append("avatar: backend did not confirm the change")
+                        av = ""
+                if av:
                     did.append("avatar")
-                    if ap:
-                        saved3 = {}
-                        pf3 = os.path.join(NAPCAT, "qq-profile.json")
-                        if os.path.isfile(pf3):
-                            try:
-                                with open(pf3, "r", encoding="utf-8") as fhr:
-                                    saved3 = json.load(fhr)
-                            except Exception:
-                                saved3 = {}
-                        saved3["avatarFile"] = ap
-                        with open(pf3, "w", encoding="utf-8") as fhr:
-                            json.dump(saved3, fhr, ensure_ascii=False)
-                return self._json(200, {"ok": True, "did": did,
-                                        "warn": warn})
+                    try:
+                        _write_qq_profile_cache(avatar, decoded)
+                    except Exception:
+                        warn.append('local avatar cache could not be saved')
+                return self._json(200, {"ok": bool(did) or not warn, "did": did,
+                                        "warn": warn, "error": "; ".join(warn) if not did else ""})
             except Exception as e:
-                return self._json(200, {"ok": False, "error": str(e)[:200]})
+                return self._json(200, {"ok": bool(did), "did": did, "warn": warn,
+                    "error": str(e) if isinstance(e, qq_backend.BackendError) else 'Profile update could not be confirmed'})
 
         if path == "/api/update":
             code, result = update_source_repository()

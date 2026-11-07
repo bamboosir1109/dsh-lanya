@@ -78,4 +78,11 @@ foreach ($d in $daemons) {
   }
 }
 
+# The backend has its own checked lifecycle. Never inject NapCat merely because
+# these shared service scripts live in the historic napcat directory.
+if (-not (Test-Script 'qq-backend-heal.ps1')) {
+  Spawn 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
+    '-File', (Join-Path $root 'qq-backend-heal.ps1')) 'selected QQ backend check'
+}
+
 Note '--- start-all done ---'

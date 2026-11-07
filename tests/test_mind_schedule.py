@@ -248,13 +248,25 @@ class MindScheduleTests(unittest.TestCase):
                        {"network": {"httpServers": [{"port": 8720, "token": "wrong-test-token"},
                                                      {"port": 18720, "token": "test-token"}]}})
         response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"retcode": 0}'
-        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = b'{"status":"ok","retcode":0,"data":{"message_id":77}}'
+        opener = mock.Mock(); opener.open.return_value = response
+        with mock.patch("urllib.request.build_opener", return_value=opener):
             self.assertTrue(self.real_deliver("admin", "offline"))
-        request = urlopen.call_args.args[0]
+        request = opener.open.call_args.args[0]
         self.assertEqual(request.full_url, "http://127.0.0.1:18720/send_private_msg")
         self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
         self.assertEqual(json.loads(request.data)["user_id"], "123")
+
+    def test_legacy_delivery_does_not_accept_a_missing_business_status(self):
+        self.mind.save(os.path.join(self.mind.DATA, "lanya-config.json"), {"adminQQ": [123]})
+        self.mind.save(os.path.join(self.mind.RUNTIME, "framework", "config", "onebot11.json"),
+                       {"network": {"httpServers": [{"port": 18720, "token": "test-token"}]}})
+        response = mock.MagicMock(); response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = b'{"retcode":0}'
+        opener = mock.Mock(); opener.open.return_value = response
+        with mock.patch('urllib.request.build_opener', return_value=opener):
+            self.assertFalse(self.real_deliver('admin', 'offline'))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@
     "lib/registry.js": "0688d2d536fe0b3adb4675b3854245fac1e5061a799d8a79344c2b2264561d3c",
     "lib/interim.js": "5a7e56739039584a4bd6f03719dfd9c57703e8fb13f0774ee023aa8fdf6d28ef",
     "LICENSE": "d29575c8c48fd56e0de6cf59ce70c49cb25ccd24cae34767c04c64c6f730e8bb",
-    "package.json": "67f4095b56d5da9ca1ecfb130f70cf9700309183f0855a7325d285a4b5ef2f93"
+    "package.json": "67f4095b56d5da9ca1ecfb130f70cf9700309183f0855a7325d285a4b5ef2f93",
+    "lib/connection.js": "35d29b29b59e8f61abc82774570189387de440e2b8b57b09ee2a9b404bb01da2"
   }
 }

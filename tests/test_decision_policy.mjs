@@ -302,9 +302,9 @@ test('observations have no user/control authority and a separate pinned dedup na
 test('only an undecided observation may redrive after an interrupted turn', async (t) => {
   const { stateFile } = temporary(t)
   const event = { scope, eventId: 'obs:retry', kind: 'quiet', producer: 'fixture', createdAt: 100 }
-  const first = createDecisionPolicy({ stateFile })
+  const first = createDecisionPolicy({ stateFile, now: () => 1000 })
   const initial = await first.recordObservation(event)
-  const restarted = createDecisionPolicy({ stateFile })
+  const restarted = createDecisionPolicy({ stateFile, now: () => 1000 })
   assert.equal((await restarted.recordObservation(event)).reason, 'duplicate')
   const retry = await restarted.recordObservation({ ...event, redrive: true })
   assert.equal(retry.revision, initial.revision + 1)

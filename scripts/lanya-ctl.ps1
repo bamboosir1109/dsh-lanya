@@ -18,13 +18,18 @@ function Show-Status {
   Write-Output ('Data directory: ' + $dataDir)
   $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
   $ports = [ordered]@{
-    OneBot = (Get-ProjectConfValue 'onebotPort' 8720)
-    NapCatWeb = 6099
     Bridge = 8643
     Panel = (Get-ProjectConfValue 'panelStaticPort' 19388)
     PanelAPI = (Get-ProjectConfValue 'panelPort' 19389)
     TTS = (Get-ProjectConfValue 'ttsPort' 9880)
   }
+  try {
+    . (Join-Path $PSScriptRoot 'qq_backend.ps1')
+    $backend = Get-QqBackendConnection
+    Write-Output ('QQ backend: ' + $backend.provider + ' (configuration only; delivery unverified)')
+    $ports['OneBot'] = ([uri]$backend.napcatHttp).Port
+    $ports['QQWeb'] = ([uri]$backend.webui_url).Port
+  } catch { Write-Output 'QQ backend: configuration unavailable; no default port assumed' }
   foreach ($entry in $ports.GetEnumerator()) {
     $hit = @($listeners | Where-Object { $_.LocalPort -eq [int]$entry.Value })
     Write-Output ('{0,-12} {1,-6} {2}' -f $entry.Key, $entry.Value, $(if ($hit.Count) { 'LISTENING' } else { 'DOWN' }))

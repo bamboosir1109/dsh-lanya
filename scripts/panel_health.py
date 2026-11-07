@@ -16,7 +16,8 @@ import urllib.request
 ROUTES = ('/service-health', '/state', '/budget/summary', '/budget', '/bili', '/live',
           '/autonomy/settings', '/activity/journal', '/memory', '/memory/diary',
           '/memes', '/memes/config', '/works', '/files?dir=diary', '/tools',
-          '/schedule', '/persona', '/config', '/napcat/profile')
+          '/schedule', '/persona', '/config', '/qq/backend', '/qq/backend/status',
+          '/qq/backend/health', '/qq/profile', '/qq/friends', '/qq/groups')
 
 
 def _need(value):
@@ -111,6 +112,27 @@ def validate(route, value):
         _need(isinstance(value.get('config'), dict))
     elif bare == '/persona':
         _need(isinstance(value.get('text'), str))
+    elif bare == '/qq/backend':
+        backend = value.get('backend') or {}
+        _need(backend.get('schema') == 'qq-backend-selection/v1' and backend.get('selected') in ('napcat', 'snowluma') and
+              isinstance(backend.get('revision'), str) and re.fullmatch(r'[a-f0-9]{64}', backend['revision']) and
+              isinstance(backend.get('providers'), list) and
+              type((backend.get('runtime_guard') or {}).get('ready')) is bool)
+        _need(sum(row.get('provider') == backend['selected'] for row in backend['providers'] if isinstance(row, dict)) == 1)
+        degraded = backend['runtime_guard']['ready'] is not True
+    elif bare == '/qq/backend/status':
+        backend = value.get('backend') or {}
+        _need(backend.get('provider') in ('napcat', 'snowluma') and type(backend.get('verified')) is bool)
+        degraded = backend['verified'] is not True or backend.get('status') != 'online'
+    elif bare == '/qq/backend/health':
+        backend = value.get('health') or {}
+        _need(backend.get('provider') in ('napcat', 'snowluma') and
+              all(backend.get(key) is True for key in ('online', 'good', 'logged_in', 'provider_matches', 'account_matches')))
+    elif bare in ('/qq/profile', '/napcat/profile'):
+        profile = value.get('profile') or {}
+        _need(re.fullmatch(r'[1-9][0-9]{0,19}', str(profile.get('user_id', ''))) and isinstance(profile.get('nickname'), str))
+    elif bare in ('/qq/friends', '/qq/groups'):
+        _need(isinstance(value.get('friends' if bare.endswith('friends') else 'groups'), list))
     return 'degraded' if degraded else 'healthy'
 
 

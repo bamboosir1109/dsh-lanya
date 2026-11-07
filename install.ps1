@@ -5,6 +5,7 @@
 param(
     [string]$Target = '',
     [string]$DataDir = '',
+    [ValidateSet('napcat', 'snowluma')][string]$QQBackend = '',
     [switch]$WhatIf,
     [switch]$Force
 )
@@ -40,6 +41,12 @@ foreach ($candidate in @((Join-Path $napcat 'config\project.json'), $projectTarg
     }
 }
 $repoProject = Read-Project (Join-Path $Repo 'config\project.json')
+if ($QQBackend -and $localProject) {
+    $currentBackend = if ($localProject.qqBackend -and $localProject.qqBackend.provider) { [string]$localProject.qqBackend.provider } else { 'napcat' }
+    if ($currentBackend -cne $QQBackend) {
+        throw 'Existing backend selection is protected. Install code without -QQBackend, load the switching guard, then select the backend on the Components page.'
+    }
+}
 $configuredName = if ($localProject -and $localProject.dataDirName) {
     [string]$localProject.dataDirName
 } elseif ($repoProject -and $repoProject.dataDirName) {
@@ -52,11 +59,11 @@ if ($DataDir -and $localProject -and $DataDir -cne $configuredName) {
 if (-not $DataDir) { $DataDir = $configuredName }
 
 # A data directory is a single child name, never a path outside Target.
-if ([string]::IsNullOrWhiteSpace($DataDir) -or $DataDir -in '.', '..', 'napcat', 'config' -or
+if ([string]::IsNullOrWhiteSpace($DataDir) -or $DataDir -in '.', '..', 'napcat', 'snowluma', 'config' -or
     [IO.Path]::IsPathRooted($DataDir) -or $DataDir.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
     $DataDir.EndsWith('.') -or $DataDir.EndsWith(' ') -or
     $DataDir -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') {
-    throw 'DataDir must be a single folder name under Target, distinct from napcat and config.'
+    throw 'DataDir must be a single folder name under Target, distinct from napcat, snowluma and config.'
 }
 $data = Join-Path $Target $DataDir
 
@@ -121,6 +128,10 @@ foreach ($entry in $map) {
     if ($entry.Project) {
         $initialProject = Read-Project $entry.From
         $initialProject | Add-Member -NotePropertyName dataDirName -NotePropertyValue $DataDir -Force
+        if ($QQBackend) {
+            if (-not $initialProject.qqBackend) { $initialProject | Add-Member -NotePropertyName qqBackend -NotePropertyValue ([pscustomobject]@{}) }
+            $initialProject.qqBackend | Add-Member -NotePropertyName provider -NotePropertyValue $QQBackend -Force
+        }
         $json = $initialProject | ConvertTo-Json -Depth 20
         [IO.File]::WriteAllText($entry.To, $json, (New-Object Text.UTF8Encoding($false)))
     } else {

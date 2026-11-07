@@ -15,7 +15,7 @@ const prepare = String.raw`
 import shutil,sys
 from pathlib import Path
 repo,out=map(Path,sys.argv[1:]);sys.path.insert(0,str(repo/'scripts'))
-import patch_onebot_inbound_context as q
+import patch_onebot_inbound_context as q,patch_onebot_backend_context as b
 shutil.copytree(repo/'tests/fixtures/onebot_egress/lib',out/'lib')
 (out/'package.json').write_text('{"type":"module"}',encoding='utf-8')
 for name,body in {'media.js':"export const extForInboundName=()=>'.bin'",'stt.js':"export const transcriptLabel=x=>x",'trace.js':"export const currentTrace=()=>undefined;export const TRACE_REASONS={}", 'errors.js':"export const describeError=e=>e?.name||'Error'"}.items():
@@ -23,7 +23,7 @@ for name,body in {'media.js':"export const extForInboundName=()=>'.bin'",'stt.js
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);'
 assert s.count(a)==1
 s='// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)
-f.write_bytes(q.transform('inbound.js',s.encode('utf-8')))
+f.write_bytes(b.transform('inbound.js',q.transform('inbound.js',s.encode('utf-8'))))
 try:q.transform('inbound.js',f.read_bytes())
 except q.PatchError:pass
 else:raise AssertionError('must refuse reapplication')
@@ -150,6 +150,21 @@ test('private historical bot quote recovers after restart through bounded exact-
   h.ctx.call = async action => action === 'get_msg' ? botMessage
     : { messages: [{ ...botMessage, peer_id: 202 }] }
   assert.equal((await h.pipeline.expandQuote('41', 'private:101')).status, 'unavailable')
+})
+
+test('SnowLuma signed message_id history anchors recover quoted images within the same scope',async()=>{
+  for(const scope of ['group:303','private:101']){
+    const h=fixture(),group=scope.startsWith('group:')
+    h.ctx.historyAnchor=id=>({message_id:Number(id)})
+    const message=quote({message_id:-41,message_type:group?'group':'private',group_id:undefined,
+      sender:{user_id:999},message:[image('signed-quote.png')]})
+    h.ctx.call=async(action,params)=>{h.calls.push({action,params});return action==='get_msg'?message:{messages:[message]}}
+    const result=await h.pipeline.expandQuote('-41',scope)
+    assert.equal(result.status,'available');assert.match(result.text,/signed-quote.png/)
+    assert.deepEqual(h.calls[1].params,{[group?'group_id':'user_id']:group?'303':'101',message_id:-41,count:3,reverse_order:false})
+    h.ctx.call=async action=>action==='get_msg'?message:{messages:[{...message,group_id:202}]}
+    assert.equal((await h.pipeline.expandQuote('-41',scope)).status,'unavailable')
+  }
 })
 
 test('partial images are truthful, bounded to three and cannot replace current OCR target', async () => {

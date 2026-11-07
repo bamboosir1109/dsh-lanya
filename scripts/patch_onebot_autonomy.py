@@ -41,13 +41,13 @@ def private_path(value, plugin, source=None):
     return path
 
 
-def base_adapter(raw, helper_raw=None, diary_raw=None):
+def base_adapter(raw, helper_raw=None, diary_raw=None, backend_raw=None):
     text = replace_once(raw.decode('utf-8'), "from './decision-policy.js'", "from './lanya-decision-policy.js'")
-    return policy.bundle_intent_helper(replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode('utf-8'), helper_raw, diary_raw)
+    return policy.bundle_intent_helper(replace_once(text, "from './observation-queue.js'", "from './lanya-observation-queue.js'").encode('utf-8'), helper_raw, diary_raw, backend_raw)
 
 
-def compile_adapter(raw, helper_raw=None, diary_raw=None):
-    return egress.transform(TARGET, base_adapter(raw, helper_raw, diary_raw))
+def compile_adapter(raw, helper_raw=None, diary_raw=None, backend_raw=None):
+    return egress.transform(TARGET, base_adapter(raw, helper_raw, diary_raw, backend_raw))
 
 
 def installed_root(value):
@@ -72,7 +72,12 @@ def read_source(value):
         watched[str(source / 'plugin/lib' / name)] = dict(sha256=wanted, signature=sig)
     raw, sig = read_regular(source / 'plugin/lib/onebot-policy-adapter.js')
     watched[str(source / 'plugin/lib/onebot-policy-adapter.js')] = dict(sha256=sha256(raw), signature=sig)
-    return source, raw, compile_adapter(raw), watched
+    backend_raw = None
+    if b"import { createBackendGuard } from './qq-backend.js'" in raw:
+        backend_path = source / 'plugin/lib/qq-backend.js'
+        backend_raw, backend_sig = read_regular(backend_path)
+        watched[str(backend_path)] = dict(sha256=sha256(backend_raw), signature=backend_sig)
+    return source, raw, compile_adapter(raw, backend_raw=backend_raw), watched
 
 
 def parents(plugin, images_manifest, allowed_adapter, source_root=None):

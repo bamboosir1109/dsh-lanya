@@ -17,6 +17,7 @@ $script:ProjectConfDefaults = @{
     panelPort       = 19389
     panelStaticPort = 19388
     onebotPort      = 8720
+    qqBackend       = @{ provider = 'napcat'; providers = @{} }
     ttsPort         = 9880
     panelFile       = 'panel.html'
     dataDirName     = ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"

@@ -362,6 +362,13 @@ html[data-theme="light"] .fbody{background:#f4f6f9;color:#3d4759}
   color:#bcc8da;margin-top:13px;display:none
 }
 .empty{color:var(--dim);font-size:13px;padding:26px 0;text-align:center}
+.qq-backend-connection{display:grid;gap:14px;margin:0}
+.qq-backend-connection>div{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr);gap:12px;align-items:baseline}
+.qq-backend-connection dt{font-weight:600}
+.qq-backend-connection dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--fg2)}
+a.qq-backend-link{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:8px 16px;border:1px solid var(--line);border-radius:12px;color:var(--fg);text-decoration:none;box-sizing:border-box}
+a.qq-backend-link:hover{border-color:var(--acc)}
+@media(max-width:650px){.qq-backend-connection>div{grid-template-columns:minmax(0,1fr);gap:4px}.qq-backend-connection{gap:16px}}
 </style>
 <link rel="stylesheet" href="./theme-light.css">
 <style id="layout-refinement">
@@ -515,7 +522,7 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
     <a class="navitem" data-page="memes"><span class="ni">😀</span>表情包<span class="cnt" id="navMemes">—</span></a>
     <a class="navitem" data-page="schedule"><span class="ni">⏰</span>定时<span class="cnt" id="navSched">—</span></a>
     <a class="navitem" data-page="activity"><span class="ni">🌤</span>她在干嘛</a>
-    <a class="navitem" data-page="napcat"><span class="ni">🐱</span>NapCatQ</a>
+    <a class="navitem" data-page="qq-backend" id="qqBackendNav"><span class="ni">🐱</span>QQ 接入</a>
     <a class="navitem" data-page="tools"><span class="ni">🔧</span>工具<span class="cnt" id="navTools">—</span></a>
     <a class="navitem" data-page="bili" id="navBiliItem"><span class="ni">📺</span>刷 B 站</a>
     <a class="navitem" data-page="memory"><span class="ni">📓</span>记忆日记</a>
@@ -558,7 +565,7 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
     <h3>一键操作</h3>
     <div class="presets">
       <button class="preset" onclick="doAction('kill-strays')"><div class="t">清理卡住的进程</div><div class="d">清掉卡住的后台任务</div></button>
-      <button class="preset" onclick="doAction('napcat-elevated')"><div class="t">确保 QQ 在线</div><div class="d">会弹 UAC，点「是」</div></button>
+      <button class="preset" onclick="doAction('qq-backend')"><div class="t">启动 / 检查 QQ 接入</div><div class="d">使用部件页选择的后端</div></button>
       <button class="preset" onclick="doAction('settings-guard')"><div class="t">检查参数</div><div class="d">和基准值比对</div></button>
       <a class="preset url" href="./phone.html" target="_blank" rel="noopener"><div class="t">真实 Android 手机</div><div class="d">查看设备截屏并操作，离线时禁用</div></a>
     </div>
@@ -591,16 +598,20 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
       <tbody id="partsBody"></tbody>
     </table></div>
     <div class="btnrow">
-      <button class="pri" onclick="doAction('napcat-elevated','partsOut')">启动 / 重启 QQ</button>
+      <button class="pri" onclick="doAction('qq-backend','partsOut')">启动 / 检查 QQ 接入</button>
       <button onclick="doAction('kill-strays','partsOut')">清理卡住的进程</button>
     </div>
     <div class="out" id="partsOut"></div>
   </div>
 
-  <div class="card">
-    <h3>NapCat（QQ 那一层）</h3>
-    <p class="note">只读。token 打码显示，改配置请直接编辑 onebot11.json。</p>
-    <div id="napcatBody"></div>
+  <div class="card" id="qqBackendSettings">
+    <h3>QQ 接入后端</h3>
+    <p class="note" id="qqBackendConfigured">正在读取所选接入。</p>
+    <div class="grid2"><div class="field"><label for="qqBackendSelect">选择后端</label>
+      <select id="qqBackendSelect" onchange="renderQQBackendChoice()"><option value="napcat">NapCatQQ</option><option value="snowluma">SnowLuma</option></select>
+    </div><div class="field"><label>配置与连接</label><p class="note" id="qqBackendChoice">正在核对配置。</p></div></div>
+    <div class="btnrow"><button class="pri" id="qqBackendApply" onclick="saveQQBackend()" disabled>应用选择</button><button onclick="loadQQBackendSettings()">重新读取</button><button onclick="goto('qq-backend')">打开接入页</button></div>
+    <div class="out" id="qqBackendOut"></div>
   </div>
 
   <div class="card">
@@ -918,8 +929,8 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
   <div class="card">
     <h3>改法提示</h3>
     <p class="note" style="margin:0">
-      想让她话少一点 → 改「短，而且要不匀」<br>
-      想让她别那么顺从 → 改「别人让你干什么，先顶回去」<br>
+      想让她话少一点 → 写清楚何时简短、何时需要展开<br>
+      想调整说话语气 → 用温和、自然的对话示例说明<br>
       想换称呼 → 去「身份」那页改，不用动人设正文
     </p>
   </div>
@@ -1026,15 +1037,11 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
   </details>
 </div>
 
-<div class="page" id="page-napcat">
-  <div class="phead">
-    <h1>NapCatQ</h1>
-    <p>QQ 那一层。改资料、看连接配置，都在这页。</p>
-  </div>
-
+<div class="page" id="page-qq-backend"><div id="qqBackendPage">正在读取 QQ 接入…</div></div>
+<template id="qqBackendCommonTemplate">
   <div class="card">
     <h3>她的资料</h3>
-    <p class="note">改完立刻生效（走 OneBot 的 set_qq_profile / set_self_longnick / set_qq_avatar）。</p>
+    <p class="note">修改会提交到当前接入的 QQ 账号，结果以接口回执为准。</p>
     <div class="grid2">
       <div class="field">
         <label>昵称</label>
@@ -1084,12 +1091,7 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
     <div class="out" id="qqGroupOut"></div>
   </div>
 
-  <div class="card">
-    <h3>连接</h3>
-    <p class="note">只读。改配置请直接编辑 <code>framework/config/onebot11.json</code>。</p>
-    <div id="napcatBody2"></div>
-  </div>
-</div>
+</template>
 
 <div class="page" id="page-tools">
   <div class="phead"><h1>工具</h1><p>这些插件背后要用的东西。看版本、在不在、跑没跑，不用开命令行。</p></div>
@@ -1101,7 +1103,7 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
     <div class="out" id="toolsOut"></div>
     <div class="btnrow">
       <button onclick="loadTools()">重新检查</button>
-      <button class="pri" onclick="doAction('napcat-elevated','toolsOut')">启动 / 重启 NapCat</button>
+      <button class="pri" onclick="doAction('qq-backend','toolsOut')">启动 / 检查 QQ 接入</button>
     </div>
   </div>
   <div class="card">
@@ -1136,6 +1138,29 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
 
 </main>
 
+<script src="qq-backend.js"></script>
+<script id="qqBackendFallback">
+// An unavailable optional module must not prevent Bili, budget or memory boot.
+(function(){
+  if(typeof window.loadQQBackendPage === 'function') return;
+  const unavailable = async function(){
+    const message = 'QQ 接入控件未加载，请刷新页面后重试。其他页面仍可使用。';
+    for(const id of ['qqBackendPage','qqBackendChoice','qqBackendHealth']){
+      const node = document.getElementById(id); if(node) node.textContent = message;
+    }
+    const button = document.getElementById('qqBackendApply'); if(button) button.disabled = true;
+    return null;
+  };
+  Object.assign(window, {
+    qqBackendTrusted:false, qqBackendState:null,
+    qqBackendReadStamp:() => null, qqBackendAcceptRead:() => false,
+    qqBackendEscape:value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
+    loadQQBackendPage:unavailable, loadQQBackendSettings:unavailable,
+    loadQQBackendHealth:unavailable, saveQQBackend:unavailable,
+    renderQQBackendChoice:unavailable
+  });
+})();
+</script>
 <script>
 let searchOn = false;
 
@@ -1194,12 +1219,13 @@ let currentPage = 'overview';
 const recordStates = new Map(), recordRequests = new Map(), refreshingPages = new Set(), dirtyPages = new Set(), pageEdits = new Map();
 
 function recordPage(path){
+  if(path.split('?')[0].startsWith('/qq/')) return path.split('?')[0] === '/qq/backend' && currentPage === 'system' ? 'system' : 'qq-backend';
   const bare = path.split('?')[0];
   if(bare === '/state') return currentPage === 'system' ? 'system' : 'overview';
   if(bare === '/files') return /[?&]dir=(made|archive)(&|$)/.test(path) ? 'works' : 'memory';
   return ({'/bili':'bili','/live':'activity','/activity/journal':'activity','/autonomy/settings':currentPage === 'talk' ? 'talk' : 'activity','/memes':'memes',
     '/budget':['activity','overview','system'].includes(currentPage) ? currentPage : 'money','/budget/summary':['activity','overview','system'].includes(currentPage) ? currentPage : null,'/schedule':'schedule','/memory':'memory','/works':'works',
-    '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'napcat'})[bare];
+    '/tools':'tools','/tunables':'talk','/persona':'persona','/config':'identity','/napcat':'qq-backend','/qq-backend':'qq-backend','/snowluma':'qq-backend','/qq/connection':'qq-backend','/qq/profile':'qq-backend'})[bare];
 }
 function noteRecord(path, state, at){
   if(path.split('?')[0] === '/activity/journal'){
@@ -1258,7 +1284,7 @@ async function refreshCurrentPage(manual){
       works:() => editing || Object.keys(workSel).length || $('worksViewer')?.classList.contains('on') ? null : loadWorks(true),
       schedule:() => editing ? null : loadSchedule(),
       talk:loadConversationPolicy,
-      napcat:() => manual && !editing ? loadNapcat() : null,
+      'qq-backend':() => manual && !editing ? loadQQBackendPage() : null,
       persona:() => manual && !editing ? loadPersona() : null,
       identity:() => manual && !editing ? loadConfig() : null
     };
@@ -1267,6 +1293,7 @@ async function refreshCurrentPage(manual){
 }
 
 function goto(page){
+  if(page === 'napcat' || page === 'snowluma') page = 'qq-backend';
   document.querySelectorAll('.page').forEach(el => el.classList.toggle('on', el.id === 'page-' + page));
   document.querySelectorAll('.navitem').forEach(el => el.classList.toggle('on', el.dataset.page === page));
   location.hash = '#/' + page;
@@ -1274,7 +1301,7 @@ function goto(page){
   renderRecordSync();
   loadBrand();
   const loaders = { talk:loadConversationPolicy, money:loadBudget, memes:loadMemes, schedule:loadSchedule, system:loadSystem, tools:loadTools, bili:loadBili,
-                    napcat:loadNapcat,
+                    'qq-backend':loadQQBackendPage,
                     activity:() => { loadAutonomySettings(dirtyPages.has('activity')); loadLive(); },
                     memory:() => loadFiles(currentDir), works:loadWorks,
                     persona:loadPersona, identity:loadConfig };
@@ -1291,6 +1318,7 @@ $('nav').addEventListener('click', (e) => {
 window.addEventListener('hashchange', () => {
   let p = (location.hash || '').replace('#/','') || 'overview';
   if(p === 'parts' || p === 'plugins') p = 'system';
+  if(p === 'napcat' || p === 'snowluma') p = 'qq-backend';
   const el = document.getElementById('page-' + p);
   if(el && !el.classList.contains('on')) goto(p);
 });
@@ -1433,17 +1461,22 @@ async function doAction(target, outId){
   if(componentActionPending) return;
   componentActionPending = true;
   const oid = outId || 'ovOut';
+  const payload = {target};
+  if(target === 'qq-backend'){
+    if(!qqBackendTrusted || !qqBackendState?.revision){ componentActionPending=false; show(oid,'接入配置未确认，请在部件页重新读取。'); return; }
+    payload.provider=qqBackendState.selected; payload.revision=qqBackendState.revision;
+  }
   show(oid, '正在执行：' + target + ' …');
   try{
     const j = await api('/action', { method:'POST', headers:{'content-type':'application/json'},
-                                     body: JSON.stringify({ target }) });
+                                     body: JSON.stringify(payload) });
     if(j.ok && j.service_check) show(oid, j.note || '服务检查已请求，健康状态待确认。');
     else if(j.ok && j.observation_only) show(oid, j.note || '检查请求已提交；活动是否执行由主 agent 决定。');
-    else if(j.ok && j.elevated) show(oid, '已弹出 UAC —— 请在屏幕上点「是」。\nQQ 大约 25 秒后恢复。');
+    else if(j.ok && j.provider) show(oid, j.status === 'already_running' ? '所选接入程序已在运行。请检查连接和账号登录。' : '所选接入正在启动。请到接入页核对管理页和登录状态。');
     else if(j.ok && j.task) show(oid, '已触发：' + j.task + '\n几秒后状态会刷新。');
     else if(j.ok) show(oid, '已启动：' + target + '（进程 ' + j.pid + '）');
     else show(oid, '失败：' + (j.error || j.log || '未知原因'));
-  }catch(e){ show(oid, '发不出去：' + e.message); }
+  }catch(e){ show(oid, '操作未完成：' + e.message); }
   componentActionPending = false;
   if(target === 'lifeloop' || target === 'mind') { loadAutonomySettings(true); loadLive(); }
   setTimeout(refreshOverview, 3000);
@@ -1477,7 +1510,7 @@ const PLUGIN = {
   'dsh-base':'基础能力，不能关',
   'dsh-web-app':'你现在看到的网页界面，不能关'
 };
-function pDesc(n){ for(const k in PLUGIN){ if(n===k || n.indexOf(k)===0) return PLUGIN[k]; } return ''; }
+function pDesc(n){ if(Object.prototype.hasOwnProperty.call(PLUGIN,n)) return PLUGIN[n]; for(const k of Object.keys(PLUGIN).sort((a,b) => b.length-a.length)){ if(n.indexOf(k + '-')===0) return PLUGIN[k]; } return ''; }
 
 // 品牌名和图标从配置读，默认中性。原来写死成「大肥鱼 / 🐺」，
 // 别人用这套东西就是别人的角色，不该顶着别人的名字和头像。
@@ -1542,9 +1575,9 @@ async function refreshOverview(){
     const tb = $('partsBody');
     tb.innerHTML = '';
     comps.forEach(c => {
-      const meta = PART[c.tag] || [c.tag, ''];
+      const meta = c.tag === 'qq-backend' ? ['QQ 接入', qqBackendEscape(c.backend?.name || '未确认') + ' · ' + (c.backend?.verified === true ? '账号与后端已核验在线' : '连接待核验')] : PART[c.tag] || [c.tag, ''];
       const managed = c.control === 'request_check';
-      const cls = c.service ? (c.service.healthy ? 'up' : 'multi') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
+      const cls = c.tag === 'qq-backend' ? (c.backend?.verified === true ? 'up' : 'multi') : c.service ? (c.service.healthy ? 'up' : 'multi') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'up' : 'multi') : c.count===0 ? 'down' : (c.count>1 ? 'multi' : 'up');
       const canStart = ['groupwatch','lifeloop','voicedaemon','browserd','works','tts'].indexOf(c.tag) >= 0;
       const btn = c.control === 'ensure_works'
         ? '<button class="sm" onclick="doAction(\'works\',\'partsOut\')">检查恢复</button>' : managed
@@ -2052,7 +2085,7 @@ async function saveBudget(){
 let memeData = [], memeCur = 0, memeFingerprint = '';
 let memeSel = null, memeMutationPending = false;
 
-function loadSystem(){ refreshOverview(); }
+function loadSystem(){ refreshOverview(); loadQQBackendSettings(); }
 
 async function loadTools(){
   hide('toolsOut');
@@ -2192,11 +2225,14 @@ function pollBiliLogin(n){
 }
 
 async function loadQQFriends(){
+  if(!qqBackendTrusted){ setText('qqFriendCount','接入配置未确认'); return; }
+  const backendStamp = qqBackendReadStamp();
   const box = $('qqFriendList');
   if(!box) return;
   box.innerHTML = '<div class="empty">读取中…</div>';
   try{
     const j = await api('/qq/friends', null, true);
+    if(!qqBackendAcceptRead(backendStamp, j)) return;
     if(!j.ok){ plainMessage(box, '读不到：' + (j.error || '')); return; }
     const list = j.friends || [];
     setText('qqFriendCount', list.length + ' 个好友');
@@ -2206,15 +2242,18 @@ async function loadQQFriends(){
       const d = appendPlainRow(box, f.remark || f.nickname || '?', String(f.qq || f.user_id || '') + '　' + (f.nickname || ''));
       d.style.cursor = 'default';
     });
-  }catch(e){ plainMessage(box, '读不到：' + e.message); }
+  }catch(e){ if(qqBackendAcceptRead(backendStamp)) plainMessage(box, '读不到：' + e.message); }
 }
 
 async function loadQQGroups(){
+  if(!qqBackendTrusted){ setText('qqGroupCount','接入配置未确认'); return; }
+  const backendStamp = qqBackendReadStamp();
   const box = $('qqGroupList');
   if(!box) return;
   box.innerHTML = '<div class="empty">读取中…</div>';
   try{
     const j = await api('/qq/groups', null, true);
+    if(!qqBackendAcceptRead(backendStamp, j)) return;
     if(!j.ok){ plainMessage(box, '读不到：' + (j.error || '')); return; }
     const list = j.groups || [];
     setText('qqGroupCount', list.length + ' 个群');
@@ -2224,7 +2263,7 @@ async function loadQQGroups(){
       const d = appendPlainRow(box, g.group_name || '?', String(g.group_id || '') + '　' + (g.member_count ?? '未确认') + ' 人');
       d.style.cursor = 'default';
     });
-  }catch(e){ plainMessage(box, '读不到：' + e.message); }
+  }catch(e){ if(qqBackendAcceptRead(backendStamp)) plainMessage(box, '读不到：' + e.message); }
 }
 
 async function loadBiliCred(){
@@ -2447,40 +2486,49 @@ async function loadLive(){
 }
 
 async function loadNapcatProfile(){
+  if(!qqBackendTrusted){ show('ncOut','接入配置未确认，请重新读取。'); return; }
+  const backendStamp = qqBackendReadStamp();
   try{
-    const j = await api('/napcat/profile', null, true);
+    const j = await api('/qq/profile', null, true);
+    if(!qqBackendAcceptRead(backendStamp, j)) return;
     if(!j.ok){ show('ncOut', '读不到：' + (j.error || '')); return; }
     const p = j.profile || {};
-    const n = $('ncNick'); if(n && p.nickname) n.value = p.nickname;
-    const sg = $('ncSign'); if(sg && p.signature) sg.value = p.signature;
+    const n = $('ncNick'); if(n) n.value = typeof p.nickname === 'string' ? p.nickname : '';
+    const sg = $('ncSign'); if(sg) sg.value = typeof p.signature === 'string' ? p.signature : '';
     // OneBot 读不回头像，用本地存的那张
     const prev = $('ncAvPrev');
     if(prev){
-      if(p.hasAvatar){ prev.src = '/qq-avatar.png?t=' + Date.now(); prev.style.display = 'block'; }
+      if(p.hasAvatar){ prev.src = API + '/qq-avatar.png?backend_fingerprint=' + encodeURIComponent(backendStamp.fingerprint) + '&t=' + Date.now(); prev.style.display = 'block'; }
       else { prev.style.display = 'none'; }
     }
     setText('ncOut', '当前 QQ：' + (p.user_id || '?')
       + '　昵称：' + (p.nickname || '（未设）')
       + '　签名：' + (p.signature || '（未设）'));
-  }catch(e){ show('ncOut', '读不到：' + e.message); }
+  }catch(e){ if(qqBackendAcceptRead(backendStamp)) show('ncOut', '读不到：' + e.message); }
 }
 
 async function saveNapcatProfile(){
+  if(!qqBackendTrusted){ show('ncOut','接入配置未确认，请重新读取。'); return; }
+  const backendStamp = qqBackendReadStamp();
   const nick = ($('ncNick') || {}).value || '';
   const sig = ($('ncSign') || {}).value || '';
   const f = $('ncAvFile');
-  const payload = { nickname: nick.trim(), signature: sig.trim() };
+  const payload = { nickname: nick.trim(), signature: sig.trim(), backend_fingerprint:backendStamp.fingerprint };
   const send = async function(){
+    if(!qqBackendAcceptRead(backendStamp)) return;
     try{
-      const j = await api('/napcat/profile', { method:'POST',
+      const j = await api('/qq/profile', { method:'POST',
         headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+      if(!qqBackendAcceptRead(backendStamp, j)) return;
       if(!j.ok){ show('ncOut', '没改成：' + (j.error || '')); return; }
-      show('ncOut', '改了：' + (j.did || []).join('、'));
+      show('ncOut', '接口已接受：' + (j.did || []).join('、') + ((j.warn || []).length ? '\n未完成：' + j.warn.join('；') : ''));
       loadNapcatProfile();
-    }catch(e){ show('ncOut', '没改成：' + e.message); }
+    }catch(e){ if(qqBackendAcceptRead(backendStamp)) show('ncOut', '没改成：' + e.message); }
   };
   if(f && f.files && f.files[0]){
+    if(f.files[0].size > 5 * 1024 * 1024){ show('ncOut','图片请控制在 5 MiB 以内。'); return; }
     const rd = new FileReader();
+    rd.onerror = function(){ if(qqBackendAcceptRead(backendStamp)) show('ncOut','图片读取失败，请重新选择。'); };
     rd.onload = function(){ payload.avatarBase64 = rd.result; send(); };
     rd.readAsDataURL(f.files[0]);
   }else{
@@ -2495,51 +2543,8 @@ document.addEventListener('change', function(ev){
   }
 });
 
-async function loadNapcat2(){
-  const box = $('napcatBody2');
-  if(!box) return;
-  try{
-    const j = await api('/napcat', null, true);
-    const n = j.napcat || {};
-    if(!n.found){ box.innerHTML = '<div class="dsc">没找到 onebot11.json</div>'; return; }
-    const http = (n.http || []).map(function(x){ return x.host + ':' + x.port; }).join('、') || '没开';
-    const ws = (n.wsClient || []).map(function(x){ return x.url; }).join('、') || '没开';
-    box.innerHTML = '<table>'
-      + '<tr><td class="dsc" style="width:140px">HTTP</td><td>' + http + '</td></tr>'
-      + '<tr><td class="dsc">反向 WS</td><td>' + ws + '</td></tr>'
-      + '<tr><td class="dsc">token</td><td><code>' + (n.tokenMasked || '（空）') + '</code></td></tr>'
-      + '</table>';
-  }catch(e){ box.innerHTML = '<div class="dsc">读不到：' + e.message + '</div>'; }
-}
-
-async function loadNapcat(){
-  await Promise.all([loadNapcat2(), loadQQFriends(), loadQQGroups(), loadNapcatProfile()]);
-  const box = $('napcatBody');
-  if(!box) return;
-  try{
-    const j = await api('/napcat', null, true);
-    const n = j.napcat || {};
-    if(!n.found){
-      box.innerHTML = '<div class="dsc">没找到 onebot11.json'
-        + (n.error ? '：' + n.error : '') + '</div>';
-      return;
-    }
-    const http = (n.http || []).map(function(x){
-      return '<span class="pkg">' + x.host + ':' + x.port + '</span>';
-    }).join(' ') || '<span class="dsc">没开</span>';
-    const ws = (n.wsClient || []).map(function(x){
-      return '<span class="pkg">' + (x.url || '?') + '</span>';
-    }).join(' ') || '<span class="dsc">没开</span>';
-    box.innerHTML = '<table>'
-      + '<tr><td class="dsc" style="width:150px">HTTP 服务</td><td>' + http + '</td></tr>'
-      + '<tr><td class="dsc">反向 WS 客户端</td><td>' + ws + '</td></tr>'
-      + '<tr><td class="dsc">连接 token</td><td><code>' + (n.tokenMasked || '（空）')
-      + '</code> <span class="dsc">（只露头尾）</span></td></tr>'
-      + '</table>';
-  }catch(e){
-    box.innerHTML = '<div class="dsc">读不到：' + e.message + '</div>';
-  }
-}
+async function loadNapcat2(){ return loadQQBackendPage(); }
+async function loadNapcat(){ return loadQQBackendPage(); }
 
 function biliRecordTime(at){
   if((typeof at !== 'number' || !Number.isFinite(at)) && (typeof at !== 'string' || !at.trim())) return '时间未确认';
@@ -3835,8 +3840,9 @@ document.addEventListener('click', function(ev){
 (async function boot(){
   let p = (location.hash || '').replace('#/','') || 'overview';
   if(p === 'parts' || p === 'plugins') p = 'system';
+  if(p === 'napcat' || p === 'snowluma') p = 'qq-backend';
   if(document.getElementById('page-' + p)) goto(p);
-  await refreshOverview();
+  await Promise.all([refreshOverview(), loadQQBackendSettings()]);
   setInterval(() => {
     if(document.hidden) return;
     refreshOverview();

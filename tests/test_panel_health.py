@@ -51,6 +51,16 @@ class PanelHealthTests(unittest.TestCase):
         self.assertEqual(health.validate('/activity/journal',dict(status='ok',days=[],freshness=dict(status='degraded'))),'degraded')
         with self.assertRaises(ValueError):health.validate('/memory',dict(ok=True,memory=dict(entries=[],availability=dict(status='error'))))
 
+    def test_backend_and_profile_contracts_do_not_accept_only_a_top_level_success(self):
+        for route in ['/qq/backend', '/qq/backend/status', '/qq/backend/health', '/qq/profile', '/qq/friends', '/qq/groups']:
+            with self.subTest(route=route), self.assertRaises(ValueError): health.validate(route, {'ok': True})
+        status={'ok':True,'backend':{'provider':'snowluma','verified':False,'status':'unconfirmed'}}
+        self.assertEqual(health.validate('/qq/backend/status',status),'degraded')
+        status['backend'].update(verified=True,status='online')
+        self.assertEqual(health.validate('/qq/backend/status',status),'healthy')
+        profile={'ok':True,'profile':{'user_id':303,'nickname':'fixture'}}
+        self.assertEqual(health.validate('/qq/profile',profile),'healthy')
+
     def test_origins_reject_external_redirect_targets_credentials_and_paths(self):
         for origin in ['http://127.0.0.1:19388','http://localhost:19389','http://[::1]:19388']:
             self.assertEqual(health.local_origin(origin),origin)

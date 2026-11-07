@@ -67,27 +67,9 @@ import time
 import urllib.request
 from decision_events import unified_decisions_enabled
 
-NAPCAT = "http://127.0.0.1:%d" % int(get('onebotPort', 8720))
-# Neither the token nor the group id belongs in the source. The token was
-# sitting here in plain text, which means every copy of this file carried a live
-# credential; the group id was hardcoded so the script could only ever work
-# against one group.
-#
-# Both are read from the install now:
-#   token -> framework/config/onebot11.json
-#   group -> <root>/<dataDir>/lanya-config.json
-NAPCAT_TOKEN = ""
+import qq_backend
+
 GROUP = ""
-try:
-    _nb = os.path.join(work_dir(), "napcat", "framework", "config", "onebot11.json")
-    if os.path.isfile(_nb):
-        with open(_nb, encoding="utf-8-sig") as _fh:
-            _nd = json.load(_fh)
-        _hs = ((_nd.get("network") or {}).get("httpServers") or [])
-        if _hs:
-            NAPCAT_TOKEN = str(_hs[0].get("token") or "")
-except Exception:
-    pass
 try:
     _cp = os.path.join(data_dir(), "lanya-config.json")
     if os.path.isfile(_cp):
@@ -96,7 +78,6 @@ try:
         GROUP = str(_cd.get("fanGroupQQ") or _cd.get("fanGroup") or "")
 except Exception:
     pass
-TOKEN = NAPCAT_TOKEN
 LOOKBACK = 60
 
 LANYA = data_dir()
@@ -138,14 +119,7 @@ def log(msg):
 
 
 def api(action, payload):
-    req = urllib.request.Request(
-        NAPCAT + "/" + action,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    return qq_backend.call(action, payload, timeout=15)
 
 
 def load(path, default):

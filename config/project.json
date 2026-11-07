@@ -3,6 +3,10 @@
   "panelPort": 19389,
   "panelStaticPort": 19388,
   "onebotPort": 8720,
+  "qqBackend": {
+    "provider": "napcat",
+    "providers": {}
+  },
   "ttsPort": 9880,
   "panelFile": "panel.html",
   "dataDirName": "大肥鱼",

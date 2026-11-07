@@ -1,6 +1,6 @@
 # dsh-lanya
 
-当前开发版本：**v1.4.0-dev.46**。普通文字在同一次主 LLM 决定中发送并结束回合，减少串行模型请求；群聊缓冲从真实收件时起计时，已排队等待的时间不会重算。保留自主旁听、表情、语音和发送保护。逐项核查和验收边界见[功能检查](docs/FUNCTIONAL-AUDIT.md)、[交互可靠性](docs/INTERACTION-RELIABILITY.md)；每批更新详见[更新日志](CHANGELOG.md)和[开发日志](docs/DEVLOG.md)，开发版不表示正式 Release。
+当前开发版本：**v1.4.0-dev.47（开发中）**。NapCatQQ 与 SnowLuma 使用统一后端接口，保留同一个主 LLM 和既有发送保护。首次部署选择、页面替换和启动保护已完成隔离验证；真实安装登录、运行部署与完整兼容验收仍待完成。进度见 [QQ 后端](docs/QQ-BACKENDS.md)、[更新日志](CHANGELOG.md)和[开发日志](docs/DEVLOG.md)。
 
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 

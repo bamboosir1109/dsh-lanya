@@ -87,7 +87,6 @@ $activitiesPath = Join-Path $dafeiyuDir 'activities.json'
 $statePath  = Join-Path $dafeiyuDir 'lifeloop.state.json'
 $logPath    = Join-Path $dafeiyuDir 'lifeloop.log'
 $budgetPath = Join-Path $dafeiyuDir 'budget.json'
-$cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
 # Group id must come from config. It used to be the literal string
 # "YOUR_GROUP_ID" - a placeholder left behind by a sanitising pass - which meant
@@ -173,7 +172,8 @@ function Read-AnyText([string]$path) {
 }
 
 if (-not (Test-Path $notesDir)) { New-Item -ItemType Directory -Path $notesDir -Force | Out-Null }
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 # NOTE: the list of people she may contact lives in lifeloop.prompt.txt, not here.
 # This file must stay pure ASCII - PowerShell 5.1 reads a BOM-less .ps1 with the

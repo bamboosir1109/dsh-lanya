@@ -50,6 +50,12 @@ class Handler(BaseHTTPRequestHandler):
             }}
             if mode == "bad":
                 value["autonomy"]["status"] = PRIVATE
+        elif self.path == "/api/qq/backend/status":
+            value = {"ok": True, "backend": {"provider": "snowluma", "name": PRIVATE,
+                "verified": True, "status": "online", "private_body": PRIVATE}}
+            if mode == "bad":
+                value["backend"]["verified"] = "true"
+                value["backend"]["provider"] = PRIVATE
         elif self.path == "/api/service-health":
             value = {"ok": True, "service": "lanya-panel", "version": 1,
                      "role": self.server.role, "port": self.server.server_port,
@@ -133,7 +139,7 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("scheduler + consumer verified by panel API", result.stdout)
         self.assertIn("Autonomy: processing", result.stdout)
         self.assertIn("Watch   : healthy (reported by panel API)", result.stdout)
-        self.assertIn("port reachable; message delivery unverified", result.stdout)
+        self.assertIn("SnowLuma account + provider verified; client delivery unverified", result.stdout)
         self.assertEqual(result.stdout.count("HTTP ready"), 2)
         self.assertIn("Source  : 9.8.7-dev.1", result.stdout)
         self.assertIn("Installed: 9.8.6-dev.9", result.stdout)
@@ -141,7 +147,7 @@ class MonitorTests(unittest.TestCase):
         self.assertNotIn(PRIVATE, result.stdout + result.stderr)
         self.assertNotIn(str(self.root), result.stdout + result.stderr)
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual(api.requests, [("GET", "/api/autonomy"), ("GET", "/api/service-health")])
+        self.assertEqual(api.requests, [("GET", "/api/autonomy"), ("GET", "/api/qq/backend/status"), ("GET", "/api/service-health")])
         self.assertEqual(works.requests, [("GET", "/api/service-health")])
 
     def test_invalid_explicit_config_does_not_fall_back_or_probe(self):
@@ -191,7 +197,7 @@ class MonitorTests(unittest.TestCase):
         result = self.run_monitor()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(redirected.requests, [])
-        self.assertEqual(len(api.requests), 3)
+        self.assertEqual(len(api.requests), 4)
         self.assertNotIn("HTTP ready", result.stdout)
 
     def test_slow_endpoints_are_bounded_and_not_retried(self):
@@ -202,7 +208,7 @@ class MonitorTests(unittest.TestCase):
         elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(elapsed, 7)
-        self.assertEqual(len(api.requests), 3)
+        self.assertEqual(len(api.requests), 4)
         self.assertNotIn("HTTP ready", result.stdout)
 
     def test_native_mutex_blocks_second_window_and_releases_after_owner_exit(self):

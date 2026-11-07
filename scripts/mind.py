@@ -435,20 +435,7 @@ def parse(answer):
 # ---------------------------------------------------------------------------
 def deliver(target, text):
     """发出去。复用 lifeloop 那套 OneBot 调用，不重写一遍。"""
-    import urllib.request
-
-    port = int(get("onebotPort", 8720))
-    nb = os.path.join(RUNTIME, "framework", "config", "onebot11.json")
-    tok = ""
-    try:
-        with io.open(nb, encoding="utf-8-sig") as fh:
-            d = json.load(fh)
-        hs = ((d.get("network") or {}).get("httpServers") or [])
-        if hs:
-            server = next((h for h in hs if str(h.get("port")) == str(port)), hs[0])
-            tok = server.get("token") or ""
-    except Exception:
-        pass
+    import qq_backend
 
     cfg = load(os.path.join(DATA, "lanya-config.json"), {})
     action = "send_group_msg"
@@ -472,15 +459,7 @@ def deliver(target, text):
         log("deliver: no target id for " + str(target))
         return False
     try:
-        req = urllib.request.Request(
-            "http://127.0.0.1:%d/" % port + action,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"content-type": "application/json",
-                     "authorization": "Bearer " + tok},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=25) as r:
-            raw = r.read().decode("utf-8", "replace")
-        result = json.loads(raw)
+        result = qq_backend.call(action, body, timeout=25)
         ok = result.get("retcode") == 0
         log("deliver(%s): %s" % (target, "ok" if ok else
                                 "OneBot retcode=%s" % result.get("retcode")))

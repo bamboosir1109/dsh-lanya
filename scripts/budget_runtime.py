@@ -264,6 +264,8 @@ def get_snapshot(now=None):
             'gate_pid': gate.get('pid') if fresh else None,
             'adapter_source_sha256': gate.get('adapter_source_sha256') if fresh else None,
             'helper_source_sha256': gate.get('helper_source_sha256') if fresh else None,
+            'backend_transport_bound': fresh and gate.get('backend_transport_bound') is True,
+            'backend_quote_bound': fresh and gate.get('backend_quote_bound') is True,
             'control_decisions_exempt': True, 'evidence': 'recent adapter heartbeat; not a provider credit balance',
             'scope': 'trusted bound main-agent turn; not entertainment-only or account-wide cost'}}
 
@@ -273,7 +275,8 @@ def gate_evidence(now=None):
     value = get_snapshot(now)['enforcement']
     return {'at': value['gate_last_seen'], 'pid': value['gate_pid'],
             'adapter_source_sha256': value['adapter_source_sha256'],
-            'helper_source_sha256': value['helper_source_sha256']}
+            'helper_source_sha256': value['helper_source_sha256'],
+            'backend_transport_bound': value['backend_transport_bound'], 'backend_quote_bound': value['backend_quote_bound']}
 
 
 def save_config(settings, expected_revision):
@@ -341,13 +344,20 @@ def operate(request, now=None):
     if not isinstance(request, dict) or not _is_contract(request.get('budget_contract')):
         raise BudgetError('budget_currency_contract_required', 409)
     if isinstance(request, dict) and request.get('operation') == 'heartbeat':
-        if set(request) != {'operation','instance_id','pid','adapter_source_sha256','budget_contract'} or not isinstance(request['instance_id'], str) or not re.fullmatch('[a-f0-9]{64}', request['instance_id']) or type(request['pid']) is not int or request['pid'] <= 0 or not isinstance(request['adapter_source_sha256'],str) or not re.fullmatch('[a-f0-9]{64}',request['adapter_source_sha256']):
+        fields = {'operation','instance_id','pid','adapter_source_sha256','budget_contract'}
+        backend_fields = {'backend_transport_bound', 'backend_quote_bound'}
+        if (set(request) not in (fields, fields | backend_fields) or
+                not isinstance(request.get('instance_id'), str) or not re.fullmatch('[a-f0-9]{64}', request['instance_id']) or
+                type(request.get('pid')) is not int or request['pid'] <= 0 or not isinstance(request.get('adapter_source_sha256'),str) or
+                not re.fullmatch('[a-f0-9]{64}',request['adapter_source_sha256']) or
+                any(type(request[key]) is not bool for key in backend_fields if key in request)):
             raise BudgetError('invalid_budget_heartbeat', 400)
         stamp, _ = _clock(now)
         with _transaction(True) as connection:
             _config()
             connection.execute("INSERT OR REPLACE INTO budget_meta VALUES ('gate',?)", (_json({'at':stamp,'instance_id':request['instance_id'],'pid':request['pid'],
                 'adapter_source_sha256':request['adapter_source_sha256'], 'helper_source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'backend_transport_bound':request.get('backend_transport_bound', False), 'backend_quote_bound':request.get('backend_quote_bound', False),
                 'owner_hash':_configured_owner_hash(), 'budget_contract':CONTRACT}),))
         return {'bound': True, 'read_only': False}
     if not isinstance(request, dict) or request.get('operation') not in ('reserve', 'check', 'settle', 'unknown'):

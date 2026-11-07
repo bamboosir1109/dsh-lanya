@@ -15,7 +15,8 @@ if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
     const child = spawnSync(process.execPath, ['--experimental-vm-modules', '--test', fileURLToPath(import.meta.url)],
-      { encoding: 'utf8', windowsHide: true, timeout: 60000, env })
+      { encoding: 'utf8', windowsHide: true, timeout: 180000, env })
+    assert.equal(child.error, undefined, child.error?.message)
     assert.equal(child.status, 0, child.stdout + child.stderr)
   })
 } else {
@@ -43,7 +44,7 @@ async function fixture(t, { admission = true, mislabeledImage = false, contextua
 import shutil,sys
 from pathlib import Path
 repo,out=map(Path,sys.argv[1:3]);sys.path.insert(0,str(repo/'scripts'))
-import patch_onebot_policy as p,patch_onebot_replay as r,patch_onebot_egress as e,patch_onebot_live_inbox as n,patch_onebot_inbound_context as q
+import patch_onebot_policy as p,patch_onebot_replay as r,patch_onebot_egress as e,patch_onebot_live_inbox as n,patch_onebot_inbound_context as q,patch_onebot_backend_context as bc
 shutil.copytree(repo/'tests/fixtures/onebot_egress',out)
 for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  f=out/'lib'/name;raw=p.transform(name,f.read_bytes())
@@ -52,6 +53,7 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  if name=='bridge.js':raw=n.transform(raw)
  if name=='bridge.js':
   raw=q.transform(name,raw)
+  raw=bc.transform(name,raw)
   import patch_onebot_group_context as g
   raw=g.transform(name,raw)
   if sys.argv[4]=='1':
@@ -60,6 +62,7 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
+raw=bc.transform('inbound.js',raw)
 if sys.argv[3]=='1':
  import patch_onebot_inbound_admission as admission
  raw=admission.transform(raw)
@@ -622,6 +625,85 @@ test('inline closing group reply returns to listening and blocks a second operat
   await assert.rejects(h.send('second operation'),/inline_reply_complete/)
   await h.end();await h.receive('other conversation');assert.equal(h.pending.length,0)
   assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,1)
+})
+
+function backendFixture(h, provider='snowluma') {
+  const directory=path.join(h.directory,'napcat','config');fs.mkdirSync(directory,{recursive:true})
+  const file=path.join(directory,'project.json'), reads=[], original=h.deps.connection.call
+  let app=provider==='snowluma'?'SnowLuma':'NapCat.Onebot'
+  const select=(value,revision)=>fs.writeFileSync(file,JSON.stringify({qqBackend:{provider:value,revision}}))
+  select(provider,1);h.deps.connection.socket={}
+  h.deps.connection.call=async(action,params)=>{
+    if(action==='get_version_info'){reads.push(action);return {app_name:app}}
+    if(action==='get_login_info'){reads.push(action);return {user_id:999}}
+    return original(action,params)
+  }
+  return {select,reads,setApp:value=>{app=value}}
+}
+
+test('native heartbeat reports actual loaded transport and quote binding, not configured file names', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy; backendFixture(h)
+  await adapter.budgetHeartbeat()
+  assert.equal(h.requests.at(-1).backend_transport_bound, true)
+  assert.equal(h.requests.at(-1).backend_quote_bound, true)
+  const anchor = h.bridge.inbound.ctx.historyAnchor
+  delete h.bridge.inbound.ctx.historyAnchor
+  await adapter.budgetHeartbeat()
+  assert.equal(h.requests.at(-1).backend_quote_bound, false)
+  await h.receive('cannot enter with unloaded quote integration')
+  assert.equal(h.pending.length, 0)
+  h.bridge.inbound.ctx.historyAnchor = anchor
+  delete h.deps.connection.lanyaBackendTransportVersion
+  await adapter.budgetHeartbeat()
+  assert.equal(h.requests.at(-1).backend_transport_bound, false)
+  await h.receive('cannot enter with unloaded transport integration')
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.length, 0)
+})
+
+test('native backend admission verifies the socket before queueing and keeps the one-step text path',async t=>{
+  const h=await fixture(t), backend=backendFixture(h)
+  backend.setApp('NapCat.Onebot');await h.receive('wrong provider input')
+  assert.equal(h.pending.length,0);assert.equal(h.requests.filter(x=>x.operation==='reserve').length,0)
+  backend.setApp('SnowLuma');await h.receive('same rejected socket stays untrusted')
+  assert.equal(h.pending.length,0);assert.equal(backend.reads.length,1)
+  h.deps.connection.socket={};await h.receive('current provider input');h.start()
+  assert.equal((await h.preStep()).kind,'enter')
+  assert.equal((await h.decide('reply',{text:'one current reply'})).sent,true)
+  assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,1)
+  assert.equal(backend.reads.length,3);await h.end()
+})
+
+test('explicit operator backend workspace stays separate from the conversation directory',async t=>{
+  const h=await fixture(t),operator=path.join(h.directory,'operator-root')
+  fs.mkdirSync(path.join(operator,'napcat/config'),{recursive:true});fs.mkdirSync(path.join(operator,'identity'))
+  fs.writeFileSync(path.join(operator,'napcat/config/project.json'),JSON.stringify({dataDirName:'identity',qqBackend:{provider:'snowluma'}}))
+  fs.writeFileSync(path.join(operator,'identity/lanya-config.json'),JSON.stringify({botQQ:'999'}))
+  const config=path.join(h.directory,'operator-policy.json')
+  fs.writeFileSync(config,JSON.stringify({stateFile:path.join(h.directory,'operator-state','policy.json'),backendWorkspace:operator}))
+  const adapter=new h.bridge.lanyaPolicy.constructor(h.bridge,h.deps,{configFile:config})
+  assert.equal(adapter.backendGuard.selection().workspace,path.resolve(operator))
+  assert.equal(adapter.backendGuard.selection().provider,'snowluma')
+  assert.equal(h.deps.config.workspacePath,h.directory)
+})
+
+test('native backend selection change blocks an old step and an old reply ticket without sending',async t=>{
+  for(const phase of ['before-step','after-decision'])await t.test(phase,async t=>{
+    const h=await fixture(t),backend=backendFixture(h);await h.receive('old selection question');h.start()
+    if(phase==='after-decision'){await h.preStep();assert.equal((await h.decide('reply')).can_send,true)}
+    backend.select('napcat',2)
+    if(phase==='before-step')assert.equal((await h.preStep()).reason,'backend_selection_changed')
+    else await assert.rejects(h.send('must not leave through old connection'),/backend_selection_changed/)
+    assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,0);await h.end()
+  })
+})
+
+test('native transport edge rejects a socket replaced after durable reservation began',async t=>{
+  const h=await fixture(t);backendFixture(h);await h.receive('current socket question');h.start();await h.preStep();await h.decide('reply')
+  const policy=h.bridge.lanyaPolicy.policy,run=policy.runGuarded.bind(policy)
+  policy.runGuarded=(ticket,options,send)=>run(ticket,options,()=>{h.deps.connection.socket={};return send()})
+  await assert.rejects(h.send('must not cross socket identity'))
+  assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,0);await h.end()
 })
 
 test('preparing administrator context cannot give a later group member control authority', async t => {

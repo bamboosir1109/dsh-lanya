@@ -458,9 +458,9 @@ async function waitFor(check) {
 }
 
 test('native final consumer completes pseudo-image-only observation as decided with zero sends', async (t) => {
-  const h = await setup(t)
+  const h = await setup(t, { clock: () => Date.parse('2026-11-03T01:00:00Z') })
   const directory = path.join(h.directory, 'decision-inbox')
-  const event = { version: 1, event_id: 'obs:synthetic-empty', scope: 'private:101', kind: 'fixture', producer: 'fixture', created_at: Date.now(),
+  const event = { version: 1, event_id: 'obs:synthetic-empty', scope: 'private:101', kind: 'fixture', producer: 'fixture', created_at: h.bridge.lanyaPolicy.now(),
     payload: { synthetic: true }, workspace_key: process.platform === 'win32' ? path.resolve(h.directory).toLowerCase() : path.resolve(h.directory),
     agent_key: 'fixture', origin: 'observation', control_allowed: false }
   await h.bridge.lanyaPolicy.pump.start({ poll: false })
@@ -528,8 +528,8 @@ test('native whitelisted raw AI voice text shares the final content gate and tic
 })
 
 test('native observation turn completion reports partial delivery as unknown rather than sent', async (t) => {
-  const h = await setup(t)
-  const event = { version: 1, event_id: 'obs:synthetic-partial', scope: 'private:101', kind: 'fixture', producer: 'fixture', created_at: Date.now(),
+  const h = await setup(t, { clock: () => Date.parse('2026-11-03T01:00:00Z') })
+  const event = { version: 1, event_id: 'obs:synthetic-partial', scope: 'private:101', kind: 'fixture', producer: 'fixture', created_at: h.bridge.lanyaPolicy.now(),
     payload: { synthetic: true }, workspace_key: process.platform === 'win32' ? path.resolve(h.directory).toLowerCase() : path.resolve(h.directory),
     agent_key: 'fixture', origin: 'observation', control_allowed: false }
   const completing = h.bridge.dispatchObservation(event)

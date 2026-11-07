@@ -178,7 +178,6 @@ $statePath  = Join-Path $root 'groupwatch.state.json'
 # The folder name is built from code points so this file stays ASCII-only.
 $affinityPath = Join-Path (Join-Path $workDir $dataDirName) 'affinity.json'
 $logPath    = Join-Path $root 'groupwatch.log'
-$cfgPath    = Join-Path $root 'balance-alert.config.json'
 $dsh        = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'DSH\resources\runtime\cli\bin\dsh.cmd')
 # Her own QQ. This was the literal string "BOT_QQ" - a placeholder left behind
 # by a sanitising pass - so every "$aq -eq $selfId" comparison was comparing a
@@ -266,7 +265,8 @@ function Read-AnyText([string]$path) {
   return [System.Text.Encoding]::UTF8.GetString($b)
 }
 
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 # Meme library roots. Images are grouped by mood folder under each pack, so the
 # model only has to name a mood and we pick a file from it.
@@ -438,6 +438,10 @@ while ($true) {
   $outsideWindow = ($hour -lt $WindowStart -or $hour -ge $WindowEnd)
 
   try {
+    # Polling is separate from the latency-sensitive native reply path. Refresh
+    # once per history poll so a live selection cannot leave this observer
+    # reading the previous injector forever.
+    $napcat = Get-QqBackendConnection
     $hj = (Invoke-NapCat 'get_group_msg_history' @{ group_id = $GroupId; count = 30 }) | ConvertFrom-Json
     if ($hj.retcode -ne 0) { Write-Log ('history failed: ' + $hj.message); Start-Sleep -Seconds $PollSeconds; continue }
 

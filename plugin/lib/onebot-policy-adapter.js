@@ -12,6 +12,7 @@ import { createDecisionPolicy, canonicalScope, autonomousRestState } from './dec
 import { createObservationPump, validateObservation, observationFreshness } from './observation-queue.js'
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
+import { createBackendGuard } from './qq-backend.js'
 
 // Freeze the on-disk bytes at ESM evaluation, including for new bridge
 // instances created from this cached module after a later deployment.
@@ -442,7 +443,7 @@ function targetScope(params, supplied) {
 
 export class OneBotDecisionAdapter {
   constructor(bridge, deps, { configFile, stateFile, policy, pumpFactory = createObservationPump,
-    memoryContext, runtimeCapabilities, budgetProvider, nativeClaims = false, pendingRecovery,
+    memoryContext, runtimeCapabilities, budgetProvider, nativeClaims = false, pendingRecovery, backendGuard,
     now = Date.now, log = (level, message) => deps.log(level, message) } = {}) {
     let config = {}
     if (!stateFile) {
@@ -456,6 +457,11 @@ export class OneBotDecisionAdapter {
     this.stateFile = stateFile
     this.policy = policy || createDecisionPolicy({ stateFile, now, autonomousPrivateScope: config.autonomousPrivateScope })
     this.config = config
+    this.backendGuard = backendGuard || createBackendGuard({ workspace: process.env.LANYA_WORKDIR || config.backendWorkspace ||
+      (typeof deps.config?.workspacePath === 'string' && path.isAbsolute(deps.config.workspacePath)
+        ? deps.config.workspacePath : path.dirname(path.dirname(stateFile))),
+      projectFile: config.projectConfig, expectedAccount: deps.config?.botQQ || '',
+      runtimeReady: connection => this.backendRuntimeReady(connection) })
     this.context = new AsyncLocalStorage()
     this.nativeClaims = nativeClaims === true
     this.pendingRecovery = pendingRecovery
@@ -722,7 +728,15 @@ export class OneBotDecisionAdapter {
     this.incoming.set(scope, (this.incoming.get(scope) || 0) + 1)
     const current = { inbound, arrival, arrivedAt: this.now(), binding: null }
     this.diagnose(scope, inbound.messageId, 'received')
-    try { return await this.context.run(current, run) }
+    try {
+      current.backendStamp = this.backendGuard.selection().stamp
+      const backend = await this.backendGuard.verify(this.deps.connection, current.backendStamp)
+      if (!backend.allowed) {
+        this.diagnose(scope, inbound.messageId, 'blocked', { reason: backend.reason })
+        return { accepted: false, reason: backend.reason }
+      }
+      return await this.context.run(current, run)
+    }
     catch (error) { this.diagnose(scope, inbound.messageId, 'preparation_failed', { reason: error?.code || 'inbound_error' }); throw error }
     finally {
       if (!current.binding && !current.groupListening) this.diagnose(scope, inbound.messageId, 'not_admitted')
@@ -797,7 +811,10 @@ export class OneBotDecisionAdapter {
       sender: inbound.userId, origin: 'live', quoted: !hasDirectEvidence,
       controlAllowed: this.deps.policy.adminUsers.includes(inbound.userId) })
     if (observed.accepted) this.latestInbound.set(scope, context.arrival)
-    if (observed.accepted) context.binding = Object.freeze({ ...observed, origin: 'live' })
+    if (observed.accepted) {
+      context.binding = Object.freeze({ ...observed, origin: 'live' })
+      context.binding = Object.freeze({ ...context.binding, backendStamp: context.backendStamp })
+    }
     if (observed.accepted && group) {
       group.revision = observed.revision
       if (addressed) group.engaged = true
@@ -1081,6 +1098,7 @@ export class OneBotDecisionAdapter {
       }
       // A physically queued owned successor can replace a stale live turn at
       // a step boundary. An admission still in progress cannot trigger this.
+      if (!this.backendGuard.current(record.binding.backendStamp)) return { kind: 'reject', reason: 'backend_selection_changed' }
       if (this.supersedingLiveInput(chat, record)) {
         record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
           turn: request.turn, epoch: this.startEpoch, binding: record.binding })
@@ -1316,13 +1334,26 @@ export class OneBotDecisionAdapter {
       throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
     }
     this.requireAutonomousTime(record.binding)
+    if (!this.backendGuard.current(record.binding.backendStamp)) throw new PolicyDeliveryError('suppressed', 'backend_selection_changed')
     return record
   }
 
   async budgetHeartbeat() {
+    const backend = this.backendRuntimeEvidence()
     const value = await this.budgetProvider({ operation: 'heartbeat', instance_id: this.budgetInstance, pid: process.pid,
-      adapter_source_sha256: this.budgetSourceHash, budget_contract: BUDGET_CONTRACT })
+      adapter_source_sha256: this.budgetSourceHash, budget_contract: BUDGET_CONTRACT,
+      backend_transport_bound: backend.transport, backend_quote_bound: backend.quote })
     if (value?.bound !== true) throw new Error('Budget gate heartbeat refused')
+  }
+
+  backendRuntimeEvidence(connection = this.deps.connection) {
+    return { transport: connection?.lanyaBackendTransportVersion === 1,
+      quote: this.bridge.inbound?.lanyaBackendQuoteVersion === 1 && typeof this.bridge.inbound?.ctx?.historyAnchor === 'function' }
+  }
+
+  backendRuntimeReady(connection = this.deps.connection) {
+    const value = this.backendRuntimeEvidence(connection)
+    return value.transport && value.quote
   }
 
   costMeter(agent) {
@@ -1778,6 +1809,8 @@ export class OneBotDecisionAdapter {
     const scope = targetScope(params, suppliedScope)
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
     if (!envelope.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
+    const backend = await this.backendGuard.verify(this.deps.connection, envelope.record?.binding?.backendStamp)
+    if (!backend.allowed) throw new PolicyDeliveryError('suppressed', backend.reason)
     if (envelope.record?.inlineTextAttempted && envelope.operationId !== envelope.record.inlineTextOperationId) {
       throw new PolicyDeliveryError('suppressed', 'inline_reply_complete')
     }
@@ -1833,6 +1866,7 @@ export class OneBotDecisionAdapter {
         // Raw API work may have awaited the durable policy transaction while
         // another output settled. Recheck synchronously at the transport edge.
         requireCertainTurn()
+        if (!this.backendGuard.edge(this.deps.connection, envelope.record?.binding?.backendStamp)) throw new PolicyDeliveryError('suppressed', 'backend_connection_changed')
         this.requireAutonomousTime(envelope.record?.binding)
         if (voiceArtifact) {
           if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
@@ -2073,6 +2107,9 @@ export class OneBotDecisionAdapter {
     // an owner lookup must not validate one object and later pin another.
     try { event = structuredClone(event) } catch { throw new Error('Invalid observation snapshot') }
     validateObservation(event)
+    const backendStamp = this.backendGuard.selection().stamp
+    const backend = await this.backendGuard.verify(this.deps.connection, backendStamp)
+    if (!backend.allowed) throw new PolicyDeliveryError('suppressed', backend.reason)
     const trustedSocial = event.kind === 'social.opportunity' ? this.intentPlanner.validateObservation(event) : null
     const owner = await this.trustedOwner(event.scope)
     if (event.workspace_key !== owner.workspace_key || event.agent_key !== owner.agent_key) {
@@ -2140,7 +2177,7 @@ export class OneBotDecisionAdapter {
     let resolve, reject
     const promise = new Promise((yes, no) => { resolve = yes; reject = no })
     const completion = { promise, resolve, reject }
-    const binding = Object.freeze({ ...observed, origin: 'observation', completion,
+    const binding = Object.freeze({ ...observed, origin: 'observation', completion, backendStamp,
       observationKind: event.kind, observationProducer: event.producer, observationEventId: event.event_id,
       observationCreatedAt: createdAt,
       ...(trustedSocial ? { trustedSocialRequest: trustedSocial.request_id } : {}),

@@ -60,14 +60,23 @@ def _record(path, limit=2 * 1024 * 1024):
     _need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= limit)
     signature = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode,
                               info.st_nlink, getattr(info, "st_file_attributes", 0))
+    def same_handle(info):
+        actual, expected = list(signature(info)), list(signature(before))
+        if os.name == "nt":
+            # Windows path stat synthesizes execute bits from .exe/.cmd suffixes;
+            # fstat has no filename and omits them. Native ACLs and readonly
+            # attributes are checked independently; retain every other field.
+            actual[4] &= ~0o111
+            expected[4] &= ~0o111
+        return actual == expected
     acl = _security(path)
     with path.open("rb") as stream:
-        _need(signature(os.fstat(stream.fileno())) == signature(before))
+        _need(same_handle(os.fstat(stream.fileno())))
         raw = stream.read(limit + 1)
-        _need(len(raw) == before.st_size and signature(os.fstat(stream.fileno())) == signature(before))
+        _need(len(raw) == before.st_size and same_handle(os.fstat(stream.fileno())))
     with path.open("rb") as second:
-        _need(signature(os.fstat(second.fileno())) == signature(before) and second.read(limit + 1) == raw and
-              signature(os.fstat(second.fileno())) == signature(before))
+        _need(same_handle(os.fstat(second.fileno())) and second.read(limit + 1) == raw and
+              same_handle(os.fstat(second.fileno())))
     _need(signature(path.lstat()) == signature(before) and _security(path) == acl)
     return {"signature": signature(before), "sha256": hashlib.sha256(raw).hexdigest(),
             "security_sha256": hashlib.sha256(acl).hexdigest()}, raw

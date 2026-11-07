@@ -35,20 +35,8 @@ import subprocess
 import time
 import urllib.request
 
-NAPCAT = "http://127.0.0.1:8720"
-# The OneBot token is a live credential; it does not belong in source, where
-# every copy of the file carries it. Read it from NapCat's own config instead.
-TOKEN = ""
-try:
-    _nb = os.path.join(work_dir(), "napcat", "framework", "config", "onebot11.json")
-    if os.path.isfile(_nb):
-        with open(_nb, encoding="utf-8-sig") as _fh:
-            _nd = json.load(_fh)
-        _hs = ((_nd.get("network") or {}).get("httpServers") or [])
-        if _hs:
-            TOKEN = str(_hs[0].get("token") or "")
-except Exception:
-    pass
+import qq_backend
+
 ADMIN = ""          # the owner; she should not "greet" him like a stranger
 # Read it from config - it is identity, not source.
 try:
@@ -98,14 +86,7 @@ def log(msg):
 
 
 def api(action, payload):
-    req = urllib.request.Request(
-        NAPCAT + "/" + action,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    return qq_backend.call(action, payload, timeout=15)
 
 
 def load(path, default):

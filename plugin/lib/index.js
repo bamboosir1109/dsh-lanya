@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { readJson, resolveRuntime, processReminders, acquireReminderLock } from './runtime.js'
 import { createReminderObserver } from './reminder-observer.js'
+import { resolveOneBotEndpoint, readBackendSelection } from './qq-backend.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -64,7 +65,6 @@ const COMPONENTS = [
   { tag: 'tts',         kind: 'server', match: 'api_v2\\.py',           desc: '本地语音 (9880)' },
   { tag: 'supervisor',  kind: 'timer',  match: '(?:lanya|dafeiyu)-supervisor\\.ps1', desc: '外部调度器' },
   { tag: 'tick',        kind: 'timer',  match: '(?:lanya|dafeiyu)-tick\\.ps1', desc: '独立到期调度进程' },
-  { tag: 'napcat',      kind: 'bridge', match: 'napimain',              desc: 'NapCat 注入进程' },
   { tag: 'headless',    kind: 'agent',  match: '--profile headless',    desc: '无头 agent（堆积就是它）' }
 ]
 
@@ -74,6 +74,7 @@ const SCRIPTS = {
   voicedaemon: 'voicedaemon.ps1',
   supervisor: 'lanya-supervisor.ps1',
   'napcat-heal': 'napcat-heal.ps1',
+  'qq-backend-heal': 'qq-backend-heal.ps1',
   'kill-strays': 'kill-strays.ps1',
   'settings-guard': 'settings-guard.py'
 }
@@ -162,6 +163,33 @@ export function decorateAutonomyComponents(state, autonomy) {
       : autonomy.mode !== 'legacy' && RETIRED_UNIFIED.has(row.tag)
         ? { ...row, control: 'retired', desc: row.count > 0
           ? '独立进程仍在运行，统一调度已接管' : '独立进程状态待确认' } : row) }
+}
+
+export async function panelBackend(runtime, { fetchImpl = globalThis.fetch } = {}) {
+  let selected
+  const names = { napcat: 'NapCatQQ', snowluma: 'SnowLuma' }
+  try { selected = readBackendSelection(runtime.workDir) } catch { }
+  const out = { provider: selected?.provider ?? null, name: names[selected?.provider] || 'QQ 接入', verified: false, status: 'unconfirmed' }
+  if (!selected) return out
+  const port = runtime.project.panelPort ?? 19389
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return out
+  try {
+    const response = await fetchImpl('http://127.0.0.1:' + port + '/api/qq/backend/status', {
+      method: 'GET', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(1500) })
+    const value = await response.json(), current = readBackendSelection(runtime.workDir)
+    if (response.ok && value.ok === true && current.stamp === selected.stamp &&
+        value.backend?.provider === selected.provider && value.backend.verified === true && value.backend.status === 'online') {
+      out.verified = true; out.status = 'online'
+    }
+  } catch { }
+  return out
+}
+
+export function decorateBackendComponent(state, backend) {
+  return { ...state, qqBackend: backend, components: [...(state.components || []).filter(row =>
+    !['napcat', 'qq-backend'].includes(row.tag)), { tag: 'qq-backend', kind: 'bridge', control: 'backend_settings',
+    desc: backend.name + ' · ' + (backend.verified ? '账号与后端已核验在线' : '连接待核验'),
+    count: backend.verified ? 1 : null, mb: null, aging: 0 }] }
 }
 
 export async function componentAction(runtime, body, deps = {}) {
@@ -576,7 +604,7 @@ async function refresh(){
       const managed = c.control === 'request_check';
       const state = c.service ? serviceLabel(c.service) : managed ? managedLabel(c.autonomy || {}) : c.desc;
       const color = c.service ? (c.service.healthy ? 'on' : 'warn') : managed ? ((c.autonomy || {}).can_request_check && c.autonomy.status !== 'uncertain' ? 'on' : 'warn') : cls(c.count);
-      const controls = c.control === 'ensure_works' ? '<button data-t="works" data-op="ensure">检查恢复</button>' : c.tag === 'panel-api' ? '后台看护' : managed ? '<button data-t="' + c.tag + '" data-op="check"' +
+      const controls = c.control === 'backend_settings' ? '在控制台部件页管理' : c.control === 'ensure_works' ? '<button data-t="works" data-op="ensure">检查恢复</button>' : c.tag === 'panel-api' ? '后台看护' : managed ? '<button data-t="' + c.tag + '" data-op="check"' +
         (actionPending || !(c.autonomy || {}).can_request_check ? ' disabled' : '') + '>请求检查</button>' :
         c.control === 'retired' ? '统一模式已停用独立循环' :
         '<button data-t="' + c.tag + '" data-op="start">启动</button> ' +
@@ -705,19 +733,13 @@ export function apply(ctx, config = {}) {
     return readJson(file, fallback)
   }
 
-  function napcatConf() {
-    return readJsonSafe(path.join(NAPCAT_DIR, 'balance-alert.config.json'), {}) || {}
-  }
-
   async function napcatSend(pathname, payload) {
-    const conf = napcatConf()
-    const base = String(conf.napcatHttp || 'http://127.0.0.1:' + (project.onebotPort || 8720)).replace(/\/+$/, '')
-    const onebot = readJsonSafe(path.join(NAPCAT_DIR, 'framework', 'config', 'onebot11.json'), {})
-    const token = String(conf.napcatToken || onebot.network?.httpServers?.[0]?.token || '')
+    const { base, token } = resolveOneBotEndpoint(runtime.workDir, { projectFile: process.env.LANYA_PROJECT_CONFIG || config.projectConfig })
     const r = await fetch(base + pathname, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
       body: JSON.stringify(payload),
+      redirect: 'error',
       signal: AbortSignal.timeout(15000)
     })
     if (!r.ok) throw new Error('OneBot HTTP ' + r.status)
@@ -870,7 +892,7 @@ export function apply(ctx, config = {}) {
     { name: 'mind',           everySec: 60,   script: 'mind.py' },
     { name: 'strays',         everySec: 300,  script: 'kill-strays.ps1' },
     { name: 'settings',       everySec: 300,  script: 'settings-guard.py' },
-    { name: 'bridge',         everySec: 600,  script: 'napcat-heal.ps1' },
+    { name: 'bridge',         everySec: 600,  script: 'qq-backend-heal.ps1' },
     { name: 'chats',          everySec: 600,  script: 'export-chats.py' },
     { name: 'steal',          everySec: 600,  script: 'stealmemes.py' },
     { name: 'greet',          everySec: 3600, script: 'greetd.py' },
@@ -996,11 +1018,12 @@ export function apply(ctx, config = {}) {
     route('/dsh-lanya/api/state', async (req, res) => {
       try {
         const current = resolveRuntime(config)
-        const autonomy = runtimeDecisionMode(current) === 'legacy'
+        const autonomyRead = runtimeDecisionMode(current) === 'legacy'
           ? { mode: 'legacy', managed_by: 'legacy_task', status: 'legacy', reason: 'legacy_mode', can_request_check: false }
-          : await panelAutonomy(current)
+          : panelAutonomy(current)
+        const [autonomy, backend] = await Promise.all([autonomyRead, panelBackend(current)])
         const [api, works] = await Promise.all(['api', 'works'].map(role => panelSupervisor.status(role)))
-        sendJson(res, 200, decoratePanelServices(decorateAutonomyComponents(await collectState(), autonomy), { api, works }))
+        sendJson(res, 200, decoratePanelServices(decorateBackendComponent(decorateAutonomyComponents(await collectState(), autonomy), backend), { api, works }))
       }
       catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }) }
     })

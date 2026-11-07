@@ -81,7 +81,6 @@ if ($null -ne $prevLimit -and $prevLimit -gt 0) {
 } else {
   $Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
 }$logPath   = Join-Path $dafeiyuDir 'budget.log'
-$cfgPath   = (Join-Path $PSScriptRoot 'balance-alert.config.json')
 # The owner's QQ. This was the literal string "YOUR_ADMIN_QQ" - a placeholder
 # from a sanitising pass - so alerts, shared notes and voice messages were all
 # addressed to a user that does not exist ("cannot get user info" from NapCat).
@@ -192,7 +191,8 @@ if ($Notify -and $exhausted -and $status.notifiedFor -ne $today) {
   }
   Assert-QqLegacyAction 'send_private_msg'
   Add-Type -AssemblyName System.Net.Http
-  $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  . (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)
   $client.DefaultRequestHeaders.Authorization =

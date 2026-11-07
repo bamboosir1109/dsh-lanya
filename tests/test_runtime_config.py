@@ -31,7 +31,7 @@ class RuntimeConfigTests(unittest.TestCase):
         self.scripts.mkdir(parents=True)
         self.live.mkdir()
         for folder in (self.scripts, self.live):
-            for name in ("project_conf.py", "project_conf.ps1"):
+            for name in ("project_conf.py", "project_conf.ps1", "qq_backend.py", "qq_backend_selection.py"):
                 shutil.copy2(REPO / "scripts" / name, folder / name)
         self.env = patch.dict(os.environ, {
             "LANYA_PROJECT_CONFIG": "", "LANYA_WORKDIR": "",
@@ -326,9 +326,34 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertIn(str(launcher), command)
             self.assertNotIn("taskkill", command)
             self.assertNotIn("os.path.join", command)
+            self.assertIn("-WindowStyle Hidden", command)
             run.return_value = subprocess.CompletedProcess([], 1, stdout=b"")
             with self.assertRaises(RuntimeError):
                 panel.start_napcat_elevated()
+
+    def test_napcat_launcher_follows_selected_installation_root(self):
+        custom = self.work / "another installation" / "framework"
+        custom.mkdir(parents=True)
+        for name in ("napimain.exe", "napiloader.dll", "nativeLoader.cjs"):
+            (custom / name).write_text("fixture only", encoding="ascii")
+        launcher = custom / "launch custom.cmd"
+        launcher.write_text("fixture only", encoding="ascii")
+        self.config(self.repo, {"qqBackend": {"provider": "napcat", "providers": {
+            "napcat": {"root": str(custom), "startScript": launcher.name}}}})
+        panel = self.panel()
+        with patch.object(panel.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout=b"4321\r\n")
+            self.assertEqual(panel.start_napcat_elevated(), 4321)
+            self.assertIn(str(launcher), run.call_args.args[0][-1])
+            self.assertNotIn(str(self.live), run.call_args.args[0][-1])
+
+    def test_napcat_launcher_refuses_when_snowluma_selected(self):
+        self.config(self.repo, {"qqBackend": {"provider": "snowluma"}})
+        panel = self.panel()
+        with patch.object(panel.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "not the selected"):
+                panel.start_napcat_elevated()
+            run.assert_not_called()
 
     def test_tts_uses_existing_local_start_script_instead_of_author_environment(self):
         self.config(self.repo, {"dataDirName": "fixture-role"})
