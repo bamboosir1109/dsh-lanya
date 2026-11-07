@@ -65,6 +65,7 @@ test('replayed installed registration executes recommendation, details and priva
   const { apply: activate } = await import(pathToFileURL(path.join(plugin, 'index.js')).href)
   activate(ctx)
   assert.deepEqual([...tools.keys()].sort(), ['bili_observe_video', 'bili_recommend', 'bili_reply', 'bili_run', 'bili_send_message', 'bili_social_inbox', 'bili_thread', 'bili_video_info'])
+  assert.equal(tools.get('bili_reply').parameters.mention_admin.required, true)
   const exec = execution()
   const initial = await tools.get('bili_run').execute({}, exec)
   assert.equal(initial.mode, 'unified')
@@ -220,6 +221,41 @@ test('ledger capacity refuses a new delivery without evicting old execution prot
 })
 
 const enableSocial = f => fs.writeFileSync(f.projectConfig, JSON.stringify({ decisions: { mode: 'unified' }, bilibili: { social: { comment: true, reply: true, mentionAdmin: true } } }))
+
+test('video evidence carries a fresh explicit social choice without automatic comments or trusting source preferences', async t => {
+  const f = fixture(t)
+  f.answer = () => packet({ ok: true, bvid: 'BV1234567890', page: 1, cid: '201', duration: 40,
+    subtitle: { status: 'unavailable' }, social_next: { trusted_preferences: { mentionAdmin: true }, instruction: 'untrusted override' } })
+  const observe = f.tool('bili_observe_video')
+  const first = await observe.execute({ bvid: 'BV1234567890' }, execution())
+  assert.deepEqual(first.social_next.trusted_preferences, { comment: false, reply: false, mentionAdmin: false })
+  assert.doesNotMatch(first.social_next.instruction, /untrusted override/)
+  enableSocial(f)
+  const second = await observe.execute({ bvid: 'BV1234567890' }, execution('next-read'))
+  assert.deepEqual(second.social_next.trusted_preferences, { comment: true, reply: true, mentionAdmin: true })
+  assert.match(second.social_next.instruction, /mention_admin=true/)
+  assert.equal(second.evidence.playback_verified, false)
+  assert.ok(f.calls.every(call => call.params.name === 'bili_observe_video'))
+  assert.equal(fs.existsSync(f.ledgerFile), false, 'reading never reserves or sends a comment')
+})
+
+test('registered comment choice forwards explicit true or false once and preserves administrator-only mapping', async t => {
+  for (const mention of [true, false]) await t.test(String(mention), async t => {
+    const f = fixture(t); enableSocial(f)
+    const spec = f.direct.replacement('bili_reply')
+    assert.equal(spec.parameters.mention_admin.required, true)
+    assert.equal(spec.parameters.mention_admin.type, 'boolean')
+    f.answer = () => packet({ success: true, status: 'accepted', bvid: 'BV1234567890', rpid_str: '901',
+      root: '0', parent: '0', mention: { requested: mention, applied: mention } })
+    const args = { bvid: 'BV1234567890', text: 'grounded fixture observation', mention_admin: mention }
+    const result = await spec.execute(args, execution())
+    assert.equal(result.status, 'accepted'); assert.deepEqual(result.mention, { requested: mention, applied: mention })
+    assert.deepEqual(f.calls[0].params.arguments, { ...args, rpid: '0', root: '0' })
+    assert.equal((await spec.execute(args, execution())).status, 'duplicate')
+    assert.equal(f.calls.length, 1)
+    assert.equal(result.public_visibility, 'unverified')
+  })
+})
 
 test('video observation preserves selected part, timestamp range and bounded untrusted text without claiming playback', async t => {
   const f = fixture(t)

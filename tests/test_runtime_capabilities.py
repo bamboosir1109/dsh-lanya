@@ -310,6 +310,9 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(guide["preferences"], {"valid": True, "comment": True,
                                               "reply": True, "mentionAdmin": True})
         self.assertNotIn("PRIVATE_BILI_ACCOUNT_NOT_FOR_GUIDE", json.dumps(guide))
+        self.assertIn("mention_admin=true or false", guide["mention"])
+        self.assertIn("mention_admin: your_explicit_boolean_choice", guide["delivery"])
+        self.assertIn("No quota", guide["mention"])
         self.assertEqual(self.snapshot(), before)
         for invalid in (None, [], True, {"comment": "true"}, {"reply": 1}, {"mentionAdmin": None}):
             with self.subTest(invalid=invalid):

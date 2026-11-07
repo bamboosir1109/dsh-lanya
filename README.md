@@ -1,6 +1,6 @@
 # dsh-lanya
 
-当前开发版本：**v1.4.0-dev.44**。配置群区分旁听与参与：普通未艾特消息只提供有界上下文，由本群自主机会决定是否加入；真实艾特、核实的引用回复或实际自主发言成功后，才接同一话题的后续消息。主 LLM 可结束话题回到旁听，保留短缓冲、私聊并行和单张真实表情。逐项核查和验收边界见[功能检查](docs/FUNCTIONAL-AUDIT.md)。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
+当前开发版本：**v1.4.0-dev.45**。B站评论工具要求新模型调用明确选择是否艾特管理员，视频内容结果同时提供可信互动偏好，避免长期省略艾特选项；仍由同一主 LLM 按真实内容决定，不自动发评论或设定配额。保留群聊旁听、自然接话和私聊并行。逐项核查和验收边界见[功能检查](docs/FUNCTIONAL-AUDIT.md)。每批更新递增版本，详见 [更新日志](CHANGELOG.md)、[开发日志](docs/DEVLOG.md) 和 [交互可靠性](docs/INTERACTION-RELIABILITY.md)；开发版不表示正式 Release。
 
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 
