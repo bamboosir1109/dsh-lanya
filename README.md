@@ -1,6 +1,6 @@
 # dsh-lanya
 
-当前开发版本：**v1.4.0-dev.47（开发中）**。NapCatQQ 与 SnowLuma 使用统一后端接口，保留同一个主 LLM 和既有发送保护。首次部署选择、页面替换和启动保护已完成隔离验证；真实安装登录、运行部署与完整兼容验收仍待完成。进度见 [QQ 后端](docs/QQ-BACKENDS.md)、[更新日志](CHANGELOG.md)和[开发日志](docs/DEVLOG.md)。
+当前开发版本：**v1.4.0-dev.48（开发中）**。NapCatQQ 与 SnowLuma 使用统一后端接口，保留同一个主 LLM 和既有发送保护。首次部署选择、页面替换和启动保护已完成隔离验证；引用编译支持已有群地址与连发父层，真实安装登录、运行部署与完整兼容验收仍待完成。进度见 [QQ 后端](docs/QQ-BACKENDS.md)、[更新日志](CHANGELOG.md)和[开发日志](docs/DEVLOG.md)。
 
 Windows 上的 QQ 角色系统：通过 NapCat 接入 QQ，由 DeepSeek Harness（DSH）运行角色提示词、长期记忆和工具，配一个本地控制台查看与管理各部件。
 

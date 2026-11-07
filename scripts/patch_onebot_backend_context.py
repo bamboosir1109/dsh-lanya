@@ -12,6 +12,10 @@ from pathlib import Path
 from patch_onebot_policy import PatchError, ordinary_path, read_regular, replace_once
 
 MARKER = '// LANYA_BACKEND_QUOTE_CONTEXT_V1\n'
+SIMPLE_OBSERVER = '            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),'
+ADDRESSED_OBSERVER = '            observeInbound: (inbound, address) => this.lanyaPolicy.observeInbound(inbound, address),'
+GROUP_MARKER = '// LANYA_CONTEXTUAL_GROUP_V1\n'
+GROUP_HOOK = '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),'
 HISTORY = """                const history = await wait(() => this.ctx.call(group ? 'get_group_msg_history' : 'get_friend_msg_history', {
                     [group ? 'group_id' : 'user_id']: scope[2], message_seq: id, count: 3, reverse_order: false,
                     parse_mult_msg: false, quick_reply: true }));"""
@@ -31,7 +35,13 @@ def transform(name, raw):
     if MARKER.strip() in text or '// LANYA_SCOPED_INBOUND_CONTEXT_V1\n' not in text:
         raise PatchError('Exact scoped context without a backend quote layer is required')
     if name == 'bridge.js':
-        anchor = '            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),'
+        # Existing installations already carry the group-addressing layer.
+        # Preserve its second argument; never replace it with an early parent.
+        addressed = GROUP_MARKER in text
+        anchor = ADDRESSED_OBSERVER if addressed else SIMPLE_OBSERVER
+        if (text.count('            observeInbound:') != 1 or 'historyAnchor:' in text or
+                addressed and text.count(GROUP_HOOK) != 1 or not addressed and GROUP_HOOK in text):
+            raise PatchError('One reviewed observer and its matching group context are required')
         text = replace_once(text, anchor, anchor + '\n            historyAnchor: id => this.lanyaPolicy.backendGuard.historyAnchor(id),')
     else:
         text = replace_once(text, HISTORY, REPLACEMENT)

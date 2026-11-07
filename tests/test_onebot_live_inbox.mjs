@@ -53,16 +53,15 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
  if name=='bridge.js':raw=n.transform(raw)
  if name=='bridge.js':
   raw=q.transform(name,raw)
-  raw=bc.transform(name,raw)
   import patch_onebot_group_context as g
   raw=g.transform(name,raw)
   if sys.argv[4]=='1':
    import patch_onebot_burst_intake as b
    raw=b.transform(name,raw)
+  raw=bc.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
-raw=bc.transform('inbound.js',raw)
 if sys.argv[3]=='1':
  import patch_onebot_inbound_admission as admission
  raw=admission.transform(raw)
@@ -71,6 +70,7 @@ if sys.argv[3]=='1':
  if sys.argv[4]=='1':
   import patch_onebot_burst_intake as b
   raw=b.transform('inbound.js',raw)
+raw=bc.transform('inbound.js',raw)
 f.write_bytes(raw)
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)

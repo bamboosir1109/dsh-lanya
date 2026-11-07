@@ -8,6 +8,8 @@ import unittest
 
 import test_patch_onebot_inbound_context as source
 import patch_onebot_backend_context as patch
+import patch_onebot_group_context as group
+import patch_onebot_burst_intake as burst
 
 
 class BackendContextTests(unittest.TestCase):
@@ -42,6 +44,36 @@ class BackendContextTests(unittest.TestCase):
                 file = Path(directory) / name.replace('.js', '.mjs'); file.write_bytes(patch.transform(name, raw))
                 result = subprocess.run(['node', '--check', str(file)], capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_current_group_and_burst_parents_keep_address_and_every_other_byte(self):
+        grouped = group.transform('bridge.js', self.raw('bridge.js'))
+        for raw in (grouped, burst.transform('bridge.js', grouped)):
+            for newline in ('\n', '\r\n'):
+                body = raw.decode().replace('\r\n', '\n').replace('\n', newline).encode()
+                expected = body.decode().replace(patch.ADDRESSED_OBSERVER,
+                    patch.ADDRESSED_OBSERVER + newline + '            historyAnchor: id => this.lanyaPolicy.backendGuard.historyAnchor(id),')
+                result = patch.transform('bridge.js', body)
+                self.assertEqual(result, (patch.MARKER.replace('\n', newline) + expected).encode())
+                self.assertEqual(result.count(patch.ADDRESSED_OBSERVER.encode()), 1)
+                for marker in (b'contextualGroupEnabled:', b'nativeBurstEnabled:', b'guardedConnectionCall(', b'dispatchFollowup('):
+                    self.assertEqual(result.count(marker), body.count(marker))
+                with tempfile.TemporaryDirectory() as directory:
+                    file = Path(directory) / 'candidate.mjs'; file.write_bytes(result)
+                    checked = subprocess.run(['node', '--check', str(file)], capture_output=True)
+                    self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_mixed_partial_unknown_and_existing_history_shapes_are_refused(self):
+        raw = group.transform('bridge.js', self.raw('bridge.js')).decode()
+        bad = (
+            raw.replace(patch.GROUP_MARKER, ''),
+            raw.replace(patch.ADDRESSED_OBSERVER, patch.SIMPLE_OBSERVER),
+            raw.replace(patch.GROUP_HOOK, ''),
+            raw.replace(patch.ADDRESSED_OBSERVER, patch.ADDRESSED_OBSERVER + '\n' + patch.SIMPLE_OBSERVER),
+            raw + '\n// historyAnchor: unknown customized implementation\n',
+            raw.replace('(inbound, address)', '(inbound,address)'),
+        )
+        for body in bad:
+            with self.assertRaises(source.policy.PatchError): patch.transform('bridge.js', body.encode())
 
     def test_cli_preview_is_read_only_and_output_requires_exact_input_and_exclusive_path(self):
         with tempfile.TemporaryDirectory() as directory:

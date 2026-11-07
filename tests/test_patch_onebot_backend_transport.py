@@ -1,5 +1,6 @@
 """Reviewed transport candidate; no host connection, installation or send."""
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -31,6 +32,23 @@ class BackendTransportTests(unittest.TestCase):
         raw = FIXTURE.read_bytes()
         for changed in (b'', raw + b'\n', raw.replace(b'const previous', b'let previous'), patch.transform(raw)):
             with self.assertRaises(patch.PatchError): patch.transform(changed)
+
+    def test_hardlinked_vendor_input_and_other_name_are_never_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'connection.js'; other = Path(directory) / 'vendor-cache.js'
+            candidate = Path(directory) / 'candidate.mjs'; raw = FIXTURE.read_bytes()
+            source.write_bytes(raw); os.link(source, other)
+            before = source.stat(); self.assertEqual(before.st_nlink, 2)
+            args = [sys.executable, '-B', patch.__file__, '--input', str(source)]
+            self.assertEqual(subprocess.run(args, capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run(args + ['--expected-sha256', patch.SOURCE_SHA,
+                '--output', str(candidate)], capture_output=True).returncode, 0)
+            self.assertEqual(candidate.read_bytes(), patch.transform(raw))
+            self.assertEqual(source.read_bytes(), raw); self.assertEqual(other.read_bytes(), raw)
+            after = source.stat()
+            self.assertEqual((after.st_dev, after.st_ino, after.st_mtime_ns, after.st_nlink),
+                             (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_nlink))
+            self.assertTrue(os.path.samefile(source, other))
 
     def test_preview_is_read_only_and_candidate_requires_exact_hash_exclusive_path(self):
         with tempfile.TemporaryDirectory() as directory:
