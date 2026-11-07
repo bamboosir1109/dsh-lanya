@@ -38,11 +38,14 @@ import re
 import sys
 import time
 
+from project_conf import data_dir, work_dir
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.path.dirname(HERE)
-DATA = os.path.join(WORK, "\u5c9a\u5a05")
-STATE = os.path.join(HERE, "bili-social-seen.json")
-LOG = os.path.join(HERE, "bili-social.log")
+WORK = work_dir()
+DATA = data_dir()
+RUNTIME = os.path.join(WORK, "napcat")
+STATE = os.path.join(RUNTIME, "bili-social-seen.json")
+LOG = os.path.join(RUNTIME, "bili-social.log")
 
 sys.path.insert(0, HERE)
 
@@ -78,31 +81,33 @@ def save_json(p, data):
 
 
 def cfg():
-    for dn in ("\u5c9a\u5a05", "\u5927\u80a5\u9c7c"):
-        p = os.path.join(WORK, dn, "lanya-config.json")
-        if os.path.isfile(p):
-            return load_json(p, {})
-    return {}
+    return load_json(os.path.join(DATA, "lanya-config.json"), {})
+
+
+def persona_path():
+    name = os.path.basename(DATA) + "-\u4eba\u8bbe\u6b63\u6587.md"
+    candidates = (os.path.join(RUNTIME, name),
+                  os.path.join(RUNTIME, "persona.md"))
+    return next((p for p in candidates if os.path.isfile(p)), candidates[0])
 
 
 # ---------------------------------------------------------------------------
 # 人设片段：让她说话像她自己，不是像客服
 # ---------------------------------------------------------------------------
 def persona_snippet(max_chars=1800):
-    for name in ("\u5c9a\u5a05-\u4eba\u8bbe\u6b63\u6587.md",):
-        p = os.path.join(HERE, name)
-        if os.path.isfile(p):
-            try:
-                with io.open(p, encoding="utf-8", errors="replace") as fh:
-                    return fh.read()[:max_chars]
-            except Exception:
-                pass
+    p = persona_path()
+    if os.path.isfile(p):
+        try:
+            with io.open(p, encoding="utf-8", errors="replace") as fh:
+                return fh.read()[:max_chars]
+        except Exception:
+            pass
     return ""
 
 
 def examples(max_n=12):
     """从人设里挑「该怎么说话」的例子，避开反例。"""
-    p = os.path.join(HERE, "\u5c9a\u5a05-\u4eba\u8bbe\u6b63\u6587.md")
+    p = persona_path()
     if not os.path.isfile(p):
         return ""
     out = []
@@ -231,6 +236,11 @@ def compose(who, text, where):
 # ---------------------------------------------------------------------------
 def run(max_per_run=3, dry=False):
     from bili_mcp import BiliMCP
+    from decision_events import unified_decisions_enabled
+    if unified_decisions_enabled():
+        from autonomy_observers import social_notifications
+        with BiliMCP(timeout=180) as m:
+            return social_notifications(m, max_per_run=max_per_run, dry=dry)
 
     seen = load_json(STATE, {"keys": []})
     done = set(seen.get("keys") or [])

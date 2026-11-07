@@ -17,8 +17,18 @@
     "watchCandidates": 4,
     "commentRetries": 3
   },
+  "bilibili": {
+    "social": {
+      "comment": false,
+      "reply": false,
+      "mentionAdmin": false
+    }
+  },
   "budget": {
     "dailyLimit": 1.0
+  },
+  "mind": {
+    "opportunityMin": 6
   },
   "memory": {
     "seenKeep": 400,
@@ -27,5 +37,9 @@
     "diaryInCorpus": 60,
     "compressOver": 120,
     "compressTo": 80
+  },
+  "decisions": {
+    "mode": "unified",
+    "agentPreset": ""
   }
 }

@@ -21,60 +21,74 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-
-# When the plugin's built-in scheduler is alive it already fires this script's work
-# (see the SCHEDULE table in dsh-lanya/lib/index.js). Bail out immediately so the
-# scheduled task becomes a no-op instead of spawning a second powershell every
-# minute just to call the tick.
-$__marker = Join-Path '<WORKDIR>\napcat' 'scheduler-in-plugin.flag'
-if (Test-Path $__marker) {
-  if (((Get-Date) - (Get-Item $__marker).LastWriteTime).TotalMinutes -lt 30) { exit 0 }
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  Write-Output 'paused: unified scheduler owns reminders; reminder records and receipts preserved'
+  exit 3
 }
 
-# Timestamp of the file we started from. The main loop compares against it and
-# exits when the script is edited, so the scheduled task relaunches fresh code.
-# Without this a long-running instance keeps executing its in-memory copy and a
-# fixed bug keeps reproducing for hours.
-$scriptStartWrite = (Get-Item $PSCommandPath).LastWriteTime
-
-# Derived from this script's own location - the repo copy had the path
-# sanitised to a literal '<WORKDIR>' string, which points at nothing.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  $root = Split-Path -Parent $root
-}
-$notesDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)   # "Lanya" folder
-$remPath   = Join-Path $notesDir 'reminders.json'
+# Resolve the same project and identity config as the panel and planning loop.
+. (Join-Path $PSScriptRoot 'project_conf.ps1')
+$root = Get-ProjectWorkDir
+$runtimeDir = Join-Path $root 'napcat'
+$notesDir = Get-ProjectDataDir
+$remPath = Join-Path $notesDir 'reminders.json'
 $statePath = Join-Path $notesDir 'reminders.state.json'
-$logPath   = Join-Path $notesDir 'reminders.log'
-$cfgPath   = '<WORKDIR>\napcat\balance-alert.config.json'
-# The owner's QQ, read from config (was a hardcoded number).
-$adminQQ = ''
+$logPath = Join-Path $notesDir 'reminders.log'
+$scriptStartWrite = (Get-Item $PSCommandPath).LastWriteTime
+$leasePath = Join-Path $runtimeDir 'scheduler-in-plugin.flag'
 try {
-  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')
-  if (Test-Path $cf) {
-    $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
-    $a = $cj.adminQQ
-    if ($a -is [array]) { if ($a.Count -gt 0) { $adminQQ = [string]$a[0] } }
-    elseif ($a) { $adminQQ = [string]$a }
-  }
+  $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+  if ($lease.version -eq 2 -and $lease.jobs -contains 'reminders' -and
+      ((Get-Date) - (Get-Item -LiteralPath $leasePath).LastWriteTime).TotalSeconds -lt 120 -and
+      (Get-Process -Id $lease.pid -ErrorAction SilentlyContinue)) { exit 0 }
 } catch { }
+$adminQQ = ''
 $groupId = ''
 try {
-  $cfgFile = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')
-  if (Test-Path $cfgFile) {
-    $cj = Get-Content $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($cj.fanGroupQQ) { $groupId = [string]$cj.fanGroupQQ }
-    if (-not $groupId -and $cj.fanGroup) { $groupId = [string]$cj.fanGroup }
-  }
+  $identity = Get-Content -LiteralPath (Join-Path $notesDir 'lanya-config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($identity.adminQQ -is [array]) { $adminQQ = [string]$identity.adminQQ[0] }
+  else { $adminQQ = [string]$identity.adminQQ }
+  $groupId = [string]$identity.fanGroupQQ
+  if (-not $groupId) { $groupId = [string]$identity.fanGroup }
 } catch { }
-if (-not $groupId) {
+$napcat = @{ napcatHttp = ('http://127.0.0.1:' + (Get-ProjectConfValue 'onebotPort' 8720)); napcatToken = '' }
+$cfgPath = Join-Path $runtimeDir 'balance-alert.config.json'
+try {
+  $localConf = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+  if ($localConf.napcatHttp) { $napcat.napcatHttp = [string]$localConf.napcatHttp }
+  if ($localConf.napcatToken) { $napcat.napcatToken = [string]$localConf.napcatToken }
+} catch { }
+if (-not $napcat.napcatToken) {
   try {
-    if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
-      . (Join-Path $PSScriptRoot 'project_conf.ps1')
-    }
-    $groupId = [string](Get-ProjectConfValue 'fanGroup' '')
+    $onebot = Get-Content -LiteralPath (Join-Path $runtimeDir 'framework\config\onebot11.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+    $napcat.napcatToken = [string]$onebot.network.httpServers[0].token
   } catch { }
+}
+
+function Confirm-Delivery($Response, $Client) {
+  try {
+    $null = $Response.EnsureSuccessStatusCode()
+    $body = $Response.Content.ReadAsStringAsync().Result
+    $ack = $body | ConvertFrom-Json
+    if ($ack.status -ne 'ok' -or $ack.retcode -ne 0) { throw 'OneBot rejected delivery' }
+    return $body
+  } finally {
+    if ($Response) { $Response.Dispose() }
+    $Client.Dispose()
+  }
+}
+
+function Get-ReminderKey($Reminder) {
+  $fields = @('at', 'daily', 'target', 'text', 'mention', 'image')
+  $identityValues = @($fields | ForEach-Object { [string]$Reminder.$_ })
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($identityValues -join [char]0))
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($hasher.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+  finally { $hasher.Dispose() }
 }
 
 function Write-Log([string]$m) {
@@ -88,9 +102,9 @@ if (-not (Test-Path $remPath)) {
   [System.IO.File]::WriteAllText($remPath, "[]", (New-Object System.Text.UTF8Encoding($false)))
 }
 
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 function Send-QQ([string]$uin, [string]$text) {
+  Assert-QqLegacyAction 'send_private_msg'
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)
@@ -100,10 +114,11 @@ function Send-QQ([string]$uin, [string]$text) {
   $content = New-Object System.Net.Http.StringContent($payload, [System.Text.Encoding]::UTF8, 'application/json')
   $url = ([string]$napcat.napcatHttp).TrimEnd('/') + '/send_private_msg'
   $resp = $client.PostAsync($url, $content).Result
-  return [System.Text.Encoding]::UTF8.GetString($resp.Content.ReadAsByteArrayAsync().Result)
+  return (Confirm-Delivery $resp $client)
 }
 
 function Send-Group([string]$text, [string]$mention, [string]$image) {
+  Assert-QqLegacyAction 'send_group_msg'
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)
@@ -126,18 +141,48 @@ function Send-Group([string]$text, [string]$mention, [string]$image) {
   $content = New-Object System.Net.Http.StringContent($payload, [System.Text.Encoding]::UTF8, 'application/json')
   $url = ([string]$napcat.napcatHttp).TrimEnd('/') + '/send_group_msg'
   $resp = $client.PostAsync($url, $content).Result
-  return [System.Text.Encoding]::UTF8.GetString($resp.Content.ReadAsByteArrayAsync().Result)
+  return (Confirm-Delivery $resp $client)
 }
 
 # target "group" -> the fan group; anything else is a QQ number (private chat).
 function Send-Any([string]$t, [string]$text, [string]$mention, [string]$image) {
-  if ($t -eq 'group') { return (Send-Group $text $mention $image) }
+  if ($t -eq 'group') {
+    if ($groupId -notmatch '^\d+$') { throw 'No configured reminder group' }
+    return (Send-Group $text $mention $image)
+  }
+  if ($t -eq 'admin') { $t = $adminQQ }
+  if ($t -notmatch '^\d+$') { throw 'No configured reminder recipient' }
   # Private chat: keep it simple, an image reminder to a person is rare.
   return (Send-QQ $t $text)
 }
 
 while ($true) {
+  $sendLock = $null
   try {
+    $lockPath = Join-Path $notesDir 'reminders-send.lock'
+    try {
+      $sendLock = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+      $ownerBytes = [Text.Encoding]::UTF8.GetBytes([string]$PID)
+      $sendLock.Write($ownerBytes, 0, $ownerBytes.Length)
+      $sendLock.Flush()
+    } catch {
+      try {
+        $ownerId = [int]([IO.File]::ReadAllText($lockPath))
+        if ($ownerId -gt 0 -and -not (Get-Process -Id $ownerId -ErrorAction SilentlyContinue)) {
+          Remove-Item -LiteralPath $lockPath -Force
+        }
+      } catch { }
+      if ($Once) { break }
+      Start-Sleep -Seconds 30
+      continue
+    }
+    # Recheck ownership every round: the plugin may have started meanwhile.
+    try {
+      $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+      if ($lease.version -eq 2 -and $lease.jobs -contains 'reminders' -and
+          ((Get-Date) - (Get-Item -LiteralPath $leasePath).LastWriteTime).TotalSeconds -lt 120 -and
+          (Get-Process -Id $lease.pid -ErrorAction SilentlyContinue)) { break }
+    } catch { }
     $raw = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($remPath))
     if ($raw.Trim() -eq '') { $raw = '[]' }
     # NOT "@($raw | ConvertFrom-Json)". That form can hand back a single element
@@ -156,11 +201,13 @@ while ($true) {
       $keep = @()
       $fired = $false
 
-      $state = @{ daily = @{} }
+      $state = [pscustomobject]@{ daily = [pscustomobject]@{} }
       if (Test-Path $statePath) {
         try { $state = Get-Content $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
       }
       $dailyMap = @{}
+      $sentOnce = @{}
+      if ($state.once) { foreach ($p in $state.once.PSObject.Properties) { $sentOnce[$p.Name] = [string]$p.Value } }
       if ($state.daily) {
         foreach ($p in $state.daily.PSObject.Properties) { $dailyMap[$p.Name] = [string]$p.Value }
       }
@@ -168,7 +215,7 @@ while ($true) {
       $idx = 0
       foreach ($r in $list) {
         $idx++
-        $key = 'r' + $idx
+        $key = Get-ReminderKey $r
         $target = if ($r.target) { [string]$r.target } else { $adminQQ }
 
         if ($r.at) {
@@ -198,9 +245,18 @@ while ($true) {
           }
           if ($now -ge $due) {
             Write-Log ('due(once): ' + $r.text)
-            Send-Any $target ([string]$r.text) ([string]$r.mention) ([string]$r.image) | Out-Null
-            $fired = $true
-            continue   # drop it
+            try {
+              if (-not $sentOnce[$key]) {
+                Send-Any $target ([string]$r.text) ([string]$r.mention) ([string]$r.image) | Out-Null
+                $sentOnce[$key] = $now.ToString('o')
+              }
+              $fired = $true
+              continue
+            } catch {
+              Write-Log ('delivery failed; entry kept: ' + $_.Exception.Message)
+              $keep += $r
+              continue
+            }
           }
           $keep += $r
           continue
@@ -209,11 +265,23 @@ while ($true) {
         if ($r.daily) {
           $hm = ([string]$r.daily).Trim()
           $todayKey = $key + '|' + $today
-          if ($now.ToString('HH:mm') -eq $hm -and $dailyMap[$todayKey] -ne 'yes') {
+          $legacyKey = 'r' + $idx + '|' + $today
+          $minutesLate = -1
+          if ($hm -match '^([01]\d|2[0-3]):([0-5]\d)$') {
+            $minutesLate = $now.Hour * 60 + $now.Minute - [int]$Matches[1] * 60 - [int]$Matches[2]
+          }
+          $grace = 5
+          if ($null -ne $r.dailyGraceMinutes) {
+            $parsedGrace = 5
+            if ([int]::TryParse([string]$r.dailyGraceMinutes, [ref]$parsedGrace)) { $grace = [math]::Max(0, [math]::Min(60, $parsedGrace)) }
+          }
+          if ($minutesLate -ge 0 -and $minutesLate -le $grace -and $dailyMap[$todayKey] -ne 'yes' -and $dailyMap[$legacyKey] -ne 'yes') {
             Write-Log ('due(daily ' + $hm + '): ' + $r.text)
-            Send-Any $target ([string]$r.text) ([string]$r.mention) ([string]$r.image) | Out-Null
-            $dailyMap[$todayKey] = 'yes'
-            $fired = $true
+            try {
+              Send-Any $target ([string]$r.text) ([string]$r.mention) ([string]$r.image) | Out-Null
+              $dailyMap[$todayKey] = 'yes'
+              $fired = $true
+            } catch { Write-Log ('daily delivery failed; entry kept: ' + $_.Exception.Message) }
           }
           $keep += $r
           continue
@@ -223,17 +291,26 @@ while ($true) {
       }
 
       if ($fired -or $keep.Count -ne $list.Count) {
-        [System.IO.File]::WriteAllText($remPath, ($keep | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
         $dailyObj = [pscustomobject]@{}
-        foreach ($k in $dailyMap.Keys) {
+        foreach ($entry in $dailyMap.GetEnumerator()) {
           # prune daily marks that are not from today
+          $k = [string]$entry.Key
           if ($k -like ('*|' + $today)) { $dailyObj | Add-Member -NotePropertyName $k -NotePropertyValue 'yes' -Force }
         }
-        [System.IO.File]::WriteAllText($statePath, ([pscustomobject]@{ daily = $dailyObj } | ConvertTo-Json -Depth 5 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($statePath, ([pscustomobject]@{ daily = $dailyObj; once = $sentOnce } | ConvertTo-Json -Depth 5 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+        $encodedKeep = ConvertTo-Json -InputObject @($keep) -Depth 5
+        if ([IO.File]::ReadAllText($remPath).TrimStart([char]0xFEFF) -eq $raw.TrimStart([char]0xFEFF)) {
+          [System.IO.File]::WriteAllText($remPath, $encodedKeep, (New-Object System.Text.UTF8Encoding($false)))
+        }
       }
     }
   } catch {
     Write-Log ('loop error: ' + $_.Exception.Message)
+  } finally {
+    if ($sendLock) {
+      $sendLock.Dispose()
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    }
   }
 
   if ($Once) { break }

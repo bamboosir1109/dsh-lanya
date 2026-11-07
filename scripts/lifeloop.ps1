@@ -35,6 +35,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  Write-Output 'paused: unified decision owner controls autonomous activity; no delivery occurred'
+  exit 3
+}
 
 # ---- shared project config ------------------------------------------------
 # Reads <repo>\config\project.json. The helper carries the same defaults, so a
@@ -202,6 +210,7 @@ function Similar($a, $b) {
 
 
 function Invoke-NapCat([string]$action, $bodyObj) {
+  Assert-QqLegacyAction $action
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)

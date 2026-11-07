@@ -1,0 +1,13 @@
+{
+  "package": "dsh-onebot-qq",
+  "version": "0.8.1",
+  "source": "lib/media.js",
+  "source_sha256": "fc3e11d3e047944cb56b6d619e151506d37ae3986586403cd8a8c9be77f4de46",
+  "extraction": "resolveContainedPath, fileToBase64, isUrl: exact contiguous unmodified exports; only standalone imports/comment added",
+  "excerpt_sha256": "585df64be27c76afe07409c2c95f12dab7b63b6393fdf680dfed3f83b4887c3a",
+  "fixture_sha256": "1f996472b6ea3e048eb59a619d5be99c75da9dc812c6c3aaf5a3a7c1beafdb7c",
+  "license": "BSD-3-Clause",
+  "license_sha256": "d29575c8c48fd56e0de6cf59ce70c49cb25ccd24cae34767c04c64c6f730e8bb",
+  "recorded_private_paths": false,
+  "runtime_installation_required": false
+}

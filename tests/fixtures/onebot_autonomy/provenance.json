@@ -1,0 +1,8 @@
+{
+  "origin": "https://github.com/bamboosir1109/dsh-lanya",
+  "commit": "c6849912608a5fe42a1c20a953f26f56a893ebb7",
+  "source": "plugin/lib/onebot-policy-adapter.js",
+  "sha256": "95481a88ebd0f4c66d5bc4256210d7c2b1ab05b693d3aa8e00609110b7e57984",
+  "modifications": "none",
+  "license": "MIT; repository LICENSE copied alongside. No installed/private source is vendored."
+}

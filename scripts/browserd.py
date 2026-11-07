@@ -26,22 +26,8 @@
 # "窗口反复弹出"就是这个。脚本没法阻止窗口被创建，但可以在第一行就把它藏掉，
 # 把可见时间从"整个运行时长"压到启动那一瞬。
 
-# --- 插件调度器在跑时，立刻退出 ---------------------------------------------
-# 这几个脚本都由计划任务用 python.exe 直接拉起，而 python 是控制台程序，任务一
-# 触发就会闪一个黑框。插件里的调度器已经在做同样的事（而且没有窗口），所以这里
-# 一看到它的标记文件就立刻退出——窗口存在的时间从"整个运行时长"缩到进程启动那
-# 一瞬。删除任务能彻底解决，但那需要管理员权限。
-import os as _os
-import time as _time
-try:
-    _mk = _os.path.join(r"<WORKDIR>\napcat", "scheduler-in-plugin.flag")
-    if _os.path.exists(_mk) and (_time.time() - _os.path.getmtime(_mk)) < 1800:
-        raise SystemExit(0)
-except SystemExit:
-    raise
-except Exception:
-    pass
 # ---------------------------------------------------------------------------
+from project_conf import data_dir, work_dir
 import ctypes as _ct
 try:
     _ct.windll.user32.ShowWindow(_ct.windll.kernel32.GetConsoleWindow(), 0)
@@ -56,8 +42,8 @@ import time
 
 from playwright.async_api import async_playwright
 
-BASE = r"<WORKDIR>"
-DAFEIYU = os.path.join(BASE, "\u5927\u80a5\u9c7c")          # "Dafeiyu"
+BASE = work_dir()
+DAFEIYU = data_dir()
 BROWSER_DIR = os.path.join(DAFEIYU, "browser")
 CMD = os.path.join(BROWSER_DIR, "cmd.json")
 SHOT = os.path.join(BROWSER_DIR, "shot.png")
@@ -140,7 +126,10 @@ async def main():
     log("browserd start")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, proxy={"server": PROXY})
+        launch_options = {"headless": True}
+        if PROXY:
+            launch_options["proxy"] = {"server": PROXY}
+        browser = await p.chromium.launch(**launch_options)
         ctx = await browser.new_context(viewport=VIEWPORT, locale="zh-CN")
         page = await ctx.new_page()
 

@@ -1,0 +1,446 @@
+"""Durable observations for the single chat decision owner; never runs an LLM.
+
+The event stays immutable in pending/. A consumer writes a separate done/
+marker, so retries cannot republish an event while it moves between folders.
+Payloads are evidence, never user control instructions or send permissions.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import time
+import uuid
+
+
+class ObservationError(ValueError):
+    pass
+
+
+MAX_OBSERVATION_BYTES = 256 * 1024
+MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
+
+
+def autonomous_rest_state(now_ms):
+    """Fixed Shanghai 00:00 inclusive to 08:00 exclusive, independent of host TZ."""
+    hour_ms = 60 * 60 * 1000
+    day_ms = 24 * hour_ms
+    offset = 8 * hour_ms
+    if type(now_ms) is not int or not 0 <= now_ms <= 8640 * 10**12 - offset:
+        raise ObservationError("A valid autonomous clock is required")
+    local = now_ms + offset
+    wake = (local // day_ms) * day_ms
+    resting = local % day_ms < offset
+    return {"resting": resting, "next_wake_at": wake if resting else wake + day_ms,
+            "current_day_wake_at": wake, "timezone": "Asia/Shanghai"}
+
+
+def canonical_json(value):
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def event_key(scope, event_id):
+    return hashlib.sha256((scope + "\0" + event_id).encode("utf-8")).hexdigest()
+
+
+def _plain_directory(path, create=False):
+    path = Path(os.path.abspath(path))
+    for part in [*reversed(path.parents), path]:
+        if not os.path.lexists(part) and create:
+            try:
+                part.mkdir()
+            except FileExistsError:
+                pass
+        if os.path.lexists(part):
+            info = part.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+                    getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ObservationError("Observation path must contain ordinary directories")
+    return path
+
+
+def validate_event(event, raw=None, check_size=True):
+    if not isinstance(event, dict) or type(event.get("version")) is not int or event["version"] != 1:
+        raise ObservationError("Unsupported observation version")
+    if not isinstance(event.get("scope"), str) or not re.fullmatch(r"(?:private|group):[1-9][0-9]*", event["scope"]):
+        raise ObservationError("Expected a canonical string conversation scope")
+    for key in ("event_id", "kind", "producer"):
+        value = event.get(key)
+        if not isinstance(value, str) or not value or len(value) > 256 or re.search(r"[\x00-\x1f]", value):
+            raise ObservationError("Invalid observation identity")
+    if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", event["kind"]):
+        raise ObservationError("Invalid observation kind")
+    if event.get("origin") != "observation" or event.get("control_allowed") is not False:
+        raise ObservationError("An observation cannot impersonate a user or grant control")
+    if not isinstance(event.get("payload"), dict):
+        raise ObservationError("Observation payload must be an object")
+    if any(not isinstance(event.get(key), str) for key in ("workspace_key", "agent_key")):
+        raise ObservationError("Explicit memory ownership is required")
+    created = event.get("created_at")
+    if isinstance(created, bool) or not isinstance(created, int) or created < 0 or created > 2**53 - 1:
+        raise ObservationError("Invalid observation creation time")
+    canonical = canonical_json(event)  # Also rejects non-finite JSON payloads.
+    size = len(raw) if raw is not None else len((canonical + "\n").encode("utf-8"))
+    if check_size and size > MAX_OBSERVATION_BYTES:
+        raise ObservationError("Observation exceeds the bounded event size")
+    return event
+
+
+def _read_regular_raw(path, max_bytes=MAX_COMPLETION_BYTES):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            getattr(info, "st_file_attributes", 0) & 0x400):
+        raise ObservationError("Observation entry is not an ordinary file")
+    if info.st_size > max_bytes:
+        raise ObservationError("Observation entry exceeds its size limit")
+    raw = path.read_bytes()
+    after = path.lstat()
+    if any(getattr(info, key) != getattr(after, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns")):
+        raise ObservationError("Observation entry changed during read")
+    return json.loads(raw.decode("utf-8")), raw
+
+
+def _read_regular(path):
+    return _read_regular_raw(path)[0]
+
+
+def _semantic(event):
+    # A producer retry's wall clock is not a new event.
+    return canonical_json({key: value for key, value in event.items() if key != "created_at"})
+
+
+def _validated_completion(result, event, raw):
+    """Validate a decision, or a distinct native-completed/no-decision outcome."""
+    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] not in (1, 2, 3) or
+            result.get("event_sha256") != hashlib.sha256(raw).hexdigest()):
+        raise ObservationError("Invalid observation completion evidence")
+    if result["version"] in (2, 3):
+        original = result.get("event_raw")
+        try:
+            exact = isinstance(original, str) and original.encode("utf-8") == raw
+        except UnicodeError:
+            exact = False
+        if not exact or any(result.get(key) != event[key] for key in ("scope", "event_id")):
+            raise ObservationError("Completion original does not match immutable evidence")
+    if result["version"] == 3:
+        # This local outcome is never an LLM verdict, send ticket, or review.
+        fields = {"version", "event_raw", "event_id", "scope", "event_sha256", "completed_at", "status",
+                  "reason", "local_outcome_id", "observation_revision", "native_turn_completed"}
+        revision = result.get("observation_revision")
+        rest_closure = (result.get("reason") in ("autonomy_rest", "observation_expired") and
+                        result.get("native_turn_completed") is False)
+        if (set(result) != fields or result.get("status") != "no_decision" or
+                not ((result.get("reason") == "model_completed_without_decision" and result.get("native_turn_completed") is True) or
+                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False) or rest_closure) or
+                type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
+                not (rest_closure or (event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")) or
+                     (event["kind"] == "social.opportunity" and event["producer"] == "social-planner"))):
+            raise ObservationError("Invalid native no-decision completion")
+        identity = "no-decision\0" + event["scope"] + "\0" + event["event_id"] + "\0" + str(revision)
+        if result.get("local_outcome_id") != hashlib.sha256(identity.encode("utf-8")).hexdigest():
+            raise ObservationError("Invalid native no-decision identity")
+    else:
+        if result.get("status") not in ("decided", "sent", "unknown", "suppressed"):
+            raise ObservationError("Invalid observation completion status")
+        decision = result.get("decision_id")
+        if not isinstance(decision, str) or not decision.strip() or len(decision) > 256 or re.search(r"[\x00-\x1f]", decision):
+            raise ObservationError("Invalid observation completion decision")
+    for key in ("scope", "event_id"):
+        if key in result and result[key] != event[key]:
+            raise ObservationError("Observation completion identity mismatch")
+    for key in ("completed_at", "next_review_at"):
+        if key in result:
+            value = result[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 2**53 - 1:
+                raise ObservationError("Invalid observation completion time")
+            if key == "next_review_at" and value <= event["created_at"]:
+                raise ObservationError("Invalid observation review time")
+    if result["version"] == 3 and result["completed_at"] < event["created_at"]:
+        raise ObservationError("Native completion precedes its observation")
+    return result
+
+
+def _read_evidence(base, key):
+    """Only ENOENT permits self-contained terminal recovery; never hide bad pending."""
+    target = _plain_directory(base / "pending") / (key + ".json")
+    marker = _plain_directory(base / "done") / (key + ".json")
+    missing = object()
+    completion = missing
+    try:
+        event, raw = _read_regular_raw(target, MAX_OBSERVATION_BYTES)
+    except FileNotFoundError:
+        completion = _read_regular(marker)
+        if (not isinstance(completion, dict) or type(completion.get("version")) is not int or
+                completion["version"] not in (2, 3) or not isinstance(completion.get("event_raw"), str)):
+            raise ObservationError("Missing original requires a self-contained completion")
+        try:
+            raw = completion["event_raw"].encode("utf-8")
+        except UnicodeError as error:
+            raise ObservationError("Invalid UTF8 completion original") from error
+        if len(raw) > MAX_OBSERVATION_BYTES:
+            raise ObservationError("Completion original exceeds event size limit")
+        event = json.loads(raw.decode("utf-8"))
+    event = validate_event(event, raw=raw)
+    if event_key(event["scope"], event["event_id"]) != key:
+        raise ObservationError("Observation filename/identity mismatch")
+    if completion is missing:
+        try:
+            completion = _read_regular(marker)
+        except FileNotFoundError:
+            pass
+    if completion is not missing:
+        _validated_completion(completion, event, raw)
+    return event, raw, None if completion is missing else completion
+
+
+def submit_observation(*, scope, kind, payload, producer, event_id,
+                       workspace_key, agent_key, directory=None, created_at=None):
+    if directory is None:
+        from project_conf import data_dir
+        directory = Path(data_dir()) / "decision-inbox"
+    event = validate_event({"version": 1, "event_id": event_id, "scope": scope,
+                            "kind": kind, "producer": producer,
+                            "created_at": int(time.time() * 1000) if created_at is None else created_at,
+                            "payload": payload, "workspace_key": workspace_key, "agent_key": agent_key,
+                            "origin": "observation", "control_allowed": False}, check_size=False)
+    # An idempotent retry can match a legal compact UTF8 original even when
+    # this producer's escaped ASCII encoding would be too large to publish.
+    base = _plain_directory(directory)
+    pending = _plain_directory(base / "pending")
+    done = _plain_directory(base / "done")
+    key = event_key(scope, event_id)
+    target = pending / (key + ".json")
+    marker = done / (key + ".json")
+
+    def existing():
+        previous, _, completed = _read_evidence(base, key)
+        if _semantic(previous) != _semantic(event):
+            raise ObservationError("Event identity already contains different evidence")
+        state = "done" if completed is not None else "pending"
+        return {"submitted": False, "state": state, "key": key, "event_id": event_id}
+
+    if os.path.lexists(target) or os.path.lexists(marker):
+        return existing()
+    raw = (canonical_json(event) + "\n").encode("utf-8")
+    if len(raw) > MAX_OBSERVATION_BYTES:
+        raise ObservationError("Observation exceeds the bounded event size")
+    _plain_directory(pending, create=True)
+    _plain_directory(done, create=True)
+    temporary = pending / (".publish-" + uuid.uuid4().hex + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            if os.name == "nt":
+                os.rename(temporary, target)  # Windows refuses to replace a winner.
+            else:
+                os.link(temporary, target, follow_symlinks=False)  # Atomic publish, no overwrite.
+        except FileExistsError:
+            return existing()
+        return {"submitted": True, "state": "pending", "key": key, "event_id": event_id}
+    finally:
+        if os.path.lexists(temporary):
+            temporary.unlink()
+
+
+def submit_project_observation(*, scope, kind, payload, producer, event_id, directory=None):
+    """Ownership is configuration, never inferred from payload or model output."""
+    from project_conf import work_dir, get
+    workspace = os.path.abspath(work_dir())
+    preset = str(get("decisions.agentPreset", "") or "").strip()
+    return submit_observation(scope=scope, kind=kind, payload=payload, producer=producer,
+                              event_id=event_id, directory=directory,
+                              workspace_key=workspace.lower() if os.name == "nt" else workspace,
+                              agent_key=preset.lower() if os.name == "nt" else preset)
+
+
+def unified_decisions_enabled():
+    from project_conf import get
+    mode = get("decisions.mode", "unified")
+    if mode not in ("unified", "legacy"):
+        raise ObservationError("Unknown decision mode; refusing independent activity")
+    return mode == "unified"
+
+
+def project_scope(target="admin"):
+    """Routing identity comes from local configuration, never observation text."""
+    from project_conf import data_dir, get
+    config = Path(data_dir()) / "lanya-config.json"
+    identity = json.loads(config.read_text(encoding="utf-8-sig")) if config.is_file() else {}
+    if not isinstance(identity, dict):
+        raise ObservationError("Invalid project identity configuration")
+    if target == "group":
+        value = identity.get("fanGroupQQ") or identity.get("fanGroup") or get("fanGroup", "")
+        prefix = "group:"
+    else:
+        value = identity.get("adminQQ") if target == "admin" else target
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        prefix = "private:"
+    value = str(value or "")
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise ObservationError("No configured observation conversation")
+    return prefix + value
+
+
+def project_scopes():
+    """One private owner and, when configured, one separate group opportunity."""
+    from project_conf import data_dir, get
+    config = Path(data_dir()) / "lanya-config.json"
+    identity = json.loads(config.read_text(encoding="utf-8-sig")) if config.is_file() else {}
+    if not isinstance(identity, dict):
+        raise ObservationError("Invalid project identity configuration")
+    admin = identity.get("adminQQ")
+    if isinstance(admin, list):
+        admin = admin[0] if admin else ""
+    group = identity.get("fanGroupQQ")
+    if group in (None, ""):
+        group = identity.get("fanGroup")
+    if group in (None, ""):
+        group = get("fanGroup", "")
+    values = [("private:", admin)]
+    if group not in (None, ""):
+        values.append(("group:", group))
+    scopes = []
+    for prefix, value in values:
+        if isinstance(value, bool) or not re.fullmatch(r"[1-9][0-9]*", str(value or "")):
+            raise ObservationError("Invalid configured observation conversation")
+        scopes.append(prefix + str(value))
+    return scopes
+
+
+def _queued_review(event):
+    return event["producer"] == "main-review" and event["event_id"].startswith("main-review:")
+
+
+def _review_anchor(base, event, depth=0, seen=None):
+    key = event_key(event["scope"], event["event_id"])
+    seen = set() if seen is None else seen
+    if depth >= 128 or key in seen:
+        raise ObservationError("Review freshness ancestry is not bounded and acyclic")
+    seen.add(key)
+    if not _queued_review(event):
+        original, raw, _ = _read_evidence(base, key)
+        if canonical_json(original) != canonical_json(event):
+            raise ObservationError("Review freshness original conflicts")
+        return {"key": key, "sha256": hashlib.sha256(raw).hexdigest(), "created_at": event["created_at"]}
+    context = event["payload"].get("review_context")
+    if (not isinstance(context, dict) or not isinstance(context.get("parent_observation_key"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", context["parent_observation_key"])
+            or not isinstance(context.get("parent_event_id"), str) or not context["parent_event_id"]
+            or not isinstance(context.get("previous_decision_id"), str) or not context["previous_decision_id"].strip()
+            or type(context.get("scheduled_at")) is not int or context["scheduled_at"] != event["created_at"]
+            or event["event_id"] != "main-review:" + context["parent_observation_key"] + ":" + str(context["scheduled_at"])):
+        raise ObservationError("Review freshness requires exact parent metadata")
+    parent, parent_raw, completed = _read_evidence(base, context["parent_observation_key"])
+    same_owner = lambda other: all(event[field] == other[field] for field in ("scope", "workspace_key", "agent_key", "kind"))
+    if (not same_owner(parent) or parent["event_id"] != context["parent_event_id"] or completed is None
+            or completed["status"] in ("unknown", "no_decision")
+            or completed["decision_id"] != context["previous_decision_id"]
+            or completed.get("next_review_at") != context["scheduled_at"]):
+        raise ObservationError("Review freshness parent receipt conflicts")
+    if "freshness_anchor" not in context:
+        return _review_anchor(base, parent, depth + 1, seen)
+    anchor = context["freshness_anchor"]
+    if (not isinstance(anchor, dict) or set(anchor) != {"key", "sha256", "created_at"}
+            or not all(isinstance(anchor.get(field), str) and re.fullmatch(r"[0-9a-f]{64}", anchor[field]) for field in ("key", "sha256"))
+            or type(anchor["created_at"]) is not int or not 0 <= anchor["created_at"] <= parent["created_at"]):
+        raise ObservationError("Review freshness anchor is invalid")
+    inherited = parent["payload"].get("review_context", {}).get("freshness_anchor") if _queued_review(parent) else None
+    expected = inherited if inherited is not None else (_review_anchor(base, parent, depth + 1, seen) if _queued_review(parent)
+        else {"key": context["parent_observation_key"], "sha256": hashlib.sha256(parent_raw).hexdigest(), "created_at": parent["created_at"]})
+    if canonical_json(expected) != canonical_json(anchor):
+        raise ObservationError("Review freshness anchor differs from parent")
+    original, raw, _ = (parent, parent_raw, completed) if anchor["key"] == context["parent_observation_key"] else _read_evidence(base, anchor["key"])
+    if (hashlib.sha256(raw).hexdigest() != anchor["sha256"] or not same_owner(original)
+            or original["created_at"] != anchor["created_at"] or _queued_review(original)):
+        raise ObservationError("Review freshness anchor original conflicts")
+    return dict(anchor)
+
+
+def observation_review_chain(scope, event_id, directory=None, limit=128):
+    """Read immutable queue successors; never publish a second review owner.
+
+    activity_due/reminder.due are legacy producer-owned. All other kinds use
+    the queue's main-review identity. An existing successor is always verified
+    before following it, including legacy events made by an earlier version.
+    """
+    if directory is None:
+        from project_conf import data_dir
+        directory = Path(data_dir()) / "decision-inbox"
+    base = _plain_directory(directory)
+    _plain_directory(base / "pending")
+    _plain_directory(base / "done")
+    for _ in range(limit):
+        key = event_key(scope, event_id)
+        event, _, completion = _read_evidence(base, key)
+        if event["scope"] != scope or event["event_id"] != event_id:
+            raise ObservationError("Invalid review observation identity")
+        result = {"event": event, "completion": completion, "waiting_review": False}
+        if completion is None or completion["status"] in ("unknown", "no_decision") or "next_review_at" not in completion:
+            return result
+        due = completion["next_review_at"]
+        successor_id = "main-review:" + key + ":" + str(due)
+        child = base / "pending" / (event_key(scope, successor_id) + ".json")
+        child_done = base / "done" / child.name
+        if not os.path.lexists(child) and not os.path.lexists(child_done):
+            result["waiting_review"] = event["kind"] not in ("activity_due", "reminder.due")
+            return result
+        expected = dict(event, event_id=successor_id, producer="main-review", created_at=due,
+                        payload=dict(event["payload"], review_context={
+                            "parent_observation_key": key, "parent_event_id": event_id,
+                            "previous_decision_id": completion["decision_id"], "scheduled_at": due}))
+        actual, _, _ = _read_evidence(base, event_key(scope, successor_id))
+        if "freshness_anchor" in actual["payload"].get("review_context", {}):
+            expected["payload"]["review_context"]["freshness_anchor"] = _review_anchor(base, event)
+        if canonical_json(actual) != canonical_json(expected):
+            raise ObservationError("Review successor conflicts with immutable evidence")
+        event_id = successor_id
+    raise ObservationError("Review chain exceeds its bounded length")
+
+
+def observation_completion(scope, event_id, directory=None):
+    if directory is None:
+        from project_conf import data_dir
+        directory = Path(data_dir()) / "decision-inbox"
+    base = _plain_directory(directory)
+    key = event_key(scope, event_id)
+    target = base / "pending" / (key + ".json")
+    marker = base / "done" / (key + ".json")
+    if not os.path.lexists(marker):
+        return None
+    _plain_directory(marker.parent)
+    _plain_directory(target.parent)
+    event, _, result = _read_evidence(base, key)
+    if event["scope"] != scope or event["event_id"] != event_id:
+        raise ObservationError("Invalid observation completion evidence")
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--directory", required=True)
+    args = parser.parse_args(argv)
+    try:
+        raw = sys.stdin.buffer.read(256 * 1024 + 1)
+        if len(raw) > 256 * 1024:
+            raise ObservationError("Observation request is too large")
+        event = validate_event(json.loads(raw.decode("utf-8-sig")))
+        result = submit_observation(directory=args.directory,
+                                    **{key: event[key] for key in ("scope", "kind", "payload", "producer",
+                                                                 "event_id", "workspace_key", "agent_key", "created_at")})
+        print(json.dumps(result))
+        return 0
+    except (OSError, ValueError, TypeError) as error:
+        print("observation refused: " + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

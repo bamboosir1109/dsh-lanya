@@ -1,3 +1,6 @@
+# HISTORICAL PROFILE EXAMPLE ONLY. Never apply wholesale to an existing profile.
+# This file includes unrelated model, UI, OneBot and other-plugin settings.
+# The installable package uses ../cordis.patch.yml, which registers dsh-lanya only.
 # Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
 # overrides, disables, and insert lists; `!!js` expressions allowed).
