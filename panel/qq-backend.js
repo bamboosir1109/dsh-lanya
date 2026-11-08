@@ -5,6 +5,9 @@ let qqBackendSaving = false;
 let qqBackendTrusted = false;
 let qqBackendPageEpoch = 0;
 let qqBackendPendingRead = null;
+let qqAccountActivity = null;
+let qqAccountActivityEpoch = 0;
+let qqAccountActivitySaving = false;
 
 function qqBackendReadStamp(){
   return {provider:qqBackendState?.selected, revision:qqBackendState?.revision,
@@ -71,6 +74,7 @@ async function loadQQBackendSettings(){
       setText('qqBackendHealth', '接入配置未确认，请重新读取。');
       for(const id of ['qqFriendCount','qqGroupCount','qqFriendList','qqGroupList','ncOut']) setText(id,'接入配置未确认，请重新读取。');
       if($('qqBackendApply')) $('qqBackendApply').disabled = true;
+      qqAccountActivityUnavailable('接入配置未确认，请重新读取。');
     }
     return null;
   }
@@ -118,9 +122,10 @@ async function renderQQBackendPage(){
     + '<button onclick="loadQQBackendHealth()">检查连接</button>'
     + '<a class="qq-backend-link" href="' + vendor + '" target="_blank" rel="noreferrer">官方下载</a></div>'
     + '<p class="note" id="qqBackendHealth">连接待核验</p><div class="out" id="qqBackendStartOut"></div></div>'
-    + '<div class="card"><h3>所选连接</h3>' + renderQQBackendConnection(row.connection) + '</div>' + profile;
+    + '<div class="card"><h3>所选连接</h3>' + renderQQBackendConnection(row.connection) + '</div>'
+    + renderQQAccountActivityCard() + profile;
   page.dataset.provider = row.provider;
-  await Promise.all([loadQQBackendHealth(), ...(row.configured ? [loadQQFriends(), loadQQGroups(), loadNapcatProfile()] : [])]);
+  await Promise.all([loadQQBackendHealth(), loadQQAccountActivity(), ...(row.configured ? [loadQQFriends(), loadQQGroups(), loadNapcatProfile()] : [])]);
 }
 async function loadQQBackendPage(){
   if(await loadQQBackendSettings()) await renderQQBackendPage();
@@ -135,4 +140,94 @@ async function loadQQBackendHealth(){
     const online = result.ok && health?.provider === selected && health.config_fingerprint === qqBackendSelected()?.connection?.config_fingerprint && health.online && health.good && health.logged_in && health.provider_matches && health.account_matches;
     setText('qqBackendHealth', online ? '所选后端和账号已核验在线。接口接受与手机实收仍按每次发送确认。' : '连接未就绪：' + (result.error || '请核对后端、账号登录与反向 WebSocket。'));
   }catch(error){ if(qqBackendAcceptRead(stamp)) setText('qqBackendHealth','连接未确认：' + error.message); }
+}
+
+function qqAccountActivityUnavailable(message){
+  qqAccountActivity = null; setText('qqAccountActivityState',message); setText('qqAccountActivityHistory','');
+  for(const id of ['qqAccountSave','qqAccountEnabled','qqAccountPosts','qqAccountSignature','qqAccountAudience']) if($(id)) $(id).disabled = true;
+}
+
+function renderQQAccountActivityCard(){
+  qqAccountActivity = null;
+  return '<div class="card"><h3>她的说说与签名</h3>'
+    + '<p class="note" id="qqAccountActivityState">正在核对主 agent 和当前账号…</p>'
+    + '<p class="note">由同一个主 LLM 根据当前兴趣决定，不要求每天更新。夜间 00:00–08:00 休息，未知结果保留，不自动重发。</p>'
+    + '<div class="policy-grid"><label class="field"><span>自主更新</span><input id="qqAccountEnabled" type="checkbox" disabled></label>'
+    + '<label class="field"><span>允许发说说</span><input id="qqAccountPosts" type="checkbox" disabled></label>'
+    + '<label class="field"><span>允许改签名</span><input id="qqAccountSignature" type="checkbox" disabled></label>'
+    + '<label class="field"><span>说说可见范围</span><select id="qqAccountAudience" disabled><option value="friends">好友可见</option><option value="self">仅自己可见</option></select></label></div>'
+    + '<p class="note" id="qqAccountActivityLimits"></p>'
+    + '<div class="btnrow"><button id="qqAccountSave" onclick="saveQQAccountActivity()" disabled>保存自主设置</button>'
+    + '<button onclick="loadQQAccountActivity()">重读动态记录</button></div>'
+    + '<div class="out" id="qqAccountActivityOut"></div><div class="record-list" id="qqAccountActivityHistory"></div></div>';
+}
+
+function renderQQAccountActivity(value){
+  const settings = value.settings;
+  if(!settings || typeof settings.enabled !== 'boolean' || typeof value.runtime_loaded !== 'boolean' || !Array.isArray(value.recent)) throw new Error('动态记录接口不匹配');
+  for(const [id,key] of [['qqAccountEnabled','enabled'],['qqAccountPosts','posts'],['qqAccountSignature','signature']]){
+    $(id).checked = settings[key] === true; $(id).disabled = false;
+  }
+  $('qqAccountPosts').disabled = !settings.post_supported;
+  $('qqAccountSignature').disabled = !settings.signature_supported;
+  $('qqAccountAudience').value = settings.audience; $('qqAccountAudience').disabled = !settings.post_supported;
+  $('qqAccountSave').disabled = !value.revision || qqAccountActivitySaving;
+  setText('qqAccountActivityState', (settings.enabled ? '自主更新已开启' : '自主更新未开启')
+    + (value.runtime_loaded ? ' · 主 agent 已加载' : ' · 主 agent 尚未加载这项能力')
+    + (settings.post_supported ? '' : ' · 当前接入未提供说说发布'));
+  setText('qqAccountActivityLimits', '说说至少间隔 ' + settings.postIntervalHours + ' 小时、每天最多 ' + settings.dailyPosts
+    + ' 条；签名至少间隔 ' + settings.signatureIntervalHours + ' 小时、每天最多 ' + settings.dailySignatures + ' 次。没有合适内容可以保持不变。');
+  const names = {post:'说说',signature:'签名'}, states = {accepted:'接口已接受',reserved:'结果待确认',unknown:'结果待确认',rejected:'接口未接受'};
+  $('qqAccountActivityHistory').innerHTML = value.recent.length ? value.recent.map(row =>
+    '<div class="record-item"><strong>' + qqBackendEscape(names[row.kind] || '动态') + ' · ' + qqBackendEscape(states[row.state] || '待核对')
+    + '</strong><p>' + qqBackendEscape(row.text) + '</p><p class="note">' + qqBackendEscape(new Date(row.at).toLocaleString('zh-CN'))
+    + (row.kind === 'post' ? ' · ' + (row.audience === 'friends' ? '好友可见' : '仅自己可见') : '') + '</p></div>').join('')
+    : '<div class="empty">尚无本机发布记录。开启后由她自主决定，不会为了填记录发布测试内容。</div>';
+}
+
+async function loadQQAccountActivity(){
+  if(!qqBackendTrusted){ qqAccountActivityUnavailable('接入配置未确认，请重新读取。'); return; }
+  const stamp = qqBackendReadStamp(), epoch = ++qqAccountActivityEpoch;
+  setText('qqAccountActivityState','正在读取当前账号的动态…');
+  try{
+    const result = await api('/qq/account-activity', null, true);
+    if(epoch !== qqAccountActivityEpoch || !qqBackendAcceptRead(stamp)) return;
+    const value = result.activity;
+    if(!result.ok || value?.provider !== stamp.provider || value?.revision !== stamp.revision) throw new Error(result.error || '配置有变化，请重新读取接入页');
+    renderQQAccountActivity(value); qqAccountActivity = value;
+  }catch(error){
+    if(epoch === qqAccountActivityEpoch && qqBackendAcceptRead(stamp)){
+      qqAccountActivityUnavailable('动态记录未确认：' + error.message);
+    }
+  }
+}
+
+async function saveQQAccountActivity(){
+  if(qqAccountActivitySaving || !qqAccountActivity?.revision || !qqBackendTrusted) return;
+  const stamp = qqBackendReadStamp(), before = qqAccountActivity;
+  const keys = ['enabled','posts','signature','audience','postIntervalHours','signatureIntervalHours','dailyPosts','dailySignatures'];
+  const settings = Object.fromEntries(keys.map(key => [key,before.settings[key]]));
+  settings.enabled = $('qqAccountEnabled').checked; settings.posts = $('qqAccountPosts').checked;
+  settings.signature = $('qqAccountSignature').checked; settings.audience = $('qqAccountAudience').value;
+  qqAccountActivitySaving = true; ++qqAccountActivityEpoch; $('qqAccountSave').disabled = true;
+  show('qqAccountActivityOut','保存中…');
+  try{
+    const result = await api('/qq/account-activity/settings', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({revision:before.revision,settings})});
+    if(!qqBackendAcceptRead(stamp)) return;
+    if(!result.ok || result.activity?.provider !== stamp.provider) throw new Error(result.error || '保存未确认，请重读设置');
+    await loadQQBackendSettings();
+    if(qqBackendPageEpoch !== stamp.page || !qqBackendTrusted || qqBackendState?.selected !== stamp.provider) return;
+    if(result.activity.revision !== qqBackendState.revision) throw new Error('设置已再次变化，请重读接入页');
+    qqAccountActivity = result.activity; renderQQAccountActivity(result.activity);
+    show('qqAccountActivityOut', result.activity.runtime_loaded ? '已保存，新自主决策会读取设置。' : '已保存，主 agent 需加载后才能使用。');
+  }catch(error){
+    if(qqBackendPageEpoch === stamp.page && qqBackendState?.selected === stamp.provider){
+      qqAccountActivity = null; show('qqAccountActivityOut','保存未确认：' + error.message);
+    }
+  }
+  finally{
+    qqAccountActivitySaving = false;
+    if($('qqAccountSave')) $('qqAccountSave').disabled = !qqBackendTrusted || !qqAccountActivity?.revision
+      || qqAccountActivity.provider !== qqBackendState?.selected || qqAccountActivity.revision !== qqBackendState?.revision;
+  }
 }

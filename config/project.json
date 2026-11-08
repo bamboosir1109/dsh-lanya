@@ -5,7 +5,17 @@
   "onebotPort": 8720,
   "qqBackend": {
     "provider": "napcat",
-    "providers": {}
+    "providers": {},
+    "accountActivity": {
+      "enabled": false,
+      "posts": true,
+      "signature": true,
+      "audience": "friends",
+      "postIntervalHours": 6,
+      "signatureIntervalHours": 4,
+      "dailyPosts": 2,
+      "dailySignatures": 2
+    }
   },
   "ttsPort": 9880,
   "panelFile": "panel.html",

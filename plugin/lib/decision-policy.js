@@ -11,7 +11,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 
 const VERSION = 1
-const KINDS = new Set(['text', 'media', 'forward', 'api', 'tool_action'])
+const KINDS = new Set(['text', 'media', 'forward', 'api', 'publication', 'tool_action'])
 const VERDICTS = new Set(['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action'])
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -57,7 +57,7 @@ function privateContactState(current, at, ticketId, autonomousChoice = false) {
   // Existing deliveries have no trusted origin. Use their real time only as a
   // conservative initial interval; never relabel them as autonomous contacts.
   const previous = contact?.at ?? Math.max(0, ...(current?.deliveries || [])
-    .filter(item => ['sent', 'unknown', 'reserved'].includes(item.status))
+    .filter(item => item.kind !== 'publication' && ['sent', 'unknown', 'reserved'].includes(item.status))
     .map(item => Number.isSafeInteger(item.at) && item.at >= 0 ? item.at : 0))
   const next = previous ? previous + CONTACT_INTERVAL_MS : null
   const waiting = Boolean(contact && latestLiveRevision(current) <= contact.lastLiveRevision)
@@ -116,6 +116,7 @@ function validateState(state) {
     for (const delivery of value.deliveries) {
       if (!plain(delivery) || !identifier(delivery.key) ||
           !['reserved', 'sent', 'unknown', 'suppressed'].includes(delivery.status) ||
+          (delivery.kind !== undefined && delivery.kind !== 'publication') ||
           (delivery.meme !== undefined && (delivery.meme !== true || !identifier(delivery.ticketId)))) {
         throw new PolicyStateError('Corrupt delivery dedup state')
       }
@@ -447,7 +448,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     }
     if (permit.verdict === 'tool_action' && kind !== 'tool_action') return { allowed: false, reason: 'not_a_speech_ticket' }
     if (current.mode === 'silent' && kind !== 'tool_action') return { allowed: false, reason: 'silent' }
-    if (current.current.origin === 'observation' && ticket.scope.startsWith('private:') && kind !== 'tool_action') {
+    if (current.current.origin === 'observation' && ticket.scope.startsWith('private:') && !['tool_action', 'publication'].includes(kind)) {
       const contact = privateContactState(current, now(), ticket.id, ticket.scope === autonomousPrivateScope)
       if (!contact.allowed) return { allowed: false, reason: contact.reason }
     }
@@ -777,8 +778,9 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           current.deliveries.splice(removable, 1)
         }
         current.deliveries.push({ key, status: 'reserved', at: now(), revision: ticket.revision,
-          ticketId: ticket.id, expiresAt: current.current.ticket.expiresAt, ...(meme === true ? { meme: true } : {}) })
-        if (observed && ticket.scope.startsWith('private:') && current.proactiveContact?.ticketId !== ticket.id) {
+          ticketId: ticket.id, expiresAt: current.current.ticket.expiresAt, ...(meme === true ? { meme: true } : {}),
+          ...(kind === 'publication' ? { kind: 'publication' } : {}) })
+        if (observed && kind !== 'publication' && ticket.scope.startsWith('private:') && current.proactiveContact?.ticketId !== ticket.id) {
           // Commit the contact with the first actual transport reservation,
           // not with a model verdict. A partial/unknown attempt remains held.
           current.proactiveContact = { ticketId: ticket.id, at: now(), lastLiveRevision: latestLiveRevision(current) }

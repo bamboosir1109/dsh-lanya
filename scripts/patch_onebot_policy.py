@@ -128,14 +128,41 @@ def bundle_backend_helper(raw, backend_raw=None):
     return replace_once(text, anchor, bundled).encode('utf-8')
 
 
-def bundle_intent_helper(raw, helper_raw=None, diary_raw=None, backend_raw=None):
+def bundle_account_helper(raw, account_raw=None):
+    text = raw.decode('utf-8')
+    anchor = "import { AccountActivity, accountPublicationAction } from './account-activity.js'"
+    if anchor not in text:
+        if 'account-activity.js' in text:
+            raise PatchError('Unknown account activity import')
+        return raw
+    if text.count(anchor) != 1:
+        raise PatchError('Ambiguous account activity import')
+    if account_raw is None:
+        account_raw, _ = read_regular(REPO / 'plugin/lib/account-activity.js')
+    helper = account_raw.decode('utf-8').replace('\r\n', '\n')
+    for dependency in ["import fs from 'node:fs'", "import path from 'node:path'",
+                       "import { createHash } from 'node:crypto'", "import { DatabaseSync } from 'node:sqlite'"]:
+        helper = replace_once(helper, dependency + '\n', '')
+    for declaration in ['function accountPublicationAction', 'function accountActivitySettings',
+                        'function accountPublicationText', 'class AccountActivityStore', 'class AccountActivity']:
+        helper = replace_once(helper, 'export ' + declaration, declaration)
+    if re.search(r'(?m)^\s*(?:import|export)\s', helper):
+        raise PatchError('Unreviewed account activity helper dependency or export')
+    bundled = "import { DatabaseSync as AccountActivityDatabaseSync } from 'node:sqlite'\n" + \
+        '// LANYA_ACCOUNT_ACTIVITY_BUNDLE_V1 ' + sha256(account_raw) + '\n' + \
+        'const { AccountActivity, accountPublicationAction } = (() => {\nconst DatabaseSync = AccountActivityDatabaseSync\n' + helper + \
+        '\nreturn { AccountActivity, accountPublicationAction }\n})()'
+    return replace_once(text, anchor, bundled).encode('utf-8')
+
+
+def bundle_intent_helper(raw, helper_raw=None, diary_raw=None, backend_raw=None, account_raw=None):
     """Current aliases are self-contained; legacy adapters stay byte-identical.
 
     The reviewed helper has a closed lexical scope. Its only extra native
     dependency is the same node:sqlite already used by the observation queue.
     No historical parent manifest or module filename is expanded.
     """
-    raw = bundle_backend_helper(raw, backend_raw)
+    raw = bundle_account_helper(bundle_backend_helper(raw, backend_raw), account_raw)
     text = raw.decode('utf-8')
     anchor = "import { AutonomyPlanner } from './autonomy-intents.js'"
     if anchor not in text:
@@ -173,7 +200,7 @@ DECIDE_TOOL = """    register(defineTool({
         parameters: {
             verdict: { type: 'string', required: true, enum: ['reply', 'idle', 'defer', 'silence', 'resume', 'tool_action'] },
             text: { type: 'string', description: 'The complete natural text reply, only for verdict=reply with expression=text or omitted. This first decision also sends and ends the turn; do not send or write the same answer again. For image/voice or an existing reply ticket, use the existing media/final-text path instead.' },
-            expression: { type: 'string', enum: ['text', 'meme', 'text_meme'], description: 'Optional expression plan, only with verdict reply. For relaxed reactions, consider a suitable real meme or text with a meme; choose text when it fits better. This plan grants no permission, selects no image and sends nothing.' },
+            expression: { type: 'string', enum: ['text', 'meme', 'text_meme', 'publication'], description: 'Optional expression plan, only with verdict reply. publication is exclusively for the registered primary account-activity tool and cannot send chat text/media. For ordinary chat choose text, meme or text_meme. This plan grants no account authority, selects no image and sends nothing.' },
             group_conversation: { type: 'string', enum: ['continue', 'end'], description: 'For the configured group exchange: end returns to listening, including after a closing reply. idle/defer/silence end by default. continue may retain an already engaged topic while skipping an aside; it never opens participation or grants sending permission.' },
             control_update: { type: 'boolean', description: 'True only for an explicit control request in the current real user message.' },
             evidenceSource: { type: 'string', enum: ['current', 'quote'] },

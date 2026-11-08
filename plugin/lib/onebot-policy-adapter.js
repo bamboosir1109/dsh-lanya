@@ -13,6 +13,7 @@ import { createObservationPump, validateObservation, observationFreshness } from
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
 import { createBackendGuard } from './qq-backend.js'
+import { AccountActivity, accountPublicationAction } from './account-activity.js'
 
 // Freeze the on-disk bytes at ESM evaluation, including for new bridge
 // instances created from this cached module after a later deployment.
@@ -155,7 +156,7 @@ function verifyVoicePacket(artifact, params) {
   const encoded = file.slice(9), bytes = Buffer.from(encoded, 'base64')
   if (bytes.length !== artifact.bytes || bytes.toString('base64') !== encoded || voiceDigest(bytes) !== artifact.sha256) throw new Error('Voice synthesis packet changed')
 }
-const communicates = (action) => typeof action === 'string' && /^(send_|upload_)/.test(action)
+const communicates = (action) => typeof action === 'string' && (/^(send_|upload_)/.test(action) || accountPublicationAction(action))
 const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
   'cost_meter_unavailable', 'budget_unavailable'])
 // SDK/plugin context is not another transport input and cannot mint a binding.
@@ -165,10 +166,11 @@ const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
+const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
 const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
 const SOCIAL_VERDICTS = ['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action']
-const SOCIAL_EXPRESSIONS = ['text', 'meme', 'text_meme', 'unspecified']
+const SOCIAL_EXPRESSIONS = ['text', 'meme', 'text_meme', 'publication', 'unspecified']
 const socialInteger = value => Number.isSafeInteger(value) && value >= 0
 const unknownSocialFacts = () => ({ schema: 'dsh-recent-social-facts/v1', status: 'unknown',
   window: { events_examined: 0, complete_turns: 0, incomplete_turns: 0, older_context: 'unknown' }, turns: [],
@@ -499,6 +501,7 @@ export class OneBotDecisionAdapter {
     this.budgetToolChecks = new WeakMap()
     this.intentPlanner = new AutonomyPlanner(this)
     this.narrativeDiary = new NarrativeDiary(this)
+    this.accountActivity = new AccountActivity(this)
     this.budgetScopes = new WeakSet()
     this.nativeScopes = new WeakSet()
     this.groupPreSteps = new Map()
@@ -565,7 +568,7 @@ export class OneBotDecisionAdapter {
     if (this.intentPlanner.scopes.has(ctx)) return []
     const disposers = []
     try {
-      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), this.memeReviewDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
+      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
     } catch (error) {
       const failures = []
       for (const dispose of disposers.reverse()) try { dispose?.() } catch (cleanup) { failures.push(cleanup) }
@@ -1342,7 +1345,8 @@ export class OneBotDecisionAdapter {
     const backend = this.backendRuntimeEvidence()
     const value = await this.budgetProvider({ operation: 'heartbeat', instance_id: this.budgetInstance, pid: process.pid,
       adapter_source_sha256: this.budgetSourceHash, budget_contract: BUDGET_CONTRACT,
-      backend_transport_bound: backend.transport, backend_quote_bound: backend.quote })
+      backend_transport_bound: backend.transport, backend_quote_bound: backend.quote,
+      account_activity_bound: this.accountActivity instanceof AccountActivity })
     if (value?.bound !== true) throw new Error('Budget gate heartbeat refused')
   }
 
@@ -1462,7 +1466,7 @@ export class OneBotDecisionAdapter {
         (args.control_update !== undefined && typeof args.control_update !== 'boolean') ||
         (args.evidenceSource !== undefined && !['current', 'quote'].includes(args.evidenceSource)) ||
         (args.group_conversation !== undefined && !['continue', 'end'].includes(args.group_conversation)) ||
-        (args.expression !== undefined && (args.verdict !== 'reply' || !['text', 'meme', 'text_meme'].includes(args.expression))) ||
+        (args.expression !== undefined && (args.verdict !== 'reply' || !['text', 'meme', 'text_meme', 'publication'].includes(args.expression))) ||
         (args.text !== undefined && (args.verdict !== 'reply' || typeof args.text !== 'string' || !args.text.trim() ||
           args.expression !== undefined && args.expression !== 'text'))) {
       throw new Error('qq_decide accepts only verdict/control_update/evidenceSource/next_review_at, optional reply expression, group_conversation and plain-reply text')
@@ -1510,7 +1514,7 @@ export class OneBotDecisionAdapter {
       }
     }
     const sendPermission = result.ticket && args.verdict !== 'tool_action'
-      ? await this.policy.check(result.ticket, { kind: 'text' }) : null
+      ? await this.policy.check(result.ticket, { kind: args.expression === 'publication' ? 'publication' : 'text' }) : null
     if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_decision_turn')
     const canSend = sendPermission?.allowed === true
     this.diagnose(record.binding.scope, record.binding.messageId, 'decision', { verdict: args.verdict, reason: result.reason, turn: record.turn })
@@ -1544,8 +1548,10 @@ export class OneBotDecisionAdapter {
     return { accepted: result.accepted, reason: result.reason || (sendPermission && !canSend ? sendPermission.reason : null), mode: result.mode || null,
       next_review_at: result.next_review_at ?? null, can_send: canSend,
       ...(result.accepted && canSend && args.verdict === 'reply' ? { expression_plan: {
-        choice: args.expression || 'unspecified', automatic_send: false, text_output: args.expression !== 'meme',
-        next_step: args.expression === 'text'
+        choice: args.expression || 'unspecified', automatic_send: false, text_output: !['meme', 'publication'].includes(args.expression),
+        next_step: args.expression === 'publication'
+          ? 'Use only qq_account_activity for one original own-account update. No chat text, image, raw API or send confirmation. The registered tool still checks the primary owner, settings, audience, rest, budget and current provider. Unknown outcomes are retained without replay.'
+          : args.expression === 'text'
           ? 'Reply naturally with text; this decision has not sent anything.'
           : (args.expression ? 'For the chosen image reply, reuse a fitting candidate already selected this turn; otherwise select one with send_meme.'
             : 'Choose the response medium before writing: a fitting real meme can be a complete casual reaction. Reuse a fitting candidate already selected this turn, or use send_meme when an image fits.')
@@ -1681,7 +1687,7 @@ export class OneBotDecisionAdapter {
     }
     // The native session keeps the assistant message. A chosen image-only
     // response must not turn its narration or tool receipt into a QQ bubble.
-    if (memeOnlyReply(record) || record.inlineTextAttempted) { record.shadow.loopPending = null; return }
+    if (memeOnlyReply(record) || publicationOnlyReply(record) || record.inlineTextAttempted) { record.shadow.loopPending = null; return }
     const envelope = this.envelope(record, identity('assistant', chat.sessionId, event.data.turn, event.data.message.id))
     this.runEnvelope(envelope, () => this.bridge.interim.onAssistantMessage(scope, record.shadow, event.data.message))
   }
@@ -1694,7 +1700,7 @@ export class OneBotDecisionAdapter {
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
-    if (record.supersededIdleWake || memeOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null
+    if (record.supersededIdleWake || memeOnlyReply(record) || publicationOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null
     else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     const settled = (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
@@ -1809,6 +1815,10 @@ export class OneBotDecisionAdapter {
     const scope = targetScope(params, suppliedScope)
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
     if (!envelope.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
+    const accountAction = accountPublicationAction(action), authority = envelope.record?.accountActivityAuthority
+    if (accountAction && (!publicationOnlyReply(envelope.record) || !authority || authority.operationId !== envelope.operationId ||
+        authority.action !== action || authority.payloadHash !== identity(JSON.stringify(params)))) throw new PolicyDeliveryError('suppressed', 'registered_account_activity_required')
+    if (!accountAction && publicationOnlyReply(envelope.record)) throw new PolicyDeliveryError('suppressed', 'publication_only_reply')
     const backend = await this.backendGuard.verify(this.deps.connection, envelope.record?.binding?.backendStamp)
     if (!backend.allowed) throw new PolicyDeliveryError('suppressed', backend.reason)
     if (envelope.record?.inlineTextAttempted && envelope.operationId !== envelope.record.inlineTextOperationId) {
@@ -1854,7 +1864,7 @@ export class OneBotDecisionAdapter {
     if (memeOnlyReply(envelope.record) && egressPart?.meme !== true) {
       throw new PolicyDeliveryError('suppressed', 'meme_only_reply')
     }
-    const kind = /forward/.test(action) ? 'forward' : action === 'send_msg'
+    const kind = accountAction ? 'publication' : /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (Array.isArray(params.message) && params.message.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
     let result
     try {
@@ -1875,7 +1885,7 @@ export class OneBotDecisionAdapter {
           verifyVoicePacket(voiceArtifact, params)
           voiceArtifact.state = 'reserved'
         }
-        return Promise.resolve(transmit()).then(normalizeAck)
+        return Promise.resolve(accountAction ? authority.invoke(transmit) : transmit()).then(normalizeAck)
       })
     } catch (error) {
       if (voiceArtifact?.state === 'reserved') voiceArtifact.state = 'unknown'

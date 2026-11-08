@@ -147,11 +147,24 @@ test('observation traffic never counts as a human answer and groups retain their
 test('a ticket crossing midnight cannot start autonomous output or action; actual live questions still reply', async t => {
   const f = fixture(t, local('23:59:59.999')), ticket = await f.observed('near-midnight', 'group:202')
   f.time(Date.parse('2026-11-04T00:00:00+08:00'))
-  for (const kind of ['text', 'media', 'forward', 'api', 'tool_action']) {
+  for (const kind of ['text', 'media', 'forward', 'api', 'publication', 'tool_action']) {
     assert.equal((await f.policy.check(ticket, { scope: 'group:202', kind })).reason, 'autonomy_rest')
   }
   assert.equal((await f.send(ticket)).reason, 'autonomy_rest')
   assert.equal((await f.send(await f.live('a-real-night-question'))).status, 'sent')
+})
+
+test('own-account publication neither uses nor resets the private-contact cooldown', async t => {
+  const f = fixture(t), first = await f.observed('own-status')
+  const publish = ticket => f.policy.runGuarded(ticket, {scope:privateScope,kind:'publication',operationId:'account-'+ticket.id}, () => ({tid:'inert-fixture'}))
+  assert.equal((await publish(first)).status,'sent')
+  assert.equal((await f.policy.proactiveStatus(privateScope)).last_contact_at,null)
+  assert.equal((await f.send(await f.observed('private-contact'))).status,'sent')
+  const before=(await f.policy.snapshot(privateScope)).proactiveContact
+  f.time(local('09:01:00'))
+  assert.equal((await publish(await f.observed('separate-signature'))).status,'sent')
+  assert.deepEqual((await f.policy.snapshot(privateScope)).proactiveContact,before)
+  assert.equal((await f.send(await f.observed('chat-still-waits'))).reason,'proactive_contact_interval')
 })
 
 test('rest-window local completion preserves a foreground live ticket and acknowledges an event-local revision', async t => {

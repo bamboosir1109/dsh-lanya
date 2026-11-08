@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { stageIndexedCandidate } from '../plugin/lib/meme-qq-picker.mjs'
+import { createBackendGuard } from '../plugin/lib/qq-backend.js'
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const prefix = path.join(os.tmpdir(), 'lanya-onebot-integration-')
@@ -143,6 +144,101 @@ async function cadenceFixture(h) {
       cadence: { valid: true, configured_opportunity_min: minutes } } } })
   return { now: () => clock, advance: ms => { clock += ms }, minutes: value => { minutes = value } }
 }
+
+async function accountFixture(h, options = {}) {
+  await cadenceFixture(h)
+  fs.mkdirSync(path.join(h.dir, 'napcat', 'config'), { recursive: true })
+  fs.mkdirSync(path.join(h.dir, 'fixture'), { recursive: true })
+  fs.writeFileSync(path.join(h.dir, 'napcat/config/project.json'), JSON.stringify({ dataDirName: 'fixture',
+    qqBackend: { provider: 'snowluma', accountActivity: { enabled: true, ...options } } }))
+  fs.writeFileSync(path.join(h.dir, 'fixture/lanya-config.json'), JSON.stringify({ botQQ: '303' }))
+  const a = h.bridge.lanyaPolicy
+  a.backendGuard = createBackendGuard({ workspace: h.dir, expectedAccount: '303', runtimeReady: () => true })
+  Object.assign(h.deps.connection, { socket: {}, selfId: '303', connected: true, call(action, params) {
+    h.calls.push({ action, params })
+    if (action === 'get_version_info') return Promise.resolve({ app_name: 'SnowLuma' })
+    if (action === 'get_login_info') return Promise.resolve({ user_id: '303' })
+    if (action === 'send_qzone_msg') return Promise.resolve({ tid: 'fixture-status', time: 1 })
+    if (action === 'set_self_longnick') return Promise.resolve({})
+    return Promise.resolve({ message_id: 'fixture-chat' })
+  } })
+  return { a, publish: (chat, action = 'post', text = '今天听到了一首喜欢的歌。') =>
+    h.tools.get('qq_account_activity').execute({ action, text, basis: 'original_reflection' }, h.exec(chat)),
+    writes: () => h.calls.filter(call => ['send_qzone_msg', 'set_self_longnick'].includes(call.action)) }
+}
+
+test('primary account tool makes one bounded friends-visible publication without chat narration', async t => {
+  const h = await setup(t), f = await accountFixture(h), chat = await h.receive(), turn = h.start(chat)
+  const result = await f.publish(chat)
+  assert.equal(result.accepted, true); assert.equal(result.client_visible_verified, false)
+  assert.deepEqual(f.writes().map(call => call.params), [{ content: '今天听到了一首喜欢的歌。', ugc_right: 4 }])
+  h.assistant(chat, turn, '已发出，回执不能另变成一条私聊。')
+  await h.end(chat, turn)
+  assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 0)
+  assert.equal(f.writes().length, 1)
+})
+
+test('account tool supports signature while idle decisions and another conversation remain closed', async t => {
+  const h = await setup(t), f = await accountFixture(h)
+  let chat = await h.receive(); let turn = h.start(chat)
+  await h.decide(chat, 'idle')
+  assert.equal((await f.publish(chat, 'signature', '慢慢听歌。')).accepted, false)
+  await h.end(chat, turn)
+  chat = await h.receive({ scope: 'private:202', sender: '202' }); turn = h.start(chat)
+  await assert.rejects(f.publish(chat), /primary/); await h.end(chat, turn)
+  chat = await h.receive(); turn = h.start(chat)
+  assert.equal((await f.publish(chat, 'signature', '慢慢听歌。')).accepted, true)
+  assert.deepEqual(f.writes().map(call => call.params), [{ longNick: '慢慢听歌。' }])
+  await h.end(chat, turn)
+})
+
+test('raw account actions cannot borrow a normal reply ticket or an internal tool decision', async t => {
+  const h = await setup(t), f = await accountFixture(h), chat = await h.receive()
+  h.start(chat); await h.decide(chat, 'reply')
+  for (const action of ['set_self_longnick', 'set_qq_profile', 'send_qzone_msg', 'delete_qzone_msg']) {
+    await assert.rejects(f.a.runTool('qq_napcat_api', { action }, h.exec(chat),
+      () => h.bridge.guardedConnectionCall(action, {}, chat.chatId)), /registered_account_activity_required/)
+  }
+  assert.equal(f.writes().length, 0)
+})
+
+test('disabled account publishing is a quiet refusal and never creates a publication journal', async t => {
+  const h = await setup(t), f = await accountFixture(h, { enabled: false }), chat = await h.receive()
+  h.start(chat)
+  assert.equal((await f.publish(chat)).reason, 'disabled_or_unsupported')
+  assert.equal(f.writes().length, 0)
+  assert.equal(fs.existsSync(path.join(h.dir, 'napcat/account-activity')), false)
+})
+
+test('an uncertain publication is held across native turns instead of trying another post', async t => {
+  const h = await setup(t), f = await accountFixture(h), original = h.deps.connection.call
+  h.deps.connection.call = (action, params) => action === 'send_qzone_msg'
+    ? (h.calls.push({ action, params }), Promise.reject(new Error('inert unknown send'))) : original(action, params)
+  let chat = await h.receive(), turn = h.start(chat)
+  await assert.rejects(f.publish(chat)); await h.end(chat, turn)
+  chat = await h.receive(); turn = h.start(chat)
+  assert.equal((await f.publish(chat, 'post', '另一个想法。')).reason, 'previous_publication_unconfirmed')
+  assert.equal(f.writes().length, 1)
+  await h.end(chat, turn)
+})
+
+test('account publication rechecks cancellation and changed settings before transmitting', async t => {
+  for (const change of ['abort','settings']) await t.test(change, async t => {
+    const h=await setup(t), f=await accountFixture(h), chat=await h.receive();h.start(chat)
+    const controller=new AbortController(), verify=f.a.backendGuard.verify.bind(f.a.backendGuard)
+    f.a.backendGuard.verify=async(...args)=>{
+      const value=await verify(...args)
+      if(change==='abort') controller.abort()
+      else {
+        const file=path.join(h.dir,'napcat/config/project.json'), value=JSON.parse(fs.readFileSync(file))
+        value.qqBackend.accountActivity.enabled=false;fs.writeFileSync(file,JSON.stringify(value))
+      }
+      return value
+    }
+    await assert.rejects(h.tools.get('qq_account_activity').execute({action:'post',text:'原创短句。',basis:'original_reflection'}, {...h.exec(chat),signal:controller.signal}))
+    assert.equal(f.writes().length,0)
+  })
+})
 
 async function opportunity(h, change = {}) {
   const scope = change.scope || 'private:101'

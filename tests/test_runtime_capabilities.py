@@ -651,7 +651,21 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             self.assertIn('00:00-08:00', initiative['boundaries'])
             self.assertIn('No additional agent', initiative['boundaries'])
             self.assertLess(len(json.dumps(live)), 20000)
+            self.assertNotIn('account_activity', live['tools'])
+            self.assertIs(type(live['tools']['qq_autonomy']['account_updates']), bool)
         self.assertEqual(self.snapshot(), before)
+
+    def test_account_guide_uses_current_settings_and_only_the_primary_private_agent(self):
+        config = {'qqBackend': {'provider': 'snowluma', 'accountActivity': {'enabled': True}}}
+        guide = self.module.account_activity_guide(config, True)
+        self.assertTrue(guide['available']); self.assertTrue(guide['settings']['post_supported'])
+        self.assertIn('same main LLM', guide['choice'])
+        self.assertIn('unknown', guide['protocol'])
+        self.assertFalse(self.module.account_activity_guide(config, False)['available'])
+        config['qqBackend']['provider'] = 'napcat'
+        self.assertFalse(self.module.account_activity_guide(config, True)['settings']['post_supported'])
+        config['qqBackend']['accountActivity'] = None
+        self.assertFalse(self.module.account_activity_guide(config, True)['available'])
 
 
 if __name__ == "__main__":

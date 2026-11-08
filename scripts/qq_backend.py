@@ -47,16 +47,18 @@ class BackendSpec:
     app_pattern: str = ''
     entry_points: tuple = ()
     enabled_key: str = 'enabled'
+    capabilities: tuple = ()
 
 
 BACKENDS = {
     'napcat': BackendSpec('napcat', 'NapCatQQ', 'napcat/framework',
         'onebot11.json', 'network', 'token', 'websocketClients',
         'websocketServers', 6099, 'https://github.com/NapNeko/NapCatQQ', app_pattern=r'NapCat(?:\.Onebot|QQ)?',
-        entry_points=('napimain.exe', 'napiloader.dll', 'nativeLoader.cjs'), enabled_key='enable'),
+        entry_points=('napimain.exe', 'napiloader.dll', 'nativeLoader.cjs'), enabled_key='enable', capabilities=('account_signature',)),
     'snowluma': BackendSpec('snowluma', 'SnowLuma', 'snowluma',
         'onebot.json', 'networks', 'accessToken', 'wsClients', 'wsServers',
-        5099, 'https://github.com/SnowLuma/SnowLuma', True, r'SnowLuma', ('index.mjs', 'node.exe' if os.name == 'nt' else 'node')),
+        5099, 'https://github.com/SnowLuma/SnowLuma', True, r'SnowLuma', ('index.mjs', 'node.exe' if os.name == 'nt' else 'node'),
+        capabilities=('account_post', 'account_signature')),
 }
 
 

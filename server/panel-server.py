@@ -2420,6 +2420,13 @@ class Handler(SimpleHTTPRequestHandler):
             facts = selected_backend_component(panel_raw_state_metadata().get("qqBackend"))["backend"]
             return self._json(200, {"ok": facts["provider"] is not None, "backend": facts})
 
+        if path == "/api/qq/account-activity":
+            try:
+                from account_activity import snapshot
+                return self._json(200, {"ok": True, "activity": snapshot()})
+            except Exception:
+                return self._json(503, {"ok": False, "error": "Account activity is unavailable; private records were preserved"})
+
         if path in ("/api/qq/friends", "/api/qq/groups"):
             key = "friends" if path.endswith("friends") else "groups"
             action = "get_friend_list" if key == "friends" else "get_group_list"
@@ -2446,6 +2453,15 @@ class Handler(SimpleHTTPRequestHandler):
                 saved = saved or {}; d = dict(d)
                 # OneBot 只能给昵称；签名和头像读不回来，用本地记的最后一次值
                 d["signature"] = saved.get("signature", "")
+                try:
+                    from account_activity import history
+                    cutoff = prof_file.stat().st_mtime * 1000 if prof_file.exists() else 0
+                    latest = next((row for row in history(project_conf.load(reload=True), connection.provider)
+                                   if row['kind'] == 'signature' and row['state'] == 'accepted'), None)
+                    if latest and latest['at'] > cutoff:
+                        d['signature'] = latest['text']
+                except Exception:
+                    pass  # Keep the separately labeled last manual cache on unavailable history.
                 d["hasAvatar"] = avatar_file.is_file()
                 d["avatarFile"] = '/qq-avatar.png' if d['hasAvatar'] else ''
                 return self._json(200, {"ok": True, "profile": d, "backend": {
@@ -2805,10 +2821,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(410, {"ok": False, "code": "legacy_control_retired",
                 "error": "This legacy control does not configure the main agent",
                 "replacement": "/api/budget" if path.endswith("topup") else "/api/autonomy/settings"})
-        if path in ("/api/autonomy/settings", "/api/budget"):
+        if path in ("/api/autonomy/settings", "/api/budget", "/api/qq/account-activity/settings"):
             try:
                 from panel_autonomy import SettingsError, save_settings
                 body = self._settings_body()
+                if path == "/api/qq/account-activity/settings":
+                    from account_activity import save_settings as save_account_activity
+                    return self._json(200, {"ok": True, "activity": save_account_activity(body)})
                 if path == "/api/autonomy/settings":
                     settings = save_settings(body)
                     settings["runtime"] = autonomy_snapshot()

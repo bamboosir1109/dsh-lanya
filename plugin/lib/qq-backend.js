@@ -6,8 +6,8 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 
 const backendSpecs = Object.freeze({
-  napcat: { directory: 'napcat/framework', file: 'onebot11.json', network: 'network', token: 'token', enabled: 'enable', app: /^NapCat(?:\.Onebot|QQ)?$/i, historyKey: 'message_seq', historyOptions: {parse_mult_msg:false,quick_reply:true} },
-  snowluma: { directory: 'snowluma', file: 'onebot.json', network: 'networks', token: 'accessToken', app: /^SnowLuma$/i, historyKey: 'message_id', historyOptions: {} }
+  napcat: { directory: 'napcat/framework', file: 'onebot11.json', network: 'network', token: 'token', enabled: 'enable', app: /^NapCat(?:\.Onebot|QQ)?$/i, historyKey: 'message_seq', historyOptions: {parse_mult_msg:false,quick_reply:true}, capabilities: ['account_signature'] },
+  snowluma: { directory: 'snowluma', file: 'onebot.json', network: 'networks', token: 'accessToken', app: /^SnowLuma$/i, historyKey: 'message_id', historyOptions: {}, capabilities: ['account_post', 'account_signature'] }
 })
 const backendObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const backendDigest = value => createHash('sha256').update(value).digest('hex')
@@ -64,7 +64,7 @@ export function readBackendSelection(workspace, { projectFile } = {}) {
   const settings = providers[provider] === undefined ? {} : providers[provider]
   if (!backendObject(settings)) throw backendFailure()
   return { provider, revision, explicit: project.qqBackend !== undefined, project, projectFile: selectedFile,
-    workspace, settings, stamp: backendDigest(JSON.stringify([selectedFile, provider, revision, settings])) }
+    workspace, settings, capabilities: Object.freeze([...backendSpecs[provider].capabilities]), stamp: backendDigest(JSON.stringify([selectedFile, provider, revision, settings])) }
 }
 
 function backendEnabled(row, spec) {

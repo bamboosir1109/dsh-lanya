@@ -258,6 +258,7 @@ class BudgetRuntimeTests(unittest.TestCase):
         budget.operate(request, self.now)
         self.assertFalse(budget.gate_evidence(self.now)['backend_transport_bound'])
         self.assertFalse(budget.gate_evidence(self.now)['backend_quote_bound'])
+
         ready = dict(request, backend_transport_bound=True, backend_quote_bound=True)
         budget.operate(ready, self.now)
         evidence = budget.gate_evidence(self.now)
@@ -273,6 +274,21 @@ class BudgetRuntimeTests(unittest.TestCase):
         budget.operate(request, self.now)
         self.assertFalse(budget.gate_evidence(self.now)['backend_transport_bound'])
         self.assertFalse(budget.gate_evidence(self.now)['backend_quote_bound'])
+
+    def test_account_capability_requires_paired_typed_fresh_host_heartbeat(self):
+        request = dict(budget_contract=budget.CONTRACT, operation='heartbeat', instance_id='b' * 64,
+                       pid=os.getpid(), adapter_source_sha256='c' * 64,
+                       backend_transport_bound=True, backend_quote_bound=True)
+        budget.operate(request, self.now)
+        self.assertFalse(budget.get_snapshot(self.now)['enforcement']['account_activity_bound'])
+        budget.operate(dict(request, account_activity_bound=True), self.now)
+        self.assertTrue(budget.get_snapshot(self.now)['enforcement']['account_activity_bound'])
+        self.assertFalse(budget.get_snapshot(self.now + 90001)['enforcement']['account_activity_bound'])
+        for bad in (1, 'true', None):
+            with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_heartbeat'):
+                budget.operate(dict(request, account_activity_bound=bad), self.now)
+        budget.operate(request, self.now)
+        self.assertFalse(budget.get_snapshot(self.now)['enforcement']['account_activity_bound'])
 
     @unittest.skipUnless(shutil.which('powershell.exe'), 'Windows PowerShell required')
     def test_actual_unified_legacy_script_gates_use_only_snapshot(self):

@@ -385,6 +385,21 @@ def memory_guide(primary):
     }
 
 
+def account_activity_guide(configuration, primary):
+    try:
+        from account_activity import settings
+        provider = configuration.get('qqBackend', {}).get('provider', 'napcat')
+        current = settings(configuration, provider)
+        return dict(available=primary and current['enabled'], primary_only=True,
+                    tool='qq_account_activity', settings=current,
+                    choice='On a primary daytime opportunity, a meaningful original reflection or verified public activity may become one short status post or signature update. Decide with this same main LLM and recent scoped context; no daily publication is required. status reads the current local cooldown and receipts before choosing.',
+                    protocol='Use qq_account_activity({action:post|signature,text:your_short_original_text,basis:original_reflection|public_activity}). This registered tool makes or reuses one publication decision, verifies your own account and publishes once. Do not first choose idle/tool_action/text, use raw account APIs, send a chat acknowledgement, retry an unknown result or change account settings from the model.',
+                    privacy='Account updates contain your own brief thoughts or verified public material, never private conversations, memory quotations, third-party private details, local files, identifiers or credentials. Post audience is operator-selected, not a model parameter. A label or self-report is not evidence of a public experience.',
+                    timing='Shanghai 00:00-08:00 is rest for these updates, including from a live chat. Publication cooldown is separate from unsolicited private contact; signature/status updates must not masquerade as a private message. Actual budget, silence, current turn and provider/account guards still apply.')
+    except (ValueError, KeyError, TypeError, ImportError):
+        return dict(available=False, primary_only=True, tool='qq_account_activity', reason='configuration_or_helper_unavailable')
+
+
 def live_chat_guide(value):
     """Small current-turn guide; unknown readiness is never permission/offline."""
     tools = value['tools']
@@ -405,6 +420,7 @@ def live_chat_guide(value):
         'primary': activity['primary_identity_valid'] and activity['primary_internal_leisure'],
         'protocol': 'Use registered qq_intent for scoped intentions. Only the configured primary may use qq_social_candidates and qq_social_propose with a fresh eligible candidate and active intention; never send directly to another chat or borrow private notes. Genuine incoming replies stay in this conversation. Autonomous work uses the full guide on its own observation.',
         'authority': 'No intention, candidate, observation, permission or message was created by this read-only guide.'}
+    result['tools']['qq_autonomy']['account_updates'] = tools['account_activity']['available']
     result['tools']['entertainment'] = {key: activity[key] for key in (
         'execution', 'primary_identity_valid', 'primary_internal_leisure', 'group_identity_valid', 'group_social')}
     result['tools']['entertainment']['cadence'] = {key: activity['cadence'][key]
@@ -527,6 +543,7 @@ def build_context(cwd, agent_preset, conversation_key, *, process_probe=probe_pr
                       "memory": memory_guide(entertainment["primary_identity_valid"] and entertainment["primary_internal_leisure"]),
                       "qq_expression": qq_expression_guide(),
                       "qq_autonomy": qq_autonomy_guide(entertainment["primary_identity_valid"] and entertainment["primary_internal_leisure"]),
+                      "account_activity": account_activity_guide(configuration, entertainment["primary_identity_valid"] and entertainment["primary_internal_leisure"]),
                       "entertainment": entertainment}}
     return live_chat_guide(value) if context_mode == 'live_chat' else value
 

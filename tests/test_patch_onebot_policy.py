@@ -75,12 +75,13 @@ const bridge = { lanyaPolicy: {
 } };
 registerTools(ctx, bridge, { call: () => assert.fail('schema registration must not send') }, {});
 const tool = tools.get('qq_decide'), field = tool.parameters.expression;
-assert.deepEqual(field.enum, ['text', 'meme', 'text_meme']);
+assert.deepEqual(field.enum, ['text', 'meme', 'text_meme', 'publication']);
 assert.notEqual(field.required, true);
 assert.equal(tool.parameters.verdict.required, true);
 await tool.execute({ verdict: 'reply' }, {});
 await tool.execute({ verdict: 'reply', expression: 'text_meme' }, {});
-assert.deepEqual(calls, [{ verdict: 'reply' }, { verdict: 'reply', expression: 'text_meme' }]);
+await tool.execute({ verdict: 'reply', expression: 'publication' }, {});
+assert.deepEqual(calls, [{ verdict: 'reply' }, { verdict: 'reply', expression: 'text_meme' }, { verdict: 'reply', expression: 'publication' }]);
 """.replace("SOURCE", json.dumps(generated))
         node = shutil.which("node")
         self.assertIsNotNone(node, "Node is required for generated tool registration")

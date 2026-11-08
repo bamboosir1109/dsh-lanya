@@ -28,6 +28,71 @@ function harness(api=async () => ({ok:true,backend:state()})) {
   return {node,context,readers,run,set,load}
 }
 
+function account(provider='snowluma', revision='revision-a') {
+  return {provider,revision,runtime_loaded:true,recent:[],settings:{enabled:true,posts:true,signature:true,
+    audience:'friends',post_supported:provider==='snowluma',signature_supported:true,
+    postIntervalHours:6,signatureIntervalHours:4,dailyPosts:2,dailySignatures:2}}
+}
+
+test('account page distinguishes provider support and escapes real history',async()=>{
+  const value=account('napcat'), h=harness(async()=>({ok:true,activity:value}));h.set(state())
+  value.recent=[{kind:'post',state:'unknown',text:'<private fixture>',at:1,audience:'friends'}]
+  await h.context.loadQQAccountActivity()
+  assert.equal(h.node('qqAccountPosts').disabled,true)
+  assert.equal(h.node('qqAccountSignature').disabled,false)
+  assert.match(h.node('qqAccountActivityHistory').innerHTML,/&lt;private fixture&gt;/)
+  assert.match(h.node('qqAccountActivityHistory').innerHTML,/结果待确认/)
+})
+
+test('account read discards a late result after a provider change',async()=>{
+  const wait=defer(), h=harness(()=>wait.promise);h.set(state('snowluma'))
+  const pending=h.context.loadQQAccountActivity();h.set(state('napcat','revision-b'))
+  h.node('qqAccountActivityState').textContent='current fixture'
+  wait.resolve({ok:true,activity:account()});await pending
+  assert.equal(h.node('qqAccountActivityState').textContent,'current fixture')
+  assert.equal(h.run('qqAccountActivity'),null)
+})
+
+test('account settings CAS submits once without exposing provider credentials',async()=>{
+  const writes=[], next=account('snowluma','revision-b')
+  const h=harness(async(route,args)=>{
+    if(route==='/qq/account-activity') return {ok:true,activity:account()}
+    if(route==='/qq/backend') return {ok:true,backend:state('snowluma','revision-b')}
+    writes.push(JSON.parse(args.body));return {ok:true,activity:next}
+  });h.set(state('snowluma'));await h.context.loadQQAccountActivity()
+  h.node('qqAccountAudience').value='self'
+  await Promise.all([h.context.saveQQAccountActivity(),h.context.saveQQAccountActivity()])
+  assert.equal(writes.length,1);assert.equal(writes[0].revision,'revision-a')
+  assert.equal(writes[0].settings.audience,'self')
+  assert.deepEqual(Object.keys(writes[0]).sort(),['revision','settings'])
+  assert.equal(h.node('qqAccountSave').disabled,false)
+})
+
+test('late account save cannot replace a newer rendering of the same provider',async()=>{
+  const wait=defer(),h=harness(async(route)=>route==='/qq/account-activity'?{ok:true,activity:account()}:wait.promise)
+  h.set(state('snowluma'));await h.context.loadQQAccountActivity()
+  const pending=h.context.saveQQAccountActivity();h.run('++qqBackendPageEpoch;qqAccountActivity=null')
+  h.node('qqAccountActivityOut').textContent='new page fixture'
+  wait.resolve({ok:true,activity:account('snowluma','revision-b')});await pending
+  assert.equal(h.node('qqAccountActivityOut').textContent,'new page fixture')
+  assert.equal(h.node('qqAccountSave').disabled,true)
+})
+
+test('unconfirmed metadata gives terminal account refresh feedback without another API request',async()=>{
+  const calls=[],h=harness(async route=>{calls.push(route);return {ok:false}});h.set(state('snowluma'),false)
+  await h.context.loadQQAccountActivity()
+  assert.deepEqual(calls,[]);assert.match(h.node('qqAccountActivityState').textContent,/配置未确认/)
+  assert.equal(h.node('qqAccountSave').disabled,true)
+})
+
+test('metadata failure revokes stale account records and loaded-state labels',async()=>{
+  const h=harness(async()=>{throw new Error('inert unavailable')});h.set(state('snowluma'))
+  h.context.renderQQAccountActivity(account());h.node('qqAccountActivityHistory').textContent='previous fixture'
+  await h.context.loadQQBackendSettings()
+  assert.match(h.node('qqAccountActivityState').textContent,/配置未确认/)
+  assert.equal(h.node('qqAccountActivityHistory').textContent,'');assert.equal(h.node('qqAccountSave').disabled,true)
+})
+
 test('selected SnowLuma replaces the provider page and starts independent readers together',async()=>{
   const waiting=defer(), calls=[]
   const h=harness(async path=>{calls.push(path);return waiting.promise});h.set(state('snowluma'))
@@ -37,7 +102,7 @@ test('selected SnowLuma replaces the provider page and starts independent reader
   assert.doesNotMatch(h.node('qqBackendPage').innerHTML,/NapCatQQ 控制台|NapNeko/)
   assert.match(h.node('qqBackendPage').innerHTML,/shared profile/)
   assert.deepEqual(h.readers,['friends','groups','profile'])
-  assert.deepEqual(calls,['/qq/backend/health'])
+  assert.deepEqual(calls,['/qq/backend/health','/qq/account-activity'])
   waiting.resolve({ok:false});await pending
   h.context.renderQQBackendNavigation();assert.match(h.node('qqBackendNav').innerHTML,/SnowLuma/)
 })
