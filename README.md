@@ -3,6 +3,8 @@
 <div align="center">
 
 <picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/assets/readme-hero-mobile-light.svg">
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-hero-light.svg">
   <img src="docs/assets/readme-hero-light.svg" width="1120" alt="dsh-lanya · 岚娅 — 有记忆，也有自己的日常。DSH QQ 角色框架：自然会话、可塑记忆与自主活动。">
