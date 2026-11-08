@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="320" viewBox="0 0 1120 320" role="img" aria-labelledby="title desc">
+  <title id="title">dsh-lanya · 有记忆，也有自己的日常</title>
+  <desc id="desc">DeepSeek Harness QQ 角色框架：自然会话、可塑记忆与自主活动。原创品牌横幅。</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#f3f8fa"/><stop offset="1" stop-color="#eaf3f3"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#b8e5d9" stop-opacity=".48"/><stop offset="1" stop-color="#b8e5d9" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M28 0H0V28" fill="none" stroke="#d7e5e7" stroke-width=".6" opacity=".45"/></pattern>
+  </defs>
+  <rect width="1120" height="320" rx="24" fill="url(#background)"/>
+  <rect width="1120" height="320" rx="24" fill="url(#grid)"/>
+  <ellipse cx="900" cy="150" rx="340" ry="255" fill="url(#glow)"/>
+  <g fill="none" stroke="#d7e5e7" opacity=".75"><circle cx="887" cy="160" r="123"/><circle cx="887" cy="160" r="151"/><path d="M621 319 941 0"/></g>
+  <g font-family="Segoe UI,Microsoft YaHei,PingFang SC,Noto Sans CJK SC,sans-serif">
+    <circle cx="63" cy="52" r="3.5" fill="#157c85"/>
+    <text x="77" y="56" fill="#157c85" font-size="10.5" font-weight="600" letter-spacing="2.1">DEEPSEEK HARNESS · QQ CHARACTER FRAMEWORK</text>
+    <text x="58" y="139" fill="#18313f" font-size="65" font-weight="700" letter-spacing="-2.6">dsh-lanya<tspan dx="17" fill="#157c85" font-size="30" letter-spacing="1">岚娅</tspan></text>
+    <text x="63" y="192" fill="#18313f" font-size="29" font-weight="600" letter-spacing=".5">有记忆，也有自己的日常。</text>
+    <text x="64" y="229" fill="#647d89" font-size="13">同一个主 LLM，带着记忆决定下一件想做的事。</text>
+    <path d="M64 264H92" stroke="#157c85" stroke-width="2"/>
+    <text x="105" y="268" fill="#647d89" font-size="10.5" letter-spacing="1.5">OPEN SOURCE / WINDOWS / LOCAL CONSOLE</text>
+    <g fill="none" stroke="#157c85" stroke-opacity=".35" stroke-width="1.2"><path d="M706 160h23V83h35M729 160h0M729 160v77h35"/></g>
+    <rect x="680" y="143" width="32" height="32" rx="10" fill="#157c85"/>
+    <path d="m696 149 10 10-10 10-10-10Z" fill="none" stroke="#e1f3ec" stroke-width="2"/>
+    <g transform="translate(765 48)">
+      <rect width="292" height="67" rx="13" fill="#ffffff" stroke="#d7e5e7"/>
+      <text x="18" y="26" fill="#157c85" font-size="10" font-weight="600">01</text>
+      <text x="47" y="26" fill="#18313f" font-size="13" font-weight="600">会话 <tspan fill="#647d89" font-size="10" font-weight="400">/ Conversation</tspan></text>
+      <text x="47" y="47" fill="#647d89" font-size="10.5">回应眼前的人与话题</text>
+    </g>
+    <g transform="translate(743 126)">
+      <rect width="292" height="67" rx="13" fill="#ffffff" stroke="#d7e5e7"/>
+      <text x="18" y="26" fill="#157c85" font-size="10" font-weight="600">02</text>
+      <text x="47" y="26" fill="#18313f" font-size="13" font-weight="600">记忆 <tspan fill="#647d89" font-size="10" font-weight="400">/ Memory</tspan></text>
+      <text x="47" y="47" fill="#647d89" font-size="10.5">把时间、对象和来源记下来</text>
+    </g>
+    <g transform="translate(765 204)">
+      <rect width="292" height="67" rx="13" fill="#ffffff" stroke="#d7e5e7"/>
+      <text x="18" y="26" fill="#157c85" font-size="10" font-weight="600">03</text>
+      <text x="47" y="26" fill="#18313f" font-size="13" font-weight="600">自主 <tspan fill="#647d89" font-size="10" font-weight="400">/ Autonomy</tspan></text>
+      <text x="47" y="47" fill="#647d89" font-size="10.5">在合适的时候，做想做的事</text>
+    </g>
+  </g>
+</svg>
