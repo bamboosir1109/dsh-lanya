@@ -46,13 +46,14 @@ class BackendSpec:
     account_overlays: bool = False
     app_pattern: str = ''
     entry_points: tuple = ()
+    enabled_key: str = 'enabled'
 
 
 BACKENDS = {
     'napcat': BackendSpec('napcat', 'NapCatQQ', 'napcat/framework',
         'onebot11.json', 'network', 'token', 'websocketClients',
         'websocketServers', 6099, 'https://github.com/NapNeko/NapCatQQ', app_pattern=r'NapCat(?:\.Onebot|QQ)?',
-        entry_points=('napimain.exe', 'napiloader.dll', 'nativeLoader.cjs')),
+        entry_points=('napimain.exe', 'napiloader.dll', 'nativeLoader.cjs'), enabled_key='enable'),
     'snowluma': BackendSpec('snowluma', 'SnowLuma', 'snowluma',
         'onebot.json', 'networks', 'accessToken', 'wsClients', 'wsServers',
         5099, 'https://github.com/SnowLuma/SnowLuma', True, r'SnowLuma', ('index.mjs', 'node.exe' if os.name == 'nt' else 'node')),
@@ -114,13 +115,20 @@ def local_url(value, schemes=('http', 'https')):
         raise BackendError('Backend URL must use an explicit local endpoint') from None
 
 
-def _rows(network, key):
+def _enabled(row, spec=None):
+    keys = ('enable', 'enabled') if spec is not None and spec.enabled_key == 'enable' else ('enabled',)
+    flags = [row[key] for key in keys if key in row]
+    if any(type(value) is not bool for value in flags) or len(set(flags)) > 1:
+        raise BackendError('Invalid or conflicting backend network enabled flags')
+    return flags[0] if flags else True
+
+
+def _rows(network, key, spec=None):
     rows = network.get(key, [])
     if not isinstance(rows, list) or len(rows) > 64 or any(not isinstance(row, dict) for row in rows):
         raise BackendError('Invalid backend network list')
     for row in rows:
-        if 'enabled' in row and type(row['enabled']) is not bool:
-            raise BackendError('Invalid backend network enabled flag')
+        _enabled(row, spec)
     return rows
 
 
@@ -146,10 +154,10 @@ def _overlay(global_document, account, spec):
         named = {}; unnamed = 0
         for source in sources:
             network = _object(source.get(spec.network_key, {}))
-            rows = _rows(network, kind)
+            rows = _rows(network, kind, spec)
             if kind == 'httpClients':
-                rows += _rows(source, 'httpPostEndpoints')
-            rows += _rows(source, kind)
+                rows += _rows(source, 'httpPostEndpoints', spec)
+            rows += _rows(source, kind, spec)
             for row in rows:
                 name = row.get('name')
                 if name in (None, ''):
@@ -182,8 +190,8 @@ class Connection:
     def public(self):
         def endpoints(kind):
             out = []
-            for row in _rows(self.network, kind):
-                if row.get('enabled', True) is False:
+            for row in _rows(self.network, kind, self.spec):
+                if not _enabled(row, self.spec):
                     continue
                 item = {key: row[key] for key in ('name', 'host', 'port', 'path', 'role') if key in row}
                 # Reverse URLs can contain access_token. Never return those
@@ -258,7 +266,7 @@ def resolve(project=None, workspace=None, provider=None, expected_account=None, 
         network = _overlay(global_document, account_document, spec)
     else:
         network = _network(global_document, spec)
-    servers = [row for row in _rows(network, 'httpServers') if row.get('enabled', True) is not False]
+    servers = [row for row in _rows(network, 'httpServers', spec) if _enabled(row, spec)]
     name = settings.get('httpServer')
     if 'httpServer' in settings:
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name):

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 
 const backendSpecs = Object.freeze({
-  napcat: { directory: 'napcat/framework', file: 'onebot11.json', network: 'network', token: 'token', app: /^NapCat(?:\.Onebot|QQ)?$/i, historyKey: 'message_seq', historyOptions: {parse_mult_msg:false,quick_reply:true} },
+  napcat: { directory: 'napcat/framework', file: 'onebot11.json', network: 'network', token: 'token', enabled: 'enable', app: /^NapCat(?:\.Onebot|QQ)?$/i, historyKey: 'message_seq', historyOptions: {parse_mult_msg:false,quick_reply:true} },
   snowluma: { directory: 'snowluma', file: 'onebot.json', network: 'networks', token: 'accessToken', app: /^SnowLuma$/i, historyKey: 'message_id', historyOptions: {} }
 })
 const backendObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -67,9 +67,16 @@ export function readBackendSelection(workspace, { projectFile } = {}) {
     workspace, settings, stamp: backendDigest(JSON.stringify([selectedFile, provider, revision, settings])) }
 }
 
-function backendRows(network, key) {
+function backendEnabled(row, spec) {
+  const keys = spec?.enabled === 'enable' ? ['enable', 'enabled'] : ['enabled']
+  const flags = keys.filter(key => Object.hasOwn(row, key)).map(key => row[key])
+  if (flags.some(value => typeof value !== 'boolean') || new Set(flags).size > 1) throw backendFailure()
+  return flags.length ? flags[0] : true
+}
+function backendRows(network, key, spec) {
   const rows = network[key] === undefined ? [] : network[key]
-  if (!Array.isArray(rows) || rows.length > 64 || rows.some(row => !backendObject(row) || row.enabled !== undefined && typeof row.enabled !== 'boolean')) throw backendFailure()
+  if (!Array.isArray(rows) || rows.length > 64 || rows.some(row => !backendObject(row))) throw backendFailure()
+  for (const row of rows) backendEnabled(row, spec)
   return rows
 }
 
@@ -101,7 +108,7 @@ export function resolveOneBotEndpoint(workspace, { projectFile, selection = read
     for (const source of sources) {
       const network = source.networks === undefined ? {} : source.networks
       if (!backendObject(network)) throw backendFailure()
-      for (const row of [...backendRows(network, 'httpServers'), ...backendRows(source, 'httpServers')]) {
+      for (const row of [...backendRows(network, 'httpServers', spec), ...backendRows(source, 'httpServers', spec)]) {
         let name = row.name
         if (name === undefined || name === null || name === '') {
           do { name = 'http-' + ++unnamed } while (named.has(name))
@@ -114,9 +121,9 @@ export function resolveOneBotEndpoint(workspace, { projectFile, selection = read
   } else {
     const network = global.network === undefined ? {} : global.network
     if (!backendObject(network)) throw backendFailure()
-    rows = backendRows(network, 'httpServers')
+    rows = backendRows(network, 'httpServers', spec)
   }
-  rows = rows.filter(row => row.enabled !== false)
+  rows = rows.filter(row => backendEnabled(row, spec))
   if (settings.httpServer !== undefined) {
     if (typeof settings.httpServer !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(settings.httpServer)) throw backendFailure()
     rows = rows.filter(row => row.name === settings.httpServer)

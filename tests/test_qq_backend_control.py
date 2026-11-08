@@ -12,6 +12,61 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import qq_backend_control as control
 
 
+class BackendPortProbeTests(unittest.TestCase):
+    def probe(self, addresses, sockets, *, failure=None, platform='nt'):
+        with mock.patch.object(control.os, 'name', platform), \
+                mock.patch.object(control.socket, 'SO_EXCLUSIVEADDRUSE', -5, create=True), \
+                mock.patch.object(control.socket, 'create_connection', side_effect=failure or control.socket.timeout()), \
+                mock.patch.object(control.socket, 'getaddrinfo', return_value=addresses), \
+                mock.patch.object(control.socket, 'socket', side_effect=sockets) as factory:
+            result = control._listening('http://localhost:5099')
+        return result, factory
+
+    @staticmethod
+    def held_socket():
+        value = mock.MagicMock()
+        value.__enter__.return_value = value
+        return value
+
+    def test_filtered_idle_windows_port_requires_exclusive_holds_on_every_address(self):
+        ipv4 = (control.socket.AF_INET, control.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 5099))
+        ipv6 = (control.socket.AF_INET6, control.socket.SOCK_STREAM, 6, '', ('::1', 5099, 0, 0))
+        first, second = self.held_socket(), self.held_socket()
+        result, factory = self.probe([ipv4, ipv4, ipv6], [first, second])
+        self.assertIs(result, False)
+        self.assertEqual(factory.call_count, 2)
+        first.bind.assert_called_once_with(ipv4[4]); second.bind.assert_called_once_with(ipv6[4])
+        first.setsockopt.assert_any_call(control.socket.SOL_SOCKET, -5, 1)
+        second.setsockopt.assert_any_call(control.socket.IPPROTO_IPV6, control.socket.IPV6_V6ONLY, 1)
+        for value in (first, second):
+            value.listen.assert_not_called(); value.__exit__.assert_called_once()
+
+    def test_any_busy_or_reserved_address_remains_unknown_and_releases_earlier_holds(self):
+        addresses = [(control.socket.AF_INET, control.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 5099)),
+            (control.socket.AF_INET6, control.socket.SOCK_STREAM, 6, '', ('::1', 5099, 0, 0))]
+        for error in (PermissionError(), OSError('address in use')):
+            with self.subTest(error=type(error).__name__):
+                first, second = self.held_socket(), self.held_socket()
+                second.bind.side_effect = error
+                result, _ = self.probe(addresses, [first, second])
+                self.assertIsNone(result)
+                first.__exit__.assert_called_once(); second.__exit__.assert_called_once()
+
+    def test_non_loopback_or_empty_resolution_is_never_probed_as_an_idle_backend(self):
+        for addresses in ([], [(control.socket.AF_INET, control.socket.SOCK_STREAM, 6, '', ('192.0.2.1', 5099))]):
+            result, factory = self.probe(addresses, [])
+            self.assertIsNone(result); factory.assert_not_called()
+
+    def test_non_windows_timeouts_and_unrelated_network_errors_stay_unknown(self):
+        for platform, error in (('posix', control.socket.timeout()), ('nt', PermissionError())):
+            result, factory = self.probe([], [], platform=platform, failure=error)
+            self.assertIsNone(result); factory.assert_not_called()
+
+    def test_connection_refusal_remains_idle_without_a_bind_probe(self):
+        result, factory = self.probe([], [], failure=ConnectionRefusedError())
+        self.assertIs(result, False); factory.assert_not_called()
+
+
 class BackendControlTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='backend lifecycle ')
@@ -59,6 +114,44 @@ class BackendControlTests(unittest.TestCase):
     def test_busy_webui_without_owned_identity_does_not_launch_a_second_instance(self):
         with self.assertRaises(control.backend.BackendError): self.start(listening=lambda url: True)
         self.launch.assert_not_called()
+
+    def external_connection(self):
+        self.write('snowluma/config/onebot.json', {'networks': {'httpServers': [
+            {'name': 'http', 'port': 3000, 'enabled': True, 'accessToken': 'fixture'}]}})
+        connection = control.backend.resolve()
+        return {'provider': 'snowluma', 'verified': True, 'config_fingerprint': connection.fingerprint}
+
+    def test_verified_external_snowluma_is_checked_without_launch_or_process_adoption(self):
+        observed = self.external_connection()
+        inspect = mock.Mock(return_value=observed)
+        result = self.start(listening=lambda url: True, inspect=inspect)
+        self.assertFalse(result['started']); self.assertFalse(result['process_owned'])
+        self.assertTrue(result['connection_verified']); self.assertEqual(result['status'], 'already_running')
+        self.launch.assert_not_called(); self.preflight.assert_not_called(); inspect.assert_called_once()
+        self.assertEqual(list((self.root / 'napcat/backend-runtime').iterdir()), [])
+
+    def test_wrong_or_unverified_external_backend_never_launches_or_claims_online(self):
+        valid = self.external_connection()
+        for changes in ({'verified': False}, {'provider': 'napcat'}, {'config_fingerprint': 'stale'}):
+            with self.subTest(changes=changes), self.assertRaises(control.backend.BackendError):
+                self.start(listening=lambda url: True, inspect=lambda: {**valid, **changes})
+        self.launch.assert_not_called()
+
+    def test_external_connection_check_cannot_accept_a_concurrent_selection_change(self):
+        valid = self.external_connection()
+        def inspect():
+            self.write('napcat/config/project.json', {'dataDirName': 'fixture', 'qqBackend': {'provider': 'napcat'}})
+            return valid
+        with self.assertRaises(control.backend.BackendError):
+            self.start(listening=lambda url: True, inspect=inspect)
+        self.launch.assert_not_called()
+
+    def test_recovery_preserves_a_fresh_verified_external_connection(self):
+        starter = mock.Mock(return_value={'ok': True, 'provider': 'snowluma', 'status': 'already_running',
+            'started': False, 'process_owned': False, 'connection_verified': True})
+        result = control.recover(inspect=lambda: {'provider': 'snowluma', 'verified': False}, starter=starter)
+        self.assertFalse(result['started']); self.assertFalse(result['action_required'])
+        self.assertTrue(result['connection_verified']); self.assertEqual(result['status'], 'online')
 
     def test_unconfirmed_started_process_has_an_intent_and_cannot_be_blindly_retried(self):
         self.native.return_value = None

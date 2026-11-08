@@ -61,6 +61,18 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.resolve(provider='napcat').provider, 'napcat')
         self.assertEqual(self.project['qqBackend']['provider'], 'snowluma')
 
+    def test_napcat_public_endpoints_respect_official_flags_and_reject_conflicts(self):
+        self.write('napcat/framework/config/onebot11.json', {'network': {
+            'httpServers': [{'enable': True, 'port': 8721}],
+            'websocketClients': [{'enable': False, 'url': 'ws://127.0.0.1:8644'},
+                {'enable': True, 'url': 'ws://127.0.0.1:8645'}]}})
+        value = self.resolve().public()
+        self.assertEqual([row['url'] for row in value['wsClient']], ['ws://127.0.0.1:8645'])
+        self.write('napcat/framework/config/onebot11.json', {'network': {
+            'httpServers': [{'enable': True, 'port': 8721}],
+            'websocketClients': [{'enable': False, 'enabled': True}]}})
+        with self.assertRaises(backend.BackendError): self.resolve().public()
+
     def test_unknown_invalid_missing_and_corrupt_selected_config_never_fall_back(self):
         for value in ['unknown', '', False, None, ['snowluma']]:
             with self.subTest(value=value):

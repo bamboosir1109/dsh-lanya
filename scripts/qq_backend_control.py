@@ -3,6 +3,8 @@
 No binary installation, blanket QQ termination or agreement/password bypass.
 The vendor's own WebUI owns injection, login and legal onboarding.
 """
+from contextlib import ExitStack
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,39 @@ import itertools
 import qq_backend as backend
 
 
+def _idle_loopback(host, port):
+    """Prove a filtered Windows loopback port idle without treating a timeout as refusal.
+
+    Windows can silently drop connections to closed loopback ports. Exclusive
+    binds cover every resolved loopback address simultaneously; a listener,
+    reservation, non-loopback resolution or failed probe remains unconfirmed.
+    No listening socket is created and the holds are released before launch.
+    """
+    if os.name != 'nt':
+        return None
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        if not addresses:
+            return None
+        with ExitStack() as holds:
+            seen = set()
+            for family, kind, protocol, _, address in addresses:
+                if family not in (socket.AF_INET, socket.AF_INET6) or not ipaddress.ip_address(address[0]).is_loopback:
+                    return None
+                key = (family, address)
+                if key in seen:
+                    continue
+                seen.add(key)
+                probe = holds.enter_context(socket.socket(family, kind, protocol))
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                if family == socket.AF_INET6:
+                    probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                probe.bind(address)
+        return False
+    except (OSError, ValueError):
+        return None
+
+
 def _listening(url):
     parsed = urllib.parse.urlsplit(url)
     try:
@@ -25,6 +60,8 @@ def _listening(url):
             return True
     except ConnectionRefusedError:
         return False
+    except (TimeoutError, socket.timeout):
+        return _idle_loopback(parsed.hostname, parsed.port or (443 if parsed.scheme == 'https' else 80))
     except OSError:
         return None
 
@@ -237,7 +274,7 @@ def _other_backend_idle(project, selected, journal, native, listening):
 
 
 def start(*, napcat_launcher=None, listening=_listening, launch=subprocess.Popen, native=_native, preflight=subprocess.run,
-        expected_provider=None, expected_revision=None, qq_client_state=_qq_client_state):
+        expected_provider=None, expected_revision=None, qq_client_state=_qq_client_state, inspect=backend.runtime_status):
     conf = backend._conf(); project = conf.load(reload=True)
     spec, settings, root, _, _, _ = backend.describe(project=project)
     if spec.key not in ('napcat', 'snowluma'):
@@ -282,7 +319,20 @@ def start(*, napcat_launcher=None, listening=_listening, launch=subprocess.Popen
             return dict(ok=True, provider=spec.key, started=False, status='already_running',
                 webui_url=webui, connection_verified=False)
         _other_backend_idle(project, spec.key, journal, native, listening)
-        if listening(webui) is not False:
+        webui_state = listening(webui)
+        if webui_state is not False:
+            # First-use setup can run the official vendor outside our launch
+            # journal. Verify its selected OneBot provider AND account, without
+            # adopting process ownership or starting another injector.
+            if spec.key == 'snowluma' and webui_state is True:
+                observed = inspect()
+                if isinstance(observed, dict) and observed.get('provider') == spec.key and observed.get('verified') is True:
+                    current = backend.resolve(project=project)
+                    if observed.get('config_fingerprint') != current.fingerprint:
+                        raise backend.BackendError('Backend connection changed during verification; refresh before starting')
+                    selected_unchanged()
+                    return dict(ok=True, provider=spec.key, started=False, status='already_running',
+                        webui_url=webui, connection_verified=True, process_owned=False)
             raise backend.BackendError('Backend WebUI port is in use; verify the existing service before starting')
         if spec.key == 'napcat':
             # Existing local launchers may close QQ before injection. A failed
@@ -355,8 +405,11 @@ def recover(*, inspect=backend.runtime_status, starter=start):
         # start refuses busy ports and unconfirmed process identities. A live
         # logged-out runtime stays available for vendor WebUI recovery.
         result = starter()
-        result['connection_verified'] = False
-        result['action_required'] = result.get('status') == 'already_running'
+        verified = result.get('connection_verified') is True
+        result['connection_verified'] = verified
+        result['action_required'] = result.get('status') == 'already_running' and not verified
+        if verified:
+            result['status'] = 'online'
         return result
     return dict(ok=False, provider=value.get('provider'), status='operator_check_required',
         started=False, action_required=True)

@@ -7,6 +7,12 @@
   },
   "cases": [
     {"name":"implicit NapCat","provider":"napcat","expected":{"base":"http://127.0.0.1:8721","token":"fixture-napcat"}},
+    {"name":"NapCat official enable flag","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enable":false,"port":8721,"token":"fixture-disabled"},{"enable":true,"port":8721,"token":"fixture-enabled"}]}}},"expected":{"base":"http://127.0.0.1:8721","token":"fixture-enabled"}},
+    {"name":"NapCat disabled listener rejected","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enable":false,"port":8721}]}}},"error":true},
+    {"name":"NapCat enabled alias","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enabled":false,"port":8721},{"enabled":true,"port":8721}]}}},"expected":{"base":"http://127.0.0.1:8721","token":""}},
+    {"name":"NapCat matching flags","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enable":true,"enabled":true,"port":8721}]}}},"expected":{"base":"http://127.0.0.1:8721","token":""}},
+    {"name":"NapCat conflicting flags","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enable":false,"enabled":true,"port":8721}]}}},"error":true},
+    {"name":"NapCat malformed enable flag","provider":"napcat","files":{"napcat/framework/config/onebot11.json":{"network":{"httpServers":[{"enable":"false","port":8721}]}}},"error":true},
     {"name":"current SnowLuma","provider":"snowluma","expected":{"base":"http://127.0.0.1:8730","token":"fixture-snow"}},
     {"name":"legacy HTTP with wildcard and prefix","provider":"snowluma","files":{"snowluma/config/onebot.json":{"httpServers":[{"host":"0.0.0.0","port":8732,"path":"/onebot/","accessToken":"fixture-legacy"}]}},"expected":{"base":"http://127.0.0.1:8732/onebot","token":"fixture-legacy"}},
     {"name":"complete account replacement never inherits token","provider":"snowluma","files":{"fixture/lanya-config.json":{"botQQ":"303"},"snowluma/config/onebot_303.json":{"networks":{"httpServers":[{"name":"http-default","port":8731}]}}},"expected":{"base":"http://127.0.0.1:8731","token":""}},
