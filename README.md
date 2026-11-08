@@ -18,6 +18,8 @@
 
 > 上图为交互演示，使用示例数据，不连接 QQ，不代表真实活动或发送结果。最新预览在 [`codex/unified-decision-memory-android`](https://github.com/bamboosir1109/dsh-lanya/tree/codex/unified-decision-memory-android)，默认分支和已发布版本可能不同。商店收录进度见[商店说明](docs/STORE.md)。
 
+社区商店收录申请已提交：[awesome-dsh-plugin #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180)，等待维护者审核。
+
 ## 它是什么
 
 dsh-lanya 是可自己部署的 QQ 角色框架。由同一个主 LLM 结合人设、最近对话和记忆，决定回复、保持安静，或做点感兴趣的事。你可以保留岚娅的风格，也可以使用自己的角色。

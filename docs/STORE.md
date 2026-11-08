@@ -2,6 +2,8 @@
 
 本项目申请进入社区维护的 DSH 插件目录。审核通过后，dsh-market 和使用同一索引的商店会同步收录；申请不等于审核通过，也不代表 DSH 官方认证。
 
+2026-11-08 已提交[目录 PR #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180)，当前等待审核，尚未合并。仅新增本项目一个 YAML 条目，并明确默认分支与开发预览的安装差异。公开演示已由 GitHub Pages 构建上线，仓库 About 已提供入口并补齐 `dsh-plugin`、`deepseek-harness` 等发现标签。
+
 ## 从哪里开始
 
 - [交互演示](https://bamboosir1109.github.io/dsh-lanya/)使用示例数据，无账号、无本机接口。
