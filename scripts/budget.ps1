@@ -24,15 +24,32 @@ param(
 # Repo root: <root>/napcat/xxx.ps1 -> <root>
 $root = Split-Path -Parent $PSScriptRoot
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+$null = Test-QqUnifiedMode
 
-# ---- shared project config ------------------------------------------------
-# Reads <repo>\config\project.json. The helper carries the same defaults, so a
-# missing or broken config file leaves behaviour exactly as it was.
+# Resolve project configuration before either accounting entry point uses it.
 $confHelper = Join-Path $PSScriptRoot 'project_conf.ps1'
 if (Test-Path $confHelper) { . $confHelper }
 if (-not (Get-Command Get-ProjectConfValue -ErrorAction SilentlyContinue)) {
   function Get-ProjectConfValue { param([string]$KeyPath, $Default = $null) return $Default }
 }
+
+# Unified decisions own their real per-turn ledger. This retired timer may
+# display the new snapshot, but never rewrites legacy numbers or emits alerts.
+if (Test-QqUnifiedMode) {
+  $budgetHelper = Join-Path $PSScriptRoot 'budget_runtime.py'
+  if (-not (Test-Path -LiteralPath $budgetHelper -PathType Leaf)) { throw 'Unified budget helper unavailable' }
+  $python = if ($env:LANYA_PYTHON) { $env:LANYA_PYTHON } else { [string](Get-ProjectConfValue 'pythonExecutable' 'python') }
+  & $python -B $budgetHelper --snapshot
+  exit $LASTEXITCODE
+}
+
+# ---- shared project config ------------------------------------------------
+# Reads <repo>\config\project.json. The helper carries the same defaults, so a
+# missing or broken config file leaves behaviour exactly as it was.
 # An explicit -Limit still wins; the config only replaces the DEFAULT (1.0).
 if (-not $PSBoundParameters.ContainsKey('Limit')) {
   
@@ -41,7 +58,7 @@ $dataDirName = [string](Get-ProjectConfValue 'dataDirName' ([string][char]0x5927
 
 # $root is the napcat folder; her files live one level up. Same mistake as
 # everywhere else in this script family.
-$workDir = Split-Path -Parent $PSScriptRoot
+$workDir = Get-ProjectWorkDir
 $dafeiyuDir  = Join-Path $workDir $dataDirName
 # %USERPROFILE% is cmd syntax; PowerShell does not expand it in a plain string,
 # so this stayed literal and Test-Path always failed. The script then logged
@@ -64,7 +81,6 @@ if ($null -ne $prevLimit -and $prevLimit -gt 0) {
 } else {
   $Limit = [double](Get-ProjectConfValue 'budget.dailyLimit' 1.0)
 }$logPath   = Join-Path $dafeiyuDir 'budget.log'
-$cfgPath   = (Join-Path $PSScriptRoot 'balance-alert.config.json')
 # The owner's QQ. This was the literal string "YOUR_ADMIN_QQ" - a placeholder
 # from a sanitising pass - so alerts, shared notes and voice messages were all
 # addressed to a user that does not exist ("cannot get user info" from NapCat).
@@ -162,8 +178,21 @@ Write-Log ('today=' + $today + ' spent=' + $status.spent + ' limit=' + $Limit + 
 
 # Tell her once per day when the budget runs out.
 if ($Notify -and $exhausted -and $status.notifiedFor -ne $today) {
+  if (Test-QqUnifiedMode) {
+    try {
+      $receipt = Submit-QqObservation -Scope (Get-QqObservationScope -Target admin) -Kind 'budget.exhausted' -Producer 'budget' -EventId ('budget:exhausted:' + $today) -Payload @{ date = $today; status_path = $outPath }
+      Write-Log ('budget observation state=' + $receipt.state + '; no delivery occurred')
+    } catch {
+      Write-Log 'budget observation failed; notification receipt unchanged'
+      exit 1
+    }
+    # Pending evidence is not a delivered QQ message. Keep notifiedFor intact.
+    exit 0
+  }
+  Assert-QqLegacyAction 'send_private_msg'
   Add-Type -AssemblyName System.Net.Http
-  $napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  . (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)
   $client.DefaultRequestHeaders.Authorization =

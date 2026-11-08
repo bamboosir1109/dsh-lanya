@@ -20,6 +20,16 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  # Do not even open/claim the old queue. The unified voice tool must migrate or
+  # consume pending records explicitly; a pause is not successful task delivery.
+  Write-Output 'paused: legacy voice queue preserved for unified owner; no delivery occurred'
+  exit 3
+}
 
 $root      = $PSScriptRoot
 $dafeiyuDir  = Join-Path (Split-Path -Parent $PSScriptRoot) ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C)   # "Dafeiyu"
@@ -30,7 +40,6 @@ $sayScript = Join-Path $root 'say.ps1'
 # her voice never goes silent while the local model server is down.
 $localScript = Join-Path $root 'say-local.ps1'
 $localSpeed = 1.0
-$cfgPath   = Join-Path $root 'balance-alert.config.json'
 # Group id must come from config. It used to be the literal string
 # "YOUR_GROUP_ID" - a placeholder left behind by a sanitising pass - which meant
 # sharing a note or sending a voice message to a group that does not exist.
@@ -76,9 +85,11 @@ if (-not (Test-Path $dafeiyuDir)) { New-Item -ItemType Directory -Path $dafeiyuD
 if (-not (Test-Path $queuePath)) {
   [System.IO.File]::WriteAllText($queuePath, '[]', (New-Object System.Text.UTF8Encoding($false)))
 }
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 function Invoke-NapCat([string]$action, $bodyObj) {
+  Assert-QqLegacyAction $action
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(60)

@@ -15,11 +15,14 @@
 # writing a short "what was talked about today" digest, because the raw log rolls
 # off and she would otherwise forget the day entirely.
 
+from project_conf import data_dir
 import os
 import time
+import hashlib
+import json
 from datetime import datetime, timedelta
 
-DAFEIYU = os.path.join(r"<WORKDIR>", "\u5927\u80a5\u9c7c")        # "Dafeiyu"
+DAFEIYU = data_dir()
 LOG = os.path.join(DAFEIYU, "cross-chat.md")
 ARCHIVE_DIR = os.path.join(DAFEIYU, "chats", "cross-chat-archive")
 MAINT_LOG = os.path.join(DAFEIYU, "memory-maintenance.log")
@@ -43,6 +46,24 @@ def log(msg):
 
 
 def main():
+    from decision_events import unified_decisions_enabled
+    if unified_decisions_enabled():
+        # Recent context is bounded at retrieval. Old append-only logs are not
+        # rewritten underneath a live OneBot writer, and meal rows are not
+        # silently deleted by the former timer.
+        from decision_events import project_scope, submit_project_observation
+        from memory_context import load_visible_entries
+        from project_conf import work_dir, get
+        entries = load_visible_entries(work_dir(), str(get("decisions.agentPreset", "") or ""))
+        day = time.strftime("%Y-%m-%d")
+        revision = hashlib.sha256(json.dumps(sorted((str(row["id"]), row.get("version", 0))
+                                                   for row in entries), sort_keys=True).encode()).hexdigest()[:20]
+        result = submit_project_observation(
+            scope=project_scope(), kind="memory.review", producer="memory-maintenance",
+            event_id="memory-review:" + day + ":" + revision,
+            payload={"date": day, "visible_entries": len(entries),
+                     "instruction": "Optional memory review. Use recent trusted conversation and scoped memory. Stable user facts and your own reflections have different tracks; do not turn guesses or your own text into user facts. Propose useful corrections or consolidation with sources; idle is valid. Do not delete raw logs or report activity without real evidence."})
+        return result
     if not os.path.isfile(LOG):
         log("no cross-chat.md; nothing to do")
         return
@@ -113,4 +134,6 @@ def prune_meal_log():
 
 if __name__ == "__main__":
     main()
-    prune_meal_log()
+    from decision_events import unified_decisions_enabled
+    if not unified_decisions_enabled():
+        prune_meal_log()

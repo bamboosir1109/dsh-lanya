@@ -10,21 +10,25 @@
 # message text is read from reminders.json as UTF-8.
 
 $ErrorActionPreference = 'Continue'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  Write-Output 'paused: unified scheduler owns night observations; reminder records preserved'
+  exit 3
+}
 
 # Derived from this script's own location - the repo copy had the path
 # sanitised to a literal '<WORKDIR>' string, which points at nothing.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'napcat'))) {
-  $root = Split-Path -Parent $root
-}
-$lanyaDir  = Join-Path $root ([string][char]0x5C9A + [char]0x5A05)
+$root = Get-ProjectWorkDir
+$lanyaDir  = Get-ProjectDataDir
 $logPath   = Join-Path $lanyaDir 'late-night.log'
 $remPath   = Join-Path $lanyaDir 'reminders.json'
 $sentLog   = Join-Path $lanyaDir 'sent-log.txt'
-$cfgPath   = '<WORKDIR>\napcat\balance-alert.config.json'
 $groupId = ''
 try {
-  $cfgFile = Join-Path (Split-Path -Parent $PSScriptRoot) ($dataDirName + '\lanya-config.json')
+  $cfgFile = Join-Path $lanyaDir 'lanya-config.json'
   if (Test-Path $cfgFile) {
     $cj = Get-Content $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($cj.fanGroupQQ) { $groupId = [string]$cj.fanGroupQQ }
@@ -42,7 +46,7 @@ if (-not $groupId) {
 # Her own QQ, read from config (was a hardcoded number).
 $selfId = ''
 try {
-  $cf = Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path ([string][char]0x5927 + [char]0x80A5 + [char]0x9C7C) 'lanya-config.json')
+  $cf = Join-Path $lanyaDir 'lanya-config.json'
   if (Test-Path $cf) {
     $cj = Get-Content $cf -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($cj.botQQ) { $selfId = [string]$cj.botQQ }
@@ -56,11 +60,13 @@ function Write-Log([string]$m) {
   Add-Content -Path $logPath -Value $line -Encoding UTF8
 }
 
-$napcat = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 $hdr = @{ Authorization = 'Bearer ' + [string]$napcat.napcatToken }
 $base = ([string]$napcat.napcatHttp).TrimEnd('/')
 
 function Invoke-Api([string]$action, $obj) {
+  Assert-QqLegacyAction $action
   $json = $obj | ConvertTo-Json -Compress -Depth 6
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   return Invoke-RestMethod -Uri ($base + '/' + $action) -Method Post -Headers $hdr -ContentType 'application/json; charset=utf-8' -Body $bytes

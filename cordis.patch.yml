@@ -1,0 +1,9 @@
+# Package-local bundle: register this plugin only.
+# OneBot, models, account permissions and other plugins belong to the user's profile.
+# Set config.workDir to the actual workspace in your profile (or LANYA_WORKDIR).
+# The DSH process working directory is not necessarily the runtime workspace.
+- insert:
+    - id: dsh-lanya
+      name: dsh-lanya
+      config:
+        enabled: true

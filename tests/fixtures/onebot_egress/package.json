@@ -1,0 +1,104 @@
+{
+  "name": "dsh-onebot-qq",
+  "version": "0.8.1",
+  "description": "给 dsh（DeepSeek Harness）加 QQ 机器人通道：OneBot 11 协议，兼容 NapCat，支持私聊群聊、图片语音、t2i 卡片与设置页配置。QQ bot channel plugin for deepseek harness via OneBot 11.",
+  "keywords": [
+    "dsh",
+    "onebot",
+    "onebot11",
+    "qq",
+    "qq-bot",
+    "qqbot",
+    "napcat",
+    "lagrange",
+    "llonebot",
+    "go-cqhttp",
+    "deepseek",
+    "deepseek-harness",
+    "harness",
+    "bridge",
+    "chatbot"
+  ],
+  "private": false,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./settings-remote": "./lib/settings-remote.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "!lib/*.bak-*",
+    "cordis.patch.yml"
+  ],
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mario841859784/dsh-onebot.git"
+  },
+  "homepage": "https://github.com/mario841859784/dsh-onebot#readme",
+  "bugs": {
+    "url": "https://github.com/mario841859784/dsh-onebot/issues"
+  },
+  "engines": {
+    "dsh": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dshx": {
+    "contributes": {
+      "tools": [
+        "qq_send_image",
+        "qq_send_voice",
+        "qq_send_video",
+        "qq_send_file",
+        "qq_send_forward",
+        "qq_napcat_api",
+        "qq_group_history"
+      ],
+      "skills": []
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-util-values": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "schemastery": "^3.18.0"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.6",
+    "fontkit": "^2.0.4",
+    "schemastery": "^3.18.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "scripts": {
+    "build": "./scripts/build.sh",
+    "test": "vitest run",
+    "replay": "node scripts/replay.mjs"
+  }
+}

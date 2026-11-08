@@ -1,0 +1,122 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import net from 'node:net'
+import { once } from 'node:events'
+import { createHash } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
+import { createObservationPump, observationKey } from '../plugin/lib/observation-queue.js'
+
+function fixture(t) {
+  const prefix = path.join(os.tmpdir(), 'lanya-worker-'), root = fs.mkdtempSync(prefix), pumps = []
+  fs.mkdirSync(path.join(root, 'pending')); fs.mkdirSync(path.join(root, 'done'))
+  t.after(async () => {
+    await Promise.all(pumps.map(pump => pump.stop()))
+    assert.ok(path.resolve(root).startsWith(path.resolve(prefix)))
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  return { root,
+    make(options = {}, factory = createObservationPump) {
+      const pump = factory({ directory: root, dispatch: event => ({ completed: true, status: 'decided', decision_id: 'decision-' + event.event_id }), ...options })
+      pumps.push(pump); return pump
+    },
+    seed(id, terminal = true, extra = {}) {
+      const event = { version: 1, event_id: id, scope: 'group:202', kind: 'activity_due', producer: 'fixture',
+        created_at: 1, payload: {}, workspace_key: 'fixture-workspace', agent_key: 'fixture-agent',
+        origin: 'observation', control_allowed: false, ...extra }
+      const name = observationKey(event.scope, event.event_id) + '.json', raw = JSON.stringify(event) + '\n'
+      fs.writeFileSync(path.join(root, 'pending', name), raw)
+      const done = path.join(root, 'done', name)
+      const marker = { version: 2, event_raw: raw, event_id: id, scope: event.scope,
+        event_sha256: createHash('sha256').update(raw).digest('hex'), completed_at: 10, status: 'decided', decision_id: 'decision-' + id }
+      if (terminal) fs.writeFileSync(done, JSON.stringify(marker) + '\n')
+      return { name, done, marker }
+    },
+    async crashFactory(method) {
+      const original = fs.readFileSync(new URL('../plugin/lib/observation-queue.js', import.meta.url), 'utf8')
+      const seam = "const value = files[message.method](message.args)"
+      assert.equal(original.split(seam).length, 2)
+      const altered = original.replace(seam, `if (message.method === '${method}' && fs.existsSync(path.join(workerData.directory, 'crash-worker'))) process.exit(23)\n      ${seam}`)
+      const module = path.join(root, 'scanner-fixture.mjs')
+      fs.writeFileSync(module, altered)
+      return (await import(pathToFileURL(module))).createObservationPump
+    },
+  }
+}
+
+test('production worker owns history IO while timers and loopback input remain responsive', async t => {
+  const f = fixture(t), count = 64
+  for (let i = 0; i < count; i++) f.seed('history-' + i)
+  let acknowledged = 0, timerAt, inputAt
+  const p = f.make({ acknowledge: () => { acknowledged++; return { acknowledged: true } } })
+  await p.start({ poll: false })
+  assert.equal(p.status().mode, 'worker'); assert.ok(p.status().thread_id > 0)
+  const server = net.createServer(socket => { socket.on('data', () => { inputAt = acknowledged }); socket.on('end', () => socket.end()) })
+  server.listen(0, '127.0.0.1'); await once(server, 'listening')
+  const client = net.createConnection(server.address().port, '127.0.0.1'); await once(client, 'connect')
+  const original = Object.fromEntries(['readFileSync', 'readdirSync', 'lstatSync'].map(key => [key, fs[key]]))
+  for (const key of Object.keys(original)) fs[key] = function (target, ...args) {
+    if (typeof target === 'string' && (target.startsWith(path.join(f.root, 'pending')) || target.startsWith(path.join(f.root, 'done')))) {
+      throw new Error('History filesystem work leaked onto parent event loop')
+    }
+    return original[key].call(this, target, ...args)
+  }
+  try {
+    const timer = new Promise(resolve => setTimeout(() => { timerAt = acknowledged; resolve() }, 0))
+    client.write('synthetic inbound QQ-like message')
+    await p.drain(); await timer
+    assert.equal(acknowledged, count)
+    assert.ok(timerAt < count); assert.ok(inputAt < count)
+  } finally {
+    for (const [key, fn] of Object.entries(original)) fs[key] = fn
+    client.end(); await once(client, 'close'); await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('incremental discovery skips inert terminals; explicit and periodic audits validate again', async t => {
+  const f = fixture(t); let clock = 100
+  for (let i = 0; i < 24; i++) f.seed('terminal-' + i)
+  const p = f.make({ now: () => clock }); await p.start({ poll: false }); await p.drain()
+  // Flush native watch notifications before recording the stable frontier.
+  await new Promise(resolve => setTimeout(resolve, 30)); await p.drain(false)
+  const reads = p.status().reads
+  await p.drain(false)
+  assert.equal(p.status().selected, 0); assert.equal(p.status().reads, reads); assert.equal(p.status().skipped, 24)
+  clock += 30_001; await p.drain(false)
+  assert.equal(p.status().full, true); assert.equal(p.status().selected, 24)
+  await p.drain(); assert.equal(p.status().selected, 24)
+})
+
+test('cached terminal loss cannot replay; restored evidence is revalidated', async t => {
+  const f = fixture(t), value = f.seed('terminal'), errors = []; let calls = 0
+  const p = f.make({ dispatch: () => { calls++; throw new Error('no replay') }, log: (_level, text) => errors.push(text) })
+  await p.start({ poll: false }); await p.drain()
+  fs.unlinkSync(value.done); await p.drain(false)
+  assert.equal(calls, 0); assert.ok(errors.some(text => text.startsWith('observation_invalid:')))
+  fs.writeFileSync(value.done, JSON.stringify(value.marker) + '\n'); await p.drain()
+  assert.equal(calls, 0)
+})
+
+for (const method of ['read', 'complete']) test(`worker crash during ${method} recovers without restarting the parent or repeating a settled turn`, async t => {
+  const f = fixture(t), factory = await f.crashFactory(method), value = f.seed('recover', false)
+  let calls = 0
+  const p = f.make({ dispatch: event => { calls++; return { completed: true, status: 'unknown', decision_id: 'decision-' + event.event_id } } }, factory)
+  await p.start({ poll: false }); fs.writeFileSync(path.join(f.root, 'crash-worker'), 'fixture')
+  if (method === 'complete') await assert.rejects(p.drain(), /Scanner worker exited/)
+  else await p.drain()
+  assert.equal(calls, method === 'complete' ? 1 : 0)
+  fs.unlinkSync(path.join(f.root, 'crash-worker'))
+  await p.drain()
+  assert.equal(calls, 1); assert.equal(p.status().starts, 2)
+  assert.equal(JSON.parse(fs.readFileSync(value.done)).status, 'unknown')
+  await p.drain(); assert.equal(calls, 1)
+})
+
+test('stop during startup settles and a new consumer can subsequently acquire ownership', async t => {
+  const f = fixture(t), p = f.make()
+  const starting = p.start({ poll: false }), stopped = p.stop()
+  assert.equal(await starting, false); await stopped
+  const next = f.make(); assert.equal(await next.start({ poll: false }), true)
+})

@@ -1,0 +1,28 @@
+{
+  "description": "Unmodified pure Cordis SDK and its sole Cosmokit dependency from installed host archive. No host bootstrap/session/config/tool transport is included or imported. Temp tests import these modules only.",
+  "license": "MIT",
+  "files": {
+    "cordis/index.js": {
+      "source": "dsh/node_modules/@deepseek-ai/cordis/lib/index.js",
+      "sha256": "6a9394c0877ff45218818c6e815edd038f8057e1a1deb390a8d43ec81c57691e",
+      "bytes": 60361
+    },
+    "cordis/LICENSE": {
+      "source": "dsh/node_modules/@deepseek-ai/cordis/LICENSE",
+      "sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7",
+      "bytes": 1071
+    },
+    "cordis_version": "4.0.4",
+    "cosmokit/index.js": {
+      "source": "dsh/node_modules/@deepseek-ai/cosmokit/lib/index.js",
+      "sha256": "ba44c0871656e4c7cac2c3c8a2ff644e0d2eb9d6bda7f6355866d686d513268e",
+      "bytes": 17160
+    },
+    "cosmokit/LICENSE": {
+      "source": "dsh/node_modules/@deepseek-ai/cosmokit/LICENSE",
+      "sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7",
+      "bytes": 1071
+    },
+    "cosmokit_version": "1.8.5"
+  }
+}

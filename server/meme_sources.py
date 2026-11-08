@@ -10,8 +10,14 @@
 # ASCII-only 的标识符；注释里用中文没问题，这个文件是 python 不是 ps1。
 
 import os
-# 根目录按脚本位置推算：<root>/napcat/xxx.py -> <root>
-ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts")
+                if os.path.basename(HERE).lower() == "server" else HERE)
+import project_conf
+
+ROOT = project_conf.work_dir()
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
@@ -20,7 +26,7 @@ PACKS = os.path.join(DSH_ROOT, "meme-packs")
 DSH_MEME = os.path.join(
     DSH_ROOT, "profiles", "desktop", "node_modules", "dsh-meme", "memes",
     "dafeiyu-001", "memes")
-DAFEIYU_MEMES = os.path.join(ROOT, "\u5927\u80a5\u9c7c", "memes")
+DAFEIYU_MEMES = os.path.join(project_conf.data_dir(), "memes")
 
 # 这些子目录是临时/回收区，不算分类
 SKIP_DIRS = {"rejected", "_scratch", "_stage", "_conv", "_tmpcls", "_archive"}

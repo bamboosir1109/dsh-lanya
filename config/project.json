@@ -3,6 +3,20 @@
   "panelPort": 19389,
   "panelStaticPort": 19388,
   "onebotPort": 8720,
+  "qqBackend": {
+    "provider": "napcat",
+    "providers": {},
+    "accountActivity": {
+      "enabled": false,
+      "posts": true,
+      "signature": true,
+      "audience": "friends",
+      "postIntervalHours": 6,
+      "signatureIntervalHours": 4,
+      "dailyPosts": 2,
+      "dailySignatures": 2
+    }
+  },
   "ttsPort": 9880,
   "panelFile": "panel.html",
   "dataDirName": "大肥鱼",
@@ -17,8 +31,18 @@
     "watchCandidates": 4,
     "commentRetries": 3
   },
+  "bilibili": {
+    "social": {
+      "comment": false,
+      "reply": false,
+      "mentionAdmin": false
+    }
+  },
   "budget": {
     "dailyLimit": 1.0
+  },
+  "mind": {
+    "opportunityMin": 6
   },
   "memory": {
     "seenKeep": 400,
@@ -27,5 +51,9 @@
     "diaryInCorpus": 60,
     "compressOver": 120,
     "compressTo": 80
+  },
+  "decisions": {
+    "mode": "unified",
+    "agentPreset": ""
   }
 }

@@ -16,5 +16,5 @@
   "WindowEnd": 23,
   "_分组_其他": "轮询间隔和群号",
   "PollSeconds": 60,
-  "GroupId": "你的群号"
+  "GroupId": ""
 }

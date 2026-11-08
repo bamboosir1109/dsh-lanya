@@ -111,6 +111,8 @@ class BiliMCP:
 
     def call(self, name, args=None):
         res = self._rpc("tools/call", {"name": name, "arguments": args or {}})
+        if not isinstance(res, dict) or res.get("isError") is True:
+            raise RuntimeError("MCP tool result failed: " + name)
         content = (res or {}).get("content") or []
         out = []
         for c in content:

@@ -24,8 +24,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$observationHelper = Join-Path $PSScriptRoot 'qq_observation.ps1'
+if (-not (Test-Path -LiteralPath $observationHelper -PathType Leaf)) { throw 'Missing QQ observation guard' }
+. $observationHelper
+if (-not (Get-Command Test-QqUnifiedMode -ErrorAction SilentlyContinue)) { throw 'QQ observation guard did not load' }
+if (Test-QqUnifiedMode) {
+  Write-Output 'paused: unified decision owner controls proactive chat; no delivery occurred'
+  exit 3
+}
 
-$root    = '<WORKDIR>\napcat'
+$root    = Join-Path (Get-ProjectWorkDir) 'napcat'
 $statePath = Join-Path $root 'agentchat.state.json'
 $logPath   = Join-Path $root 'agentchat.log'
 $promptPath = Join-Path $root 'agentchat.prompt.txt'
@@ -35,7 +43,8 @@ foreach ($d in 'CDEFG') {
   $cand = Join-Path ($d + ':\') ('DSH\resources\runtime\cli\bin\dsh.cmd')
   if (Test-Path $cand) { $dsh = $cand; break }
 }
-$napcat  = Get-Content (Join-Path $root 'balance-alert.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'qq_backend.ps1')
+$napcat = Get-QqBackendConnection
 
 function Write-Log([string]$m) {
   $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $m
@@ -52,6 +61,7 @@ $SELF_PREFIX = [string][char]0x6211 + '(' + [char]0x5C9A + [char]0x5A05 + ')' + 
 
 # ---- helpers ---------------------------------------------------------------
 function Invoke-NapCat([string]$action, $bodyObj) {
+  Assert-QqLegacyAction $action
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds(30)

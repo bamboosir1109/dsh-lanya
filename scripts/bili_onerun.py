@@ -23,12 +23,13 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from bili_mcp import BiliMCP
+from bili_mcp import BiliMCP, VENV_PY
+from project_conf import data_dir, work_dir
 
-WORK = os.path.dirname(HERE)
+WORK = work_dir()
 SEEN = os.path.join(os.path.expanduser("~"), ".dsh", "bili-duty", "seen.md")
 PERSONA_FILE = os.path.join(WORK, "napcat", "persona.md")
-LANYA_DIR = os.path.join(WORK, "\u5c9a\u5a05")
+LANYA_DIR = data_dir()
 INTEREST_FILE = os.path.join(LANYA_DIR, "bili-interests.json")
 CHAT_DIR = os.path.join(LANYA_DIR, "chats")
 CONFIG_FILE = os.path.join(LANYA_DIR, "lanya-config.json")
@@ -186,7 +187,9 @@ def watch_frames(bvid, every=0, max_frames=36):
                           "bili_watch.py")
     if not os.path.isfile(script):
         return [], "bili_watch.py missing"
-    args = [sys.executable, script, bvid, "--max=36"]
+    python = VENV_PY if os.path.isfile(VENV_PY) else sys.executable
+    args = [python, script, bvid,
+            "--max=%d" % max(1, min(60, int(max_frames)))]
     if every:
         args.append("--every=%d" % every)
     try:
@@ -485,6 +488,10 @@ def _content_of(m, bv):
 # 跑一轮
 # ---------------------------------------------------------------------------
 def run_one(do_comment=True, mention=False):
+    from decision_events import unified_decisions_enabled
+    if unified_decisions_enabled():
+        from autonomy_observers import entertainment_review
+        return entertainment_review(do_comment=do_comment, mention=mention)
     result = {"ok": False, "step": "", "error": ""}
     already = seen_bvs()
     comment = ""
@@ -632,54 +639,63 @@ def run_one(do_comment=True, mention=False):
 # ---------------------------------------------------------------------------
 # 核对：这条评论公开了没有
 # ---------------------------------------------------------------------------
-def verify_comment(bv, text):
+def verify_comment(bv, text, rpid=None):
+    """Observe an exact receipt in a bounded public sample; absence is unknown."""
+    def identifier(value):
+        if type(value) is int:
+            value = str(value)
+        return value if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,31}", value) else None
+
+    target = identifier(rpid)
+    if (not isinstance(bv, str) or not re.fullmatch(r"BV[0-9A-Za-z]{10}", bv) or
+            target is None or not isinstance(text, str) or len(text) > 2000):
+        return {"state": "unknown", "code": "exact_comment_receipt_required", "why": "需要有效视频和明确评论回执"}
     try:
         with BiliMCP() as m:
             r = m.call_json("bili_comments", {"bvid": bv, "num": 50})
-    except Exception as e:
-        return {"state": "unknown", "why": str(e)[:120]}
+    except Exception:
+        return {"state": "unknown", "code": "comment_read_unavailable", "why": "评论样本读取失败"}
+    if (not isinstance(r, dict) or r.get("ok") is False or r.get("success") is False or
+            r.get("code", 0) != 0 or r.get("bvid", bv) != bv or not isinstance(r.get("comments"), list)):
+        return {"state": "unknown", "code": "comment_sample_invalid", "why": "评论样本无法核对"}
+    for c in r["comments"][:50]:
+        if not isinstance(c, dict):
+            continue
+        found = identifier(c.get("rpid_str") if c.get("rpid_str") is not None else c.get("rpid"))
+        if found != target:
+            continue
+        if c.get("rpid") is not None and identifier(c["rpid"]) != found:
+            return {"state": "unknown", "code": "comment_receipt_conflict", "why": "评论回执不一致"}
+        body = c.get("content")
+        if text.strip() and (not isinstance(body, str) or body.strip() != text.strip()):
+            return {"state": "unknown", "code": "comment_text_mismatch", "why": "对应回执的完整正文不一致"}
+        return {"state": "public", "rpid": target, "evidence": "sampled_public_comments", "sample_limit": 50}
+    return {"state": "unknown", "code": "comment_not_in_sample", "sample_limit": 50,
+            "why": "当前评论样本中未见对应回执，公开状态仍未知"}
 
-    cms = r.get("comments") or []
-    if not cms and not r.get("count"):
-        return {"state": "unknown", "why": "\u8bc4\u8bba\u533a\u8bfb\u4e0d\u5230"}
 
-    key = (text or "").strip()[:20]
-    for c in cms:
-        body = (c.get("content") or "").strip()
-        if key and key in body:
-            return {"state": "public", "rpid": c.get("rpid"),
-                    "user": c.get("user"), "like": c.get("like")}
-
-    # 正文对不上时，按"自己的账号名"兜底
-    upl = str(_cfg().get("biliUserName") or "").strip()
-    if upl:
-        for c in cms:
-            if upl in (c.get("user") or ""):
-                return {"state": "public", "rpid": c.get("rpid"),
-                        "user": c.get("user"), "like": c.get("like"),
-                        "note": "text differs"}
-    return {"state": "pending",
-            "why": "\u8bc4\u8bba\u533a\u524d 50 \u6761\u91cc\u6ca1\u6709"
-                   "\uff08\u591a\u534a\u5728\u5ba1\u6838\uff09"}
+def verify_cli(argv):
+    """Keep receipt IDs as strings and reject unreadable supplied text."""
+    import argparse
+    import base64
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verify", required=True)
+    parser.add_argument("--rpid")
+    parser.add_argument("--text-b64")
+    parser.add_argument("text", nargs="?", default="")
+    args = parser.parse_args(argv)
+    text = args.text
+    if args.text_b64 is not None:
+        try:
+            text = base64.b64decode(args.text_b64, validate=True).decode("utf-8")
+        except (ValueError, UnicodeError):
+            return {"state": "unknown", "code": "comment_text_invalid", "why": "评论正文无法读取"}
+    return verify_comment(args.verify, text, rpid=args.rpid)
 
 
 if __name__ == "__main__":
     if "--verify" in sys.argv:
-        i = sys.argv.index("--verify")
-        bv = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
-        txt = ""
-        # 评论正文走 base64：中文当命令行参数传，Windows 上会被转成 GBK 乱码。
-        if "--text-b64" in sys.argv:
-            j = sys.argv.index("--text-b64")
-            if len(sys.argv) > j + 1:
-                try:
-                    import base64
-                    txt = base64.b64decode(sys.argv[j + 1]).decode("utf-8")
-                except Exception:
-                    txt = ""
-        elif len(sys.argv) > i + 2:
-            txt = sys.argv[i + 2]
-        print(json.dumps(verify_comment(bv, txt), ensure_ascii=False))
+        print(json.dumps(verify_cli(sys.argv[1:]), ensure_ascii=False))
         sys.exit(0)
 
     no_comment = "--no-comment" in sys.argv

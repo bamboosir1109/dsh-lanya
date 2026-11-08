@@ -7,15 +7,18 @@ import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { requireBrowserFixture, installFixtureBrowserNetwork } from './browser-fixture-guard.mjs'
 
-const URL_BASE = process.argv[2] || 'http://127.0.0.1:19388/dafeiyu-panel.html'
-const OUT = '<WORKDIR>\\dafeiyu\\made\\_uitest'
+const fixture = await requireBrowserFixture()
+
+const URL_BASE = fixture.origin + '/lanya-panel.html'
+const OUT = fixture.outDir
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-const PORT = 9334
+const PORT = fixture.debugPort
 
 mkdirSync(OUT, { recursive: true })
 const proc = spawn(EDGE, [
-  '--headless=new', `--remote-debugging-port=${PORT}`,
+  '--enable-automation', '--headless=new', `--remote-debugging-port=${PORT}`,
   `--user-data-dir=${join(OUT, '_profile2')}`,
   '--no-first-run', '--no-default-browser-check', '--disable-gpu',
   '--window-size=1400,1000', 'about:blank',
@@ -36,6 +39,7 @@ async function target() {
 
 const ws = new WebSocket(await target())
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
+await installFixtureBrowserNetwork(ws, fixture)
 let id = 0
 const pend = new Map()
 const events = []

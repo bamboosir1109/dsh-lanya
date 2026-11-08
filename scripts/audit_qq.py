@@ -1,33 +1,9 @@
 # -*- coding: utf-8 -*-
-"""QQ 聊天链路体检。
+"""Read-only QQ diagnostics for the selected OneBot backend.
 
-链路
-----
-    QQ 客户端
-      -> NapCat 注入
-      -> OneBot HTTP :8720（脚本发消息用）
-      -> OneBot 反向 WS :8643（插件收消息用）
-      -> dsh-onebot-qq 插件
-      -> DSH headless agent
-      -> 回复 -> NapCat -> QQ
-
-任何一环错了，「她不理人」或者「发不出去」。这一晚踩过的都是这一类：
-token 不一致、selfId 是占位符、群号是占位符、管理员是占位符。
-
-查什么
-------
-1. token 三方一致（NapCat HTTP / NapCat WS client / 插件）
-2. 账号一致（NapCat 登录号 / 配置 botQQ）
-3. 三处群号一致（tunables / config / 实际群列表里有）
-4. 私聊准入策略（能不能回所有人）
-5. 端口都在听
-6. 聊天记录在更新
-7. 脚本里还有没有「处理了但没用」的死变量
-8. 回复重复检测（同一句话连发）
-
-用法
-----
-    python audit_qq.py
+Uses actual backend configuration and bounded HTTP without sending messages,
+starting models or echoing account identifiers, tokens or conversation bodies.
+HTTP and reverse-WebSocket authentication are independent.
 """
 import io
 import json
@@ -35,10 +11,14 @@ import os
 import re
 import sys
 import time
-import urllib.request
+import urllib.parse
+import socket
 
-W = r"<WORKDIR>\napcat"
-D = os.path.join(r"<WORKDIR>", "\u5c9a\u5a05")
+import qq_backend
+from project_conf import work_dir, data_dir
+
+W = os.path.join(work_dir(), "napcat")
+D = data_dir()
 PROFILE = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")
 
 try:
@@ -61,10 +41,6 @@ def load_json(p, default=None):
             return json.load(fh)
     except Exception:
         return default if default is not None else {}
-
-
-def napcat_cfg():
-    return load_json(os.path.join(W, "framework", "config", "onebot11.json"), {})
 
 
 def plugin_cfg():
@@ -99,26 +75,13 @@ def plugin_cfg():
     return out
 
 
-def call(action, payload=None, tok=""):
-    req = urllib.request.Request(
-        "http://127.0.0.1:8720/" + action,
-        data=json.dumps(payload or {}).encode("utf-8"),
-        headers={"content-type": "application/json",
-                 "authorization": "Bearer " + tok},
-        method="POST")
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return json.loads(r.read().decode())
-
-
-def port_up(p):
-    import subprocess
+def port_up(port, host='127.0.0.1'):
+    if type(port) is not int or not 1 <= port <= 65535:
+        return False
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(netstat -ano | Select-String ':%d .*LISTENING').Count" % p],
-            capture_output=True, text=True, timeout=40).stdout
-        return (out or "0").strip() not in ("", "0")
-    except Exception:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
         return False
 
 
@@ -128,77 +91,83 @@ def main():
     print("=" * 76)
     print()
 
-    nc = napcat_cfg()
-    net = nc.get("network") or {}
-    hs = (net.get("httpServers") or [{}])[0]
-    wcs = net.get("websocketClients") or [{}]
-    wc = wcs[0] if wcs else {}
+    ROWS.clear()
+    try:
+        connection = qq_backend.resolve()
+    except qq_backend.BackendError:
+        add("所选 QQ 后端", False, "配置未确认，没有回退到其他后端")
+        for name, ok, detail in ROWS:
+            print(name, detail)
+        return 1
     pc = plugin_cfg()
-
-    http_tok = hs.get("token") or ""
-    ws_tok = wc.get("token") or ""
-    plug_tok = pc.get("accessToken") or ""
-
-    # ---------------------------------------------------------------- token
-    add("token: NapCat HTTP vs WS",
-        bool(http_tok) and http_tok == ws_tok,
-        "%s / %s" % (http_tok[:10] or "(空)", ws_tok[:10] or "(空)"))
-    add("token: WS vs 插件",
-        bool(ws_tok) and ws_tok == plug_tok,
-        "%s / %s" % (ws_tok[:10] or "(空)", plug_tok[:10] or "(空)"))
-
-    # ---------------------------------------------------------------- 端口
-    for p, label in ((8720, "OneBot HTTP"), (8643, "反向 WS"), (6099, "WebUI")):
-        add("端口 %d %s" % (p, label), port_up(p), "")
-
-    # ---------------------------------------------------------------- 账号
-    cfg = {}
-    for dn in ("\u5c9a\u5a05", "\u5927\u80a5\u9c7c"):
-        p = os.path.join(os.path.dirname(W), dn, "lanya-config.json")
-        if os.path.isfile(p):
-            cfg = load_json(p)
-            break
-
-    real_id = ""
+    cfg = load_json(os.path.join(D, "lanya-config.json"))
+    add("所选 QQ 后端", True, connection.name)
+    add("HTTP 访问凭据", bool(connection.token), "只检查是否已配置，不显示内容")
+    wcs = [row for row in connection.network.get(connection.spec.ws_clients, []) if row.get('enabled', True)]
+    tokens = []
+    ports = set()
+    ws_valid = True
+    for row in wcs:
+        try:
+            url = row.get('url', '')
+            if not isinstance(url, str) or not url or len(url) > 2048:
+                raise ValueError()
+            parsed = urllib.parse.urlsplit(url)
+            if (parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.scheme not in ('ws', 'wss')
+                    or parsed.username is not None or parsed.password is not None or parsed.fragment):
+                raise ValueError()
+            port = parsed.port or (443 if parsed.scheme == 'wss' else 80)
+            if not 1 <= port <= 65535: raise ValueError()
+            token = row.get(connection.spec.token_key) or (urllib.parse.parse_qs(parsed.query).get('access_token') or [''])[0]
+            if not isinstance(token, str): raise ValueError()
+            tokens.append(token); ports.add((parsed.hostname, port))
+        except (ValueError, TypeError):
+            ws_valid = False
+    add("反向 WS 与插件凭据", ws_valid and bool(pc.get('accessToken')) and pc['accessToken'] in tokens,
+        "只核对反向连接；不要求与 HTTP 令牌相同")
+    for address, label in [(connection.base_url, "OneBot HTTP"), (connection.webui_url, "管理页")]:
+        parsed = urllib.parse.urlsplit(address)
+        add(label + "端口", port_up(parsed.port or (443 if parsed.scheme == 'https' else 80), parsed.hostname), "端口可达不代表账号已登录")
+    add("反向 WS 端口", ws_valid and bool(ports) and all(port_up(port, host) for host, port in ports), "依据当前启用的回环适配器")
     groups = []
     try:
-        li = call("get_login_info", {}, http_tok)
-        real_id = str((li.get("data") or {}).get("user_id") or "")
-        gl = call("get_group_list", {}, http_tok)
-        groups = [str(g.get("group_id")) for g in (gl.get("data") or [])]
-    except Exception as e:
-        add("OneBot 可调用", False, str(e)[:50])
-
-    bot = str(cfg.get("botQQ") or "")
-    add("账号: NapCat 登录 vs config.botQQ", bool(bot) and bot == real_id,
-        "%s / %s" % (real_id or "(空)", bot or "(空)"))
+        status = qq_backend.health(connection, expected_account=cfg.get('botQQ'))
+        add("后端版本与登录", status['online'] and status['good'] and status['logged_in'] and status['provider_matches'],
+            "只读接口核验，实际消息另行确认")
+        add("账号与角色配置", bool(cfg.get('botQQ')) and status['account_matches'], "只核对一致性，不显示账号")
+        result = qq_backend.call('get_group_list', connection=connection)
+        if not isinstance(result.get('data'), list) or any(not isinstance(group, dict) for group in result['data']):
+            raise qq_backend.BackendError('Invalid group list')
+        groups = [str(group.get('group_id')) for group in result['data']]
+        add("核验期间配置一致", qq_backend.resolve().fingerprint == connection.fingerprint, "配置代次及端点保持一致")
+    except qq_backend.BackendError:
+        add("OneBot 可调用", False, "所选连接未确认，没有发送任何消息")
 
     # ---------------------------------------------------------------- 群号
     tun = load_json(os.path.join(D, "lanya-tunables.json"))
     tg = str(tun.get("GroupId") or "")
     fg = str(cfg.get("fanGroupQQ") or cfg.get("fanGroup") or "")
     add("群号: tunables vs config", bool(tg) and tg == fg,
-        "%s / %s" % (tg or "(空)", fg or "(空)"))
+        "只核对一致性，不显示群号")
     if groups:
-        add("群号: 在真实群列表里", fg in groups, fg or "(空)")
+        add("群号: 在真实群列表里", fg in groups, "只读核验")
 
     # ---------------------------------------------------------------- 私聊准入
     policy = pc.get("dmPolicy") or ""
     allow_all = bool(pc.get("allowAllUsers"))
     admins = pc.get("adminUsers") or []
     # 按源码：open -> allowAllUsers || adminUsers；allowlist -> 只看 allowFrom
-    can_all = (policy == "open" and allow_all) or (policy == "open" and admins)
+    can_all = policy == "open" and allow_all
     add("私聊: 所有好友都能聊", can_all,
-        "policy=%s allowAllUsers=%s adminUsers=%s"
-        % (policy or "?", allow_all, ",".join(admins) or "无"))
+        "policy=%s allowAllUsers=%s" % (policy or "?", allow_all))
 
     # 管理员号是否都在 adminUsers 里
     admin_list = cfg.get("adminQQ") or []
     if not isinstance(admin_list, list):
         admin_list = [admin_list]
-    missing = [a for a in admin_list if a and a not in admins]
+    missing = [str(a) for a in admin_list if a and str(a) not in [str(item) for item in admins]]
     add("私聊: 管理员都在 adminUsers", not missing,
-        "缺 %s" % ",".join(missing) if missing else "齐")
+        "缺 %d 个" % len(missing) if missing else "齐")
 
     # ---------------------------------------------------------------- 中间消息
     add("只发最终回复", pc.get("interimMessages") is False,

@@ -1,0 +1,33 @@
+{
+  "source_packages": {
+    "dsh-meme": "0.1.47",
+    "dsh-onebot-qq": "0.8.1"
+  },
+  "source": "Actual installed published program bytes; bridge already has reviewed policy/replay/egress/autonomy layers. No settings, credentials, personal images, index DB or sessions included.",
+  "license": {
+    "dsh-meme": "MIT",
+    "dsh-onebot-qq": "BSD-3-Clause"
+  },
+  "files": {
+    "index.js": {
+      "sha256": "38b766f3a8838fcfcc736e8874da2018febda3774ae5aa81ddd71a86f5430359",
+      "bytes": 83360
+    },
+    "memes.js": {
+      "sha256": "2a036594131ad5667b6539a40f46f5d8a200ab0964ef16693e05b372f1cda1b4",
+      "bytes": 22293
+    },
+    "LICENSE": {
+      "sha256": "b690cbe7074efafeacfd12ac75a32686a5912dce598d9b00f6ce91826e7a0377",
+      "bytes": 1099
+    },
+    "bridge.js": {
+      "sha256": "6f692aef1d9aec06ca77a88c76e2cfe3183ad8c37ace7cd2d9dcc9f104399d3d",
+      "bytes": 41705
+    },
+    "onebot/LICENSE": {
+      "sha256": "d29575c8c48fd56e0de6cf59ce70c49cb25ccd24cae34767c04c64c6f730e8bb",
+      "bytes": 1534
+    }
+  }
+}
