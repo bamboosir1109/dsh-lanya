@@ -1,7 +1,7 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.52",
-  "description": "DSH 角色插件与本地控制台：人设、记忆、群聊、自主活动与运行维护。",
+  "version": "1.4.0-dev.53",
+  "description": "QQ character framework for DeepSeek Harness: persona, scoped memory, autonomous activities and a local dashboard. Companion services required.",
   "type": "module",
   "main": "plugin/lib/index.js",
   "exports": {
@@ -56,7 +56,11 @@
     "CHANGELOG.md",
     "LICENSE",
     "docs/INTERACTION-RELIABILITY.md",
-    "docs/QQ-BACKENDS.md"
+    "docs/QQ-BACKENDS.md",
+    "docs/STORE.md",
+    "docs/index.html",
+    "docs/assets/*",
+    "screenshots.json"
   ],
   "license": "MIT",
   "engines": {
@@ -86,7 +90,7 @@
     "type": "git",
     "url": "git+https://github.com/bamboosir1109/dsh-lanya.git"
   },
-  "homepage": "https://github.com/bamboosir1109/dsh-lanya#readme",
+  "homepage": "https://bamboosir1109.github.io/dsh-lanya/",
   "bugs": {
     "url": "https://github.com/bamboosir1109/dsh-lanya/issues"
   },
@@ -94,10 +98,12 @@
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
+    "ai-companion",
     "persona",
     "qq-bot",
     "onebot",
     "napcat",
+    "snowluma",
     "bilibili",
     "llm-agent",
     "digital-life",

@@ -506,6 +506,11 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
+<style>
+.project-intro{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;margin-bottom:22px;padding:23px 26px;border:1px solid var(--line2);border-radius:var(--r);background:linear-gradient(125deg,rgba(91,157,255,.09),rgba(53,211,153,.035))}.intro-kicker{color:var(--acc);font-size:10px;letter-spacing:.1em;font-weight:650}.project-intro h2{font-size:21px;line-height:1.5;margin:6px 0 8px;font-weight:650}.project-intro p{color:var(--fg2);font-size:12px;line-height:1.85;margin:0;max-width:620px}.project-links{display:flex;gap:8px;flex-wrap:wrap}.project-links a{color:var(--fg2);border:1px solid var(--line2);border-radius:8px;padding:8px 12px;text-decoration:none;font-size:11px}.project-links a:hover{color:var(--fg);border-color:var(--acc)}.feature-guide{margin:0 0 24px;border:1px solid var(--line);border-radius:var(--r);padding:15px 20px;background:var(--card)}.feature-guide summary{cursor:pointer;font-size:12px;color:var(--fg2);font-weight:600}.guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}.guide-grid a{padding:13px;border:1px solid var(--line);border-radius:9px;text-decoration:none;min-width:0}.guide-grid b{font-size:12px;color:var(--fg);display:block;margin-bottom:5px}.guide-grid span{font-size:11px;color:var(--fg2);line-height:1.8;display:block}.feature-guide .note{margin-bottom:0;font-size:11px}
+@media(max-width:1000px){.project-intro{grid-template-columns:minmax(0,1fr)}.guide-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.project-intro{padding:20px 18px;gap:15px}.project-intro h2{font-size:19px}.feature-guide{padding:15px}.guide-grid{grid-template-columns:minmax(0,1fr)}.project-links a{flex:1;text-align:center}}
+</style>
 </head>
 <body>
 
@@ -544,6 +549,8 @@ td{font-size:13px;line-height:1.75;overflow-wrap:anywhere}td.op button{min-heigh
 
 <div class="page on" id="page-overview">
   <div class="phead"><h1>概览</h1><p>她现在的状态。可见页面的记录每 15 秒检查更新。</p></div>
+  <section class="project-intro" aria-label="项目介绍"><div><span class="intro-kicker">DSH-LANYA · LOCAL CONSOLE</span><h2>有记忆，也有自己的日常。</h2><p>从这里看看她聊了什么、做了什么，以及哪些事情还没完成。聊天、记忆和自主活动由同一个主 LLM 协调，实际状态以下方记录为准。</p></div><div class="project-links"><a href="https://bamboosir1109.github.io/dsh-lanya/" target="_blank" rel="noopener noreferrer">项目演示 ↗</a><a href="https://github.com/bamboosir1109/dsh-lanya/blob/codex/unified-decision-memory-android/docs/INSTALL.md" target="_blank" rel="noopener noreferrer">安装手册 ↗</a></div></section>
+  <details class="feature-guide"><summary>第一次打开？从这些页面开始</summary><div class="guide-grid"><a href="#/qq-backend"><b>接上 QQ</b><span>选择后端，检查连接与实际加载。</span></a><a href="#/talk"><b>自然地聊</b><span>查看接话、静默和近期会话策略。</span></a><a href="#/activity"><b>看看她在干嘛</b><span>自主计划、活动证据和每日回顾。</span></a><a href="#/bili"><b>看过哪些视频</b><span>内容摘录、评论与回复结果。</span></a><a href="#/memory"><b>记忆和日记</b><span>按范围检索，查看来源与时间。</span></a><a href="#/money"><b>每日花销</b><span>人民币费用估值和待核算记录。</span></a></div><p class="note">先完成本机配置，再核对连接与真实收件。功能介绍不代表服务已经在线。</p></details>
   <div class="banner" id="banner">
     <div class="bi">⚠️</div>
     <div><div class="bt" id="bannerTitle">还有重复的计划任务</div><div class="bd" id="bannerText">—</div></div>
