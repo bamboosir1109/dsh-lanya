@@ -24,7 +24,7 @@
 
 **[体验交互演示 ↗](https://bamboosir1109.github.io/dsh-lanya/)** &nbsp; · &nbsp; **[开始部署](#quick-start)** &nbsp; · &nbsp; **[阅读文档](#documentation)** &nbsp; · &nbsp; **[反馈问题](https://github.com/bamboosir1109/dsh-lanya/issues)**
 
-<sub>v1.4.0-dev.54 · 人设与记忆 · 群聊与私聊 · 真实表情和语音 · 自主活动 · 本地控制台</sub>
+<sub>v1.4.0-dev.55 · 人设与记忆 · 群聊与私聊 · 真实表情和语音 · 自主活动 · 本地控制台</sub>
 
 </div>
 
@@ -37,7 +37,7 @@
 <p align="center"><sub>↑ 无需登录，点击体验。画面全部使用示例数据，不代表真实活动或发送结果。</sub></p>
 
 > [!NOTE]
-> 当前为 **v1.4.0-dev.54 开发预览**。最新源码在[开发分支](https://github.com/bamboosir1109/dsh-lanya/tree/codex/unified-decision-memory-android)，默认分支与已发布版本可能不同。社区商店[收录申请 #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 等待审核。
+> 当前为 **v1.4.0-dev.55 开发预览**，源码、安装说明与展示素材统一在默认分支 [main](https://github.com/bamboosir1109/dsh-lanya/tree/main)。社区商店[收录申请 #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 等待审核；本机部署后需另行核对实际加载版本。
 
 <details>
 <summary><strong>目录 · 找到你关心的部分</strong></summary>
@@ -131,7 +131,7 @@ QQ 群 / 私聊 ── QQ 后端 ── 主 LLM ── 工具与自主活动
 ```powershell
 $workspace = Join-Path $env:USERPROFILE 'qq-character-work'
 $repo = Join-Path $workspace 'dsh-lanya'
-git clone --branch 'codex/unified-decision-memory-android' https://github.com/bamboosir1109/dsh-lanya.git $repo
+git clone --branch main https://github.com/bamboosir1109/dsh-lanya.git $repo
 Set-Location -LiteralPath $repo
 .\install.ps1 -Target $workspace -DataDir 'character' -WhatIf
 .\install.ps1 -Target $workspace -DataDir 'character'
