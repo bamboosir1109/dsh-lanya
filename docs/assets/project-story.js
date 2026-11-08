@@ -1,185 +1,145 @@
-// A local, illustrative project story. No network, model, media or platform calls.
-(() => {
-  'use strict';
-  const player = document.querySelector('[data-project-story]');
-  if (!player) return;
+import {DURATION, SCENE_SECONDS, sampleStory, joint} from './project-story-motion.js';
+
+// A silent, local animated film. One clock owns character, props and subtitles.
+const player = document.querySelector('[data-project-story]');
+if (player) {
   const scenes = [
-    {
-      eyebrow: '01 / CONNECT', title: '叮咚，一条消息来了。',
-      description: '选择 NapCatQQ 或 SnowLuma，让群聊、私聊与引用来到同一套角色系统。QQ 后端负责连接，主 LLM 负责决定。',
-      label: '来信示例', example: '“还记得我们聊的纸飞机吗？”',
-      state: '接收当前上下文', nodes: ['qq'],
-    },
-    {
-      eyebrow: '02 / REMEMBER', title: '翻翻记忆，原来是这件事。',
-      description: '把眼前的话题与相关记忆放在一起。短期线索、长期事实、时间和来源，让回应有上下文，也允许更正。',
-      label: '检索示例', example: '纸飞机 · 共同话题 · 来源：先前对话',
-      state: '检索相关记忆', nodes: ['memory'],
-    },
-    {
-      eyebrow: '03 / EXPRESS', title: '一句话，一张图，或一段语音。',
-      description: '主 LLM 选择文字、真实表情或本地语音。GPT-SoVITS 合成后再核对发送，轻松的时候也可以只发一张图。',
-      label: '回应示例 · 波形无声音', example: '“记得呀，要不要试试另一种折法？”',
-      state: '选择表达方式', nodes: ['voice'],
-    },
-    {
-      eyebrow: '04 / EXPLORE', title: '刷到有趣的，想和你分享。',
-      description: '在 B 站读取有时间范围的字幕和画面，再判断是否评论、回复或 @ 管理员。内容覆盖和互动结果分别记录。',
-      label: '活动示例', example: '纸飞机的重心 · 00:18–00:43 内容片段',
-      state: '选择内容与互动', nodes: ['bili'],
-    },
-    {
-      eyebrow: '05 / LIVE', title: '玩一会儿，也记得休息。',
-      description: '浏览、玩一小会儿、整理日记，或安静休息。自主机会让她重新考虑下一步，休息、预算和联系间隔继续生效。',
-      label: '计划示例', example: '试试 2048，再把有依据的进展记下来。',
-      state: '安排下一件事', nodes: ['activity'],
-    },
-    {
-      eyebrow: '06 / EXTEND', title: '给她的世界，再添一点可能。',
-      description: '把 QQ、B 站、语音和记忆按需组合，再沿 DSH 插件与本机执行器接入自己的工具。新能力仍需适配和验证。',
-      label: '你的集成底座', example: '同一主 LLM · 可信上下文 · 可扩展的工具与服务',
-      state: '统一调用工具', nodes: ['extend'],
-    },
+    ['CONNECT', '叮咚，一条消息来了。', 'NapCatQQ / SnowLuma 负责 QQ 连接，主 LLM 结合当前群聊、私聊与引用，判断怎样回应。'],
+    ['REMEMBER', '翻翻记忆，原来是这件事。', '短期线索、长期事实、时间和来源一起提供上下文。记忆可以更正，日记保留有依据的经历。'],
+    ['EXPRESS', '把想说的话，自然说出来。', '选择文字、真实表情或 GPT-SoVITS 本地语音。轻松的时候，也可以只发一张表情。'],
+    ['EXPLORE', '刷到有趣的，想和你分享。', '读取有时间范围的 B 站字幕与画面，再决定是否评论、回复或 @ 管理员；覆盖与结果分别记录。'],
+    ['LIVE', '玩一会儿，也记得休息。', '自主考虑浏览、游戏、记日记或安静休息。预算、休息时间与联系间隔继续生效。'],
+    ['EXTEND', '给她的世界，再添一点可能。', '组合 QQ、B 站、语音和记忆，沿 DSH 插件与本机执行器接入自己的工具。新能力需适配与验证。'],
   ];
-  const perScene = 6000;
-  const duration = scenes.length * perScene;
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const $ = selector => player.querySelector(selector);
+  const rig = Object.fromEntries([...player.querySelectorAll('[data-rig]')].map(n => [n.dataset.rig, n]));
+  const toggle = $('[data-story-toggle]'), seek = $('[data-story-seek]');
+  const previous = $('[data-story-previous]'), next = $('[data-story-next]');
   const chapters = [...player.querySelectorAll('[data-story-step]')];
-  const toggle = player.querySelector('[data-story-toggle]');
-  const previous = player.querySelector('[data-story-previous]');
-  const next = player.querySelector('[data-story-next]');
-  const restart = player.querySelector('[data-story-restart]');
-  const progress = player.querySelector('[data-story-progress]');
-  const clock = player.querySelector('[data-story-clock]');
-  const status = player.querySelector('[data-story-status]');
-  let elapsed = 0;
-  let index = -1;
-  let frame = null;
-  let lastStamp = null;
-  let inView = !('IntersectionObserver' in window);
+  const status = $('[data-story-status]'), clock = $('[data-story-clock]');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  let elapsed = 0, frame = null, lastStamp = null, chapter = -1, lastClock = '';
+  let visible = !('IntersectionObserver' in window), pageActive = true;
   let wanted = !reduced.matches && !document.body.classList.contains('capture');
-  let entered = false;
-  let copyAnimation = null;
-  let lastSecond = -1;
-
-  function render() {
-    const selected = Math.min(scenes.length - 1, Math.floor(elapsed / perScene));
-    if (selected !== index) {
-      const animateCopy = index !== -1 && !reduced.matches && inView && !document.hidden;
-      index = selected;
-      const scene = scenes[index];
-      player.dataset.step = String(index);
-      for (const [key, value] of Object.entries({eyebrow: scene.eyebrow, title: scene.title,
-        description: scene.description, label: scene.label, example: scene.example, state: scene.state})) {
-        player.querySelector('[data-story-' + key + ']').textContent = value;
-      }
-      for (const chapter of chapters) {
-        if (Number(chapter.dataset.storyStep) === index) chapter.setAttribute('aria-current', 'step');
-        else chapter.removeAttribute('aria-current');
-      }
-      for (const node of player.querySelectorAll('[data-story-node]'))
-        node.dataset.on = String(scene.nodes.includes(node.dataset.storyNode));
-      previous.disabled = index === 0;
-      next.disabled = index === scenes.length - 1;
-      copyAnimation?.cancel();
-      if (animateCopy && player.querySelector('.story-copy').animate) {
-        copyAnimation = player.querySelector('.story-copy').animate(
-          [{opacity: .4, transform: 'translateY(6px)'}, {opacity: 1, transform: 'translateY(0)'}],
-          {duration: 360, easing: 'cubic-bezier(.2,.7,.3,1)'});
-      }
-    }
-    progress.style.setProperty('--story-progress', String(elapsed / duration));
-    const second = Math.floor(elapsed / 1000);
-    if (second !== lastSecond) {
-      lastSecond = second;
-      clock.textContent = '00:' + String(second).padStart(2, '0') + ' / 00:36';
-      progress.parentElement.setAttribute('aria-valuenow', String(Math.round(elapsed / duration * 100)));
-    }
+  const fmt = n => Number(n.toFixed(3));
+  const move = (name, x, y, r = 0, scale = 1) => rig[name]?.setAttribute('transform',
+    `translate(${fmt(x)} ${fmt(y)}) rotate(${fmt(r)}) scale(${fmt(scale)})`);
+  const alpha = (name, value) => { if (rig[name]) rig[name].style.opacity = String(fmt(value)); };
+  const path = (name, value) => rig[name].setAttribute('d', value);
+  const point = v => v.map(fmt).join(' ');
+  function limb(name, start, end, upper, lower, bend) {
+    const k = joint(start, end, upper, lower, bend);
+    path(name + '-upper', `M${point(start)} L${point(k.elbow)}`);
+    path(name + '-lower', `M${point(k.elbow)} L${point(k.end)}`);
+    if (name.endsWith('arm')) {
+      const angle = Math.atan2(k.end[1] - k.elbow[1], k.end[0] - k.elbow[0]) * 180 / Math.PI;
+      move(name + '-hand', ...k.end, angle - 90);
+    } else move(name + '-shoe', ...k.end);
   }
-
+  function draw() {
+    const p = sampleStory(elapsed);
+    player.dataset.step = String(p.scene);
+    move('actor', p.x, p.y, p.lean);
+    move('shadow', p.x, 448, 0, p.scene === 3 ? .85 : 1);
+    move('head', 0, -191, p.head);
+    move('back-hair', 0, -191, p.head);
+    move('eyes', p.look, p.gazeY);
+    rig.lids.setAttribute('transform', `scale(1 ${fmt(Math.max(.06, p.blink))})`);
+    path('mouth', `M-10 25 Q0 ${fmt(34 + p.talk * 9)} 10 25 Q0 ${fmt(34 - p.talk * 15)} -10 25`);
+    limb('left-leg', [-21, -77], p.feet[0], 37, 36, -1);
+    limb('right-leg', [21, -77], p.feet[1], 37, 36, -1);
+    limb('left-arm', [-38, -132], p.left, 44, 45, -1);
+    limb('right-arm', [38, -132], p.right, 44, 45, 1);
+    for (const n of ['phone', 'book', 'mic', 'game']) {
+      rig[n].style.display = p.item === n ? '' : 'none';
+      if (p.item === n) { move(n, p.itemX, p.itemY, p.itemAngle); alpha(n, p.itemOpacity); }
+    }
+    rig.page.setAttribute('transform', `scale(${fmt(Math.cos(p.page * Math.PI))} 1)`);
+    move('paper-plane', 714 - 270 * p.plane, 230 - 135 * Math.sin(p.plane * Math.PI * .8), -12 - p.plane * 18, 1 + p.plane * .55);
+    move('tile-moving', p.tileX, p.tileY, 15 * (1 - p.wave));
+    alpha('night', p.night * .35);
+    alpha('notification', p.scene === 0 ? Math.max(0, 1 - Math.max(0, p.t - 3) / .8) : 0);
+    move('notification', 0, Math.sin(p.t * 10) * (p.t < 1 ? 3 : 0));
+    move('camera', 480 * (1 - p.camera), 280 * (1 - p.camera), 0, p.camera);
+    const subtitle = $('[data-story-subtitle]');
+    if (subtitle.textContent !== p.subtitle) subtitle.textContent = p.subtitle;
+    $('[data-story-action]').textContent = p.action;
+    if (p.scene !== chapter) {
+      chapter = p.scene;
+      $('[data-story-eyebrow]').textContent = `0${chapter + 1} / ${scenes[chapter][0]}`;
+      $('[data-story-title]').textContent = scenes[chapter][1];
+      $('[data-story-description]').textContent = scenes[chapter][2];
+      for (const n of player.querySelectorAll('[data-story-node]')) n.style.display = Number(n.dataset.storyNode) === chapter ? '' : 'none';
+      for (const b of chapters) {
+        if (Number(b.dataset.storyStep) === chapter) b.setAttribute('aria-current', 'step');
+        else b.removeAttribute('aria-current');
+      }
+      previous.disabled = chapter === 0; next.disabled = chapter === 5;
+    }
+    seek.value = String(elapsed);
+    seek.style.setProperty('--story-progress', `${elapsed / DURATION * 100}%`);
+    const stamp = '00:' + String(Math.floor(elapsed)).padStart(2, '0') + ' / 00:48';
+    if (stamp !== lastClock) { clock.textContent = stamp; lastClock = stamp; }
+    seek.setAttribute('aria-valuetext', `${Math.floor(elapsed)} 秒，共 48 秒；${scenes[chapter][1]}`);
+  }
   function controls() {
-    const finished = elapsed >= duration;
-    toggle.textContent = finished ? '重播' : wanted ? '暂停' : '播放';
-    toggle.setAttribute('aria-label', finished ? '重播项目介绍动画' : wanted ? '暂停项目介绍动画' : '播放项目介绍动画');
-    player.dataset.playing = String(wanted && inView && !document.hidden && !finished);
+    const ended = elapsed >= DURATION;
+    player.dataset.playing = String(wanted && visible && pageActive && !document.hidden && !ended);
+    toggle.textContent = ended ? '↻ 重播' : wanted ? 'Ⅱ 暂停' : '▶ 播放';
+    toggle.setAttribute('aria-label', ended ? '重播项目介绍动画' : wanted ? '暂停项目介绍动画' : '播放项目介绍动画');
   }
-
   function tick(stamp) {
     frame = null;
-    if (!wanted || !inView || document.hidden) { lastStamp = null; controls(); return; }
-    if (lastStamp !== null) elapsed = Math.min(duration, elapsed + Math.max(0, Math.min(stamp - lastStamp, 250)));
-    lastStamp = stamp;
-    render();
-    if (elapsed >= duration) {
-      wanted = false;
-      lastStamp = null;
-      status.textContent = '介绍播放完成，可以重播或选择任一章节。';
-      controls();
-      return;
+    if (!wanted || !visible || !pageActive || document.hidden) { lastStamp = null; controls(); return; }
+    if (lastStamp !== null) elapsed = Math.min(DURATION, elapsed + Math.max(0, (stamp - lastStamp) / 1000));
+    lastStamp = stamp; draw();
+    if (elapsed >= DURATION) {
+      wanted = false; lastStamp = null; controls();
+      status.textContent = '短片播放完毕，可以重播或拖动进度查看。'; return;
     }
     frame = requestAnimationFrame(tick);
   }
-
   function reconcile() {
-    const run = wanted && inView && !document.hidden && elapsed < duration;
-    if (!run) {
+    if (wanted && visible && pageActive && !document.hidden && elapsed < DURATION) {
+      if (frame === null) { lastStamp = null; frame = requestAnimationFrame(tick); }
+    } else {
       if (frame !== null) cancelAnimationFrame(frame);
-      frame = null;
-      lastStamp = null;
-      copyAnimation?.cancel();
-    } else if (frame === null) {
-      lastStamp = null;
-      frame = requestAnimationFrame(tick);
+      frame = null; lastStamp = null;
     }
     controls();
   }
-
-  function seek(selected) {
-    wanted = false;
-    elapsed = selected * perScene;
-    render();
-    reconcile();
-    status.textContent = '已选择第 ' + (selected + 1) + ' 章：' + scenes[selected].title;
+  function jump(time) {
+    wanted = false; elapsed = Math.min(DURATION, Math.max(0, time));
+    draw(); reconcile(); status.textContent = `已暂停在 ${elapsed.toFixed(1)} 秒。`;
   }
-  for (const chapter of chapters) {
-    chapter.disabled = false;
-    chapter.addEventListener('click', () => seek(Number(chapter.dataset.storyStep)));
+  for (const b of chapters) {
+    b.disabled = false;
+    b.addEventListener('click', () => jump(Number(b.dataset.storyStep) * SCENE_SECONDS));
   }
-  for (const button of [toggle, previous, next, restart]) button.disabled = false;
-  previous.addEventListener('click', () => seek(Math.max(0, index - 1)));
-  next.addEventListener('click', () => seek(Math.min(scenes.length - 1, index + 1)));
-  restart.addEventListener('click', () => {
-    elapsed = 0; wanted = true; render(); reconcile();
-    status.textContent = '从第一章重新播放。';
-  });
+  for (const b of [toggle, previous, next, $('[data-story-restart]')]) b.disabled = false;
+  seek.disabled = false;
+  seek.addEventListener('input', () => jump(Number(seek.value)));
+  previous.addEventListener('click', () => jump(Math.max(0, chapter - 1) * SCENE_SECONDS));
+  next.addEventListener('click', () => jump(Math.min(5, chapter + 1) * SCENE_SECONDS));
   toggle.addEventListener('click', () => {
-    if (elapsed >= duration) elapsed = 0;
-    wanted = !wanted;
-    render(); reconcile();
-    status.textContent = wanted ? '继续播放。' : '已暂停，可以逐章查看。';
+    if (elapsed >= DURATION) elapsed = 0;
+    wanted = !wanted; draw(); reconcile();
+    if (wanted) $('.story-screen').scrollIntoView({block: 'center', behavior: reduced.matches ? 'instant' : 'smooth'});
+    status.textContent = wanted ? '正在播放无声动画短片。' : '已暂停。';
+  });
+  $('[data-story-restart]').addEventListener('click', () => {
+    elapsed = 0; wanted = true; draw(); reconcile(); status.textContent = '从头播放无声动画短片。';
+    $('.story-screen').scrollIntoView({block: 'center', behavior: reduced.matches ? 'instant' : 'smooth'});
   });
   document.addEventListener('visibilitychange', reconcile);
-  reduced.addEventListener('change', () => {
-    if (reduced.matches) { wanted = false; copyAnimation?.cancel(); reconcile(); }
-  });
-  let observer = null;
+  reduced.addEventListener('change', () => { if (reduced.matches) { wanted = false; reconcile(); } });
   if ('IntersectionObserver' in window) {
-    observer = new IntersectionObserver(entries => {
-      inView = entries[0].isIntersecting && entries[0].intersectionRatio >= .12;
-      // Do not start while merely loading a hash link to another section.
-      if (inView) entered = true;
-      reconcile();
-    }, {threshold: .12});
-    observer.observe(player);
+    const observer = new IntersectionObserver(entries => {
+      visible = entries[0].isIntersecting; reconcile();
+    }, {threshold: 0});
+    observer.observe($('.story-screen'));
   }
-  window.addEventListener('pagehide', () => {
-    if (frame !== null) cancelAnimationFrame(frame);
-    frame = null; lastStamp = null; copyAnimation?.cancel();
-    player.dataset.playing = 'false';
-  });
-  window.addEventListener('pageshow', () => {
-    if (entered || !observer) reconcile();
-  });
-  render();
-  reconcile();
-})();
+  window.addEventListener('pagehide', () => { pageActive = false; reconcile(); });
+  window.addEventListener('pageshow', () => { pageActive = true; reconcile(); });
+  draw(); reconcile();
+}
