@@ -3,11 +3,11 @@
 <div align="center">
 
 <picture>
-  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-mobile-dark.svg">
-  <source media="(max-width: 600px)" srcset="docs/assets/readme-hero-mobile-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-hero-light.svg">
-  <img src="docs/assets/readme-hero-light.svg" width="1120" alt="dsh-lanya · 岚娅 — 可扩展的 DSH QQ 角色集成包：NapCatQQ / SnowLuma、B 站互动、GPT-SoVITS 语音与可塑记忆。">
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-integrations-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/assets/readme-hero-integrations-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-integrations-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-hero-integrations-light.svg">
+  <img src="docs/assets/readme-hero-integrations-light.svg" width="1120" alt="dsh-lanya · 岚娅 — 可扩展的 DSH QQ 角色集成包：NapCatQQ / SnowLuma、B 站互动、GPT-SoVITS 语音与可塑记忆。">
 </picture>
 
 # dsh-lanya
