@@ -105,15 +105,12 @@ class DaemonPathsTests(unittest.TestCase):
 
     def test_all_daemon_paths_follow_project_configuration(self):
         browser = self.load("browserd.py")
-        export = self.load("export-chats.py")
         greet = self.load("greetd.py")
         steal = self.load("stealmemes.py")
         memory = self.load("memory-maintenance.py")
         settings = self.load("settings-guard.py")
         self.assertEqual(Path(browser.BASE), self.root)
         self.assertEqual(Path(browser.BROWSER_DIR), self.data / "browser")
-        self.assertEqual(Path(export.OUT_DIR), self.data / "chats")
-        self.assertEqual(Path(export.DSH_HOME), self.root / ".dsh")
         self.assertEqual(Path(greet.PEOPLE), self.data / "people")
         self.assertEqual(Path(greet.PROMPT), self.runtime / "greet.prompt.txt")
         self.assertEqual(Path(steal.MEMES), self.data / "memes")
@@ -129,11 +126,26 @@ class DaemonPathsTests(unittest.TestCase):
             encoding="utf-8")
         greet = self.load("greetd.py")
         steal = self.load("stealmemes.py")
-        export = self.load("export-chats.py")
         self.assertEqual(greet.ADMIN, "4242")
         self.assertEqual(steal.GROUP, "1234")
-        self.assertEqual(Path(export._config_path()), self.data / "lanya-config.json")
-        self.assertEqual(export._speaker_name(), "synthetic owner")
+        self.assert_no_external_work()
+
+    def test_export_entrypoint_uses_current_configured_record_roots(self):
+        export = self.load("export-chats.py")
+        changed_data = self.root / "another-character"
+        changed_data.mkdir()
+        native_home = self.root / "configured-native-home"
+        mapping = native_home / "media" / "onebot" / "current-mapping.json"
+        self.config.write_text(json.dumps({
+            "dataDirName": changed_data.name,
+            "decisions": {"mode": "unified", "agentPreset": "fixture-agent"},
+            "panelRecords": {"dshHome": str(native_home), "onebotMappingFile": str(mapping)},
+        }), encoding="utf-8")
+        with mock.patch("chat_export.export_current", return_value={"status": "ok"}) as scoped_export, \
+                mock.patch("builtins.print"):
+            self.assertEqual(export.main(), 0)
+        scoped_export.assert_called_once_with(workspace=str(self.root), preset="fixture-agent",
+            role=str(changed_data), dsh_home=str(native_home), mapping_file=str(mapping))
         self.assert_no_external_work()
 
     def test_meme_business_switch_is_still_respected(self):
