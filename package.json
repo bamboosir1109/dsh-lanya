@@ -1,7 +1,7 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.55",
-  "description": "QQ character framework for DeepSeek Harness: persona, scoped memory, autonomous activities and a local dashboard. Companion services required.",
+  "version": "1.4.0-dev.56",
+  "description": "Modular QQ character integration kit for DSH: NapCatQQ/SnowLuma, Bilibili, GPT-SoVITS voice, revisable memory and autonomy. Companion services required.",
   "type": "module",
   "main": "plugin/lib/index.js",
   "exports": {
@@ -58,6 +58,7 @@
     "docs/INTERACTION-RELIABILITY.md",
     "docs/QQ-BACKENDS.md",
     "docs/STORE.md",
+    "docs/INTEGRATIONS.md",
     "docs/index.html",
     "docs/assets/*",
     "screenshots.json"

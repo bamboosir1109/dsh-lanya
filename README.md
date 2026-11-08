@@ -3,19 +3,21 @@
 <div align="center">
 
 <picture>
-  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-mobile-dark.svg">
-  <source media="(max-width: 600px)" srcset="docs/assets/readme-hero-mobile-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-hero-light.svg">
-  <img src="docs/assets/readme-hero-light.svg" width="1120" alt="dsh-lanya · 岚娅 — 有记忆，也有自己的日常。DSH QQ 角色框架：自然会话、可塑记忆与自主活动。">
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-integrations-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/assets/readme-hero-integrations-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-integrations-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-hero-integrations-light.svg">
+  <img src="docs/assets/readme-hero-integrations-light.svg" width="1120" alt="dsh-lanya · 岚娅 — 可扩展的 DSH QQ 角色集成包：NapCatQQ / SnowLuma、B 站互动、GPT-SoVITS 语音与可塑记忆。">
 </picture>
 
 # dsh-lanya
 
 **在 QQ 里认真接话，也会安静待着。**
 
-一个可自己部署的 QQ 角色框架。<br>
-由同一个主 LLM，结合人设、对话和记忆，决定回应或下一件想做的事。
+**面向 DeepSeek Harness 的可扩展 QQ 角色集成包。**<br>
+把 QQ 接入、B 站、语音、记忆与自主活动接到同一个角色，按需组合自己的工具与服务。
+
+**NapCatQQ / SnowLuma** &nbsp; · &nbsp; **B 站浏览与互动** &nbsp; · &nbsp; **GPT-SoVITS 语音** &nbsp; · &nbsp; **可塑记忆与日记**
 
 [![Development preview](docs/assets/badge-preview.svg)](CHANGELOG.md)
 [![DeepSeek Harness plugin](docs/assets/badge-dsh.svg)](https://github.com/deepseek-ai/deepseek-harness)
@@ -24,7 +26,7 @@
 
 **[体验交互演示 ↗](https://bamboosir1109.github.io/dsh-lanya/)** &nbsp; · &nbsp; **[开始部署](#quick-start)** &nbsp; · &nbsp; **[阅读文档](#documentation)** &nbsp; · &nbsp; **[反馈问题](https://github.com/bamboosir1109/dsh-lanya/issues)**
 
-<sub>v1.4.0-dev.55 · 人设与记忆 · 群聊与私聊 · 真实表情和语音 · 自主活动 · 本地控制台</sub>
+<sub>v1.4.0-dev.56 · 一个主 LLM 统一决策 · 工具与服务按需集成 · Windows 本地控制台</sub>
 
 </div>
 
@@ -37,7 +39,11 @@
 <p align="center"><sub>↑ 无需登录，点击体验。画面全部使用示例数据，不代表真实活动或发送结果。</sub></p>
 
 > [!NOTE]
-> 当前为 **v1.4.0-dev.55 开发预览**，源码、安装说明与展示素材统一在默认分支 [main](https://github.com/bamboosir1109/dsh-lanya/tree/main)。社区商店[收录申请 #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 等待审核；本机部署后需另行核对实际加载版本。
+> 当前为 **v1.4.0-dev.56 开发预览**，源码、安装说明与展示素材统一在默认分支 [main](https://github.com/bamboosir1109/dsh-lanya/tree/main)。
+>
+> 这是插件与配套服务的集成包，QQ 后端、B 站及语音引擎需分别安装配置，详见[组件接入表](docs/INTEGRATIONS.md)。
+>
+> 社区商店[收录申请 #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 等待审核。
 
 <details>
 <summary><strong>目录 · 找到你关心的部分</strong></summary>
@@ -45,6 +51,7 @@
 - [能做什么](#features)
 - [界面一览](#gallery)
 - [如何组成](#how-it-works)
+- [按需集成与扩展](#integrations)
 - [开始部署](#quick-start)
 - [常见问题](#faq)
 - [文档导航](#documentation)
@@ -57,22 +64,28 @@
 <a id="features"></a>
 ## 不只接话，也有自己的日常
 
-可以使用岚娅的风格，也可以换成你自己的角色。把人设、记忆和真实工具接起来，让表达与行动有上下文。
+可以使用岚娅的风格，也可以换成你自己的角色。同一个主 LLM 带着人设、近期对话和记忆，选择回应、调用工具或安排下一件事。
 
 <table>
   <tr>
-    <td width="50%" valign="top"><h3>💬 自然地聊</h3>群聊、私聊、引用消息与图片。合并近期输入，由主 LLM 判断接话或安静，支持持续静默与恢复。<br><br><a href="docs/INTERACTION-RELIABILITY.md">了解会话链路 →</a></td>
-    <td width="50%" valign="top"><h3>🎭 不只有文字</h3>按已有标签选择真实表情，一轮最多一张，文字与图片独立发送。语音在本机生成，再按当前会话权限发送。<br><br><a href="docs/VOICE.md">了解语音接入 →</a></td>
+    <td width="50%" valign="top"><h3>💬 两种 QQ 接入后端</h3>支持 <strong>NapCatQQ / SnowLuma</strong>，选择一套连接自己的 QQ。群聊、私聊、引用消息与图片共用角色和会话策略，切换后端保留同一套人设与记忆。<br><br><a href="docs/QQ-BACKENDS.md">了解双后端接入 →</a></td>
+    <td width="50%" valign="top"><h3>📺 B 站内容与互动</h3>推荐与视频详情、按时间窗读取字幕、按需查看抽帧；主 LLM 决定是否评论、回复他人或 <strong>@ 管理员</strong>，控制台保留内容来源与互动结果。<br><br><a href="docs/CAPABILITIES.md#b站内容与互动">了解 B 站能力 →</a></td>
   </tr>
   <tr>
-    <td valign="top"><h3>📓 带着记忆</h3>按工作区与对象检索，保留时间和来源。可修订记忆、压缩历史与日记一起维护，记得住，也能慢慢修正。<br><br><a href="docs/MEMORY.md">了解记忆方案 →</a></td>
-    <td valign="top"><h3>🌤 决定下一件事</h3>结合兴趣与近况安排活动，浏览 B 站，选择是否评论或分享。休息、预算、静默与联系间隔继续生效。<br><br><a href="docs/DECISIONS.md">了解自主决策 →</a></td>
+    <td valign="top"><h3>🎙 GPT-SoVITS 语音</h3>接入本机语音引擎，由当前主 LLM 选择要说的话。合成、音频校验和 QQ 发送分别核对，支持真实可播放语音回复。<br><br><a href="docs/VOICE.md">了解语音接入 →</a></td>
+    <td valign="top"><h3>📓 可塑记忆与日记</h3>短期上下文、长期事实、可塑更正、压缩与第一人称日记。对话检索结合主题、时间、标签和来源；按工作区与对象隔离，保留版本和恢复依据。<br><br><a href="docs/MEMORY.md">了解记忆与检索 →</a></td>
   </tr>
   <tr>
-    <td valign="top"><h3>🪟 看得见过程</h3>活动证据、视频内容摘录、回复结果、记忆日记与每日费用估值集中查看。缺少资料与未知结果会保留。<br><br><a href="https://bamboosir1109.github.io/dsh-lanya/">体验界面演示 →</a></td>
-    <td valign="top"><h3>🔧 自己维护系统</h3>选择 NapCatQQ 或 SnowLuma，检查连接、查看部件、持续监控。身份、人设、记忆与日记保存在本机。<br><br><a href="docs/QQ-BACKENDS.md">了解 QQ 后端 →</a></td>
+    <td valign="top"><h3>🎭 真实表情与自然接话</h3>按已有标签选择真实表情，可只发图，一轮最多一张。合并近期输入判断接话或安静，支持引用理解、持续静默和恢复。<br><br><a href="docs/INTERACTION-RELIABILITY.md">了解会话链路 →</a></td>
+    <td valign="top"><h3>🌤 自主活动与工具</h3>结合兴趣、记忆与近况，选择浏览、游戏或主动联系。浏览器与 Android 截图操作按环境接入，休息、预算、静默与联系间隔继续生效。<br><br><a href="docs/CAPABILITIES.md">了解自主工具 →</a></td>
+  </tr>
+  <tr>
+    <td valign="top"><h3>🧩 按需组合与扩展</h3>DSH 插件、QQ 连接、本机执行器与外部插件分别接入。复用同一主 LLM、可信能力上下文和会话边界，为自己的角色增添工具与服务。<br><br><a href="#integrations">查看集成方式 →</a></td>
+    <td valign="top"><h3>🪟 一处查看运行过程</h3>在本地控制台查看连接、部件、活动、B 站内容与回复、记忆日记和每日人民币费用估值，缺少资料与未知结果明确保留。<br><br><a href="https://bamboosir1109.github.io/dsh-lanya/">体验界面演示 →</a></td>
   </tr>
 </table>
+
+组件配置决定实际可用能力。B 站评论、回复和提及需本机启用；字幕或画面读取不等于完整播放，接口接受也不等于公开可见。[接入条件与功能边界 →](docs/INTEGRATIONS.md)
 
 <a id="gallery"></a>
 ## 一扇看见日常的窗口
@@ -112,6 +125,23 @@ QQ 群 / 私聊 ── QQ 后端 ── 主 LLM ── 工具与自主活动
 ```
 
 在商店安装插件后，仍需完成本机服务和账号配置。自主行为可以选择不执行，设备离线或发送结果未知时不会编造完成状态。
+
+<a id="integrations"></a>
+## 按需组合，继续扩展
+
+把它作为自己的角色集成底座：先接上 QQ 与记忆，再按需要加入 B 站、语音、浏览器或其他工具。各组件分别配置，同一主 LLM 使用已有上下文决定何时调用。
+
+| 组件 | 当前集成方式 |
+|---|---|
+| QQ 平台连接 | **NapCatQQ / SnowLuma** 二选一，通过共用 OneBot v11 边界接入 |
+| 记忆与日记 | 对接 **memento**，补充可塑注释、范围检索、压缩和来源记录 |
+| B 站 | 对接 **dsh-bili-scroll** 与配套内容工具，读取字幕、画面与互动通知 |
+| 语音表达 | 对接本地 **GPT-SoVITS**，合成校验后再发送到当前 QQ 会话 |
+| 更多本机工具 | 独立浏览器、2048、真实 Android 截图操作；按需安装并核对可用状态 |
+
+扩展沿用 DSH 的插件与工具机制，结合本项目的可信能力说明、本机执行器和活动记录接入。新的平台动作仍需实现对应适配并验证权限、结果与故障处理；没有默认附带任意插件的自动兼容。
+
+**[组件接入表与扩展步骤 →](docs/INTEGRATIONS.md)** &nbsp; · &nbsp; [架构说明](docs/ARCHITECTURE.md) &nbsp; · &nbsp; [能力上下文](docs/CAPABILITIES.md)
 
 <a id="quick-start"></a>
 ## 从自己的工作区开始
@@ -183,6 +213,7 @@ SnowLuma 的私聊、群聊、引用图片、真实表情图和可播放语音�
 | 我想…… | 入口 |
 |---|---|
 | 安装并接入 QQ | [安装与升级](docs/INSTALL.md) · [QQ 后端](docs/QQ-BACKENDS.md) |
+| 组合组件或扩展工具 | [集成与扩展](docs/INTEGRATIONS.md) · [能力上下文](docs/CAPABILITIES.md) |
 | 理解接话、自主与并发 | [主 LLM 决策](docs/DECISIONS.md) · [交互可靠性](docs/INTERACTION-RELIABILITY.md) |
 | 调整记忆或接入媒体 | [记忆](docs/MEMORY.md) · [语音](docs/VOICE.md) · [Android](docs/ANDROID.md) |
 | 看结构、排故与恢复 | [架构](docs/ARCHITECTURE.md) · [维护](docs/MAINTENANCE.md) · [已知限制](docs/LIMITATIONS.md) |
@@ -199,7 +230,7 @@ SnowLuma 的私聊、群聊、引用图片、真实表情图和可播放语音�
 <details>
 <summary><strong>English overview</strong></summary>
 
-A self-hosted Windows QQ character framework for DeepSeek Harness. One main LLM combines persona, recent conversation and scoped memory to decide replies or autonomous activities, with a local console for activity, diary and estimated costs. NapCatQQ or SnowLuma and companion services must be configured separately. This branch is a development preview; all public demo screenshots use synthetic data.
+A modular, self-hosted QQ character integration kit for DeepSeek Harness on Windows. Choose NapCatQQ or SnowLuma, connect Bilibili content and interactions, local GPT-SoVITS voice, and revisable memory with scoped retrieval and diaries. One main LLM coordinates conversation and autonomous tools; DSH plugins and local executors provide extension points. Companion services require separate installation and configuration. This is a development preview; all public demo screenshots use synthetic data.
 
 </details>
 

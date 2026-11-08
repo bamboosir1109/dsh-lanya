@@ -15,7 +15,7 @@
 ```text
 QQ 消息
   → NapCat
-     或 SnowLuma（开发版本接入，真实验收待完成）
+     或 SnowLuma（私聊、群聊、引用图、表情和语音已实机验收）
   → OneBot / dsh-onebot-qq
   → DSH agent：角色提示词 + 身份 + 记忆 + 工具
   → qq_decide：回复 / 安静 / 内部工具 / 持久控制
