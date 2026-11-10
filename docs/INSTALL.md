@@ -83,7 +83,7 @@ Set-Location -LiteralPath $repo
 dsh plugin --profile desktop add ("link:" + $repo)
 ```
 
-当前公开预览以默认分支 `main` 为安装入口，按 README 克隆并连接同一份本地源码。拉取源码、部署配套服务与重载宿主是独立步骤，安装后核对实际加载版本；商店收录仍待审核。根目录 `cordis.patch.yml` 只插入 `dsh-lanya`，不会覆盖模型、OneBot 准入、其他插件或整个 profile。`docs/cordis.patch.yml` 是历史完整 profile 示例，**不能整体应用到现有 profile**。
+当前公开预览以默认分支 `main` 为安装入口，按 README 克隆并连接同一份本地源码。拉取源码、部署配套服务与重载宿主是独立步骤，安装后核对实际加载版本；社区目录已收录且实时索引已同步，详见[收录说明](STORE.md)。根目录 `cordis.patch.yml` 只插入 `dsh-lanya`，不会覆盖模型、OneBot 准入、其他插件或整个 profile。`docs/cordis.patch.yml` 是历史完整 profile 示例，**不能整体应用到现有 profile**。
 
 在自己的 profile patch 中配置实际工作区。下面的 `<WORKDIR>` 必须换成本机绝对路径：
 

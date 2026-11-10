@@ -1,8 +1,10 @@
 # 商店收录与展示
 
-本项目申请进入社区维护的 DSH 插件目录。审核通过后，dsh-market 和使用同一索引的商店会同步收录；申请不等于审核通过，也不代表 DSH 官方认证。
+本项目已进入社区维护的 DSH 插件目录，dsh-market 使用的实时索引已包含本项目。可打开[目录页面](https://awesome-dsh-plugin.com/p/bamboosir1109/dsh-lanya/)，或在使用该目录的商店中搜索 `dsh-lanya`。这是社区收录，项目继续保持开发预览。
 
-2026-11-08 已提交[目录 PR #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180)，当前等待审核，尚未合并。仅新增本项目一个 YAML 条目。当前公开开发预览、README 与截图统一由默认分支 `main` 提供；仓库 About 已提供演示入口并补齐 `dsh-plugin`、`deepseek-harness` 等发现标签。
+2026 年 11 月 9 日，[目录 PR #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 已合并到目录的 `main`，仅新增本项目一个 YAML 条目。
+
+2026 年 11 月 10 日读回确认：[条目原文](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/data/plugins/bamboosir1109__dsh-lanya.yml) 仍在默认分支，[实时索引](https://awesome-dsh-plugin.com/plugins.json) 已返回本项目、目录页面和四张示例截图。当前公开开发预览、README 与截图由本仓库 `main` 提供；商店本机安装及实际加载版本仍需单独核对。
 
 ## 从哪里开始
 
@@ -19,7 +21,7 @@
 
 条目为 `data/plugins/bamboosir1109__dsh-lanya.yml`，分类 `identity`，描述角色提示词与本地控制台。其他配套能力的配置条件在项目说明中列明，不把其他作者的插件作为本项目独立实现宣传。
 
-根 `screenshots.json` 声明公开截图顺序；截图全部来自示例演示，不包含真实账号、私人对话、运行配置或凭据。默认分支提供图标、截图及其声明；素材可访问不代表目录已审核或商店已抓取。
+根 `screenshots.json` 声明公开截图顺序；截图全部来自示例演示，不包含真实账号、私人对话、运行配置或凭据。默认分支提供图标、截图及其声明；本次已核对实时索引中的截图地址，不把目录收录或素材抓取当作本机安装与收件验收。
 
 ## 维护
 
