@@ -23,7 +23,7 @@ dsh-market 和使用 awesome-dsh-plugin 同一索引的其他展示站，按同�
 | --- | --- | --- |
 | DSH 1024Store | [PR #900](https://github.com/imsai-sh/awesome-deepseek-harness-plugins/pull/900) | 已合并，生产检索可见。 |
 | SihanTeng 插件目录 | [PR #71](https://github.com/SihanTeng/awesome-deepseek-harness-plugins/pull/71) · [展示站](https://awesome-deepseek-harness-plugins.pages.dev/) | 已提交集成分类条目，待维护者审核。 |
-| dsh.pub | [PR #192](https://github.com/dsh-pub/dsh-pub/pull/192) | 来源检查、静态检查、单测和站点构建通过；目录 CI 安装测试浏览器失败，后续集成检查未执行，已在原 PR 反馈，等待维护者核查。 |
+| dsh.pub | [投稿 PR #192](https://github.com/dsh-pub/dsh-pub/pull/192) · [CI 修复 PR #193](https://github.com/dsh-pub/dsh-pub/pull/193) | 完整日志确认 Ubuntu 26.04 与锁定的 Playwright 1.58 不兼容。已提交三个浏览器任务固定 Ubuntu 24.04 的修复，待维护者审核、批准 CI 并在合并后重跑投稿。 |
 | 0xsline 双语资源目录 | [PR #828](https://github.com/0xsline/awesome-deepseek-harness/pull/828) | 中英文消息通道分类条目已提交，待审核。 |
 | Alex-Yanggg 插件目录 | [PR #187](https://github.com/Alex-Yanggg/awesome-DSH-plugin/pull/187) | 中英文数据及生成文档已提交，生成一致性检查通过，待审核。 |
 | deepseekharnessplugins / cccakeee 目录 | [PR #63](https://github.com/cccakeee/awesome-dsh-plugins/pull/63) | 来源证据、通道分类及双语生成文档已提交，严格生成校验通过，待审核。 |
@@ -32,7 +32,13 @@ dsh-market 和使用 awesome-dsh-plugin 同一索引的其他展示站，按同�
 | DSHX Hub | [商店](https://dshx.io/en/plugins) | 网页确认 “Repository queued for the next operations run.”；已入队，尚未确认发布。 |
 | awesome-dsh-plugin 已有条目更新 | [PR #13992](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13992) | 仅更新自己的中英文描述，保留分类、图标和既有地址；原收录继续有效，新描述待审核。 |
 
-目录字段中的 `verified`、风险分类或来源证据属于各站自己的定义。本批没有宣称通过完整业务、安全或新版 DSH 兼容性验收。dsh.pub 失败已定位到 CI 步骤，但未取得完整安装日志，暂不判断该步骤失败的具体原因。
+目录字段中的 `verified`、风险分类或来源证据属于各站自己的定义。本批没有宣称通过完整业务、安全或新版 DSH 兼容性验收。
+
+### dsh.pub CI 故障跟进
+
+2026-11-10 取得[失败任务](https://github.com/dsh-pub/dsh-pub/actions/runs/42820004800/job/129842815598)完整日志：来源检查、目录生成、静态检查、单测及站点构建通过，浏览器安装阶段明确报告 Playwright 1.58.0 不支持 `ubuntu26.04-x64`。该版本的[上游依赖表](https://github.com/microsoft/playwright/blob/v1.58.0/packages/playwright-core/src/server/registry/nativeDeps.ts)包含 Ubuntu 24.04；`ubuntu-latest` 的镜像升级触发了此次不兼容。
+
+[修复 PR #193](https://github.com/dsh-pub/dsh-pub/pull/193)仅将投稿校验、合并后整合和 Quality 三个浏览器任务固定为 `ubuntu-24.04`，保留依赖版本、权限与全部校验步骤。YAML 语义和格式核对通过；上游 Quality 工作流等待维护者批准，尚未完成 Linux E2E。投稿校验使用可信 `main`，需维护者合并修复后重跑投稿，当前账号没有该仓库的写入或重跑权限。原失败记录保留，投稿仍待审核。
 
 ## 其他发现渠道与限制
 
