@@ -1,6 +1,6 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.59",
+  "version": "1.4.0-dev.60",
   "description": "Modular QQ character integration kit for DSH: NapCatQQ/SnowLuma, Bilibili, GPT-SoVITS voice, revisable memory and autonomy. Companion services required.",
   "type": "module",
   "main": "plugin/lib/index.js",
@@ -69,7 +69,7 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "cordis.patch.yml"
+      "patch": "./cordis.patch.yml"
     },
     "engines": {
       "dsh": ">=0.2.0-rc.2"
@@ -108,6 +108,10 @@
     "bilibili",
     "llm-agent",
     "digital-life",
-    "control-panel"
+    "control-panel",
+    "gpt-sovits",
+    "memory",
+    "autonomy",
+    "voice"
   ]
 }
