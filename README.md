@@ -45,9 +45,9 @@
 >
 > 这是插件与配套服务的集成包，QQ 后端、B 站及语音引擎需分别安装配置，详见[组件接入表](docs/INTEGRATIONS.md)。
 >
-> 已进入[社区插件目录](https://awesome-dsh-plugin.com/p/bamboosir1109/dsh-lanya/)，商店实时索引已同步。
+> 已进入[社区插件目录](https://awesome-dsh-plugin.com/p/bamboosir1109/dsh-lanya/)和 [1024Store 目录](https://github.com/imsai-sh/awesome-deepseek-harness-plugins/blob/main/catalog/plugins/bamboosir1109--dsh-lanya.json)，两方实时索引均已返回本项目。
 >
-> [目录 PR #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) 于 2026 年 11 月 9 日合并；完整部署仍需配置配套服务。
+> 其他目录正在审核，见[多渠道收录与投稿进度](docs/STORE.md)。完整部署仍需配置配套服务。
 
 <details>
 <summary><strong>目录 · 找到你关心的部分</strong></summary>
@@ -222,7 +222,7 @@ SnowLuma 的私聊、群聊、引用图片、真实表情图和可播放语音�
 | 调整记忆或接入媒体 | [记忆](docs/MEMORY.md) · [语音](docs/VOICE.md) · [Android](docs/ANDROID.md) |
 | 看结构、排故与恢复 | [架构](docs/ARCHITECTURE.md) · [维护](docs/MAINTENANCE.md) · [已知限制](docs/LIMITATIONS.md) |
 | 了解进度与下一步 | [更新日志](CHANGELOG.md) · [开发日志](docs/DEVLOG.md) · [路线图](docs/ROADMAP.md) |
-| 查看商店收录 | [收录说明](docs/STORE.md) · [目录 PR #13180](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13180) |
+| 查找与分享项目 | [多渠道收录与投稿进度](docs/STORE.md) · [组件接入表](docs/INTEGRATIONS.md) |
 
 <a id="contributing"></a>
 ## 一起把日常打磨好
