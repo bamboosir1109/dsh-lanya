@@ -155,10 +155,19 @@ def agent_emulator_target(options, serial):
         return 5554 <= port <= 65534 and port % 2 == 0
     loopback = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{3,4})", serial)
     server = options.get("adbServerPort")
-    if not loopback or options.get("agentTransport") != "qemu_loopback" or type(server) is not int:
+    if (not loopback or options.get("agentTransport") not in ("qemu_loopback", "desktop_loopback")
+            or type(server) is not int):
         return False
     port = int(loopback[1])
     return 1024 <= port <= 65535 and 1024 <= server <= 65535 and server not in (5037, port)
+
+
+def agent_apps(options):
+    packages = {"amap": "com.autonavi.minimap", "meituan": "com.sankuai.meituan", "qq": "com.tencent.mobileqq"}
+    enabled = options.get("agentApps", [])
+    if not isinstance(enabled, list):
+        return {}
+    return {alias: package for alias, package in packages.items() if alias in enabled}
 
 
 class AndroidWorker:

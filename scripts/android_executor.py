@@ -8,14 +8,14 @@ import sys
 import time
 
 from android_panel import AndroidPanel, PanelAndroidError
-from androidd import AGENT_JOB_SECONDS, agent_emulator_target
+from androidd import AGENT_JOB_SECONDS, agent_apps, agent_emulator_target
 from runtime_capabilities import DEFAULTS, _configuration, entertainment_guide, owner_of
 
 
 SCHEMA = "dsh-android-result/v1"
 ACTIONS = {
     "shot": set(), "tap": {"x", "y"}, "swipe": {"x1", "y1", "x2", "y2", "ms"},
-    "back": set(), "home": set(), "open_game": set(),
+    "back": set(), "home": set(), "open_game": set(), "open_app": {"app"},
 }
 FRAME_NAME = re.compile(r"[a-f0-9]{32}\.png")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -87,6 +87,12 @@ def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sl
     job = dict(job, serial=serial)
     if action == "open_game":
         job.update(action="start", pkg="org.dshlanya.game2048")
+    elif action == "open_app":
+        app = job.pop("app", None)
+        package = agent_apps(options).get(app) if isinstance(app, str) else None
+        if not package:
+            return dict(base, status="unavailable", code="android_app_not_enabled")
+        job.update(action="start", pkg=package)
     elif action in ("back", "home"):
         job.update(action="key", key=action.upper())
     directory = data / "android"

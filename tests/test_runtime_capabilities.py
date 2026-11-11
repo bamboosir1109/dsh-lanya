@@ -639,9 +639,11 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
     def test_enabled_native_phone_is_discoverable_in_primary_live_and_autonomous_contexts(self):
         self.install('androidd.py', 'android_executor.py')
         self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'android': {
-            'serial': 'emulator-5556', 'agentEnabled': True}}), encoding='utf-8')
+            'serial': '127.0.0.1:16384', 'agentTransport': 'desktop_loopback', 'adbServerPort': 15043,
+            'agentEnabled': True, 'agentApps': ['amap', 'unknown']}}), encoding='utf-8')
         full = self.context(lock_probe=lambda _: True)['tools']
         self.assertEqual(full['entertainment']['android_game']['name'], '2048')
+        self.assertNotIn('agent_apps', full['android'])
         self.assertNotIn('android_game', self.context(lock_probe=lambda _: False)['tools']['entertainment'])
 
         def forbidden(*_):
@@ -655,9 +657,11 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 if scope == 'private:101':
                     self.assertEqual(live['android']['agent_tool'], 'android_phone')
                     self.assertIn('read_image', live['android']['agent_play'])
+                    self.assertEqual(live['android']['agent_apps'], ['amap'])
                     self.assertEqual(live['android']['worker'], 'unverified')
                 else:
                     self.assertNotIn('agent_tool', live['android'])
+                    self.assertNotIn('agent_apps', live['android'])
 
     def test_warm_tone_reaches_live_and_full_context_without_widening_autonomy(self):
         before = self.snapshot()

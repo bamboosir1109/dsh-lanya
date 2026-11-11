@@ -113,3 +113,23 @@ class AndroidExecutorTests(unittest.TestCase):
             self.assertFalse(validate(options, serial))
         self.assertFalse(validate(dict(options, adbServerPort=5037), "127.0.0.1:15555"))
         self.assertFalse(validate(dict(options, agentTransport=None), "127.0.0.1:15555"))
+        desktop = dict(options, agentTransport="desktop_loopback", adbServerPort=15043)
+        self.assertTrue(validate(desktop, "127.0.0.1:16384"))
+        self.assertFalse(validate(desktop, "127.0.0.1:15043"))
+        self.assertFalse(validate(desktop, "192.0.2.1:16384"))
+
+    def test_named_app_launch_is_enabled_explicitly_and_uses_the_current_frame(self):
+        self.options["android"]["agentApps"] = ["amap"]
+        self.config.write_text(json.dumps(self.options), encoding="utf-8")
+        with self.androidd.worker_lock(self.worker.work / "worker.lock"):
+            self.androidd.atomic_json(self.worker.result, self.worker.handle({"seq": 0, "action": "shot"}))
+            first = self.call(action="shot")
+            frame = {"action": "open_app", "expected_shot_id": first["shot_id"]}
+            for alias in ("qq", "com.autonavi.minimap", []):
+                self.assertEqual(self.call(app=alias, **frame)["code"], "android_app_not_enabled")
+            self.assertEqual(self.actions, [])
+            opened = self.call(app="amap", **frame)
+            self.assertEqual(opened["status"], "observed")
+            self.assertNotEqual(opened["shot_id"], first["shot_id"])
+            self.assertEqual(self.actions, [["shell", "monkey -p com.autonavi.minimap -c android.intent.category.LAUNCHER 1"]])
+            self.assertEqual(self.call(app="amap", **frame)["code"], "stale_view")

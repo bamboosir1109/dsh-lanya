@@ -1572,9 +1572,10 @@ export class OneBotDecisionAdapter {
   androidPhoneDefinition() {
     return {
       name: 'android_phone',
-      description: 'Operate the enabled local Android emulator in the owner’s private turn. Choose tool_action, capture shot, inspect its real file with read_image, then pass that same-turn shot ID to each tap, swipe, back, home or open_game. Every successful action returns a new PNG. No network posting or QQ send. After an error or unknown action, observe again before deciding what to do; never replay the old input.',
+      description: 'Operate the enabled local Android emulator in the owner’s private turn. Choose tool_action, take a shot, inspect it with read_image, then pass its same-turn shot ID to the next action. In live chat open_app opens a configured app by alias when the owner asks. Use app navigation for observation and search. No posting, QQ send or purchases. Every successful action returns a new PNG. After an uncertain outcome, observe again before deciding what to do.',
       parameters: {
-        action: { type: 'string', required: true, enum: ['shot', 'open_game', 'tap', 'swipe', 'back', 'home'] },
+        action: { type: 'string', required: true, enum: ['shot', 'open_game', 'open_app', 'tap', 'swipe', 'back', 'home'] },
+        app: { type: 'string', enum: ['amap', 'meituan', 'qq'], description: 'Configured alias for open_app.' },
         expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID; required except for shot.' },
         x: { type: 'number' }, y: { type: 'number' }, x1: { type: 'number' }, y1: { type: 'number' },
         x2: { type: 'number' }, y2: { type: 'number' }, ms: { type: 'number' },
@@ -1596,9 +1597,13 @@ export class OneBotDecisionAdapter {
     const callId = exec.callId
     if (!ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
     if (typeof callId !== 'string' || !callId) throw new PolicyDeliveryError('suppressed', 'missing_call_id')
-    if (!plain(args) || !['shot', 'open_game', 'tap', 'swipe', 'back', 'home'].includes(args.action) ||
-        Object.keys(args).some(key => !['action', 'expected_shot_id', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'ms'].includes(key))) {
+    if (!plain(args) || !['shot', 'open_game', 'open_app', 'tap', 'swipe', 'back', 'home'].includes(args.action) ||
+        Object.keys(args).some(key => !['action', 'app', 'expected_shot_id', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'ms'].includes(key)) ||
+        (args.action === 'open_app' ? !['amap', 'meituan', 'qq'].includes(args.app) : Object.hasOwn(args, 'app'))) {
       throw new Error('Invalid Android phone action')
+    }
+    if (args.action === 'open_app' && origin !== 'live') {
+      throw new PolicyDeliveryError('suppressed', 'android_live_app_request_required')
     }
     const job = structuredClone(args)
     record.androidCalls ??= new Map()

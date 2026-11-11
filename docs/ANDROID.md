@@ -14,6 +14,10 @@
 
 需要独立桌面窗口和较新的安卓版本时，可评估 MuMuPlayer 的 Android 15 实例。先在 BIOS 开启硬件虚拟化，再验证独立窗口、目标应用、ADB 回环连接、实际截图和触摸。通过后再切换 Agent 的目标设备。MuMuPlayer 接入仍待实机验收。[系统要求](https://www.mumuplayer.com/help/win/minimum-system-request-mumu-windows.html) · [Android 15 支持](https://www.mumuplayer.com/help/win/how-to-upgrade-mumuplayer.html) · [ADB 说明](https://www.mumuplayer.com/help/win/developers-essentials-manual.html)
 
+桌面模拟器接入时，设置 `agentTransport: "desktop_loopback"`，用实例实际回环端口填 `serial`，例如 `127.0.0.1:16384`。`adbServerPort` 填另一个独立本机端口。用该端口执行 `adb -P <独立服务端口> connect <serial>`，确认 `get-state` 和 `sys.boot_completed` 后启动 worker。窗口自动归位使用同一实例的实际可执行文件和完整标题。
+
+确认应用已安装后，可在 `android.agentApps` 里启用 `amap`（高德）、`meituan`（美团）或 `qq`（QQ）。主私聊选择 `tool_action` 后先截图并读取 PNG，再用 `android_phone({action:"open_app",app:"amap",expected_shot_id:"<本轮截图 ID>"})`。查看新图确认前台应用后继续点击或滑动。验收可用公开地点搜索、公开商户浏览和 QQ 登录页等实际界面。应用内文本输入取决于来宾输入法。
+
 项目配置示例：
 
 ```json
@@ -69,4 +73,4 @@ adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
 
 截图核对 PNG 签名、chunk CRC、完整 IEND、压缩流和扫描行长度，并与同一 serial 的 `wm size` 尺寸核对，支持旋转后的宽高互换。暂不接受交错 PNG。失败结果是 `offline` 或 `error`，`shot`/`shot_id` 为空；磁盘可能保留上一张好图供排查，不能把它当成这次成功截图。
 
-面板队列的 `shell` 支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`。文本参数按远端 shell 规则加引号。主 Agent 工具仅提供截图、点击、滑动、返回、主页和打开固定游戏。
+面板队列的 `shell` 支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`。文本参数按远端 shell 规则加引号。主 Agent 工具提供截图、点击、滑动、返回、主页、打开固定游戏，以及在主私聊中打开已配置应用。
