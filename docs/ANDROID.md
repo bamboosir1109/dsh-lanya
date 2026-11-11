@@ -10,6 +10,10 @@
 
 想在 Windows 桌面直接查看和操作模拟器，可用独立窗口启动同一个 AVD。启动参数去掉 `-no-window`，保留原数据盘、设备 serial 和 ADB 服务。对已运行的实例，先正常关机再以窗口模式启动。可把同一启动入口放到桌面和用户登录启动目录。相关选项见 [Android Emulator 命令行说明](https://developer.android.com/studio/run/emulator-commandline)。
 
+使用 `scripts/android_window.py` 可以在 Windows 固定模拟器位置。指定 `--exe` 和完整的 `--title`，默认停在主屏幕右上方。可以用 `--position X Y` 指定桌面坐标，或加 `--watch` 监控窗口并在拖动结束后归位。截图和触摸使用设备坐标。设备窗口被其他应用遮挡时，仍可通过 ADB 观察设备。
+
+需要独立桌面窗口和较新的安卓版本时，可评估 MuMuPlayer 的 Android 15 实例。先在 BIOS 开启硬件虚拟化，再验证独立窗口、目标应用、ADB 回环连接、实际截图和触摸。通过后再切换 Agent 的目标设备。MuMuPlayer 接入仍待实机验收。[系统要求](https://www.mumuplayer.com/help/win/minimum-system-request-mumu-windows.html) · [Android 15 支持](https://www.mumuplayer.com/help/win/how-to-upgrade-mumuplayer.html) · [ADB 说明](https://www.mumuplayer.com/help/win/developers-essentials-manual.html)
+
 项目配置示例：
 
 ```json
