@@ -145,6 +145,21 @@ def worker_lock(path):
         stream.close()
 
 
+def agent_emulator_target(options, serial):
+    if not isinstance(options, dict) or options.get("agentEnabled") is not True or not isinstance(serial, str):
+        return False
+    emulator = re.fullmatch(r"emulator-([0-9]{4,5})", serial)
+    if emulator:
+        port = int(emulator[1])
+        return 5554 <= port <= 65534 and port % 2 == 0
+    loopback = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{3,4})", serial)
+    server = options.get("adbServerPort")
+    if not loopback or options.get("agentTransport") != "qemu_loopback" or type(server) is not int:
+        return False
+    port = int(loopback[1])
+    return 1024 <= port <= 65535 and 1024 <= server <= 65535 and server not in (5037, port)
+
+
 class AndroidWorker:
     def __init__(self, *, run=subprocess.run, now=time.time):
         self.serial = str(get("android.serial", "emulator-5556")).strip()
@@ -166,6 +181,13 @@ class AndroidWorker:
         self.temp = Path(work_dir()) / "android" / "temp"
         self.temp.mkdir(parents=True, exist_ok=True)
         self.env = {**os.environ, "TEMP": str(self.temp), "TMP": str(self.temp)}
+        server_port = get("android.adbServerPort", 5037)
+        if type(server_port) is not int or not 1 <= server_port <= 65535:
+            raise AndroidError("configuration", "Invalid Android ADB server port")
+        # An isolated emulator can have its own local ADB server. Never inherit
+        # a remote/default server that could point this serial at another host.
+        self.env.update(ADB_SERVER_SOCKET=f"tcp:{server_port}",
+                        ANDROID_ADB_SERVER_PORT=str(server_port))
         self.run, self.now, self.current_shot = run, now, None
 
     def adb(self, *args, timeout=30):

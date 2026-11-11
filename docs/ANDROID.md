@@ -9,14 +9,31 @@
 ```json
 {
   "android": {
+    "agentEnabled": false,
     "serial": "emulator-5556",
     "adbPath": "",
+    "adbServerPort": 5037,
     "maxShotAgeSeconds": 30
   }
 }
 ```
 
-默认 serial 固定为 `emulator-5556`，空值或不合法值拒绝启动；`adbPath` 留空时使用工作区 `android/platform-tools/adb.exe`（非 Windows 使用 `adb`）。配置路径、工作区和角色数据目录沿用 `project_conf`，支持其环境覆盖。ADB 只在子进程使用工作区 `android/temp`，不会修改主机全局 TEMP。每条读、写、截图命令都带 `-s <固定serial>`；没有扫描端口或选择列表第一台设备的回退。
+默认 serial 为 `emulator-5556`。`adbPath` 留空时使用工作区 `android/platform-tools/adb.exe`（非 Windows 使用 `adb`）。配置路径、工作区和角色数据目录沿用 `project_conf`。ADB 子进程使用工作区 `android/temp` 和配置的本机 ADB 服务端口。每条设备命令都带 `-s <固定serial>`。
+
+## 主 Agent 实玩
+
+用已配置的 ADB 确认模拟器实际开机，再启动 `androidd.py`。运行副本需带同版的 `android_executor.py`、`android_panel.py`、能力指南和 OneBot 策略适配器。确认面板可以抓图后，再为该专用模拟器设置 `agentEnabled: true`。使用 QEMU 转发时，可配置 `agentTransport: "qemu_loopback"`、固定 `serial: "127.0.0.1:15555"` 和独立 `adbServerPort: 5039`。来宾应使用隔离网络，ADB 转发仅绑定本机回环地址。远端地址与默认 ADB 服务不适用于此转发配置。
+
+项目提供原生离线 2048。安装 JDK 21、Android SDK Platform 35 和 Build Tools 35.0.0 后，可以从仓库构建。输出目录须是新目录，调试密钥与生成文件留在工作区的私有目录。
+
+```powershell
+python -B scripts/build_android_game.py --jdk '<JDK 21 目录>' --sdk '<Android SDK 目录>' --output '<新构建目录>' --keystore '<本地调试密钥文件>'
+adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
+```
+
+同一主 Agent 在主私聊或可信自主活动中选择 `tool_action`，调用 `android_phone({action:"shot"})` 并用 `read_image` 看返回的 PNG。用当前轮的图 ID 打开 `open_game`，观察游戏实际进入前台，再用 `swipe` 或 `tap` 操作。每步返回独立的 PNG 和新 ID。动作结果未知时重新截图，依据屏幕决定下一步。该工具只授权本机动作。
+
+## 视觉队列
 
 运行 `python androidd.py --setup` 只抓一张验证图并退出；无参数消费长期队列，`--once` 最多消费一个现有 job。队列文件仍是角色目录 `android/cmd.json`、`result.json`、`shot.png`；新增 `shot-meta.json` 和 OS worker 锁。生产者应先写临时文件，再原子替换 `cmd.json`。不要同时运行旧、新两种 worker。
 
@@ -38,4 +55,4 @@
 
 截图核对 PNG 签名、chunk CRC、完整 IEND、压缩流和扫描行长度，并与同一 serial 的 `wm size` 尺寸核对，支持旋转后的宽高互换。暂不接受交错 PNG。失败结果是 `offline` 或 `error`，`shot`/`shot_id` 为空；磁盘可能保留上一张好图供排查，不能把它当成这次成功截图。
 
-原生动作名称和字段沿用旧接口。`shell` 仅支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`；配置更改和任意 shell 写命令不兼容。文本参数做远端 shell 引号处理，不能用输入文字拼接 Android shell 命令。协议本身不做 QQ 发送，也不代表自主行为许可；接入主 LLM 统一决策仍需上层调用方负责。
+面板队列的 `shell` 支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`。文本参数按远端 shell 规则加引号。主 Agent 工具仅提供截图、点击、滑动、返回、主页和打开固定游戏。

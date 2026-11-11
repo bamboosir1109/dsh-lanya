@@ -44,6 +44,8 @@ B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗�
 
 ## Android
 
+主私聊和可信自主活动可用已注册的 `android_phone` 操作专用模拟器。完整能力指南在本机明确启用、部署执行器且身份匹配时提供入口。主 Agent 选择 `tool_action`，先观察并用 `read_image` 读图，再用最新 ID 打开原生 2048、点击或滑动。此决定只授权本轮本机动作。
+
 guide 提供配置中的固定 serial、实际角色目录的 Android 队列和本机面板 job 地址。优先通过 `/api/android/job` 提交带固定 serial 的 `shot`，由面板分配 seq；文件调用方必须保留已有 `cmd.json` / `cmd.claim-*`，只在空槽原子发布新 seq。
 
 等对应 seq 的 `status=ok`、`ok=true`、固定 serial、`shot_id`、尺寸、时间与 SHA，再读取返回的真实 PNG。动作带新 seq、同一 serial、图中真实坐标与这张图的 `expected_shot_id`；执行后再等新的成功图与新 ID。worker 重启、图过期、serial 不符、offline/error 或超时都要求停止并重新观察。缓存图不算本轮实时观察，浏览器截图也不能代替 Android。完整协议见 [ANDROID](ANDROID.md)。

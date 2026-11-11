@@ -568,7 +568,7 @@ export class OneBotDecisionAdapter {
     if (this.intentPlanner.scopes.has(ctx)) return []
     const disposers = []
     try {
-      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
+      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition(), this.androidPhoneDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
     } catch (error) {
       const failures = []
       for (const dispose of disposers.reverse()) try { dispose?.() } catch (cleanup) { failures.push(cleanup) }
@@ -1567,6 +1567,99 @@ export class OneBotDecisionAdapter {
       ...(cadence ? { requested_next_review_at: requestedReview,
         next_review_adjusted: result.accepted === true && nextReview !== requestedReview,
         autonomous_cadence_min: cadence.minutes } : {}) }
+  }
+
+  androidPhoneDefinition() {
+    return {
+      name: 'android_phone',
+      description: 'Operate the enabled local Android emulator in the owner’s private turn. Choose tool_action, capture shot, inspect its real file with read_image, then pass that same-turn shot ID to each tap, swipe, back, home or open_game. Every successful action returns a new PNG. No network posting or QQ send. After an error or unknown action, observe again before deciding what to do; never replay the old input.',
+      parameters: {
+        action: { type: 'string', required: true, enum: ['shot', 'open_game', 'tap', 'swipe', 'back', 'home'] },
+        expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID; required except for shot.' },
+        x: { type: 'number' }, y: { type: 'number' }, x1: { type: 'number' }, y1: { type: 'number' },
+        x2: { type: 'number' }, y2: { type: 'number' }, ms: { type: 'number' },
+      },
+      output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      isConcurrencySafe: () => false,
+      execute: (args, exec) => this.androidPhone(args, exec),
+    }
+  }
+
+  async androidPhone(args, exec) {
+    const record = this.captureExec(exec)
+    const { scope, origin, observationKind } = record.binding
+    if (!scope.startsWith('private:') || !(origin === 'live' ||
+        origin === 'observation' && observationKind === 'activity.opportunity' && localOpportunity(record.binding))) {
+      throw new PolicyDeliveryError('suppressed', 'android_private_activity_required')
+    }
+    const ticket = record.ticket
+    const callId = exec.callId
+    if (!ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
+    if (typeof callId !== 'string' || !callId) throw new PolicyDeliveryError('suppressed', 'missing_call_id')
+    if (!plain(args) || !['shot', 'open_game', 'tap', 'swipe', 'back', 'home'].includes(args.action) ||
+        Object.keys(args).some(key => !['action', 'expected_shot_id', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'ms'].includes(key))) {
+      throw new Error('Invalid Android phone action')
+    }
+    const job = structuredClone(args)
+    record.androidCalls ??= new Map()
+    const previous = record.androidCalls.get(callId)
+    const signature = JSON.stringify(Object.entries(job).sort(([a], [b]) => a.localeCompare(b)))
+    if (previous) {
+      if (previous.signature !== signature) throw new Error('Android call ID was reused with different parameters')
+      return previous.promise
+    }
+    if (record.androidBusy || record.androidCalls.size >= 16) throw new PolicyDeliveryError('suppressed', 'android_turn_limit')
+    if (job.action !== 'shot' && (!record.androidView || job.expected_shot_id !== record.androidView)) {
+      throw new PolicyDeliveryError('suppressed', 'android_current_turn_view_required')
+    }
+    record.androidBusy = true
+    record.androidView = null
+    const check = async () => {
+      const permission = await this.policy.check(ticket, { scope, kind: 'tool_action' })
+      if (!permission.allowed) throw new PolicyDeliveryError('suppressed', permission.reason)
+      if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
+    }
+    const promise = (async () => {
+      const owner = await this.trustedOwner(scope)
+      if (!owner.cwd || !path.isAbsolute(owner.cwd)) throw new Error('Android requires a trusted workspace')
+      const script = this.config.androidExecutorScript || path.join(owner.cwd, 'napcat', 'android_executor.py')
+      if (!path.isAbsolute(script)) throw new Error('Android requires a trusted executor path')
+      await check()
+      let value
+      try {
+        value = await this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset,
+          conversation_key: scope, job }, { cwd: owner.cwd, timeout: 58 * 1000, signal: exec.signal })
+      } catch {
+        return { status: 'unknown', code: 'android_executor_interrupted' }
+      }
+      this.validateOwnerContext(value, 'dsh-android-result/v1', scope, owner)
+      if (!['observed', 'unavailable', 'error', 'unknown'].includes(value.status)) throw new Error('Invalid Android receipt')
+      if (value.status !== 'observed') return { status: value.status, code: value.code }
+      const fresh = await this.trustedOwner(scope)
+      if (fresh.workspace_key !== owner.workspace_key || fresh.agent_key !== owner.agent_key) throw new Error('Android owner changed')
+      await check()
+      const { file, bytes, sha256, shot_id, serial, width, height, captured_at } = value
+      if (typeof file !== 'string' || !path.isAbsolute(file) || !/^[a-f0-9]{32}$/.test(shot_id || '') ||
+          path.basename(file) !== shot_id + '.png' || typeof serial !== 'string' ||
+          !/^(?:emulator-|127\.0\.0\.1:)[0-9]{4,5}$/.test(serial) ||
+          !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 16 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(sha256 || '') ||
+          !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || !Number.isFinite(captured_at)) {
+        throw new Error('Invalid Android screenshot receipt')
+      }
+      const real = fs.realpathSync(file)
+      const relative = path.relative(fs.realpathSync(owner.cwd), real)
+      const info = fs.lstatSync(file)
+      if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) ||
+          !info.isFile() || info.nlink !== 1 || info.size !== bytes ||
+          createHash('sha256').update(fs.readFileSync(real)).digest('hex') !== sha256) {
+        throw new Error('Android screenshot is outside the workspace or changed')
+      }
+      record.androidView = shot_id
+      return { status: 'observed', file, shot_id, serial, width, height, captured_at, sha256,
+        inspect: { tool: 'read_image', file_path: file } }
+    })().finally(() => { record.androidBusy = false })
+    record.androidCalls.set(callId, { signature, promise })
+    return this.track(record, promise)
   }
 
   async synthesizeVoice(args, exec) {

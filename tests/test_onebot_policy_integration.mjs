@@ -885,6 +885,41 @@ test('capability helper wrong owner/scope fails closed without disabling scoped 
   assert.equal(h.calls.length, 0)
 })
 
+test('native Android tool requires the current action ticket and deduplicates input within that turn', async t => {
+  const h = await setup(t), jobs = []
+  const policy = h.bridge.lanyaPolicy
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jgfgAAAAASUVORK5CYII=', 'base64')
+  policy.readTrustedHelper = async (_script, request) => {
+    jobs.push(request.job)
+    const owner = await policy.trustedOwner(request.conversation_key)
+    const shot_id = jobs.length.toString(16).padStart(32, '0')
+    const file = path.join(h.dir, shot_id + '.png')
+    fs.writeFileSync(file, png, { flag: 'wx' })
+    return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+      status: 'observed', file, shot_id, serial: 'emulator-5556', width: 1, height: 1,
+      captured_at: Date.now() / 1000, bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') }
+  }
+  const chat = await h.receive()
+  const turn = h.start(chat)
+  const tool = h.tools.get('android_phone')
+  await assert.rejects(() => tool.execute({ action: 'shot' }, h.exec(chat)), { reason: 'decision_required' })
+  await h.decide(chat, 'tool_action')
+  await assert.rejects(() => tool.execute({ action: 'open_game', expected_shot_id: '0'.repeat(32) }, h.exec(chat)),
+    { reason: 'android_current_turn_view_required' })
+  const shot = await tool.execute({ action: 'shot' }, h.exec(chat))
+  assert.equal(shot.status, 'observed')
+  assert.deepEqual(shot.inspect, { tool: 'read_image', file_path: shot.file })
+  const open = { action: 'open_game', expected_shot_id: shot.shot_id }
+  const call = h.exec(chat)
+  const [game, duplicate] = await Promise.all([tool.execute(open, call), tool.execute(open, call)])
+  assert.deepEqual(duplicate, game)
+  assert.notEqual(game.shot_id, shot.shot_id)
+  assert.deepEqual(jobs, [{ action: 'shot' }, open])
+  await assert.rejects(() => tool.execute(open, h.exec(chat)), { reason: 'android_current_turn_view_required' })
+  assert.equal(h.calls.length, 0)
+  await h.end(chat, turn)
+})
+
 function voiceFixture(h, mode = 'ready', receiptOverrides = {}) {
   const script = path.join(h.dir, 'voice-fixture.py')
   fs.writeFileSync(script, `import json,sys,os,pathlib,hashlib,wave\nv=json.load(sys.stdin)\nassert set(v).issubset({'cwd','agent_preset','conversation_key','request_id','text','speed'})\nroot=pathlib.Path(v['cwd']);w=os.path.abspath(v['cwd']);a=v['agent_preset'].strip()\nif os.name=='nt':w=w.lower();a=a.lower()\ncalls=root/'voice-fixture-calls.json'\nitems=json.loads(calls.read_text()) if calls.exists() else []\nitems.append(v);calls.write_text(json.dumps(items))\nf=root/'fixture-audio.wav'\nwith wave.open(str(f),'wb') as out:\n out.setnchannels(1);out.setsampwidth(2);out.setframerate(8000);out.writeframes(b'\\0\\0'*800)\nb=f.read_bytes()\nr={'schema':'dsh-voice-result/v1','owner':{'workspace_key':w,'agent_key':a},'conversation_key':v['conversation_key'],'request_id':v['request_id'],'status':'ready','delivered':False,'file':str(f),'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b),'duration_seconds':0.1}\nmode=${JSON.stringify(mode)}\nif mode=='foreign':r['owner']['agent_key']='foreign-fixture'\nif mode=='delivered':r['delivered']=True\nif mode=='wrong-request':r['request_id']='wrong-fixture-request'\nif mode=='bad-hash':r['sha256']='f'*64\nif mode=='unknown':r={'schema':r['schema'],'owner':r['owner'],'conversation_key':r['conversation_key'],'request_id':r['request_id'],'status':'unknown','delivered':False,'code':'fixture_unknown'}\nprint(json.dumps(r))\n`)
