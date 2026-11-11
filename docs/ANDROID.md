@@ -4,6 +4,10 @@
 
 推荐使用硬件加速；AMD 的 SVM 未开启时，加速路径仍需在用户安排的维护窗口完成 BIOS 前置并复查 Windows hypervisor。官方也保留 `-accel off` 软件模拟入口，需显式设置 `ANDROID_I_WANT_MY_TCG=yes`，但标为不受支持且很慢；不能把硬件加速检查失败写成软件模拟不存在。一次特定版本或镜像的软件模式崩溃，也不能证明所有软件模式都不可能。无论使用哪条路径，都以实际开机、ADB 在线和真实截图验收，见[命令行说明](https://developer.android.com/studio/run/emulator-commandline)与[加速说明](https://developer.android.com/studio/run/emulator-acceleration)。
 
+已实测的离线兼容环境是 SDK Tools 25.2.5 经典 ARM 模拟器与 Android 6.0 AOSP（API 23）。此环境用于离线 2048 开发验证，来宾采用受限网络、专用数据盘及独立回环 ADB 服务。SDK Tools 的维护状态见 [Android Developers 发布说明](https://developer.android.com/tools/releases/sdk-tools)。
+
+启动后先确认目标设备在线、`sys.boot_completed` 为 `1`、`pm path org.dshlanya.game2048` 返回安装路径，再使用工作队列。经典来宾内重启如果在系统日志中确认已关机，重新启动同一模拟器实例并保留数据盘。独立 ADB 服务显示目标离线时，先按固定 serial 检查连接，必要时对该设备执行一次 `adb -P <端口> -s <serial> reconnect`，随后重新观察屏幕。
+
 项目配置示例：
 
 ```json
