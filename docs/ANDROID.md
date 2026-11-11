@@ -8,6 +8,8 @@
 
 启动后先确认目标设备在线、`sys.boot_completed` 为 `1`、`pm path org.dshlanya.game2048` 返回安装路径，再使用工作队列。经典来宾内重启如果在系统日志中确认已关机，重新启动同一模拟器实例并保留数据盘。独立 ADB 服务显示目标离线时，先按固定 serial 检查连接，必要时对该设备执行一次 `adb -P <端口> -s <serial> reconnect`，随后重新观察屏幕。
 
+想在 Windows 桌面直接查看和操作模拟器，可用独立窗口启动同一个 AVD。启动参数去掉 `-no-window`，保留原数据盘、设备 serial 和 ADB 服务。对已运行的实例，先正常关机再以窗口模式启动。可把同一启动入口放到桌面和用户登录启动目录。相关选项见 [Android Emulator 命令行说明](https://developer.android.com/studio/run/emulator-commandline)。
+
 项目配置示例：
 
 ```json
