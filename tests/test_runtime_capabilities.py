@@ -636,6 +636,29 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             with self.assertRaises(self.module.CapabilityError):
                 self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode=mode)
 
+    def test_enabled_native_phone_is_discoverable_in_primary_live_and_autonomous_contexts(self):
+        self.install('androidd.py', 'android_executor.py')
+        self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'android': {
+            'serial': 'emulator-5556', 'agentEnabled': True}}), encoding='utf-8')
+        full = self.context(lock_probe=lambda _: True)['tools']
+        self.assertEqual(full['entertainment']['android_game']['name'], '2048')
+        self.assertNotIn('android_game', self.context(lock_probe=lambda _: False)['tools']['entertainment'])
+
+        def forbidden(*_):
+            self.fail('Live phone guidance must not probe the worker')
+
+        for scope in ('private:101', 'private:303', 'group:202'):
+            with self.subTest(scope=scope):
+                live = self.module.build_context(str(self.root), 'fixture', scope,
+                    context_mode='live_chat', process_probe=forbidden, lock_probe=forbidden)['tools']
+                self.assertNotIn('android_game', live['entertainment'])
+                if scope == 'private:101':
+                    self.assertEqual(live['android']['agent_tool'], 'android_phone')
+                    self.assertIn('read_image', live['android']['agent_play'])
+                    self.assertEqual(live['android']['worker'], 'unverified')
+                else:
+                    self.assertNotIn('agent_tool', live['android'])
+
     def test_warm_tone_reaches_live_and_full_context_without_widening_autonomy(self):
         before = self.snapshot()
         for scope in ('private:101', 'group:202'):

@@ -37,6 +37,8 @@ adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
 
 同一主 Agent 在主私聊或可信自主活动中选择 `tool_action`，调用 `android_phone({action:"shot"})` 并用 `read_image` 看返回的 PNG。用当前轮的图 ID 打开 `open_game`，观察游戏实际进入前台，再用 `swipe` 或 `tap` 操作。每步返回独立的 PNG 和新 ID。动作结果未知时重新截图，依据屏幕决定下一步。该工具只授权本机动作。
 
+主私聊的精简提示会介绍已启用的原生安卓工具，截图按需获取。自主活动指南在专用 worker 持锁时把离线 2048 列入可选活动，由主 Agent 决定何时尝试并通过新截图确认设备和棋盘状态。
+
 ## 视觉队列
 
 运行 `python androidd.py --setup` 只抓一张验证图并退出。无参数立即消费队列，`--once` 最多消费一个现有 job。worker 启动时使先前截图失效，并保留已完成的序号。队列使用角色目录的 `android/cmd.json`、`result.json`、`shot.png`、`shot-meta.json` 和 OS worker 锁。生产者须原子发布到空槽。
