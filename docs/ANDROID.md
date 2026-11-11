@@ -35,7 +35,9 @@ adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
 
 ## 视觉队列
 
-运行 `python androidd.py --setup` 只抓一张验证图并退出；无参数消费长期队列，`--once` 最多消费一个现有 job。队列文件仍是角色目录 `android/cmd.json`、`result.json`、`shot.png`；新增 `shot-meta.json` 和 OS worker 锁。生产者应先写临时文件，再原子替换 `cmd.json`。不要同时运行旧、新两种 worker。
+运行 `python androidd.py --setup` 只抓一张验证图并退出。无参数立即消费队列，`--once` 最多消费一个现有 job。worker 启动时使先前截图失效，并保留已完成的序号。队列使用角色目录的 `android/cmd.json`、`result.json`、`shot.png`、`shot-meta.json` 和 OS worker 锁。生产者须原子发布到空槽。
+
+主 Agent 请求从入队起共用 45 秒设备操作期限。过期请求停止，已经提交的输入如果缺少新截图，按结果未知处理，再从真实截图判断下一步。
 
 面板状态的 `claim_wait` 仅诊断已领取请求的数量与文件等待时间，不读取任务内容。时间来自文件 mtime，重命名不会重置它；时钟异常、链接或元数据不可读时不提供时长。新旧 claim 都可能仍在处理，也可能结果未知，不能凭年龄判断 worker 已死；需人工核对持续未完成的请求，面板不会删除 claim 或自动重试动作，原有 busy 和截图许可保持生效。
 

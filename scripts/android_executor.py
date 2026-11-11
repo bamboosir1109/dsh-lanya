@@ -8,7 +8,7 @@ import sys
 import time
 
 from android_panel import AndroidPanel, PanelAndroidError
-from androidd import agent_emulator_target
+from androidd import AGENT_JOB_SECONDS, agent_emulator_target
 from runtime_capabilities import DEFAULTS, _configuration, entertainment_guide, owner_of
 
 
@@ -97,12 +97,12 @@ def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sl
         # Publication may succeed even if its caller later loses the response.
         submitted = True
         try:
-            pending = panel.submit(job)
+            pending = panel.submit(job, agent=True)
         except PanelAndroidError as error:
             state = "unavailable" if error.code == "worker_offline" else "error"
             return dict(base, status=state, code=error.code)
         seq = pending["seq"]
-        deadline = monotonic() + 53
+        deadline = monotonic() + AGENT_JOB_SECONDS + 8
         while monotonic() < deadline:
             status = panel.status(serial)
             if status.get("seq", 0) > seq:

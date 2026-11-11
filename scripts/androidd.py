@@ -24,6 +24,7 @@ from project_conf import data_dir, get, work_dir
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PNG_BYTES = 64 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+AGENT_JOB_SECONDS = 45
 
 
 class AndroidError(RuntimeError):
@@ -189,8 +190,14 @@ class AndroidWorker:
         self.env.update(ADB_SERVER_SOCKET=f"tcp:{server_port}",
                         ANDROID_ADB_SERVER_PORT=str(server_port))
         self.run, self.now, self.current_shot = run, now, None
+        self.agent_deadline = None
 
     def adb(self, *args, timeout=30):
+        if self.agent_deadline is not None:
+            remaining = self.agent_deadline - time.monotonic()
+            if remaining <= 0:
+                raise AndroidError("request_expired", "Android agent request expired")
+            timeout = min(timeout, remaining)
         command = [self.adb_exe, "-s", self.serial, *args]
         options = {"capture_output": True, "timeout": timeout, "env": self.env}
         if os.name == "nt":
@@ -305,6 +312,12 @@ class AndroidWorker:
         try:
             if not isinstance(job, dict) or job.get("serial", self.serial) != self.serial:
                 raise AndroidError("bad_job", "Job serial does not match the configured target")
+            if "agent_deadline" in job:
+                deadline = job["agent_deadline"]
+                now = time.monotonic()
+                if type(deadline) not in (int, float) or not now < deadline <= now + AGENT_JOB_SECONDS:
+                    raise AndroidError("request_expired", "Android agent request expired")
+                self.agent_deadline = deadline
             if str(job.get("action", "")).lower() != "shot":
                 detail = self.action(job)
                 # The old view must never authorize a second action, even on failure.
@@ -317,17 +330,32 @@ class AndroidWorker:
             self.current_shot = None
             code = error.code if isinstance(error, AndroidError) else "bad_job"
             result.update(status="offline" if code == "offline" else "error", code=code, note=str(error))
+        finally:
+            self.agent_deadline = None
         result["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return result
 
 
 def consume(worker, args):
-    initial = worker.handle({"seq": 0, "action": "shot"})
-    atomic_json(worker.result, initial)
     if args.setup:
+        initial = worker.handle({"seq": 0, "action": "shot"})
+        atomic_json(worker.result, initial)
         print(json.dumps(initial, ensure_ascii=True))
         return 0 if initial["ok"] else 1
-    last_seq = 0
+
+    # An unsolicited startup capture can keep a real request waiting behind
+    # several slow ADB operations. Retire the old view without using ADB,
+    # keeping the last completed sequence so an old job cannot replay.
+    try:
+        previous = json.loads(worker.result.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        previous = {}
+    sequence = previous.get("seq", 0) if isinstance(previous, dict) else 0
+    last_seq = sequence if type(sequence) is int and sequence >= 0 else 0
+    worker.current_shot = None
+    atomic_json(worker.result, {"seq": last_seq, "serial": worker.serial, "ok": False,
+        "status": "error", "code": "capture_required", "note": "Capture a new screenshot to begin",
+        "shot": "", "shot_id": ""})
     while True:
         if worker.cmd.exists():
             claimed = worker.cmd.with_name("cmd.claim-" + uuid.uuid4().hex + ".json")

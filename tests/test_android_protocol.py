@@ -209,6 +209,36 @@ class AndroidProtocolTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["code"], "busy")
         self.assertEqual(len(self.calls), calls)
 
+    def test_queue_startup_retires_last_frame_without_adb_or_sequence_replay(self):
+        old = self.shot()
+        self.module.atomic_json(self.worker.result, old)
+        before = len(self.calls)
+        with mock.patch.object(self.module, "AndroidWorker", return_value=self.worker):
+            self.assertEqual(self.module.main(["--once"]), 0)
+            waiting = json.loads(self.worker.result.read_text())
+            self.assertEqual(waiting["code"], "capture_required")
+            self.assertEqual(waiting["seq"], old["seq"])
+            self.assertEqual(waiting["shot_id"], "")
+            self.worker.cmd.write_text(json.dumps({"seq": old["seq"], "action": "shot"}), encoding="utf-8")
+            self.assertEqual(self.module.main(["--once"]), 0)
+        self.assertEqual(json.loads(self.worker.result.read_text())["code"], "duplicate")
+        self.assertEqual(len(self.calls), before)
+
+    def test_agent_deadline_rejects_late_input_and_bounds_capture_calls(self):
+        view = self.shot()
+        count = len(self.calls)
+        with mock.patch.object(self.module.time, "monotonic", return_value=100):
+            expired = self.worker.handle({"action": "tap", "x": 1, "y": 1,
+                "expected_shot_id": view["shot_id"], "agent_deadline": 99})
+            self.assertEqual(expired["code"], "request_expired")
+            self.assertEqual(len(self.calls), count)
+            with mock.patch.object(self.worker, "run", wraps=self.worker.run) as run:
+                observed = self.worker.handle({"action": "shot", "agent_deadline": 105})
+                self.assertTrue(observed["ok"])
+                self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [5, 5, 5])
+                self.worker.handle({"action": "shot"})
+                self.assertEqual(run.call_args.kwargs["timeout"], 45)
+
 
 if __name__ == "__main__":
     unittest.main()

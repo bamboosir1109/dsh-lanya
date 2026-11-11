@@ -11,7 +11,7 @@ import stat
 import time
 import uuid
 
-from androidd import AndroidError, atomic_json, verify_png, worker_lock
+from androidd import AGENT_JOB_SECONDS, AndroidError, atomic_json, verify_png, worker_lock
 from project_conf import data_dir, get
 
 
@@ -274,7 +274,7 @@ class AndroidPanel:
                 raise PanelAndroidError("bad_job", "Only worker read-only inspection commands are allowed", 400)
         return job
 
-    def submit(self, body):
+    def submit(self, body, *, agent=False):
         # No directory/lock creation while the worker is offline.
         self._target(body.get("serial") if isinstance(body, dict) else None)
         if not self.is_running(self.directory / "worker.lock"):
@@ -292,6 +292,10 @@ class AndroidPanel:
                 job = self._job(body)
                 seq = max(int(self.now() * 1000), result_seq + 1, previous_seq + 1)
                 job["seq"] = seq
+                if agent:
+                    # The worker and producer share the host monotonic clock.
+                    # A queued action must not start after the agent gave up.
+                    job["agent_deadline"] = time.monotonic() + AGENT_JOB_SECONDS
                 # Record invalidation before publishing the request. Even a crash must not
                 # leave an old image available for a second action.
                 request = {"seq": seq, "serial": self.serial, "submitted_at": self.now()}
