@@ -16,6 +16,8 @@
 
 桌面模拟器接入时，设置 `agentTransport: "desktop_loopback"`，用实例实际回环端口填 `serial`，例如 `127.0.0.1:16384`。`adbServerPort` 填另一个独立本机端口。用该端口执行 `adb -P <独立服务端口> connect <serial>`，确认 `get-state` 和 `sys.boot_completed` 后启动 worker。窗口自动归位使用同一实例的实际可执行文件和完整标题。
 
+桌面设备断线时，请在模拟器恢复后重新截图。worker 会对同一回环设备尝试重连，两次重连至少间隔十秒。先看新截图确认当前界面，再决定下一步。断线前已提交的点击、滑动或应用启动结果可能未知。
+
 确认应用已安装后，可在 `android.agentApps` 里启用 `amap`（高德）、`meituan`（美团）或 `qq`（QQ）。主私聊选择 `tool_action` 后先截图并读取 PNG，再用 `android_phone({action:"open_app",app:"amap",expected_shot_id:"<本轮截图 ID>"})`。查看新图确认前台应用后继续点击或滑动。验收可用公开地点搜索、公开商户浏览和 QQ 登录页等实际界面。应用内文本输入取决于来宾输入法。
 
 项目配置示例：

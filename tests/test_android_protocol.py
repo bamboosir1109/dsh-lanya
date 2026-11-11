@@ -136,6 +136,54 @@ class AndroidProtocolTests(unittest.TestCase):
         self.assertEqual(self.worker.handle(job)["code"], "stale_view")
         self.assertEqual(len(self.writes()), 1)
 
+    def test_desktop_reconnect_is_pinned_to_fresh_observation_after_an_uncertain_input(self):
+        target = "127.0.0.1:16384"
+        server = 15045
+        settings = {"android.serial": target, "android.agentTransport": "desktop_loopback",
+                    "android.adbServerPort": server}
+        calls = []
+        connected = True
+
+        def adb(argv, **kwargs):
+            nonlocal connected
+            self.assertEqual(kwargs["env"]["ADB_SERVER_SOCKET"], f"tcp:{server}")
+            args = argv[1:]
+            calls.append(args)
+            if args == ["disconnect", target]:
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            if args == ["connect", target]:
+                connected = True
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            self.assertEqual(args[:2], ["-s", target])
+            if args[2:] == ["get-state"]:
+                return subprocess.CompletedProcess(argv, 0 if connected else 1, b"device\n", b"")
+            if args[2:] == ["shell", "wm size"]:
+                return subprocess.CompletedProcess(argv, 0, b"Physical size: 2x2\n", b"")
+            if args[2:] == ["exec-out", "screencap", "-p"]:
+                return subprocess.CompletedProcess(argv, 0, self.image, b"")
+            self.assertEqual(args[2:], ["shell", "input tap 0 0"])
+            connected = False
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(self.module, "get", side_effect=settings.get):
+            worker = self.module.AndroidWorker(run=adb, now=lambda: self.time)
+        first = worker.handle({"action": "shot"})
+        self.assertTrue(first["ok"], first)
+        tap = {"action": "tap", "x": 0, "y": 0, "expected_shot_id": first["shot_id"]}
+        self.assertEqual(worker.handle(tap)["code"], "offline")
+        self.assertEqual(worker.handle(tap)["code"], "stale_view")
+        self.assertNotIn(["connect", target], calls)
+
+        restored = worker.handle({"action": "shot"})
+        self.assertTrue(restored["ok"], restored)
+        self.assertNotEqual(restored["shot_id"], first["shot_id"])
+        self.assertEqual([c for c in calls if c[0] in {"disconnect", "connect"}],
+                         [["disconnect", target], ["connect", target]])
+        self.assertEqual(calls.count(["-s", target, "shell", "input tap 0 0"]), 1)
+        connected = False
+        self.assertEqual(worker.handle({"action": "shot"})["code"], "offline")
+        self.assertEqual(calls.count(["connect", target]), 1)
+
     def test_complete_png_crc_zlib_scanlines_dimensions_and_iend_are_required(self):
         valid = png()
         invalid = [b"not PNG" * 200, valid[:-1], valid + b"trailing", valid[:30] + b"broken" + valid[36:],

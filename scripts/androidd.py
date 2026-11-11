@@ -153,10 +153,13 @@ def agent_emulator_target(options, serial):
     if emulator:
         port = int(emulator[1])
         return 5554 <= port <= 65534 and port % 2 == 0
+    return (options.get("agentTransport") in ("qemu_loopback", "desktop_loopback")
+            and isolated_loopback_target(serial, options.get("adbServerPort")))
+
+
+def isolated_loopback_target(serial, server):
     loopback = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{3,4})", serial)
-    server = options.get("adbServerPort")
-    if (not loopback or options.get("agentTransport") not in ("qemu_loopback", "desktop_loopback")
-            or type(server) is not int):
+    if not loopback or type(server) is not int:
         return False
     port = int(loopback[1])
     return 1024 <= port <= 65535 and 1024 <= server <= 65535 and server not in (5037, port)
@@ -200,14 +203,18 @@ class AndroidWorker:
                         ANDROID_ADB_SERVER_PORT=str(server_port))
         self.run, self.now, self.current_shot = run, now, None
         self.agent_deadline = None
+        self.reconnect_enabled = (get("android.agentTransport", "") == "desktop_loopback"
+                                  and isolated_loopback_target(self.serial, server_port))
+        self.next_reconnect = 0
 
-    def adb(self, *args, timeout=30):
+    def adb(self, *args, timeout=30, device=True):
         if self.agent_deadline is not None:
             remaining = self.agent_deadline - time.monotonic()
             if remaining <= 0:
                 raise AndroidError("request_expired", "Android agent request expired")
             timeout = min(timeout, remaining)
-        command = [self.adb_exe, "-s", self.serial, *args]
+        target = ("-s", self.serial) if device else ()
+        command = [self.adb_exe, *target, *args]
         options = {"capture_output": True, "timeout": timeout, "env": self.env}
         if os.name == "nt":
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -224,12 +231,25 @@ class AndroidWorker:
         return self.adb("shell", shlex.join(str(word) for word in words)).decode("utf-8", "replace").strip()
 
     def online(self):
-        if self.adb("get-state").strip() != b"device":
+        if self.adb("get-state", timeout=5).strip() != b"device":
             raise AndroidError("offline", "Configured Android serial is not online")
 
-    def capture(self):
+    def capture(self, *, reconnect=False):
         self.current_shot = None
-        self.online()
+        try:
+            self.online()
+        except AndroidError as error:
+            if error.code != "offline" or not reconnect or not self.reconnect_enabled:
+                raise
+            now = time.monotonic()
+            if now < self.next_reconnect:
+                raise
+            self.next_reconnect = now + 10
+            # Reconnect just this device and only for a fresh observation. A
+            # capture after input cannot establish what happened across a drop.
+            self.adb("disconnect", self.serial, timeout=3, device=False)
+            self.adb("connect", self.serial, timeout=5, device=False)
+            self.online()
         sizes = re.findall(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", self.shell("wm", "size"))
         if not sizes:
             raise AndroidError("bad_dimensions", "Cannot verify Android display dimensions")
@@ -327,13 +347,14 @@ class AndroidWorker:
                 if type(deadline) not in (int, float) or not now < deadline <= now + AGENT_JOB_SECONDS:
                     raise AndroidError("request_expired", "Android agent request expired")
                 self.agent_deadline = deadline
-            if str(job.get("action", "")).lower() != "shot":
+            observation = str(job.get("action", "")).lower() == "shot"
+            if not observation:
                 detail = self.action(job)
                 # The old view must never authorize a second action, even on failure.
                 self.current_shot = None
             else:
                 detail = ""
-            shot = self.capture()
+            shot = self.capture(reconnect=observation)
             result.update(ok=True, status="ok", note=detail[:400], shot=str(self.shot), **shot)
         except (AndroidError, KeyError, TypeError, ValueError, OSError) as error:
             self.current_shot = None
@@ -388,7 +409,7 @@ def consume(worker, args):
             atomic_json(worker.result, result)
         if args.once:
             return 0
-        time.sleep(1.5)
+        time.sleep(0.25)
 
 
 def main(argv=None):

@@ -102,6 +102,17 @@ test('a fresh status permits capture again only after the worker is available an
   assert.equal(f.requests.filter(request => request.body).length, 0)
 })
 
+test('a live worker can request a new screenshot after its Android device disconnects', async () => {
+  const f = await fixture({ok:false, status:'offline', serial, code:'offline'})
+  assert.match(f.elements.get('error').textContent, /重新截取屏幕/)
+  assert.equal(f.elements.get('capture').disabled, false)
+  assert.ok(f.buttons.every(button => button.disabled))
+  f.post({ok:false, status:'pending', serial, seq:3})
+  f.status({ok:false, status:'pending', serial, seq:3, code:'pending'})
+  await f.functions.submit('shot')
+  assert.deepEqual(f.requests.filter(request => request.body).map(request => request.body), [{action:'shot', serial}])
+})
+
 test('verified expired or invalid screenshots allow an explicit fresh capture while device actions stay disabled', async () => {
   for (const code of ['stale_view','invalid_frame']) {
     const f = await fixture(); await f.capture()

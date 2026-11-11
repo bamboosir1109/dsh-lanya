@@ -116,7 +116,7 @@ async function request(path, options){
 }
 function androidError(data, fallback='Android 接口暂不可用'){
   if (data.code === 'worker_offline') return '设备服务未在线。启动 Android worker 后刷新状态。';
-  if (data.code === 'device_offline') return 'Android 设备未在线。请先启动设备或模拟器。';
+  if (['offline','device_offline'].includes(data.code)) return 'Android 设备未连接。模拟器启动后，请重新截取屏幕。';
   return data.error || data.code || fallback;
 }
 function display(data){
@@ -165,7 +165,7 @@ async function refreshStatus(){
     }
     if (data.serial !== state.serial) throw new Error('设备 serial 已改变，请重新打开页面');
     showClaimWait(data.claim_wait);
-    mayCapture = !data.claim_wait && ['capture_required','stale_view','invalid_frame'].includes(data.code)
+    mayCapture = !data.claim_wait && ['capture_required','stale_view','invalid_frame','offline','device_offline'].includes(data.code)
       && (!state.busy || (state.seq !== null && data.seq === state.seq));
     state.captureReady = !data.claim_wait && data.ok === true || mayCapture;
     if (state.captureReady && state.availabilityError) {
