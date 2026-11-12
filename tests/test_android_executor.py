@@ -38,6 +38,7 @@ class AndroidExecutorTests(unittest.TestCase):
         self.module = android_executor
         self.androidd = androidd
         self.image = png()
+        self.focused_package = "org.dshlanya.game2048"
         self.actions = []
         self.fail_capture = False
         self.worker = androidd.AndroidWorker(run=self.adb)
@@ -50,6 +51,8 @@ class AndroidExecutorTests(unittest.TestCase):
             data = b"device\n"
         elif request == ["shell", "wm size"]:
             data = b"Physical size: 2x2\n"
+        elif request == ["shell", "dumpsys window"]:
+            data = f"mCurrentFocus=Window{{123 u0 {self.focused_package}/.MainActivity}}\n".encode()
         elif request == ["exec-out", "screencap", "-p"]:
             data = self.image
         else:
@@ -104,6 +107,20 @@ class AndroidExecutorTests(unittest.TestCase):
         self.assertEqual(receipt["code"], "dedicated_emulator_not_enabled")
         self.assertFalse(self.worker.cmd.exists())
         self.assertEqual(self.actions, [])
+
+    def test_operator_private_app_returns_unavailable_without_an_agent_frame(self):
+        self.focused_package = "com.yek.android.kfc.activitys"
+        self.options["android"]["agentApps"] = ["qq"]
+        self.config.write_text(json.dumps(self.options), encoding="utf-8")
+        with self.androidd.worker_lock(self.worker.work / "worker.lock"):
+            self.androidd.atomic_json(self.worker.result, self.worker.handle({"seq": 0, "action": "shot"}))
+            for job in ({"action": "shot"}, {"action": "open_app", "app": "qq"}):
+                result = self.call(**job)
+                self.assertEqual(result["status"], "unavailable")
+                self.assertEqual(result["code"], "android_operator_private_screen")
+                self.assertNotIn("file", result)
+            self.assertFalse((self.worker.work / "agent-frames").exists())
+            self.assertEqual(self.actions, [])
 
     def test_forwarded_emulator_must_be_loopback_with_its_own_adb_server(self):
         validate = self.androidd.agent_emulator_target

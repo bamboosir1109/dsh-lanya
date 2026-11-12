@@ -48,6 +48,8 @@ class AndroidProtocolTests(unittest.TestCase):
         self.time = 1000.0
         self.calls = []
         self.image = png()
+        self.focus = b"mCurrentFocus=Window{123 u0 com.tencent.mobileqq/.MainActivity}\n"
+        self.focus_after_capture = None
         self.offline = False
         self.break_after_action = False
         self.worker = self.module.AndroidWorker(run=self.run_adb, now=lambda: self.time)
@@ -64,8 +66,12 @@ class AndroidProtocolTests(unittest.TestCase):
             stdout = b"device\n"
         elif args == ["shell", "wm size"]:
             stdout = b"Physical size: 2x2\n"
+        elif args == ["shell", "dumpsys window"]:
+            stdout = self.focus
         elif args == ["exec-out", "screencap", "-p"]:
             stdout = self.image
+            if self.focus_after_capture is not None:
+                self.focus = self.focus_after_capture
         elif args[:1] == ["shell"] and self.break_after_action:
             self.image = b"garbage" * 200
         return subprocess.CompletedProcess(argv, 0, stdout, b"")
@@ -327,9 +333,43 @@ class AndroidProtocolTests(unittest.TestCase):
             with mock.patch.object(self.worker, "run", wraps=self.worker.run) as run:
                 observed = self.worker.handle({"action": "shot", "agent_deadline": 105})
                 self.assertTrue(observed["ok"])
-                self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [5, 5, 5])
+                self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [5, 5, 4, 5, 4])
                 self.worker.handle({"action": "shot"})
                 self.assertEqual(run.call_args.kwargs["timeout"], 45)
+
+    def test_operator_delivery_app_blocks_agent_screenshot_and_input(self):
+        for package in ("com.sankuai.meituan.takeoutnew", "com.yek.android.kfc.activitys"):
+            with self.subTest(package=package):
+                self.focus = (f"mCurrentFocus=Window{{123 u0 com.android.systemui/.Overlay}}\n"
+                              f"mFocusedApp=ActivityRecord{{456 u0 {package}/.Checkout}}\n").encode()
+                view = self.shot()
+                self.calls.clear()
+                with mock.patch.object(self.module.time, "monotonic", return_value=100):
+                    tap = self.worker.handle({"action": "tap", "x": 1, "y": 1,
+                        "expected_shot_id": view["shot_id"], "agent_deadline": 105})
+                    shot = self.worker.handle({"action": "shot", "agent_deadline": 105})
+                for result in (tap, shot):
+                    self.assertEqual(result["code"], "android_operator_private_screen")
+                    self.assertEqual(result["shot_id"], "")
+                self.assertFalse(any("input tap 1 1" in call or "screencap" in call for call in self.calls))
+                self.assertTrue(self.shot()["ok"])
+
+    def test_agent_discards_frame_if_private_app_opens_during_capture(self):
+        original = self.shot()
+        self.focus_after_capture = b"mCurrentFocus=Window{123 u0 com.yek.android.kfc.activitys/.Checkout}\n"
+        self.image = png(raster=(b"\0" + b"\xaa\xbb\xcc\xff" * 2) * 2)
+        with mock.patch.object(self.module.time, "monotonic", return_value=100):
+            result = self.worker.handle({"action": "shot", "agent_deadline": 105})
+        self.assertEqual(result["code"], "android_operator_private_screen")
+        self.assertEqual(json.loads(self.worker.meta.read_text())["shot_id"], original["shot_id"])
+        self.assertNotEqual(self.worker.shot.read_bytes(), self.image)
+
+    def test_agent_cannot_capture_when_foreground_is_unknown(self):
+        self.focus = b"mCurrentFocus=null\nmFocusedApp=null\n"
+        with mock.patch.object(self.module.time, "monotonic", return_value=100):
+            result = self.worker.handle({"action": "shot", "agent_deadline": 105})
+        self.assertEqual(result["code"], "android_foreground_required")
+        self.assertFalse(self.worker.shot.exists())
 
 
 if __name__ == "__main__":

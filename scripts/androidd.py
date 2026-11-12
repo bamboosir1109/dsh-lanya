@@ -25,6 +25,8 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PNG_BYTES = 64 * 1024 * 1024
 MAX_PIXELS = 16_000_000
 AGENT_JOB_SECONDS = 45
+OPERATOR_ONLY_APPS = frozenset({"com.sankuai.meituan.takeoutnew", "com.yek.android.kfc.activitys"})
+FOCUSED_PACKAGE = re.compile(r"(?m)^\s*m(?:CurrentFocus|FocusedApp)=[^\r\n]*?\s([A-Za-z][\w.]*)/")
 
 
 class AndroidError(RuntimeError):
@@ -234,6 +236,15 @@ class AndroidWorker:
         if self.adb("get-state", timeout=5).strip() != b"device":
             raise AndroidError("offline", "Configured Android serial is not online")
 
+    def require_agent_visible_screen(self):
+        if self.agent_deadline is None:
+            return
+        packages = set(FOCUSED_PACKAGE.findall(self.shell("dumpsys", "window", timeout=4)))
+        if packages & OPERATOR_ONLY_APPS:
+            raise AndroidError("android_operator_private_screen", "This app is for the local operator")
+        if not packages:
+            raise AndroidError("android_foreground_required", "Cannot verify the Android foreground")
+
     def capture(self, *, reconnect=False):
         self.current_shot = None
         try:
@@ -254,7 +265,9 @@ class AndroidWorker:
         if not sizes:
             raise AndroidError("bad_dimensions", "Cannot verify Android display dimensions")
         expected = tuple(map(int, sizes[-1]))
+        self.require_agent_visible_screen()
         raw = self.adb("exec-out", "screencap", "-p", timeout=45)
+        self.require_agent_visible_screen()
         width, height = verify_png(raw)
         if sorted((width, height)) != sorted(expected):
             raise AndroidError("bad_dimensions", "Screenshot dimensions differ from the configured display")
@@ -291,6 +304,7 @@ class AndroidWorker:
         action = str(job.get("action", "")).lower()
         view = self.require_view(job)
         self.online()
+        self.require_agent_visible_screen()
         width, height = view["width"], view["height"]
         xy = lambda x, y: (self.coordinate(job.get(x), width), self.coordinate(job.get(y), height))
         if action == "tap":

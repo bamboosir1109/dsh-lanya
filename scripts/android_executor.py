@@ -156,8 +156,10 @@ def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_
                     return dict(base, status="unknown", code="superseded")
                 if status.get("seq") == seq and status.get("status") != "pending":
                     if not status.get("ok"):
-                        return dict(base, status="error" if command["action"] == "shot" else "unknown",
-                                    code=status.get("code", "capture_failed"))
+                        code = status.get("code", "capture_failed")
+                        if code in {"android_operator_private_screen", "android_foreground_required"} and command["action"] == "shot":
+                            return dict(base, status="unavailable", code=code)
+                        return dict(base, status="error" if command["action"] == "shot" else "unknown", code=code)
                     return status
                 sleep(0.2)
             return dict(base, status="unknown", code="observation_timeout")

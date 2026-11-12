@@ -168,11 +168,14 @@ const localOpportunity = binding => binding?.observationKind === 'activity.oppor
 function androidCheckoutIntent(text) {
   if (typeof text !== 'string') return null
   const value = text.trim()
-  if (value === '已退出美团结算') return Object.freeze({ action: 'end' })
-  const amount = /^(?:开始)?美团结算\s+(\d{1,7})(?:\.(\d{1,2}))?\s*元$/u.exec(value)
+  if (value === '已退出美团结算' || value === '已退出外卖结算') {
+    return Object.freeze({ action: 'end', app: value === '已退出美团结算' ? 'meituan' : 'delivery' })
+  }
+  const amount = /^(?:开始)?(美团|外卖)结算\s+(\d{1,7})(?:\.(\d{1,2}))?\s*元$/u.exec(value)
   if (!amount) return null
-  const maxTotalFen = Number(amount[1]) * 100 + Number((amount[2] || '').padEnd(2, '0'))
-  return maxTotalFen > 0 ? Object.freeze({ action: 'begin', maxTotalFen }) : null
+  const app = amount[1] === '美团' ? 'meituan' : 'delivery'
+  const maxTotalFen = Number(amount[2]) * 100 + Number((amount[3] || '').padEnd(2, '0'))
+  return maxTotalFen > 0 ? Object.freeze({ action: 'begin', app, maxTotalFen }) : null
 }
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
@@ -1595,7 +1598,7 @@ export class OneBotDecisionAdapter {
   androidOrderDefinition() {
     return {
       name: 'android_order_review',
-      description: 'Open or close the private human checkout handoff for Meituan. A direct primary administrator message “美团结算 20元” authorizes begin at that amount, and “已退出美团结算” authorizes end after leaving the sensitive screen. The administrator operates the official checkout and payment. Never include delivery or authentication data in tool arguments or QQ replies.',
+      description: 'Open or close the private human delivery checkout handoff. A direct primary administrator message “外卖结算 20元” or “美团结算 20元” authorizes begin at that amount. “已退出外卖结算” or “已退出美团结算” authorizes end after leaving the sensitive screen. The administrator operates the official checkout and payment. Never include delivery or authentication data in tool arguments or QQ replies.',
       parameters: {
         action: { type: 'string', required: true, enum: ['begin', 'end'] },
       },
@@ -1620,16 +1623,19 @@ export class OneBotDecisionAdapter {
     const owner = await this.trustedOwner(scope)
     const guide = await this.runtimeCapabilities(scope, owner)
     this.validateOwnerContext(guide, 'dsh-runtime-capabilities/v1', scope, owner)
+    const { app, maxTotalFen } = binding.checkout
+    const android = guide.tools?.android
+    const available = app === 'meituan' ? android?.agent_apps?.includes('meituan') : android?.agent_tool === 'android_phone'
     if (guide.read_only !== true || guide.tools?.entertainment?.primary_internal_leisure !== true ||
-        !guide.tools?.android?.agent_apps?.includes('meituan')) {
+        !available) {
       throw new PolicyDeliveryError('suppressed', 'android_order_primary_device_required')
     }
     const active = await this.policy.runCurrentRevision({
       scope, expectedRevision: revision, requireOpen: true,
       check: () => this.captureExec(exec) === record && !record.androidBusy && this.deps.policy.adminUsers.includes(peer),
     }, () => this.intentPlanner.store.setCheckout(owner, scope, args.action === 'begin'))
-    return active ? { status: 'admin_handoff', app: 'meituan', max_total_fen: binding.checkout.maxTotalFen, order_placed: false }
-      : { status: 'closed', app: 'meituan' }
+    return active ? { status: 'admin_handoff', app, max_total_fen: maxTotalFen, order_placed: false }
+      : { status: 'closed', app }
   }
 
   async androidAdministrator(binding) {

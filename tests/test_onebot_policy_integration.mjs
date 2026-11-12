@@ -937,7 +937,7 @@ test('Meituan checkout is a private administrator handoff and pauses model scree
   const readGuide = adapter.runtimeCapabilities
   adapter.runtimeCapabilities = async (scope, owner) => {
     const guide = await readGuide(scope, owner)
-    guide.tools.android = { agent_apps: ['meituan'] }
+    guide.tools.android = { agent_tool: 'android_phone', agent_apps: ['meituan'] }
     return guide
   }
   const order = h.tools.get('android_order_review'), phone = h.tools.get('android_phone')
@@ -970,6 +970,19 @@ test('Meituan checkout is a private administrator handoff and pauses model scree
   turn = h.start(next)
   assert.equal((await order.execute({ action: 'end' }, h.exec(next))).status, 'closed')
   await h.end(next, turn)
+
+  const otherDelivery = await h.receive({ text: '外卖结算 18.50元' })
+  turn = h.start(otherDelivery)
+  assert.deepEqual(await order.execute(begin, h.exec(otherDelivery)), {
+    status: 'admin_handoff', app: 'delivery', max_total_fen: 1850, order_placed: false,
+  })
+  await h.decide(otherDelivery, 'tool_action')
+  assert.deepEqual(await phone.execute({ action: 'shot' }, h.exec(otherDelivery)), { status: 'unavailable', code: 'android_checkout_private' })
+  await h.end(otherDelivery, turn)
+  const done = await h.receive({ text: '已退出外卖结算' })
+  turn = h.start(done)
+  assert.deepEqual(await order.execute({ action: 'end' }, h.exec(done)), { status: 'closed', app: 'delivery' })
+  await h.end(done, turn)
   assert.equal(h.calls.length, 0)
 })
 
