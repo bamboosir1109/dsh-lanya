@@ -1722,20 +1722,39 @@ export class OneBotDecisionAdapter {
       check: () => this.captureExec(exec) === record && !exec.signal?.aborted,
     }, run)
     if (asking) {
-      if (origin !== 'observation' || !localOpportunity(record.binding) || record.ticket || record.decision) {
+      if (origin !== 'observation' || !localOpportunity(record.binding) || record.ticket || record.decision ||
+          typeof exec.callId !== 'string' || !exec.callId || record.androidHelpDelivery) {
         throw new PolicyDeliveryError('suppressed', 'android_login_followup_required')
       }
       const rhythm = await this.policy.proactiveStatus(scope)
       if (!rhythm.allowed || rhythm.resting) return { status: 'pending', code: rhythm.reason }
-      const request = await current(() => update('claim'), true)
-      if (request.status !== 'claimed') return request
+      const request = await current(() => update('preview'), true)
+      if (request.status !== 'pending') return request
+      if (record.androidHelpDelivery || record.ticket || record.decision) {
+        throw new PolicyDeliveryError('suppressed', 'android_login_followup_required')
+      }
+      const delivery = {
+        operationId: identity('tool', exec.agent.session.id, exec.callId),
+        begun: false,
+        begin: () => {
+          if (delivery.begun) return
+          const claim = update('claim', { requestId: request.requestId })
+          if (claim.status !== 'claimed') throw new PolicyDeliveryError('suppressed', 'android_login_request_changed')
+          delivery.begun = true
+        },
+      }
+      record.androidHelpDelivery = delivery
       let outcome = 'unknown'
       try {
         const result = await this.decide({ verdict: 'reply', expression: 'text',
           text: `我想用模拟器里的${apps[app]}${request.purpose}，登录这一步卡住了。你方便时能帮我看看吗？` }, exec)
-        outcome = result.sent ? 'sent' : result.status === 'unknown' || result.reason === 'no_confirmed_transport' ? 'unknown' : 'pending'
+        if (result.sent && !delivery.begun) throw new Error('Missing Android login delivery claim')
+        outcome = result.sent ? 'sent' : delivery.begun ? 'unknown' : 'pending'
         return { status: outcome, sent: result.sent === true, code: result.reason }
-      } finally { update('settle', { requestId: request.requestId, outcome }) }
+      } finally {
+        record.androidHelpDelivery = null
+        if (delivery.begun) update('settle', { requestId: request.requestId, outcome })
+      }
     }
     if (!record.ticket || record.androidBusy || !shotId || shotId !== record.androidView) {
       throw new PolicyDeliveryError('suppressed', 'android_current_app_view_required')
@@ -2093,6 +2112,8 @@ export class OneBotDecisionAdapter {
           verifyVoicePacket(voiceArtifact, params)
           voiceArtifact.state = 'reserved'
         }
+        const login = envelope.record?.androidHelpDelivery
+        if (login?.operationId === envelope.operationId) login.begin()
         return Promise.resolve(accountAction ? authority.invoke(transmit) : transmit()).then(normalizeAck)
       })
     } catch (error) {

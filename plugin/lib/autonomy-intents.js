@@ -133,7 +133,10 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
         db.prepare('DELETE FROM android_login_help WHERE owner_scope_key=? AND app=?').run(key, app)
         return { status: 'resolved' }
       }
-      if (action === 'claim' && row?.state === 'pending') {
+      if (action === 'preview' && row?.state === 'pending') {
+        return { status: 'pending', purpose: row.purpose, requestId: row.request_id }
+      }
+      if (action === 'claim' && row?.state === 'pending' && row.request_id === requestId) {
         db.prepare("UPDATE android_login_help SET state='attempting' WHERE owner_scope_key=? AND app=?").run(key, app)
         return { status: 'claimed', purpose: row.purpose, requestId: row.request_id }
       }

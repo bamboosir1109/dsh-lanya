@@ -977,9 +977,35 @@ test('a primary opportunity can browse Android, request manual login once, and r
   await visit.completion
   clock.advance(180000)
 
+  const interrupted = await opportunity(h, { producer: 'main-review' })
+  const checkBudget = adapter.checkBudget
+  adapter.checkBudget = async () => { throw new Error('fixture interrupted before sending') }
+  try {
+    await assert.rejects(() => phone('ask_owner', { app: 'meituan' }), /interrupted before sending/)
+    const owner = await adapter.trustedOwner(interrupted.chat.chatId)
+    assert.deepEqual(adapter.intentPlanner.store.loginHelp(owner, interrupted.chat.chatId).map(row => ({ ...row })),
+      [{ app: 'meituan', purpose: login.purpose, state: 'pending' }])
+    assert.equal(h.calls.length, 0)
+  } finally { adapter.checkBudget = checkBudget }
+  await h.decide(interrupted.chat, 'idle')
+  await interrupted.end()
+  await interrupted.completion
+  clock.advance(180000)
+
   const review = await opportunity(h, { producer: 'main-review' })
   assert.match(review.chat.messages.at(-1).content[0].text, /<android_login_help>/)
-  assert.equal((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  const owner = await adapter.trustedOwner(review.chat.chatId)
+  const transmit = h.deps.connection.call
+  let sendingState
+  h.deps.connection.call = (action, params) => {
+    if (/^send_/.test(action)) sendingState = adapter.intentPlanner.store.loginHelp(owner, review.chat.chatId)[0]?.state
+    return transmit(action, params)
+  }
+  try {
+    assert.equal((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  } finally { h.deps.connection.call = transmit }
+  assert.equal(sendingState, 'attempting')
+  assert.equal(adapter.intentPlanner.store.loginHelp(owner, review.chat.chatId)[0]?.state, 'sent')
   assert.equal(h.calls.length, 1)
   assert.match(JSON.stringify(h.calls[0].params.message), /美团看看附近的咖啡店/)
   await review.end()
