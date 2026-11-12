@@ -526,7 +526,8 @@ export class OneBotDecisionAdapter {
     }
     this.pump = pumpFactory({ directory: path.join(path.dirname(stateFile), 'decision-inbox'),
       dispatch: (event) => this.dispatchObservation(event),
-      acknowledge: (event, outcome) => this.acknowledgeObservation(event, outcome), log })
+      acknowledge: (event, outcome) => this.acknowledgeObservation(event, outcome),
+      acknowledgeBatch: records => this.acknowledgeObservations(records), log })
   }
 
   state(chat) {
@@ -2371,10 +2372,18 @@ export class OneBotDecisionAdapter {
     return promise
   }
 
-  acknowledgeObservation(event, outcome) {
+  observationAck(event, outcome) {
     if (event.kind === 'social.opportunity') this.intentPlanner.finish(event.event_id, outcome)
-    if (outcome.status === 'no_decision') return this.policy.ackObservation({ scope: event.scope, eventId: event.event_id,
-      localOutcomeId: outcome.local_outcome_id, expectedRevision: outcome.observation_revision })
-    return this.policy.ackObservation({ scope: event.scope, eventId: event.event_id, decisionId: outcome.decision_id })
+    if (outcome.status === 'no_decision') return { scope: event.scope, eventId: event.event_id,
+      localOutcomeId: outcome.local_outcome_id, expectedRevision: outcome.observation_revision }
+    return { scope: event.scope, eventId: event.event_id, decisionId: outcome.decision_id }
+  }
+
+  acknowledgeObservation(event, outcome) {
+    return this.policy.ackObservation(this.observationAck(event, outcome))
+  }
+
+  acknowledgeObservations(records) {
+    return this.policy.ackObservations(records.map(({ event, marker }) => this.observationAck(event, marker)))
   }
 }

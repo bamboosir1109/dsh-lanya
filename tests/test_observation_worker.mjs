@@ -108,6 +108,34 @@ test('a long full audit leaves time for incremental discovery before another ful
   assert.equal(p.status().full, true)
 })
 
+test('cold recovery confirms terminal records in bounded batches without replay', async t => {
+  const f = fixture(t)
+  const sizes = [], handled = []
+  for (let i = 0; i < 64; i++) f.seed('historical-' + i)
+  f.seed('fresh', false)
+  const p = f.make({
+    acknowledge: event => assert.equal(event.event_id, 'fresh'),
+    acknowledgeBatch: records => {
+      sizes.push(records.length)
+      return records.map(({ event, marker }) => {
+        assert.equal(event.event_id, marker.event_id)
+        return { acknowledged: false, reason: 'unknown_observation' }
+      })
+    },
+    dispatch: event => {
+      handled.push(event.event_id)
+      return { completed: true, status: 'decided', decision_id: 'fresh-decision' }
+    },
+  })
+  await p.start({ poll: false })
+  assert.equal((await p.drain()).processed, 1)
+  assert.deepEqual(sizes, Array(8).fill(8))
+  assert.deepEqual(handled, ['fresh'])
+  await p.drain()
+  assert.deepEqual(sizes, Array(8).fill(8))
+  assert.deepEqual(handled, ['fresh'])
+})
+
 test('cached terminal loss cannot replay; restored evidence is revalidated', async t => {
   const f = fixture(t), value = f.seed('terminal'), errors = []; let calls = 0
   const p = f.make({ dispatch: () => { calls++; throw new Error('no replay') }, log: (_level, text) => errors.push(text) })

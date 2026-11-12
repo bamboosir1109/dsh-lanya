@@ -470,10 +470,11 @@ function backgroundScanner(base) {
 // fallback to the shared chat thread if worker initialization fails.
 export function createInlineObservationPump(options) { return createObservationPump({ ...options, scanMode: 'inline' }) }
 
-export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, log = () => {}, now = Date.now,
+export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, acknowledgeBatch, log = () => {}, now = Date.now,
   intervalMs = 2000, isOwnerAlive = ownerAlive, scanMode = 'worker' } = {}) {
   if (typeof directory !== 'string' || !directory.trim() || typeof dispatch !== 'function') throw new ObservationQueueError('directory and dispatch are required')
   if (!['worker', 'inline'].includes(scanMode)) throw new ObservationQueueError('Invalid observation scanner mode')
+  if (acknowledgeBatch !== undefined && typeof acknowledgeBatch !== 'function') throw new ObservationQueueError('Invalid acknowledgement batch callback')
   const base = path.resolve(directory)
   const pending = path.join(base, 'pending')
   const done = path.join(base, 'done')
@@ -508,7 +509,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   async function acknowledgeTerminal(event, marker, name, eventHash, markerHash) {
     const fingerprint = eventHash + ':' + markerHash
     if (acknowledgedTerminals.get(name) === fingerprint) return true
-    const result = await acknowledge(event, marker)
+    return rememberAcknowledgement(name, fingerprint, await acknowledge(event, marker))
+  }
+
+  function rememberAcknowledgement(name, fingerprint, result) {
     // Legacy callbacks resolve void. A missing pin is the idempotent result of
     // an earlier successful ack (including a crash before this cache existed).
     // Other negative outcomes remain retryable and never enter this cache.
@@ -518,6 +522,25 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       return true
     }
     return false
+  }
+
+  async function acknowledgeScanned(records) {
+    const outcomes = new Map()
+    const missing = records.filter(record => {
+      if (acknowledgedTerminals.get(record.name) !== record.fingerprint) return true
+      outcomes.set(record.name, true)
+      return false
+    })
+    if (acknowledgeBatch && missing.length > 1) {
+      try {
+        const results = await acknowledgeBatch(missing.map(({ event, read }) => ({ event, marker: read.completion })))
+        if (!Array.isArray(results) || results.length !== missing.length) throw new ObservationQueueError('Incomplete acknowledgement batch')
+        for (const [index, { name, fingerprint }] of missing.entries()) {
+          outcomes.set(name, rememberAcknowledgement(name, fingerprint, results[index]))
+        }
+      } catch { /* Recheck individual evidence if the bounded transaction failed. */ }
+    }
+    return outcomes
   }
 
   function takeClaim() {
@@ -678,6 +701,27 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           scanInProgress = true
           reportScanner('scanning')
           try {
+            const terminals = []
+            const flushTerminals = async () => {
+              if (!terminals.length) return
+              const records = terminals.splice(0)
+              const outcomes = await acknowledgeScanned(records)
+              for (const { event, name, read } of records) {
+                if (stopped) break
+                try {
+                  const completed = read.completion
+                  const acknowledged = outcomes.has(name) ? outcomes.get(name)
+                    : await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
+                  if (acknowledged) unsettledWrites.delete(name)
+                  const review = await scheduleReview(event, completed, read, acknowledged)
+                  if (review) backlog.set(review.name, review)
+                  invalidEvidence.delete(name)
+                } catch (error) {
+                  if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
+                  invalidEvidence.add(name)
+                }
+              }
+            }
             const audit = fullRescanRequested
             fullRescanRequested = false
             const names = await scanner.call('list', { full: audit, at: now() })
@@ -698,14 +742,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 const event = validateObservation(read.value)
                 if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
                 if (read.completion) {
-                  const completed = read.completion
                   // A crash after durable completion but before core acknowledgement
                   // is recovered here, without running the model or sending again.
-                  const acknowledged = await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
-                  if (acknowledged) unsettledWrites.delete(name)
-                  const review = await scheduleReview(event, completed, read, acknowledged)
-                  if (review) backlog.set(review.name, review)
-                  invalidEvidence.delete(name)
+                  terminals.push({ event, name, read, fingerprint: read.sha256 + ':' + read.completionSha256 })
+                  if (terminals.length >= (acknowledgeBatch ? 8 : 1)) await flushTerminals()
                   continue
                 }
                 // Permanently parked uncertain terminal claims remain evidence, not
@@ -718,7 +758,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 invalidEvidence.add(name)
               }
             }
-            if (!stopped) await scanner.call('finishScan', { at: now() })
+            if (!stopped) {
+              await flushTerminals()
+              await scanner.call('finishScan', { at: now() })
+            }
           } finally { scanInProgress = false; reportScanner(inFlight.size ? 'waiting_turns' : 'ready') }
         }
         if (failure) throw failure

@@ -294,8 +294,13 @@ test('observations have no user/control authority and a separate pinned dedup na
   await assert.rejects(() => policy.recordObservation({ ...event, eventId: 'obs:two' }), /Pinned observation capacity/)
   const badAck = await policy.ackObservation({ scope, eventId: event.eventId, decisionId: 'not-the-decision' })
   assert.equal(badAck.acknowledged, false)
-  const ack = await policy.ackObservation({ scope, eventId: event.eventId, decisionId: duplicate.decision.decisionId })
-  assert.equal(ack.acknowledged, true)
+  const batch = await policy.ackObservations([
+    { scope, eventId: 'obs:missing', decisionId: 'unknown' },
+    { scope, eventId: event.eventId, decisionId: 'not-the-decision' },
+    { scope, eventId: event.eventId, decisionId: duplicate.decision.decisionId },
+  ])
+  assert.deepEqual(batch, [{ acknowledged: false, reason: 'unknown_observation' },
+    { acknowledged: false, reason: 'decision_mismatch' }, { acknowledged: true }])
   assert.equal((await policy.recordObservation({ ...event, eventId: 'obs:two' })).accepted, true)
 })
 

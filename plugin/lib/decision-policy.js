@@ -431,6 +431,28 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     return state.scopes[scope]
   }
 
+  function validateObservationAck({ scope, decisionId, localOutcomeId, expectedRevision }) {
+    canonicalScope(scope)
+    if (localOutcomeId !== undefined && (decisionId !== undefined || typeof localOutcomeId !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(localOutcomeId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+      throw new PolicyStateError('Exact local outcome acknowledgement required')
+    }
+  }
+
+  function acknowledgeObservation(state, { scope, eventId, decisionId, localOutcomeId, expectedRevision }) {
+    const current = scopeState(state, scope)
+    const index = current?.observations?.findIndex(entry => entry.eventId === eventId) ?? -1
+    if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
+    const entry = current.observations[index]
+    const matches = localOutcomeId !== undefined
+      ? entry.localOutcome?.local_outcome_id === localOutcomeId && entry.revision === expectedRevision &&
+        !entry.decision && (entry.localOnly || !current.deliveries.some(item => item.revision === expectedRevision))
+      : Boolean(entry.decision && entry.decision.decisionId === decisionId)
+    if (!matches) return { acknowledged: false, reason: 'decision_mismatch' }
+    current.observations.splice(index, 1)
+    return { acknowledged: true }
+  }
+
   function inspectTicket(state, ticket, { scope, kind = 'text' } = {}) {
     if (!plain(ticket)) return { allowed: false, reason: 'missing_ticket' }
     canonicalScope(scope ?? ticket.scope)
@@ -655,21 +677,18 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * Pending observations remain pinned independently of the QQ LRU.
      */
     async ackObservation({ scope, eventId, decisionId, localOutcomeId, expectedRevision } = {}) {
-      canonicalScope(scope)
-      const local = localOutcomeId !== undefined
-      if (local && (decisionId !== undefined || typeof localOutcomeId !== 'string' || !/^[0-9a-f]{64}$/.test(localOutcomeId) ||
-          !Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) throw new PolicyStateError('Exact local outcome acknowledgement required')
-      return transaction((state) => {
-        const current = scopeState(state, scope)
-        const index = current?.observations?.findIndex((entry) => entry.eventId === eventId) ?? -1
-        if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
-        const entry = current.observations[index]
-        if (local ? !entry.localOutcome || entry.localOutcome.local_outcome_id !== localOutcomeId || entry.revision !== expectedRevision ||
-            entry.decision || !entry.localOnly && current.deliveries.some(item => item.revision === expectedRevision)
-          : !entry.decision || entry.decision.decisionId !== decisionId) return { acknowledged: false, reason: 'decision_mismatch' }
-        current.observations.splice(index, 1)
-        return { acknowledged: true }
-      })
+      const request = { scope, eventId, decisionId, localOutcomeId, expectedRevision }
+      validateObservationAck(request)
+      return transaction(state => acknowledgeObservation(state, request))
+    },
+
+    async ackObservations(requests) {
+      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 8 || requests.some(request => !plain(request))) {
+        throw new PolicyStateError('Expected a bounded observation acknowledgement batch')
+      }
+      const batch = clone(requests)
+      for (const request of batch) validateObservationAck(request)
+      return transaction(state => batch.map(request => acknowledgeObservation(state, request)))
     },
 
     async decide({ scope, messageId, expectedRevision, verdict, controlUpdate = false, evidenceSource = 'current', nextReviewAt = null } = {}) {
