@@ -89,6 +89,25 @@ test('incremental discovery skips inert terminals; explicit and periodic audits 
   await p.drain(); assert.equal(p.status().selected, 24)
 })
 
+test('a long full audit leaves time for incremental discovery before another full audit', async t => {
+  const f = fixture(t)
+  f.seed('terminal-before-audit')
+  let clock = 100
+  const p = f.make({ now: () => clock, acknowledge: () => { clock += 45_000 } })
+  await p.start({ poll: false })
+  await p.drain()
+  const reads = p.status().reads
+  await p.drain(false)
+  assert.equal(p.status().full, false)
+  assert.equal(p.status().reads, reads)
+  f.seed('live-after-audit', false)
+  assert.equal((await p.drain(false)).processed, 1)
+  assert.equal(p.status().selected, 1)
+  clock += 30_001
+  await p.drain(false)
+  assert.equal(p.status().full, true)
+})
+
 test('cached terminal loss cannot replay; restored evidence is revalidated', async t => {
   const f = fixture(t), value = f.seed('terminal'), errors = []; let calls = 0
   const p = f.make({ dispatch: () => { calls++; throw new Error('no replay') }, log: (_level, text) => errors.push(text) })

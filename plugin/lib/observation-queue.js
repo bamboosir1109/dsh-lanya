@@ -310,13 +310,17 @@ function fileScanner(directory, incremental = true) {
       for (const name of versions.keys()) if (!names.has(name)) versions.delete(name)
       reads.clear()
       const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= RECONCILE_MS
-      if (audit) { fullAt = at; reconcile = false }
+      if (audit) reconcile = false
       const selected = audit ? all : all.filter(name => {
         const entry = history.get(name)
         return !entry || !doneNames.has(name) || entry.version !== (versions.get(name) || 0) || entry.nextAt <= at
       })
       Object.assign(metrics, { skipped: all.length - selected.length, selected: selected.length, entries: all.length, full: audit })
       return selected
+    },
+    finishScan({ at }) {
+      if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scan completion timestamp')
+      if (metrics.full) fullAt = at
     },
     read({ key }) {
       const name = key + '.json', version = versions.get(name) || 0
@@ -714,6 +718,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 invalidEvidence.add(name)
               }
             }
+            if (!stopped) await scanner.call('finishScan', { at: now() })
           } finally { scanInProgress = false; reportScanner(inFlight.size ? 'waiting_turns' : 'ready') }
         }
         if (failure) throw failure
@@ -830,7 +835,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
 
 if (!isMainThread && workerData?.protocol === SCANNER_PROTOCOL) {
   const files = fileScanner(workerData.directory)
-  const methods = new Set(['list', 'read', 'review', 'verify', 'complete'])
+  const methods = new Set(['list', 'read', 'review', 'verify', 'complete', 'finishScan'])
   files.start()
   parentPort.on('message', message => {
     if (!message || !Number.isSafeInteger(message.id) || !methods.has(message.method)) return
