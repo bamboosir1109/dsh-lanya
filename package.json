@@ -1,6 +1,6 @@
 {
   "name": "dsh-lanya",
-  "version": "1.4.0-dev.79",
+  "version": "1.4.0-dev.80",
   "description": "Modular QQ character integration kit for DSH: NapCatQQ/SnowLuma, Bilibili, GPT-SoVITS voice, revisable memory and autonomy. Companion services required.",
   "type": "module",
   "main": "plugin/lib/index.js",
@@ -24,6 +24,7 @@
     "games/android-2048/*.java",
     "games/android-2048/AndroidManifest.xml",
     "prompts/*.txt",
+    "skills/**/*.md",
     "tests/*.py",
     "tests/*.mjs",
     "tests/fixtures/**/*.js",

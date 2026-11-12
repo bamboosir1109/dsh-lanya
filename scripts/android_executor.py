@@ -96,6 +96,7 @@ def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_
     if not isinstance(action, str) or action not in ACTIONS:
         raise ValueError("Unknown Android tool action")
     allowed = ACTIONS[action] | {"action"} | (set() if action == "shot" else {"expected_shot_id"})
+    screen_input = action in ("tap", "swipe", "type_text")
     if set(job) - allowed:
         raise ValueError("Unexpected Android tool parameters")
     job = dict(job, serial=serial)
@@ -119,7 +120,8 @@ def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_
     try:
         ordinary_directory(directory)
         panel = panel_factory(directory=directory, serial=serial, max_age=options.get("maxShotAgeSeconds", 30))
-        if action == "foreground":
+        apps = agent_apps(options)
+        if action == "foreground" or (screen_input and "meituan" in apps):
             shot_id = job.get("expected_shot_id")
             first = panel.status(serial)
             if not shot_id or not first.get("ok") or first.get("shot_id") != shot_id:
@@ -128,8 +130,13 @@ def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_
             last = panel.status(serial)
             if not last.get("ok") or last.get("shot_id") != shot_id or last.get("seq") != first.get("seq"):
                 return dict(base, status="unavailable", code="stale_view")
-            app = next((alias for alias, allowed in agent_apps(options).items() if allowed == package), None)
-            return dict(base, status="foreground", serial=serial, shot_id=shot_id, app=app)
+            if action == "foreground":
+                app = next((alias for alias, allowed in apps.items() if allowed == package), None)
+                return dict(base, status="foreground", serial=serial, shot_id=shot_id, app=app)
+            if package == apps["meituan"]:
+                return dict(base, status="unavailable", code="android_meituan_human_input_required")
+            if package not in {*apps.values(), "org.dshlanya.game2048"}:
+                return dict(base, status="unavailable", code="android_foreground_required")
         deadline = monotonic() + AGENT_JOB_SECONDS + 8
 
         def observe_job(command):

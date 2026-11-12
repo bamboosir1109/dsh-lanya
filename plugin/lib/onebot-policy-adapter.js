@@ -165,6 +165,15 @@ const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
   'repeat-tool-reminder', 'compact-checkpoint'])
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
+function androidCheckoutIntent(text) {
+  if (typeof text !== 'string') return null
+  const value = text.trim()
+  if (value === '已退出美团结算') return Object.freeze({ action: 'end' })
+  const amount = /^(?:开始)?美团结算\s+(\d{1,7})(?:\.(\d{1,2}))?\s*元$/u.exec(value)
+  if (!amount) return null
+  const maxTotalFen = Number(amount[1]) * 100 + Number((amount[2] || '').padEnd(2, '0'))
+  return maxTotalFen > 0 ? Object.freeze({ action: 'begin', maxTotalFen }) : null
+}
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
@@ -569,7 +578,10 @@ export class OneBotDecisionAdapter {
     if (this.intentPlanner.scopes.has(ctx)) return []
     const disposers = []
     try {
-      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition(), this.androidPhoneDefinition(ctx)]) disposers.push(ctx.tools.register(defineTool(definition)))
+      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(),
+        this.memeReviewDefinition(), this.androidPhoneDefinition(ctx), this.androidOrderDefinition()]) {
+        disposers.push(ctx.tools.register(defineTool(definition)))
+      }
     } catch (error) {
       const failures = []
       for (const dispose of disposers.reverse()) try { dispose?.() } catch (cleanup) { failures.push(cleanup) }
@@ -816,7 +828,9 @@ export class OneBotDecisionAdapter {
       controlAllowed: this.deps.policy.adminUsers.includes(inbound.userId) })
     if (observed.accepted) this.latestInbound.set(scope, context.arrival)
     if (observed.accepted) {
+      const checkout = androidCheckoutIntent(directText)
       context.binding = Object.freeze({ ...observed, origin: 'live' })
+      if (checkout) context.binding = Object.freeze({ ...context.binding, checkout })
       context.binding = Object.freeze({ ...context.binding, backendStamp: context.backendStamp })
     }
     if (observed.accepted && group) {
@@ -1578,6 +1592,54 @@ export class OneBotDecisionAdapter {
         autonomous_cadence_min: cadence.minutes } : {}) }
   }
 
+  androidOrderDefinition() {
+    return {
+      name: 'android_order_review',
+      description: 'Open or close the private human checkout handoff for Meituan. A direct primary administrator message “美团结算 20元” authorizes begin at that amount, and “已退出美团结算” authorizes end after leaving the sensitive screen. The administrator operates the official checkout and payment. Never include delivery or authentication data in tool arguments or QQ replies.',
+      parameters: {
+        action: { type: 'string', required: true, enum: ['begin', 'end'] },
+      },
+      output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      isConcurrencySafe: () => false,
+      execute: (args, exec) => this.androidOrderReview(args, exec),
+    }
+  }
+
+  async androidOrderReview(args, exec) {
+    const record = this.captureExec(exec), binding = record.binding
+    const peer = await this.androidAdministrator(binding)
+    if (!peer) {
+      throw new PolicyDeliveryError('suppressed', 'android_order_admin_required')
+    }
+    if (!plain(args) || !['begin', 'end'].includes(args.action) ||
+        Object.keys(args).some(key => key !== 'action')) throw new Error('Invalid Android checkout handoff')
+    if (binding.checkout?.action !== args.action) {
+      throw new PolicyDeliveryError('suppressed', 'android_order_direct_instruction_required')
+    }
+    const { scope, revision } = binding
+    const owner = await this.trustedOwner(scope)
+    const guide = await this.runtimeCapabilities(scope, owner)
+    this.validateOwnerContext(guide, 'dsh-runtime-capabilities/v1', scope, owner)
+    if (guide.read_only !== true || guide.tools?.entertainment?.primary_internal_leisure !== true ||
+        !guide.tools?.android?.agent_apps?.includes('meituan')) {
+      throw new PolicyDeliveryError('suppressed', 'android_order_primary_device_required')
+    }
+    const active = await this.policy.runCurrentRevision({
+      scope, expectedRevision: revision, requireOpen: true,
+      check: () => this.captureExec(exec) === record && !record.androidBusy && this.deps.policy.adminUsers.includes(peer),
+    }, () => this.intentPlanner.store.setCheckout(owner, scope, args.action === 'begin'))
+    return active ? { status: 'admin_handoff', app: 'meituan', max_total_fen: binding.checkout.maxTotalFen, order_placed: false }
+      : { status: 'closed', app: 'meituan' }
+  }
+
+  async androidAdministrator(binding) {
+    const peer = /^private:([1-9][0-9]*)$/.exec(binding.scope)?.[1]
+    if (binding.origin !== 'live' || binding.recoveryRevision || !peer || !this.deps.policy.adminUsers.includes(peer)) return null
+    const state = await this.policy.snapshot(binding.scope), current = state?.current
+    return state?.revision === binding.revision && current?.messageId === binding.messageId && current.origin === 'live' &&
+      current.sender === peer && current.controlAllowed === true && current.quoted === false ? peer : null
+  }
+
   androidPhoneDefinition(ctx) {
     return {
       name: 'android_phone',
@@ -1651,6 +1713,7 @@ export class OneBotDecisionAdapter {
     const promise = (async () => {
       const owner = await this.trustedOwner(scope)
       await check()
+      if (this.intentPlanner.store.checkoutActive(owner, scope)) return { status: 'unavailable', code: 'android_checkout_private' }
       if (record.androidApp && ['tap', 'swipe', 'type_text'].includes(job.action) &&
           this.intentPlanner.store.loginHelp(owner, scope).some(help => help.app === record.androidApp)) {
         return { status: 'unavailable', code: 'android_waiting_for_owner_login' }
@@ -1667,6 +1730,7 @@ export class OneBotDecisionAdapter {
       const fresh = await this.trustedOwner(scope)
       if (fresh.workspace_key !== owner.workspace_key || fresh.agent_key !== owner.agent_key) throw new Error('Android owner changed')
       await check()
+      if (this.intentPlanner.store.checkoutActive(owner, scope)) return { status: 'unavailable', code: 'android_checkout_private' }
       const { file, bytes, sha256, shot_id, serial, width, height, captured_at } = value
       if (typeof file !== 'string' || !path.isAbsolute(file) || !/^[a-f0-9]{32}$/.test(shot_id || '') ||
           path.basename(file) !== shot_id + '.png' || typeof serial !== 'string' ||
@@ -1716,6 +1780,7 @@ export class OneBotDecisionAdapter {
     }
     const owner = await this.trustedOwner(scope)
     const store = this.intentPlanner.store
+    if (!asking && store.checkoutActive(owner, scope)) return { status: 'unavailable', code: 'android_checkout_private' }
     const update = (action, fields = {}) => store.updateLoginHelp({ owner, scope, app, action, ...fields })
     const current = (run, requireOpen = false) => this.policy.runCurrentRevision({
       scope, expectedRevision: record.binding.revision, requireOpen,

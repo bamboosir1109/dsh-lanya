@@ -173,3 +173,19 @@ class AndroidExecutorTests(unittest.TestCase):
             result = self.call(action="open_app", app="amap")
             self.assertEqual(result["status"], "observed")
             self.assertEqual(self.actions, [["shell", "monkey -p com.autonavi.minimap -c android.intent.category.LAUNCHER 1"]])
+
+    def test_meituan_input_is_reserved_for_the_human_checkout(self):
+        self.options["android"]["agentApps"] = ["meituan"]
+        self.config.write_text(json.dumps(self.options), encoding="utf-8")
+        with self.androidd.worker_lock(self.worker.work / "worker.lock"):
+            self.androidd.atomic_json(self.worker.result, self.worker.handle({"seq": 0, "action": "shot"}))
+            frame = self.call(action="shot")
+            job = {"action": "tap", "x": 1, "y": 1, "expected_shot_id": frame["shot_id"]}
+            request = {"cwd": str(self.root), "agent_preset": "fixture", "conversation_key": "private:101", "job": job}
+            probe = lambda *_: "com.sankuai.meituan"
+            self.assertEqual(self.module.execute(request, foreground_probe=probe)["code"], "android_meituan_human_input_required")
+            self.assertEqual(self.actions, [])
+            job["meituan_admin"] = True
+            with self.assertRaises(ValueError):
+                self.module.execute(request, foreground_probe=probe, sleep=self.consume)
+            self.assertEqual(self.actions, [])

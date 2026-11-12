@@ -89,6 +89,7 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
           CREATE TABLE IF NOT EXISTS android_login_help (owner_scope_key TEXT NOT NULL, app TEXT NOT NULL,
             purpose TEXT NOT NULL, state TEXT NOT NULL, request_id TEXT NOT NULL,
             PRIMARY KEY(owner_scope_key,app));
+          CREATE TABLE IF NOT EXISTS android_checkout_guard (owner_scope_key TEXT PRIMARY KEY);
           PRAGMA user_version=1`)
         db.prepare("INSERT OR IGNORE INTO intent_meta(key,value) VALUES('bot_binding',?)").run(binding)
       }
@@ -119,6 +120,22 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
       if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_login_help'").get()) return []
       return db.prepare('SELECT app,purpose,state FROM android_login_help WHERE owner_scope_key=? ORDER BY app').all(key)
     } finally { db.close() }
+  }
+  function checkoutActive(owner, scope) {
+    const key = intentOwnerScopeKey(owner, scope), db = open()
+    if (!db) return false
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_checkout_guard'").get()) return false
+      return Boolean(db.prepare('SELECT 1 FROM android_checkout_guard WHERE owner_scope_key=?').get(key))
+    } finally { db.close() }
+  }
+  function setCheckout(owner, scope, active) {
+    const key = intentOwnerScopeKey(owner, scope)
+    return transaction(db => {
+      if (active) db.prepare('INSERT OR IGNORE INTO android_checkout_guard VALUES(?)').run(key)
+      else db.prepare('DELETE FROM android_checkout_guard WHERE owner_scope_key=?').run(key)
+      return active
+    })
   }
   function updateLoginHelp({ owner, scope, app, action, purpose, requestId, outcome }) {
     const key = intentOwnerScopeKey(owner, scope)
@@ -270,7 +287,7 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
     } finally { db.close() }
   }
   return { file, get, list, update, prepareSocial, socialForEvent, finishSocial, rememberSighting, sighting, sightings,
-    loginHelp, updateLoginHelp }
+    loginHelp, updateLoginHelp, checkoutActive, setCheckout }
 }
 
 /** Publish exactly one full observation. Existing bytes must match; an older

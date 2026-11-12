@@ -930,6 +930,49 @@ test('native Android tool requires the current action ticket and deduplicates in
   await h.end(chat, turn)
 })
 
+test('Meituan checkout is a private administrator handoff and pauses model screenshots', async t => {
+  const h = await setup(t)
+  const clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy
+  const readGuide = adapter.runtimeCapabilities
+  adapter.runtimeCapabilities = async (scope, owner) => {
+    const guide = await readGuide(scope, owner)
+    guide.tools.android = { agent_apps: ['meituan'] }
+    return guide
+  }
+  const order = h.tools.get('android_order_review'), phone = h.tools.get('android_phone')
+  const begin = { action: 'begin' }
+  const member = await h.receive({ scope: 'private:102', sender: '102' })
+  let turn = h.start(member)
+  await assert.rejects(() => order.execute(begin, h.exec(member)), { reason: 'android_order_admin_required' })
+  await h.end(member, turn)
+  const background = await opportunity(h)
+  await assert.rejects(() => order.execute(begin, h.exec(background.chat)), { reason: 'android_order_admin_required' })
+  await h.decide(background.chat, 'idle')
+  await background.end()
+  await background.completion
+  clock.advance(180000)
+
+  const admin = await h.receive()
+  turn = h.start(admin)
+  await assert.rejects(() => order.execute(begin, h.exec(admin)), { reason: 'android_order_direct_instruction_required' })
+  await h.end(admin, turn)
+  await h.receive({ text: '美团结算 20元' })
+  turn = h.start(admin)
+  await assert.rejects(() => order.execute({ ...begin, address: 'fixture address' }, h.exec(admin)), /Invalid Android checkout handoff/)
+  const receipt = await order.execute(begin, h.exec(admin))
+  assert.deepEqual(receipt, { status: 'admin_handoff', app: 'meituan', max_total_fen: 2000, order_placed: false })
+  await h.decide(admin, 'tool_action')
+  adapter.readTrustedHelper = async () => assert.fail('A private checkout must not read the device')
+  assert.deepEqual(await phone.execute({ action: 'shot' }, h.exec(admin)), { status: 'unavailable', code: 'android_checkout_private' })
+  await h.end(admin, turn)
+  const next = await h.receive({ text: '已退出美团结算' })
+  turn = h.start(next)
+  assert.equal((await order.execute({ action: 'end' }, h.exec(next))).status, 'closed')
+  await h.end(next, turn)
+  assert.equal(h.calls.length, 0)
+})
+
 test('a primary opportunity can browse Android, request manual login once, and resume with fresh evidence', async t => {
   const h = await setup(t)
   const clock = await cadenceFixture(h)
