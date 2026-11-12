@@ -75,6 +75,50 @@ class AndroidProtocolTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         return result
 
+    def test_desktop_app_capture_waits_for_the_requested_package(self):
+        target = "127.0.0.1:16384"
+        pkg = "com.tencent.mobileqq"
+        settings = {"android.serial": target, "android.agentTransport": "desktop_loopback",
+                    "android.adbServerPort": 15045}
+        commands = []
+        launch_status = b"Status: ok\nActivity: com.tencent.mobileqq/.LoginActivity\nComplete\n"
+
+        def adb(argv, **kwargs):
+            self.assertEqual(argv[1:3], ["-s", target])
+            args = argv[3:]
+            commands.append(args)
+            if args == ["get-state"]:
+                raw = b"device\n"
+            elif args == ["shell", "wm size"]:
+                raw = b"Physical size: 2x2\n"
+            elif args == ["exec-out", "screencap", "-p"]:
+                raw = png()
+            elif args[1].startswith("cmd package resolve-activity --brief "):
+                self.assertTrue(args[1].endswith("-p " + pkg))
+                raw = b"priority=0 isDefault=false\ncom.tencent.mobileqq/.SplashActivity\n"
+            else:
+                self.assertEqual(args, ["shell", "am start -W -a android.intent.action.MAIN "
+                                        "-c android.intent.category.LAUNCHER -n com.tencent.mobileqq/.SplashActivity"])
+                self.assertEqual(kwargs["timeout"], 12)
+                raw = launch_status
+            return subprocess.CompletedProcess(argv, 0, raw, b"")
+
+        with mock.patch.object(self.module, "get", side_effect=settings.get):
+            worker = self.module.AndroidWorker(run=adb, now=lambda: self.time)
+        initial = worker.handle({"action": "shot"})
+        commands.clear()
+        opened = worker.handle({"action": "start", "pkg": pkg, "expected_shot_id": initial["shot_id"]})
+        self.assertTrue(opened["ok"], opened)
+        self.assertNotEqual(opened["shot_id"], initial["shot_id"])
+        self.assertTrue(commands[2][1].startswith("am start -W "))
+        self.assertEqual(commands[-1], ["exec-out", "screencap", "-p"])
+
+        commands.clear()
+        launch_status = b"Status: timeout\nActivity: com.tencent.mobileqq/.SplashActivity\n"
+        failed = worker.handle({"action": "start", "pkg": pkg, "expected_shot_id": opened["shot_id"]})
+        self.assertEqual(failed["code"], "launch_unconfirmed")
+        self.assertFalse(any(args[0] == "exec-out" for args in commands))
+
     def writes(self):
         return [args for args in self.calls if args[3:4] == ["shell"] and args[4] != "wm size"]
 

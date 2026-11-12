@@ -203,8 +203,8 @@ class AndroidWorker:
                         ANDROID_ADB_SERVER_PORT=str(server_port))
         self.run, self.now, self.current_shot = run, now, None
         self.agent_deadline = None
-        self.reconnect_enabled = (get("android.agentTransport", "") == "desktop_loopback"
-                                  and isolated_loopback_target(self.serial, server_port))
+        self.desktop_loopback = (get("android.agentTransport", "") == "desktop_loopback"
+                                 and isolated_loopback_target(self.serial, server_port))
         self.next_reconnect = 0
 
     def adb(self, *args, timeout=30, device=True):
@@ -226,9 +226,9 @@ class AndroidWorker:
             raise AndroidError("offline", "ADB command failed for the configured serial")
         return response.stdout
 
-    def shell(self, *words):
+    def shell(self, *words, timeout=30):
         # ADB's remote shell needs its own quoting even though shell=False here.
-        return self.adb("shell", shlex.join(str(word) for word in words)).decode("utf-8", "replace").strip()
+        return self.adb("shell", shlex.join(str(word) for word in words), timeout=timeout).decode("utf-8", "replace").strip()
 
     def online(self):
         if self.adb("get-state", timeout=5).strip() != b"device":
@@ -239,7 +239,7 @@ class AndroidWorker:
         try:
             self.online()
         except AndroidError as error:
-            if error.code != "offline" or not reconnect or not self.reconnect_enabled:
+            if error.code != "offline" or not reconnect or not self.desktop_loopback:
                 raise
             now = time.monotonic()
             if now < self.next_reconnect:
@@ -316,6 +316,20 @@ class AndroidWorker:
             package = job.get("pkg", "")
             if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
                 raise AndroidError("bad_job", "Invalid Android package")
+            if self.desktop_loopback:
+                intent = ("-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER")
+                resolved = self.shell("cmd", "package", "resolve-activity", "--brief", *intent, "-p", package, timeout=5)
+                component = re.escape(package) + r"/[A-Za-z0-9_.$]+"
+                targets = [line for line in resolved.splitlines() if re.fullmatch(component, line)]
+                if len(targets) != 1:
+                    raise AndroidError("action_failed", "No launcher activity found in the selected package")
+                # Monkey returns after sending input, before the first app frame.
+                # Activity Manager's wait also reports the foreground activity on a warm launch.
+                output = self.shell("am", "start", "-W", *intent, "-n", targets[0], timeout=12)
+                lines = output.splitlines()
+                if "Status: ok" not in lines or not any(re.fullmatch("Activity: " + component, line) for line in lines):
+                    raise AndroidError("launch_unconfirmed", "Android did not confirm the app's first display")
+                return output
             output = self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
             if "no activities found" in output.lower():
                 raise AndroidError("action_failed", "No launcher activity found")

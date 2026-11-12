@@ -20,6 +20,8 @@
 
 确认应用已安装后，可在 `android.agentApps` 里启用 `amap`（高德）、`meituan`（美团）或 `qq`（QQ）。主私聊选择 `tool_action` 后先截图并读取 PNG，再用 `android_phone({action:"open_app",app:"amap",expected_shot_id:"<本轮截图 ID>"})`。查看新图确认前台应用后继续点击或滑动。确认搜索框已聚焦后，可以用 `type_text` 输入最多 160 个可打印 ASCII 字符，再看新截图确认输入。首次使用协议和账号登录由用户在应用界面处理。
 
+桌面模拟器的启动命令先解析应用的启动 Activity，再等待 Android 确认目标应用显示。启动结果未确认时，重新截图观察当前界面后再决定下一步。
+
 项目配置示例：
 
 ```json
