@@ -133,3 +133,11 @@ class AndroidExecutorTests(unittest.TestCase):
             self.assertNotEqual(opened["shot_id"], first["shot_id"])
             self.assertEqual(self.actions, [["shell", "monkey -p com.autonavi.minimap -c android.intent.category.LAUNCHER 1"]])
             self.assertEqual(self.call(app="amap", **frame)["code"], "stale_view")
+            query = {"action": "type_text", "expected_shot_id": opened["shot_id"]}
+            for invalid in ("\u6545\u5bab", "only%sone", "  ", "a" * 161):
+                self.assertEqual(self.call(text=invalid, **query)["code"], "android_printable_ascii_required")
+            self.assertEqual(len(self.actions), 1)
+            typed = self.call(text="Forbidden City", **query)
+            self.assertEqual(typed["status"], "observed")
+            self.assertNotEqual(typed["shot_id"], opened["shot_id"])
+            self.assertEqual(self.actions[-1], ["shell", "input text Forbidden%sCity"])

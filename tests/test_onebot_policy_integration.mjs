@@ -918,8 +918,13 @@ test('native Android tool requires the current action ticket and deduplicates in
   await assert.rejects(() => tool.execute(open, h.exec(chat)), { reason: 'android_current_turn_view_required' })
   const app = { action: 'open_app', app: 'amap', expected_shot_id: game.shot_id }
   await assert.rejects(() => tool.execute({ ...app, app: 'com.autonavi.minimap' }, h.exec(chat)), /Invalid Android phone action/)
-  assert.equal((await tool.execute(app, h.exec(chat))).status, 'observed')
+  const opened = await tool.execute(app, h.exec(chat))
+  assert.equal(opened.status, 'observed')
   assert.deepEqual(jobs.at(-1), app)
+  const text = { action: 'type_text', text: 'Forbidden City', expected_shot_id: opened.shot_id }
+  await assert.rejects(() => tool.execute({ ...text, action: 'tap' }, h.exec(chat)), /Invalid Android phone action/)
+  assert.equal((await tool.execute(text, h.exec(chat))).status, 'observed')
+  assert.deepEqual(jobs.at(-1), text)
   assert.equal(h.calls.length, 0)
   await h.end(chat, turn)
 })

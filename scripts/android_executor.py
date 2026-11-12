@@ -15,7 +15,7 @@ from runtime_capabilities import DEFAULTS, _configuration, entertainment_guide, 
 SCHEMA = "dsh-android-result/v1"
 ACTIONS = {
     "shot": set(), "tap": {"x", "y"}, "swipe": {"x1", "y1", "x2", "y2", "ms"},
-    "back": set(), "home": set(), "open_game": set(), "open_app": {"app"},
+    "back": set(), "home": set(), "open_game": set(), "open_app": {"app"}, "type_text": {"text"},
 }
 FRAME_NAME = re.compile(r"[a-f0-9]{32}\.png")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -93,6 +93,11 @@ def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sl
         if not package:
             return dict(base, status="unavailable", code="android_app_not_enabled")
         job.update(action="start", pkg=package)
+    elif action == "type_text":
+        text = job.get("text")
+        if not isinstance(text, str) or not text.strip() or not re.fullmatch(r"[ -~]{1,160}", text) or "%s" in text:
+            return dict(base, status="error", code="android_printable_ascii_required")
+        job.update(action="text")
     elif action in ("back", "home"):
         job.update(action="key", key=action.upper())
     directory = data / "android"
