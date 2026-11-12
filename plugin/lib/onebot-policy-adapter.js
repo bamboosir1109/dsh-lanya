@@ -1581,13 +1581,13 @@ export class OneBotDecisionAdapter {
   androidPhoneDefinition(ctx) {
     return {
       name: 'android_phone',
-      description: 'Use the owner’s local Android in live requests or your own primary activity. Choose tool_action and inspect the attached PNG. Call read_image only for an inspect fallback. For a named configured app use open_app immediately after the first shot. Use the current frame ID for navigation. If a real login page or login restriction blocks a concrete task, stop and record the app and purpose with request_login. On a later primary opportunity, ask_owner can send one short private request under QQ policy. After verified manual login, use login_resolved. Keep visits focused; stop if repeating actions adds no progress. Credentials, posting and purchases are outside phone navigation.',
+      description: 'Use the owner’s local Android in live requests or your own primary activity. For a named configured app, call open_app with its alias as the first phone action and inspect the returned PNG. The tool observes the device internally. Use the current frame ID for navigation. If a real login page or login restriction blocks a concrete task, stop and record the app and purpose with request_login. On a later primary opportunity, ask_owner can send one short private request under QQ policy. After verified manual login, use login_resolved. Keep visits focused; stop if repeating actions adds no progress. Credentials, posting and purchases are outside phone navigation.',
       parameters: {
         action: { type: 'string', required: true, enum: ['shot', 'open_game', 'open_app', 'type_text', 'tap', 'swipe', 'back', 'home', 'request_login', 'ask_owner', 'login_resolved'] },
         app: { type: 'string', enum: ['amap', 'meituan', 'qq'], description: 'Configured alias for open_app or the app with a login blocker.' },
         text: { type: 'string', description: 'Short ASCII search query for type_text.' },
         purpose: { type: 'string', description: 'For request_login, a short description of the task that requires login, without account or credential details.' },
-        expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID. Omit for shot and ask_owner.' },
+        expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID. Omit for the first open_app, shot and ask_owner.' },
         x: { type: 'number' }, y: { type: 'number' }, x1: { type: 'number' }, y1: { type: 'number' },
         x2: { type: 'number' }, y2: { type: 'number' }, ms: { type: 'number' },
       },
@@ -1636,7 +1636,9 @@ export class OneBotDecisionAdapter {
       return previous.promise
     }
     if (record.androidBusy || record.androidCalls.size >= 16) throw new PolicyDeliveryError('suppressed', 'android_turn_limit')
-    if (job.action !== 'shot' && (!record.androidView || job.expected_shot_id !== record.androidView)) {
+    const launchWithoutView = job.action === 'open_app' && !Object.hasOwn(job, 'expected_shot_id') &&
+      record.androidCalls.size === 0 && !record.androidView
+    if (job.action !== 'shot' && !launchWithoutView && (!record.androidView || job.expected_shot_id !== record.androidView)) {
       throw new PolicyDeliveryError('suppressed', 'android_current_turn_view_required')
     }
     record.androidBusy = true

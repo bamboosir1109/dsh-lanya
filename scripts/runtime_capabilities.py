@@ -556,7 +556,8 @@ def build_context(cwd, agent_preset, conversation_key, *, process_probe=probe_pr
                 android["agent_navigation"] = (
                     "For a current request or a self-chosen goal in the primary activity, use tool_action "
                     "and the screenshot workflow. Pick something you actually want to check. "
-                    "For a named configured app, use open_app with its alias right after the first shot. Verify the actual "
+                    "For a named configured app, make open_app with its alias the first phone call. The tool observes "
+                    "the device internally and opens the configured app. Verify the actual "
                     "foreground from the next PNG before continuing. After observing a focused search box, "
                     "use type_text for a short ASCII query and check the resulting PNG before tapping Search. "
                     "Keep visits focused and stop repeating actions that make no progress. If a real app login page "

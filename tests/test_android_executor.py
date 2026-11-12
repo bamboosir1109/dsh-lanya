@@ -159,3 +159,17 @@ class AndroidExecutorTests(unittest.TestCase):
             self.call(action="shot")
             self.assertEqual(self.module.execute(request, foreground_probe=probe)["code"], "stale_view")
             self.assertEqual(self.actions, [])
+
+    def test_first_app_launch_observes_device_then_uses_the_bound_frame(self):
+        self.options["android"]["agentApps"] = ["amap"]
+        self.config.write_text(json.dumps(self.options), encoding="utf-8")
+        with self.androidd.worker_lock(self.worker.work / "worker.lock"):
+            self.androidd.atomic_json(self.worker.result, self.worker.handle({"seq": 0, "action": "shot"}))
+            self.image = b"invalid screenshot"
+            blocked = self.call(action="open_app", app="amap")
+            self.assertEqual(blocked["status"], "error")
+            self.assertEqual(self.actions, [])
+            self.image = png()
+            result = self.call(action="open_app", app="amap")
+            self.assertEqual(result["status"], "observed")
+            self.assertEqual(self.actions, [["shell", "monkey -p com.autonavi.minimap -c android.intent.category.LAUNCHER 1"]])

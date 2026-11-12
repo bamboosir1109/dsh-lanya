@@ -130,31 +130,45 @@ def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_
                 return dict(base, status="unavailable", code="stale_view")
             app = next((alias for alias, allowed in agent_apps(options).items() if allowed == package), None)
             return dict(base, status="foreground", serial=serial, shot_id=shot_id, app=app)
-        # Publication may succeed even if its caller later loses the response.
-        submitted = True
-        try:
-            pending = panel.submit(job, agent=True)
-        except PanelAndroidError as error:
-            state = "unavailable" if error.code == "worker_offline" else "error"
-            return dict(base, status=state, code=error.code)
-        seq = pending["seq"]
         deadline = monotonic() + AGENT_JOB_SECONDS + 8
-        while monotonic() < deadline:
-            status = panel.status(serial)
-            if status.get("seq", 0) > seq:
-                return dict(base, status="unknown", code="superseded")
-            if status.get("seq") == seq and status.get("status") != "pending":
-                if not status.get("ok"):
-                    return dict(base, status="error" if action == "shot" else "unknown",
-                                code=status.get("code", "capture_failed"))
-                shot_id = status["shot_id"]
-                raw = panel.image(serial, shot_id)
-                frame = stage_frame(directory, shot_id, raw, status["captured_at"])
-                return dict(base, status="observed", serial=serial, shot_id=shot_id, file=frame,
-                            sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
-                            width=status["width"], height=status["height"], captured_at=status["captured_at"])
-            sleep(0.2)
-        return dict(base, status="unknown", code="observation_timeout")
+
+        def observe_job(command):
+            nonlocal submitted
+            if monotonic() >= deadline:
+                return dict(base, status="unknown", code="observation_timeout")
+            # Publication may succeed even if its caller later loses the response.
+            submitted = True
+            try:
+                seq = panel.submit(command, agent=True)["seq"]
+            except PanelAndroidError as error:
+                state = "unavailable" if error.code == "worker_offline" else "error"
+                return dict(base, status=state, code=error.code)
+            while monotonic() < deadline:
+                status = panel.status(serial)
+                if status.get("seq", 0) > seq:
+                    return dict(base, status="unknown", code="superseded")
+                if status.get("seq") == seq and status.get("status") != "pending":
+                    if not status.get("ok"):
+                        return dict(base, status="error" if command["action"] == "shot" else "unknown",
+                                    code=status.get("code", "capture_failed"))
+                    return status
+                sleep(0.2)
+            return dict(base, status="unknown", code="observation_timeout")
+
+        if action == "open_app" and "expected_shot_id" not in job:
+            initial = observe_job({"action": "shot", "serial": serial})
+            if not initial.get("ok"):
+                return initial
+            job["expected_shot_id"] = initial["shot_id"]
+        status = observe_job(job)
+        if not status.get("ok"):
+            return status
+        shot_id = status["shot_id"]
+        raw = panel.image(serial, shot_id)
+        frame = stage_frame(directory, shot_id, raw, status["captured_at"])
+        return dict(base, status="observed", serial=serial, shot_id=shot_id, file=frame,
+                    sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
+                    width=status["width"], height=status["height"], captured_at=status["captured_at"])
     except (AndroidError, PanelAndroidError) as error:
         return dict(base, status="unknown" if submitted else "error", code=error.code)
     except FileNotFoundError:
