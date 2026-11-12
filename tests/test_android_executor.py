@@ -141,3 +141,21 @@ class AndroidExecutorTests(unittest.TestCase):
             self.assertEqual(typed["status"], "observed")
             self.assertNotEqual(typed["shot_id"], opened["shot_id"])
             self.assertEqual(self.actions[-1], ["shell", "input text Forbidden%sCity"])
+
+    def test_foreground_is_read_only_and_bound_to_the_same_verified_frame(self):
+        self.options["android"]["agentApps"] = ["amap"]
+        self.config.write_text(json.dumps(self.options), encoding="utf-8")
+        with self.androidd.worker_lock(self.worker.work / "worker.lock"):
+            self.androidd.atomic_json(self.worker.result, self.worker.handle({"seq": 0, "action": "shot"}))
+            frame = self.call(action="shot")
+            request = {"cwd": str(self.root), "agent_preset": "fixture", "conversation_key": "private:101",
+                       "job": {"action": "foreground", "expected_shot_id": frame["shot_id"]}}
+            probe = lambda _dir, _serial: "com.autonavi.minimap"
+            receipt = self.module.execute(request, foreground_probe=probe, sleep=self.consume)
+            self.assertEqual((receipt["status"], receipt["app"], receipt["shot_id"]),
+                             ("foreground", "amap", frame["shot_id"]))
+            denied = self.module.execute(request, foreground_probe=lambda *_: "com.tencent.mobileqq")
+            self.assertIsNone(denied["app"])
+            self.call(action="shot")
+            self.assertEqual(self.module.execute(request, foreground_probe=probe)["code"], "stale_view")
+            self.assertEqual(self.actions, [])

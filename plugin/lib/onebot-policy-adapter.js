@@ -1580,7 +1580,7 @@ export class OneBotDecisionAdapter {
   androidPhoneDefinition(ctx) {
     return {
       name: 'android_phone',
-      description: 'Use the owner’s local Android in live requests or your own primary activity. Choose tool_action and inspect the attached PNG. Call read_image only if the result provides an inspect fallback. Use the current turn shot ID for navigation. Open a configured app or play 2048. Keep voluntary visits short and continue a useful goal in later opportunities. When a real login screen blocks a concrete task, record it with request_login and a short purpose. On a later primary opportunity, ask_owner can send one short private request under QQ policy. After verified manual login, use login_resolved. Credentials, posting and purchases are outside phone navigation.',
+      description: 'Use the owner’s local Android in live requests or your own primary activity. Choose tool_action and inspect the attached PNG. Call read_image only for an inspect fallback. For a named configured app use open_app immediately after the first shot. Use the current frame ID for navigation. If a real login page or login restriction blocks a concrete task, stop and record the app and purpose with request_login. On a later primary opportunity, ask_owner can send one short private request under QQ policy. After verified manual login, use login_resolved. Keep visits focused; stop if repeating actions adds no progress. Credentials, posting and purchases are outside phone navigation.',
       parameters: {
         action: { type: 'string', required: true, enum: ['shot', 'open_game', 'open_app', 'type_text', 'tap', 'swipe', 'back', 'home', 'request_login', 'ask_owner', 'login_resolved'] },
         app: { type: 'string', enum: ['amap', 'meituan', 'qq'], description: 'Configured alias for open_app or the app with a login blocker.' },
@@ -1598,6 +1598,14 @@ export class OneBotDecisionAdapter {
     }
   }
 
+  readAndroidHelper(owner, scope, job, signal, timeout) {
+    if (!owner.cwd || !path.isAbsolute(owner.cwd)) throw new Error('Android requires a trusted workspace')
+    const script = this.config.androidExecutorScript || path.join(owner.cwd, 'napcat', 'android_executor.py')
+    if (!path.isAbsolute(script)) throw new Error('Android requires a trusted executor path')
+    return this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset, conversation_key: scope, job },
+      { cwd: owner.cwd, timeout, signal })
+  }
+
   async androidPhone(args, exec, ctx) {
     const record = this.captureExec(exec)
     const { scope, origin, observationKind } = record.binding
@@ -1606,7 +1614,7 @@ export class OneBotDecisionAdapter {
       throw new PolicyDeliveryError('suppressed', 'android_private_activity_required')
     }
     if (plain(args) && ['request_login', 'ask_owner', 'login_resolved'].includes(args.action)) {
-      return this.androidLoginHelp(args, exec, record)
+      return this.track(record, this.androidLoginHelp(args, exec, record))
     }
     const ticket = record.ticket
     const callId = exec.callId
@@ -1639,9 +1647,6 @@ export class OneBotDecisionAdapter {
     }
     const promise = (async () => {
       const owner = await this.trustedOwner(scope)
-      if (!owner.cwd || !path.isAbsolute(owner.cwd)) throw new Error('Android requires a trusted workspace')
-      const script = this.config.androidExecutorScript || path.join(owner.cwd, 'napcat', 'android_executor.py')
-      if (!path.isAbsolute(script)) throw new Error('Android requires a trusted executor path')
       await check()
       if (record.androidApp && ['tap', 'swipe', 'type_text'].includes(job.action) &&
           this.intentPlanner.store.loginHelp(owner, scope).some(help => help.app === record.androidApp)) {
@@ -1649,8 +1654,7 @@ export class OneBotDecisionAdapter {
       }
       let value
       try {
-        value = await this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset,
-          conversation_key: scope, job }, { cwd: owner.cwd, timeout: 58 * 1000, signal: exec.signal })
+        value = await this.readAndroidHelper(owner, scope, job, exec.signal, 58 * 1000)
       } catch {
         return { status: 'unknown', code: 'android_executor_interrupted' }
       }
@@ -1684,6 +1688,7 @@ export class OneBotDecisionAdapter {
       } catch { /* Keep the same verified frame available through read_image. */ }
       await check()
       record.androidView = shot_id
+      record.androidSerial = serial
       if (job.action === 'open_app') record.androidApp = job.app
       else if (job.action === 'open_game' || job.action === 'home') record.androidApp = null
       return { status: 'observed', file, shot_id, serial, width, height, captured_at, sha256,
@@ -1724,17 +1729,35 @@ export class OneBotDecisionAdapter {
       let outcome = 'unknown'
       try {
         const result = await this.decide({ verdict: 'reply', expression: 'text',
-          text: `我想用模拟器里的${apps[app]}${request.purpose}，卡在登录页了。你方便时能在模拟器上登一下吗？` }, exec)
+          text: `我想用模拟器里的${apps[app]}${request.purpose}，登录这一步卡住了。你方便时能帮我看看吗？` }, exec)
         outcome = result.sent ? 'sent' : result.status === 'unknown' || result.reason === 'no_confirmed_transport' ? 'unknown' : 'pending'
         return { status: outcome, sent: result.sent === true, code: result.reason }
       } finally { update('settle', { requestId: request.requestId, outcome }) }
     }
-    if (!record.ticket || record.androidBusy || !shotId || shotId !== record.androidView || app !== record.androidApp) {
+    if (!record.ticket || record.androidBusy || !shotId || shotId !== record.androidView) {
       throw new PolicyDeliveryError('suppressed', 'android_current_app_view_required')
     }
-    const permission = await this.policy.check(record.ticket, { scope, kind: 'tool_action' })
-    if (!permission.allowed) throw new PolicyDeliveryError('suppressed', permission.reason)
-    return current(() => update(recording ? 'record' : 'resolve', { purpose, requestId: shotId }))
+    record.androidBusy = true
+    try {
+      const permission = await this.policy.check(record.ticket, { scope, kind: 'tool_action' })
+      if (!permission.allowed) throw new PolicyDeliveryError('suppressed', permission.reason)
+      let proof
+      try {
+        proof = await this.readAndroidHelper(owner, scope, { action: 'foreground', expected_shot_id: shotId }, exec.signal, 7500)
+      } catch {
+        return { status: 'unknown', code: 'android_foreground_interrupted' }
+      }
+      this.validateOwnerContext(proof, 'dsh-android-result/v1', scope, owner)
+      if (proof.status !== 'foreground' || proof.app !== app || proof.shot_id !== shotId || proof.serial !== record.androidSerial) {
+        throw new PolicyDeliveryError('suppressed', 'android_current_app_view_required')
+      }
+      const fresh = await this.trustedOwner(scope)
+      if (fresh.workspace_key !== owner.workspace_key || fresh.agent_key !== owner.agent_key) throw new Error('Android owner changed')
+      return await current(() => {
+        record.androidApp = app
+        return update(recording ? 'record' : 'resolve', { purpose, requestId: shotId })
+      })
+    } finally { record.androidBusy = false }
   }
 
   async synthesizeVoice(args, exec) {

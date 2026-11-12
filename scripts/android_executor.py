@@ -8,7 +8,7 @@ import sys
 import time
 
 from android_panel import AndroidPanel, PanelAndroidError
-from androidd import AGENT_JOB_SECONDS, agent_apps, agent_emulator_target
+from androidd import AGENT_JOB_SECONDS, AndroidError, AndroidWorker, agent_apps, agent_emulator_target
 from runtime_capabilities import DEFAULTS, _configuration, entertainment_guide, owner_of
 
 
@@ -16,6 +16,7 @@ SCHEMA = "dsh-android-result/v1"
 ACTIONS = {
     "shot": set(), "tap": {"x", "y"}, "swipe": {"x1", "y1", "x2", "y2", "ms"},
     "back": set(), "home": set(), "open_game": set(), "open_app": {"app"}, "type_text": {"text"},
+    "foreground": set(),
 }
 FRAME_NAME = re.compile(r"[a-f0-9]{32}\.png")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -58,7 +59,20 @@ def stage_frame(directory, shot_id, raw, captured_at):
     return str(output)
 
 
-def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sleep=time.sleep):
+def foreground_package(directory, serial):
+    device = AndroidWorker()
+    if device.serial != serial or device.work.resolve() != directory.resolve():
+        raise AndroidError("configuration", "Android foreground target changed")
+    report = device.shell("dumpsys", "activity", "activities", timeout=4)
+    for field in ("topResumedActivity", "mResumedActivity"):
+        packages = set(re.findall(r"(?m)^\s*" + field + r"\b[^\r\n]*?\s([a-zA-Z][\w.]*)/", report))
+        if packages:
+            return next(iter(packages)) if len(packages) == 1 else None
+    return None
+
+
+def execute(request, *, panel_factory=AndroidPanel, foreground_probe=foreground_package,
+            monotonic=time.monotonic, sleep=time.sleep):
     if not isinstance(request, dict) or set(request) != {"cwd", "agent_preset", "conversation_key", "job"}:
         raise ValueError("Invalid Android tool request")
     owner = owner_of(request["cwd"], request["agent_preset"])
@@ -105,6 +119,17 @@ def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sl
     try:
         ordinary_directory(directory)
         panel = panel_factory(directory=directory, serial=serial, max_age=options.get("maxShotAgeSeconds", 30))
+        if action == "foreground":
+            shot_id = job.get("expected_shot_id")
+            first = panel.status(serial)
+            if not shot_id or not first.get("ok") or first.get("shot_id") != shot_id:
+                return dict(base, status="unavailable", code="stale_view")
+            package = foreground_probe(directory, serial)
+            last = panel.status(serial)
+            if not last.get("ok") or last.get("shot_id") != shot_id or last.get("seq") != first.get("seq"):
+                return dict(base, status="unavailable", code="stale_view")
+            app = next((alias for alias, allowed in agent_apps(options).items() if allowed == package), None)
+            return dict(base, status="foreground", serial=serial, shot_id=shot_id, app=app)
         # Publication may succeed even if its caller later loses the response.
         submitted = True
         try:
@@ -130,7 +155,7 @@ def execute(request, *, panel_factory=AndroidPanel, monotonic=time.monotonic, sl
                             width=status["width"], height=status["height"], captured_at=status["captured_at"])
             sleep(0.2)
         return dict(base, status="unknown", code="observation_timeout")
-    except PanelAndroidError as error:
+    except (AndroidError, PanelAndroidError) as error:
         return dict(base, status="unknown" if submitted else "error", code=error.code)
     except FileNotFoundError:
         return dict(base, status="unknown" if submitted else "unavailable", code="worker_state_unavailable")

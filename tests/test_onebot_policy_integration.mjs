@@ -945,6 +945,10 @@ test('a primary opportunity can browse Android, request manual login once, and r
   adapter.readTrustedHelper = async (_script, request) => {
     jobs.push(request.job)
     const owner = await adapter.trustedOwner(request.conversation_key)
+    if (request.job.action === 'foreground') {
+      return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+        status: 'foreground', app: 'meituan', shot_id: request.job.expected_shot_id, serial: 'emulator-5556' }
+    }
     const shot_id = jobs.length.toString(16).padStart(32, '0')
     const file = path.join(h.dir, shot_id + '.png')
     fs.writeFileSync(file, png, { flag: 'wx' })
@@ -961,11 +965,12 @@ test('a primary opportunity can browse Android, request manual login once, and r
   const [text, image] = h.tools.get('android_phone').output.render({}, shot)
   assert.equal(JSON.parse(text.text).attachment, undefined)
   assert.deepEqual(image, { type: 'image', attachment })
-  const page = await phone('open_app', { app: 'meituan', expected_shot_id: shot.shot_id })
+  const page = await phone('tap', { x: 1, y: 1, expected_shot_id: shot.shot_id })
   const login = { app: 'meituan', purpose: '看看附近的咖啡店', expected_shot_id: page.shot_id }
   await assert.rejects(() => phone('request_login', { ...login, app: 'qq' }), { reason: 'android_current_app_view_required' })
   await assert.rejects(() => phone('request_login', { ...login, purpose: '发送验证码' }), /Invalid Android login assistance request/)
   assert.equal((await phone('request_login', login)).status, 'pending')
+  assert.deepEqual(jobs.at(-1), { action: 'foreground', expected_shot_id: page.shot_id })
   await assert.rejects(() => phone('ask_owner', { app: 'meituan' }), { reason: 'android_login_followup_required' })
   assert.equal(h.calls.length, 0)
   await visit.end()

@@ -556,10 +556,11 @@ def build_context(cwd, agent_preset, conversation_key, *, process_probe=probe_pr
                 android["agent_navigation"] = (
                     "For a current request or a self-chosen goal in the primary activity, use tool_action "
                     "and the screenshot workflow. Pick something you actually want to check. "
-                    "Choose open_app with a configured app alias and the observed frame ID. Verify the actual "
+                    "For a named configured app, use open_app with its alias right after the first shot. Verify the actual "
                     "foreground from the next PNG before continuing. After observing a focused search box, "
                     "use type_text for a short ASCII query and check the resulting PNG before tapping Search. "
-                    "Keep autonomous visits short. If the real app login page blocks a concrete task, "
+                    "Keep visits focused and stop repeating actions that make no progress. If a real app login page "
+                    "or login restriction blocks a concrete task, stop navigating and "
                     "use request_login with the app, that frame ID and the short purpose. On a later activity "
                     "use ask_owner once if the task still matters. After the owner manually logs in, check the "
                     "real app again and use login_resolved before continuing. Never enter or ask for credentials, "
