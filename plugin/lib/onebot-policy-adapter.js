@@ -1022,7 +1022,7 @@ export class OneBotDecisionAdapter {
     // keeping its inbox insertion alone would preserve bytes but lose context.
     const binding = record?.binding
     const internal = binding?.origin === 'observation' && localOpportunity(binding) &&
-      record.decision?.verdict === 'tool_action'
+      (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
     if (!(binding?.origin === 'live' || internal) || !record.nativeStepEntered || record.claimConflict || record.ended ||
         record.inFlight.size) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
@@ -1106,9 +1106,10 @@ export class OneBotDecisionAdapter {
       // A physically queued owned successor can replace a stale chat or internal turn at
       // a step boundary. An admission still in progress cannot trigger this.
       if (!this.backendGuard.current(record.binding.backendStamp)) return { kind: 'reject', reason: 'backend_selection_changed' }
-      if (this.supersedingLiveInput(chat, record)) {
+      const successor = this.supersedingLiveInput(chat, record)
+      if (successor) {
         record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
-          turn: request.turn, epoch: this.startEpoch, binding: record.binding })
+          turn: request.turn, epoch: this.startEpoch, binding: record.binding, revision: successor.binding.revision })
         this.diagnose(record.binding.scope, record.binding.messageId, 'blocked', { reason: 'superseded_live_input', turn: request.turn })
         return { kind: 'reject', reason: 'superseded_live_input' }
       }
@@ -1907,6 +1908,20 @@ export class OneBotDecisionAdapter {
       }
       if (!completion) return
       if (!record.decision) {
+        const superseded = record.supersededIdleWake
+        if (event.data.reason?.kind === 'blocked' && superseded?.turn === record.turn &&
+            superseded.binding === record.binding && !superseded.signal?.aborted &&
+            record.binding.origin === 'observation' && record.binding.observationKind === 'activity.opportunity' &&
+            localOpportunity(record.binding) && !record.ticket && record.outcomes.length === 0) {
+          try {
+            const outcome = await this.policy.completeObservationWithoutDecision({
+              scope, eventId: record.binding.messageId, expectedRevision: record.binding.revision,
+              nativeTurnCompleted: false, nativeSupersedingRevision: superseded.revision,
+            })
+            completion.resolve({ completed: true, ...outcome })
+          } catch (error) { completion.reject(error) }
+          return
+        }
         const rest = record.nativeRestInterrupted
         if (event.data.reason?.kind === 'blocked' && ['autonomy_rest', 'observation_expired'].includes(rest?.reason) &&
             rest.turn === record.turn && rest.binding === record.binding && !rest.signal?.aborted &&

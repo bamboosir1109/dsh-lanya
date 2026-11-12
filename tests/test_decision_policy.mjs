@@ -283,6 +283,9 @@ test('observations have no user/control authority and a separate pinned dedup na
   const event = { scope, eventId: 'obs:one', kind: 'quiet', producer: 'fixture', createdAt: 100 }
   const observed = await policy.recordObservation(event)
   assert.equal(observed.accepted, true)
+  await assert.rejects(() => policy.completeObservationWithoutDecision({ scope, eventId: event.eventId,
+    expectedRevision: observed.revision, nativeTurnCompleted: false, nativeSupersedingRevision: observed.revision + 1 }),
+  /exact undecided no-delivery turn/)
   assert.equal((await policy.decide({ scope, messageId: event.eventId, expectedRevision: observed.revision,
     verdict: 'resume', controlUpdate: true })).reason, 'unauthorized_control')
   const decided = await policy.decide({ scope, messageId: event.eventId, expectedRevision: observed.revision, verdict: 'idle' })

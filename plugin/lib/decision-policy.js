@@ -73,7 +73,8 @@ const noDecisionId = (scope, eventId, revision) => createHash('sha256').update([
 const localOutcomeValid = (value, scope, eventId, revision) => plain(value) &&
   Object.keys(value).sort().join(',') === 'completed_at,local_outcome_id,native_turn_completed,observation_revision,reason,status' &&
   value.status === 'no_decision' && ((value.reason === 'model_completed_without_decision' && value.native_turn_completed === true) ||
-    ((value.reason === 'native_admission_refused' || REST_REASONS.has(value.reason)) && value.native_turn_completed === false)) &&
+    ((['native_admission_refused', 'superseded_live_input'].includes(value.reason) || REST_REASONS.has(value.reason)) &&
+      value.native_turn_completed === false)) &&
   Number.isSafeInteger(revision) && revision >= 1 && value.observation_revision === revision &&
   Number.isSafeInteger(value.completed_at) && value.completed_at >= 0 && value.local_outcome_id === noDecisionId(scope, eventId, revision)
 
@@ -635,7 +636,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * This does not grant a verdict, ticket, or persistent silence change.
      */
     async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted,
-      nativeAdmissionReason, nativeModelSteps, nativeRestInterrupted, nativeRestInterruptedAt } = {}) {
+      nativeAdmissionReason, nativeModelSteps, nativeRestInterrupted, nativeRestInterruptedAt, nativeSupersedingRevision } = {}) {
       canonicalScope(scope)
       // These attestations come only from the native adapter, never qq_decide
       // arguments. A refused admission is not a completed model turn or a
@@ -647,9 +648,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       const restInterrupted = nativeRestInterrupted === true && nativeTurnCompleted === false &&
         nativeAdmissionReason === undefined && Number.isSafeInteger(interruptionAt) && interruptionAt <= now() &&
         interruptionAt >= 0 && autonomousRestState(interruptionAt).resting
-      if (nativeRestInterrupted !== undefined && nativeRestInterrupted !== true ||
+      const superseded = Number.isSafeInteger(nativeSupersedingRevision) && nativeSupersedingRevision > expectedRevision &&
+        nativeTurnCompleted === false && nativeAdmissionReason === undefined && nativeModelSteps === undefined &&
+        nativeRestInterrupted === undefined && nativeRestInterruptedAt === undefined
+      if (nativeSupersedingRevision !== undefined && !superseded ||
+          nativeRestInterrupted !== undefined && nativeRestInterrupted !== true ||
           nativeRestInterruptedAt !== undefined && nativeRestInterrupted !== true ||
-          !identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || (!completed && !refused && !restInterrupted)) {
+          !identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+          (!completed && !refused && !restInterrupted && !superseded)) {
         throw new PolicyStateError('Exact native completion or zero-step admission refusal required')
       }
       return transaction((state) => {
@@ -661,12 +667,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         // excludes a legal ticket/send across ALL earlier revisions of this
         // same pinned event, without attributing other events' deliveries to it.
         if (!entry || entry.revision !== expectedRevision || entry.decision ||
+            superseded && latestLiveRevision(current) < nativeSupersedingRevision ||
             current.deliveries.some(item => item.revision === expectedRevision) ||
             (current.revision === expectedRevision && (current.current?.decided || current.current?.ticket))) {
           throw new PolicyStateError('Observation is not an exact undecided no-delivery turn')
         }
         if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision',
-          reason: restInterrupted ? 'autonomy_rest' : refused ? 'native_admission_refused' : 'model_completed_without_decision',
+          reason: superseded ? 'superseded_live_input'
+            : restInterrupted ? 'autonomy_rest' : refused ? 'native_admission_refused' : 'model_completed_without_decision',
           native_turn_completed: completed, observation_revision: expectedRevision, completed_at: now(),
           local_outcome_id: noDecisionId(scope, eventId, expectedRevision) }
         return clone(entry.localOutcome)

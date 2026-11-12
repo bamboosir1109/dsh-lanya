@@ -34,10 +34,12 @@ function validateCompletion(marker, event, sha256, raw) {
     const fields = ['version', 'event_raw', 'event_id', 'scope', 'event_sha256', 'completed_at', 'status',
       'reason', 'local_outcome_id', 'observation_revision', 'native_turn_completed']
     const restClosure = ['autonomy_rest', 'observation_expired'].includes(marker.reason) && marker.native_turn_completed === false
+    const activity = event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)
+    const superseded = activity && marker.reason === 'superseded_live_input' && marker.native_turn_completed === false
     if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
         !((marker.reason === 'model_completed_without_decision' && marker.native_turn_completed === true) ||
-          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false) || restClosure) ||
-        !(restClosure || (event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)) ||
+          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false) || restClosure || superseded) ||
+        !(restClosure || activity ||
           (event.kind === 'social.opportunity' && event.producer === 'social-planner')) ||
         marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
         !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||

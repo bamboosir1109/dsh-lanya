@@ -1327,41 +1327,56 @@ test('native burst stops stale model steps and waits for old accounting before w
   assert.equal(h.agent.inbox.hasPending,false)
 })
 
-test('a new private input yields a decided autonomous tool turn and is claimed once', async t => {
-  const h = await nativeDriverFixture(t)
-  const entered = defer(), release = defer()
-  const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
-  const step = h.agent.step
-  h.agent.step = async () => {
-    const result = await step()
-    if (h.steps.length !== 1) return result
-    const record = adapter.state(h.chat).active
-    const decision = await adapter.policy.decide({ scope, expectedRevision: record.binding.revision,
-      messageId: record.binding.messageId, verdict: 'tool_action' })
-    assert.equal(decision.accepted, true)
-    record.ticket = decision.ticket
-    record.decision = { verdict: 'tool_action' }
-    record.decisionId = decision.decisionId
-    entered.resolve()
-    await release.promise
-    return null
-  }
-  const observed = await adapter.policy.recordObservation({ scope, eventId: 'phone-opportunity', kind: 'activity.opportunity',
-    producer: 'mind', createdAt: adapter.now() })
-  await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation',
-    observationKind: 'activity.opportunity', observationProducer: 'mind', observationCreatedAt: adapter.now() }) }, async () => {
-    const text = await adapter.enrichContext(scope, 'phone fixture')
-    adapter.dispatchNative(h.chat, { id: 'phone-fixture', source: { kind: 'plugin:dsh-lanya-observation' },
-      content: [{ type: 'text', text }] }, 'admin', 'phone fixture')
+test('a new private input yields autonomous activity before or after the tool decision and is claimed once', async t => {
+  for (const decided of [false, true]) await t.test(decided ? 'decided' : 'undecided', async t => {
+    const h = await nativeDriverFixture(t)
+    const entered = defer(), release = defer()
+    let resolve, reject
+    const result = new Promise((yes, no) => { resolve = yes; reject = no })
+    const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    const step = h.agent.step
+    h.agent.step = async () => {
+      const result = await step()
+      if (h.steps.length !== 1) return result
+      if (decided) {
+        const record = adapter.state(h.chat).active
+        const decision = await adapter.policy.decide({ scope, expectedRevision: record.binding.revision,
+          messageId: record.binding.messageId, verdict: 'tool_action' })
+        assert.equal(decision.accepted, true)
+        record.ticket = decision.ticket
+        record.decision = { verdict: 'tool_action' }
+        record.decisionId = decision.decisionId
+      }
+      entered.resolve()
+      await release.promise
+      return null
+    }
+    const event = { scope, eventId: 'phone-opportunity', kind: 'activity.opportunity',
+      producer: 'mind', createdAt: adapter.now() }
+    const observed = await adapter.policy.recordObservation(event)
+    await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', completion: { resolve, reject },
+      observationKind: event.kind, observationProducer: event.producer, observationCreatedAt: event.createdAt }) }, async () => {
+      const text = await adapter.enrichContext(scope, 'phone fixture')
+      adapter.dispatchNative(h.chat, { id: 'phone-fixture', source: { kind: 'plugin:dsh-lanya-observation' },
+        content: [{ type: 'text', text }] }, 'admin', 'phone fixture')
+    })
+    await entered.promise
+    await h.receive('new live input during phone use')
+    const newest = h.agent.inbox.nextTurn[0]
+    release.resolve()
+    const outcome = await result
+    assert.equal(outcome.status, decided ? 'decided' : 'no_decision')
+    if (!decided) {
+      assert.equal(outcome.reason, 'superseded_live_input')
+      assert.equal(outcome.native_turn_completed, false)
+      const saved = (await adapter.policy.snapshot(scope)).observations.find(item => item.eventId === event.eventId)
+      assert.equal(saved.localOutcome.local_outcome_id, outcome.local_outcome_id)
+    }
+    await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
+    assert.deepEqual(h.steps.map(item => item.claimedId), ['phone-fixture', newest.id])
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.agent.inbox.hasPending, false)
   })
-  await entered.promise
-  await h.receive('new live input during phone use')
-  const newest = h.agent.inbox.nextTurn[0]
-  release.resolve()
-  await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
-  assert.deepEqual(h.steps.map(item => item.claimedId), ['phone-fixture', newest.id])
-  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
-  assert.equal(h.agent.inbox.hasPending, false)
 })
 
 test('canceling a superseded native turn does not cause an automatic wake or replay', async t => {
