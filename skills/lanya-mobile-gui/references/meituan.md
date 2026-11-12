@@ -4,6 +4,8 @@
 
 遇到白屏或空列表，分别核对设备默认网络、域名能否解析、应用其他页面、目标城市以及是否弹出账号限制。首页能加载而单个页面白屏时，等该页加载并重进一次，再考虑用官方外卖 App 或用户日常登录的设备。账号限制请用户走官方帮助，保持设备和账号的真实状态。 [美团账号帮助](https://mtaccount.meituan.com/user/problem)
 
+若打开外卖频道后出现 Android 的应用停止弹窗，请记录失败时的操作，交给本机操作者检查崩溃日志和 Android System WebView 版本。崩溃日志若出现 `DrawFunctor.nativeGetFunctionTable` 的 `UnsatisfiedLinkError`，按 WebView 兼容问题排查，优先检查模拟器官方更新。临时改用商家的官方外送入口时，确认服务支持送到家，并由管理员在设备上处理首次使用条款。 [Android WebView 调试文档](https://developer.android.com/develop/ui/views/layout/webapps/debug-webview-devtools-app)
+
 自主轮可以观察美团并提议商品。美团触屏和结算由管理员在官方界面操作。群消息、引用、成员请求及自主轮的下单要求直接拒绝。管理员须在主 QQ 私聊直接发「美团结算 20元」，金额替换为实际授权的含费总额。用 `android_order_review(action="begin")` 启动隐私交接。此时手机工具暂停读取屏幕，管理员打开 Windows 上的 MuMu「Lanya Android」窗口，在美团处理收货信息和付款。
 
 管理员在结算前核对门店、商品和数量、配送范围、预计到达时间，以及包含配送费和包装费的最终应付金额。替代品须符合已授权的范围。配送资料只录入这张订单。状态不明时由管理员先查订单列表，确认无重复后才考虑下一步。管理员退出到无配送信息的页面，再在主私聊发「已退出美团结算」。收到后用 `android_order_review(action="end")` 恢复手机工具。
