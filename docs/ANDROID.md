@@ -18,7 +18,7 @@
 
 桌面设备断线时，请在模拟器恢复后重新截图。worker 会对同一回环设备尝试重连，两次重连至少间隔十秒。先看新截图确认当前界面，再决定下一步。断线前已提交的点击、滑动或应用启动结果可能未知。
 
-确认应用已安装后，可在 `android.agentApps` 里启用 `amap`（高德）、`meituan`（美团）或 `qq`（QQ）。主私聊选择 `tool_action` 后先截图并读取 PNG，再用 `android_phone({action:"open_app",app:"amap",expected_shot_id:"<本轮截图 ID>"})`。查看新图确认前台应用后继续点击或滑动。确认搜索框已聚焦后，可以用 `type_text` 输入最多 160 个可打印 ASCII 字符，再看新截图确认输入。首次使用协议和账号登录由用户在应用界面处理。
+确认应用已安装后，可在 `android.agentApps` 里启用 `amap`（高德）、`meituan`（美团）或 `qq`（QQ）。主 Agent 在主私聊或可信自主轮选择 `tool_action`，先看截图，再用 `android_phone({action:"open_app",app:"amap",expected_shot_id:"<本轮截图 ID>"})`。查看新图确认前台应用后继续点击或滑动。确认搜索框已聚焦后，可以用 `type_text` 输入最多 160 个可打印 ASCII 字符，再看新截图确认输入。首次使用协议和账号登录由用户在应用界面处理。
 
 桌面模拟器的启动命令先解析应用的启动 Activity，再等待 Android 确认目标应用显示。启动结果未确认时，重新截图观察当前界面后再决定下一步。
 
@@ -49,7 +49,9 @@ python -B scripts/build_android_game.py --jdk '<JDK 21 目录>' --sdk '<Android 
 adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
 ```
 
-同一主 Agent 在主私聊或可信自主活动中选择 `tool_action`，调用 `android_phone({action:"shot"})` 并用 `read_image` 看返回的 PNG。用当前轮的图 ID 打开 `open_game`，观察游戏实际进入前台，再用 `swipe` 或 `tap` 操作。每步返回独立的 PNG 和新 ID。动作结果未知时重新截图，依据屏幕决定下一步。该工具只授权本机动作。
+同一主 Agent 在主私聊或可信自主活动中选择 `tool_action`，调用 `android_phone({action:"shot"})` 看随结果返回的 PNG。附件服务不可用时，可用 `read_image` 读取结果里的路径。用当前轮的图 ID 打开 `open_game`，观察游戏实际进入前台，再用 `swipe` 或 `tap` 操作。每步返回独立的 PNG 和新 ID。动作结果未知时重新截图，依据屏幕决定下一步。
+
+登录页挡住实际任务时，`request_login` 将当前应用和简短目的保存在主私聊的本机状态中。之后的自主轮可通过 `ask_owner` 请求用户在模拟器登录。发送沿用该私聊的正常守卫，状态不明时停止重试。用户完成后，主 Agent 打开应用并核对新画面，通过 `login_resolved` 继续任务。
 
 主私聊的精简提示会介绍已启用的原生安卓工具，截图按需获取。自主活动指南在专用 worker 持锁时把离线 2048 列入可选活动，由主 Agent 决定何时尝试并通过新截图确认设备和棋盘状态。
 
@@ -77,4 +79,4 @@ adb -P 5037 -s emulator-5556 install '<新构建目录>/lanya-2048.apk'
 
 截图核对 PNG 签名、chunk CRC、完整 IEND、压缩流和扫描行长度，并与同一 serial 的 `wm size` 尺寸核对，支持旋转后的宽高互换。暂不接受交错 PNG。失败结果是 `offline` 或 `error`，`shot`/`shot_id` 为空；磁盘可能保留上一张好图供排查，不能把它当成这次成功截图。
 
-面板队列的 `shell` 支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`。文本参数按远端 shell 规则加引号。主 Agent 工具提供截图、点击、滑动、返回、主页、打开固定游戏，以及在主私聊中打开已配置应用和输入查询。
+面板队列的 `shell` 支持只读 `getprop`、单服务 `dumpsys`、`wm size/density`、`settings get/list`、`pm list`。文本参数按远端 shell 规则加引号。主 Agent 工具提供截图、点击、滑动、返回、主页、打开固定游戏、打开已配置应用和输入查询。

@@ -104,7 +104,8 @@ async function setup(t, stagedEgress = false) {
   // Most transport tests isolate this independent enrichment; dedicated cases
   // below execute the real capability helper against an empty temporary workspace.
   bridge.lanyaPolicy.runtimeCapabilities = async () => null
-  const ctx = { tools: { register: definition => { tools.set(definition.name, definition); return () => {} } },
+  const ctx = { get: name => name === 'attachments' ? deps.attachments : undefined,
+    tools: { register: definition => { tools.set(definition.name, definition); return () => {} } },
     systemPrompt: { section: value => prompts.push(value.text) }, waitMedia: () => deps.waitMedia?.() }
   bridge.installChannelScope(ctx)
   t.after(async () => { await bridge.stop() })
@@ -927,6 +928,69 @@ test('native Android tool requires the current action ticket and deduplicates in
   assert.deepEqual(jobs.at(-1), text)
   assert.equal(h.calls.length, 0)
   await h.end(chat, turn)
+})
+
+test('a primary opportunity can browse Android, request manual login once, and resume with fresh evidence', async t => {
+  const h = await setup(t)
+  const clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy
+  const jobs = []
+  const png = Buffer.from('89504e470d0a1a0a', 'hex')
+  const attachment = { attachmentId: 'fixture-frame', mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }
+  h.deps.attachments = { saveImage: async input => {
+    assert.deepEqual(input.data, png)
+    assert.equal(input.mediaType, 'image/png')
+    return attachment
+  } }
+  adapter.readTrustedHelper = async (_script, request) => {
+    jobs.push(request.job)
+    const owner = await adapter.trustedOwner(request.conversation_key)
+    const shot_id = jobs.length.toString(16).padStart(32, '0')
+    const file = path.join(h.dir, shot_id + '.png')
+    fs.writeFileSync(file, png, { flag: 'wx' })
+    return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+      status: 'observed', file, shot_id, serial: 'emulator-5556', width: 1, height: 1,
+      captured_at: clock.now() / 1000, bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') }
+  }
+  const visit = await opportunity(h)
+  const phone = (action, fields = {}) => h.tools.get('android_phone').execute({ action, ...fields }, h.exec(visit.chat))
+  await h.decide(visit.chat, 'tool_action')
+  const shot = await phone('shot')
+  assert.equal(shot.image_attached, true)
+  assert.equal(shot.inspect, undefined)
+  const [text, image] = h.tools.get('android_phone').output.render({}, shot)
+  assert.equal(JSON.parse(text.text).attachment, undefined)
+  assert.deepEqual(image, { type: 'image', attachment })
+  const page = await phone('open_app', { app: 'meituan', expected_shot_id: shot.shot_id })
+  const login = { app: 'meituan', purpose: '看看附近的咖啡店', expected_shot_id: page.shot_id }
+  await assert.rejects(() => phone('request_login', { ...login, app: 'qq' }), { reason: 'android_current_app_view_required' })
+  await assert.rejects(() => phone('request_login', { ...login, purpose: '发送验证码' }), /Invalid Android login assistance request/)
+  assert.equal((await phone('request_login', login)).status, 'pending')
+  await assert.rejects(() => phone('ask_owner', { app: 'meituan' }), { reason: 'android_login_followup_required' })
+  assert.equal(h.calls.length, 0)
+  await visit.end()
+  await visit.completion
+  clock.advance(180000)
+
+  const review = await opportunity(h, { producer: 'main-review' })
+  assert.match(review.chat.messages.at(-1).content[0].text, /<android_login_help>/)
+  assert.equal((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  assert.equal(h.calls.length, 1)
+  assert.match(JSON.stringify(h.calls[0].params.message), /美团看看附近的咖啡店/)
+  await review.end()
+  await review.completion
+  clock.advance(180000)
+
+  const resume = await opportunity(h)
+  assert.notEqual((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  await h.decide(resume.chat, 'tool_action')
+  const fresh = await phone('shot')
+  const reopened = await phone('open_app', { app: 'meituan', expected_shot_id: fresh.shot_id })
+  assert.equal((await phone('login_resolved', { app: 'meituan', expected_shot_id: reopened.shot_id })).status, 'resolved')
+  assert.equal((await phone('type_text', { text: 'coffee', expected_shot_id: reopened.shot_id })).status, 'observed')
+  assert.equal(h.calls.length, 1)
+  await resume.end()
+  await resume.completion
 })
 
 function voiceFixture(h, mode = 'ready', receiptOverrides = {}) {

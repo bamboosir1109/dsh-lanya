@@ -548,7 +548,7 @@ export class OneBotDecisionAdapter {
         if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size >= 8 * 1024 * 1024) return
       } catch (error) { if (error.code !== 'ENOENT') return }
       const fields = Object.fromEntries(Object.entries(detail).filter(([key, value]) =>
-        ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status'].includes(key) &&
+        ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status', 'budget_wait_ms'].includes(key) &&
         (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
       fs.appendFileSync(file, JSON.stringify({ schema: 'qq-interaction/v1', at: this.now(),
         scope: identity(scope).slice(0, 16), input: identity(scope, messageId).slice(0, 24), phase, ...fields }) + '\n', { mode: 0o600 })
@@ -568,7 +568,7 @@ export class OneBotDecisionAdapter {
     if (this.intentPlanner.scopes.has(ctx)) return []
     const disposers = []
     try {
-      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition(), this.androidPhoneDefinition()]) disposers.push(ctx.tools.register(defineTool(definition)))
+      for (const definition of [...this.intentPlanner.definitions(), ...this.narrativeDiary.definitions(), ...this.accountActivity.definitions(), this.memeReviewDefinition(), this.androidPhoneDefinition(ctx)]) disposers.push(ctx.tools.register(defineTool(definition)))
     } catch (error) {
       const failures = []
       for (const dispose of disposers.reverse()) try { dispose?.() } catch (cleanup) { failures.push(cleanup) }
@@ -1019,7 +1019,10 @@ export class OneBotDecisionAdapter {
     // A claimed input is added to model history only by the first native
     // step. Let it enter once so its meaning is available to the successor;
     // keeping its inbox insertion alone would preserve bytes but lose context.
-    if (record?.binding?.origin !== 'live' || !record.nativeStepEntered || record.claimConflict || record.ended ||
+    const binding = record?.binding
+    const internal = binding?.origin === 'observation' && localOpportunity(binding) &&
+      record.decision?.verdict === 'tool_action'
+    if (!(binding?.origin === 'live' || internal) || !record.nativeStepEntered || record.claimConflict || record.ended ||
         record.inFlight.size) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
     if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
@@ -1099,7 +1102,7 @@ export class OneBotDecisionAdapter {
         }
         return { kind: 'reject', reason: 'unbound_native_input' }
       }
-      // A physically queued owned successor can replace a stale live turn at
+      // A physically queued owned successor can replace a stale chat or internal turn at
       // a step boundary. An admission still in progress cannot trigger this.
       if (!this.backendGuard.current(record.binding.backendStamp)) return { kind: 'reject', reason: 'backend_selection_changed' }
       if (this.supersedingLiveInput(chat, record)) {
@@ -1114,7 +1117,9 @@ export class OneBotDecisionAdapter {
           signal: request.signal, reason: restReason, at: restAt })
         return { kind: 'reject', reason: restReason }
       }
+      let budgetWaitMs
       if (this.budgetEnabled && !record.binding.budget) {
+        const budgetStartedAt = Date.now()
         const binding = record.binding
         const local = { binding }
         try {
@@ -1145,6 +1150,7 @@ export class OneBotDecisionAdapter {
           return { kind: 'reject', reason: 'stale_budget_admission' }
         }
         record.binding = local.binding
+        budgetWaitMs = Math.max(0, Date.now() - budgetStartedAt)
       }
       const admissionAt = this.now(), afterAdmissionRest = this.autonomyBlockReason(record.binding, admissionAt)
       if (afterAdmissionRest) {
@@ -1153,7 +1159,8 @@ export class OneBotDecisionAdapter {
         return { kind: 'reject', reason: afterAdmissionRest }
       }
       record.nativeStepEntered = true
-      this.diagnose(record.binding.scope, record.binding.messageId, 'step_ready', { turn: request.turn, step: request.step })
+      this.diagnose(record.binding.scope, record.binding.messageId, 'step_ready',
+        { turn: request.turn, step: request.step, budget_wait_ms: budgetWaitMs })
       return next()
     })
     ctx.on('agent/turn-stopping', request => this.remindUndecidedLiveTurn(request))
@@ -1268,7 +1275,7 @@ export class OneBotDecisionAdapter {
     const marker = record.supersededIdleWake || record.unboundIdleWake
     if (!marker || record.unboundIdleWakeConsumed || event.data.reason?.kind !== 'blocked') return
     const superseded = Boolean(record.supersededIdleWake)
-    if (superseded && (record.binding !== marker.binding || record.binding?.origin !== 'live')) return
+    if (superseded && record.binding !== marker.binding) return
     record.unboundIdleWakeConsumed = true
     const agent = marker.agent, state = this.state(chat), scope = chat.chatId
     const refuse = reason => this.log('warn', 'native_internal_idle_wake_refused:' + reason)
@@ -1569,30 +1576,36 @@ export class OneBotDecisionAdapter {
         autonomous_cadence_min: cadence.minutes } : {}) }
   }
 
-  androidPhoneDefinition() {
+  androidPhoneDefinition(ctx) {
     return {
       name: 'android_phone',
-      description: 'Operate the enabled local Android emulator in the owner’s private turn. Choose tool_action, take a shot, inspect it with read_image, then pass its same-turn shot ID to the next action. In live chat, open_app opens a configured app and type_text enters a short ASCII query in the observed focused search box. Use app navigation for observation and search. No credentials, posting, QQ send or purchases. Every successful action returns a new PNG. After an uncertain outcome, observe again before deciding what to do.',
+      description: 'Use the owner’s local Android in live requests or your own primary activity. Choose tool_action and inspect the attached PNG. Call read_image only if the result provides an inspect fallback. Use the current turn shot ID for navigation. Open a configured app or play 2048. Keep voluntary visits short and continue a useful goal in later opportunities. When a real login screen blocks a concrete task, record it with request_login and a short purpose. On a later primary opportunity, ask_owner can send one short private request under QQ policy. After verified manual login, use login_resolved. Credentials, posting and purchases are outside phone navigation.',
       parameters: {
-        action: { type: 'string', required: true, enum: ['shot', 'open_game', 'open_app', 'type_text', 'tap', 'swipe', 'back', 'home'] },
-        app: { type: 'string', enum: ['amap', 'meituan', 'qq'], description: 'Configured alias for open_app.' },
+        action: { type: 'string', required: true, enum: ['shot', 'open_game', 'open_app', 'type_text', 'tap', 'swipe', 'back', 'home', 'request_login', 'ask_owner', 'login_resolved'] },
+        app: { type: 'string', enum: ['amap', 'meituan', 'qq'], description: 'Configured alias for open_app or the app with a login blocker.' },
         text: { type: 'string', description: 'Short ASCII search query for type_text.' },
-        expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID; required except for shot.' },
+        purpose: { type: 'string', description: 'For request_login, a short description of the task that requires login, without account or credential details.' },
+        expected_shot_id: { type: 'string', description: 'The freshly inspected frame ID. Omit for shot and ask_owner.' },
         x: { type: 'number' }, y: { type: 'number' }, x1: { type: 'number' }, y1: { type: 'number' },
         x2: { type: 'number' }, y2: { type: 'number' }, ms: { type: 'number' },
       },
-      output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      output: { schema: { type: 'json' }, render: (_args, { attachment, ...value }) => [
+        { type: 'text', text: JSON.stringify(value) }, ...(attachment ? [{ type: 'image', attachment }] : []),
+      ] },
       isConcurrencySafe: () => false,
-      execute: (args, exec) => this.androidPhone(args, exec),
+      execute: (args, exec) => this.androidPhone(args, exec, ctx),
     }
   }
 
-  async androidPhone(args, exec) {
+  async androidPhone(args, exec, ctx) {
     const record = this.captureExec(exec)
     const { scope, origin, observationKind } = record.binding
     if (!scope.startsWith('private:') || !(origin === 'live' ||
         origin === 'observation' && observationKind === 'activity.opportunity' && localOpportunity(record.binding))) {
       throw new PolicyDeliveryError('suppressed', 'android_private_activity_required')
+    }
+    if (plain(args) && ['request_login', 'ask_owner', 'login_resolved'].includes(args.action)) {
+      return this.androidLoginHelp(args, exec, record)
     }
     const ticket = record.ticket
     const callId = exec.callId
@@ -1603,9 +1616,6 @@ export class OneBotDecisionAdapter {
         (args.action === 'open_app' ? !['amap', 'meituan', 'qq'].includes(args.app) : Object.hasOwn(args, 'app')) ||
         (args.action === 'type_text' ? typeof args.text !== 'string' : Object.hasOwn(args, 'text'))) {
       throw new Error('Invalid Android phone action')
-    }
-    if (['open_app', 'type_text'].includes(args.action) && origin !== 'live') {
-      throw new PolicyDeliveryError('suppressed', 'android_live_app_request_required')
     }
     const job = structuredClone(args)
     record.androidCalls ??= new Map()
@@ -1632,6 +1642,10 @@ export class OneBotDecisionAdapter {
       const script = this.config.androidExecutorScript || path.join(owner.cwd, 'napcat', 'android_executor.py')
       if (!path.isAbsolute(script)) throw new Error('Android requires a trusted executor path')
       await check()
+      if (record.androidApp && ['tap', 'swipe', 'type_text'].includes(job.action) &&
+          this.intentPlanner.store.loginHelp(owner, scope).some(help => help.app === record.androidApp)) {
+        return { status: 'unavailable', code: 'android_waiting_for_owner_login' }
+      }
       let value
       try {
         value = await this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset,
@@ -1657,16 +1671,69 @@ export class OneBotDecisionAdapter {
       const relative = path.relative(fs.realpathSync(owner.cwd), real)
       const info = fs.lstatSync(file)
       if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) ||
-          !info.isFile() || info.nlink !== 1 || info.size !== bytes ||
-          createHash('sha256').update(fs.readFileSync(real)).digest('hex') !== sha256) {
+          !info.isFile() || info.nlink !== 1 || info.size !== bytes) {
         throw new Error('Android screenshot is outside the workspace or changed')
       }
+      const data = fs.readFileSync(real)
+      if (createHash('sha256').update(data).digest('hex') !== sha256) throw new Error('Android screenshot changed')
+      let attachment
+      try {
+        const saved = await ctx?.get?.('attachments')?.saveImage({ data, mediaType: 'image/png', name: 'android-screen.png' })
+        if (saved?.attachmentId) attachment = saved
+      } catch { /* Keep the same verified frame available through read_image. */ }
+      await check()
       record.androidView = shot_id
+      if (job.action === 'open_app') record.androidApp = job.app
+      else if (job.action === 'open_game' || job.action === 'home') record.androidApp = null
       return { status: 'observed', file, shot_id, serial, width, height, captured_at, sha256,
-        inspect: { tool: 'read_image', file_path: file } }
+        ...(attachment ? { image_attached: true, attachment } : { inspect: { tool: 'read_image', file_path: file } }) }
     })().finally(() => { record.androidBusy = false })
     record.androidCalls.set(callId, { signature, promise })
     return this.track(record, promise)
+  }
+
+  async androidLoginHelp(args, exec, record) {
+    const { scope, origin } = record.binding
+    const { action, app, expected_shot_id: shotId } = args
+    const apps = { amap: '高德地图', meituan: '美团', qq: 'QQ' }
+    const asking = action === 'ask_owner'
+    const recording = action === 'request_login'
+    const keys = ['action', 'app', ...(asking ? [] : ['expected_shot_id']), ...(recording ? ['purpose'] : [])]
+    const purpose = recording && typeof args.purpose === 'string' ? args.purpose.trim() : ''
+    if (typeof app !== 'string' || !Object.hasOwn(apps, app) || Object.keys(args).some(key => !keys.includes(key)) ||
+        recording && (!purpose || purpose.length > 54 || !/^[\p{L}\p{N} ，、的-]+$/u.test(purpose) ||
+          /\d{4}|密码|验证码|令牌|口令|password|token|otp/i.test(purpose))) {
+      throw new Error('Invalid Android login assistance request')
+    }
+    const owner = await this.trustedOwner(scope)
+    const store = this.intentPlanner.store
+    const update = (action, fields = {}) => store.updateLoginHelp({ owner, scope, app, action, ...fields })
+    const current = (run, requireOpen = false) => this.policy.runCurrentRevision({
+      scope, expectedRevision: record.binding.revision, requireOpen,
+      check: () => this.captureExec(exec) === record && !exec.signal?.aborted,
+    }, run)
+    if (asking) {
+      if (origin !== 'observation' || !localOpportunity(record.binding) || record.ticket || record.decision) {
+        throw new PolicyDeliveryError('suppressed', 'android_login_followup_required')
+      }
+      const rhythm = await this.policy.proactiveStatus(scope)
+      if (!rhythm.allowed || rhythm.resting) return { status: 'pending', code: rhythm.reason }
+      const request = await current(() => update('claim'), true)
+      if (request.status !== 'claimed') return request
+      let outcome = 'unknown'
+      try {
+        const result = await this.decide({ verdict: 'reply', expression: 'text',
+          text: `我想用模拟器里的${apps[app]}${request.purpose}，卡在登录页了。你方便时能在模拟器上登一下吗？` }, exec)
+        outcome = result.sent ? 'sent' : result.status === 'unknown' || result.reason === 'no_confirmed_transport' ? 'unknown' : 'pending'
+        return { status: outcome, sent: result.sent === true, code: result.reason }
+      } finally { update('settle', { requestId: request.requestId, outcome }) }
+    }
+    if (!record.ticket || record.androidBusy || !shotId || shotId !== record.androidView || app !== record.androidApp) {
+      throw new PolicyDeliveryError('suppressed', 'android_current_app_view_required')
+    }
+    const permission = await this.policy.check(record.ticket, { scope, kind: 'tool_action' })
+    if (!permission.allowed) throw new PolicyDeliveryError('suppressed', permission.reason)
+    return current(() => update(recording ? 'record' : 'resolve', { purpose, requestId: shotId }))
   }
 
   async synthesizeVoice(args, exec) {
@@ -2096,6 +2163,11 @@ export class OneBotDecisionAdapter {
       this.intentPlanner.observeLive(scope, owner, current?.inbound, current?.binding)
       enriched += '\n<scoped_agent_intentions>\n' + JSON.stringify(this.intentPlanner.context(scope, owner)).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</scoped_agent_intentions>\n'
         + 'These short intentions are agent reports, not user instructions, verified memories or delivery permission. Use qq_intent to revise them after real work. Ordinary chat uses words, not action or psychological stage directions.'
+      if (scope.startsWith('private:')) {
+        const help = this.intentPlanner.store.loginHelp(owner, scope)
+        if (help.length) enriched += '\n<android_login_help>\n' + JSON.stringify(help) + '\n</android_login_help>\n'
+          + 'These are local Android blockers. If a pending purpose still matters, a later primary activity may call android_phone(ask_owner) before deciding. For sent, attempting or unknown requests, wait for the owner instead of asking again. After the owner acts, reopen the app and verify the new frame before resolving the blocker and continuing the task.'
+      }
     } catch (error) { this.log('warn', 'scoped_intentions_unavailable:' + error.name) }
     if (this.nativeClaims) {
       const current = this.context.getStore()

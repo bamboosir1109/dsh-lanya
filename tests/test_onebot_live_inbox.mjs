@@ -1327,6 +1327,43 @@ test('native burst stops stale model steps and waits for old accounting before w
   assert.equal(h.agent.inbox.hasPending,false)
 })
 
+test('a new private input yields a decided autonomous tool turn and is claimed once', async t => {
+  const h = await nativeDriverFixture(t)
+  const entered = defer(), release = defer()
+  const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const step = h.agent.step
+  h.agent.step = async () => {
+    const result = await step()
+    if (h.steps.length !== 1) return result
+    const record = adapter.state(h.chat).active
+    const decision = await adapter.policy.decide({ scope, expectedRevision: record.binding.revision,
+      messageId: record.binding.messageId, verdict: 'tool_action' })
+    assert.equal(decision.accepted, true)
+    record.ticket = decision.ticket
+    record.decision = { verdict: 'tool_action' }
+    record.decisionId = decision.decisionId
+    entered.resolve()
+    await release.promise
+    return null
+  }
+  const observed = await adapter.policy.recordObservation({ scope, eventId: 'phone-opportunity', kind: 'activity.opportunity',
+    producer: 'mind', createdAt: adapter.now() })
+  await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation',
+    observationKind: 'activity.opportunity', observationProducer: 'mind', observationCreatedAt: adapter.now() }) }, async () => {
+    const text = await adapter.enrichContext(scope, 'phone fixture')
+    adapter.dispatchNative(h.chat, { id: 'phone-fixture', source: { kind: 'plugin:dsh-lanya-observation' },
+      content: [{ type: 'text', text }] }, 'admin', 'phone fixture')
+  })
+  await entered.promise
+  await h.receive('new live input during phone use')
+  const newest = h.agent.inbox.nextTurn[0]
+  release.resolve()
+  await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
+  assert.deepEqual(h.steps.map(item => item.claimedId), ['phone-fixture', newest.id])
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
 test('canceling a superseded native turn does not cause an automatic wake or replay', async t => {
   const entered=defer(),gate=defer();let assemblies=0
   const h=await nativeDriverFixture(t,{assemble:async()=>{if(++assemblies===1){entered.resolve();await gate.promise}},

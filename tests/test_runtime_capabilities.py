@@ -643,7 +643,8 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             'agentEnabled': True, 'agentApps': ['amap', 'unknown']}}), encoding='utf-8')
         full = self.context(lock_probe=lambda _: True)['tools']
         self.assertEqual(full['entertainment']['android_game']['name'], '2048')
-        self.assertNotIn('agent_apps', full['android'])
+        self.assertEqual(full['android']['agent_apps'], ['amap'])
+        self.assertIn('request_login', full['android']['agent_navigation'])
         self.assertNotIn('android_game', self.context(lock_probe=lambda _: False)['tools']['entertainment'])
 
         def forbidden(*_):
