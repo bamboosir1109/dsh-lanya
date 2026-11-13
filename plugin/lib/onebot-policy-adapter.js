@@ -633,7 +633,7 @@ export class OneBotDecisionAdapter {
 
   rememberReplyInput(binding, text) {
     const inbound = this.context.getStore()?.inbound
-    if (!this.nativeClaims || binding.origin !== 'live' || binding.recoveryRevision || !inbound ||
+    if (!this.nativeClaims || binding.origin !== 'live' || binding.recoveryRevision || binding.temporaryPrivate || !inbound ||
         !this.replyReviewAllowed(binding.scope, inbound.userId)) return
     const bot = [this.deps.connection?.selfId, this.deps.config.botQQ].filter(value => typeof value === 'string' && /^[1-9][0-9]*$/.test(value))
     const directMention = inbound.segments?.some(segment => segment?.type === 'at' &&
@@ -745,8 +745,8 @@ export class OneBotDecisionAdapter {
     if (!Number.isSafeInteger(this.inboundSequence + 1)) throw new Error('Inbound sequence exhausted')
     const arrival = ++this.inboundSequence
     this.incoming.set(scope, (this.incoming.get(scope) || 0) + 1)
-    const current = { inbound, arrival, arrivedAt: this.now(), binding: null }
-    this.diagnose(scope, inbound.messageId, 'received')
+    const current = { inbound, arrival, arrivedAt: this.now(), binding: null, disposition: null }
+    this.diagnose(scope, inbound.messageId, 'received', { reason: inbound.kind === 'private' ? (inbound.lanyaTemporaryPrivate ? 'private_temporary' : 'private_direct') : 'group' })
     try {
       current.backendStamp = this.backendGuard.selection().stamp
       const backend = await this.backendGuard.verify(this.deps.connection, current.backendStamp)
@@ -758,11 +758,30 @@ export class OneBotDecisionAdapter {
     }
     catch (error) { this.diagnose(scope, inbound.messageId, 'preparation_failed', { reason: error?.code || 'inbound_error' }); throw error }
     finally {
-      if (!current.binding && !current.groupListening) this.diagnose(scope, inbound.messageId, 'not_admitted')
+      if (!current.binding && !current.groupListening) this.diagnose(scope, inbound.messageId, 'not_admitted', { reason: current.disposition })
       const left = this.incoming.get(scope) - 1
       if (left) this.incoming.set(scope, left)
       else this.incoming.delete(scope)
     }
+  }
+
+  noteInboundDisposition(inbound, reason) {
+    const current = this.context.getStore()
+    if (current?.inbound === inbound) current.disposition = reason
+  }
+
+  bindPrivateInbound(inbound, event) {
+    if (inbound.kind !== 'private' || event.post_type !== 'message' || event.sub_type !== 'group' ||
+        inbound.lanyaInjected === true) return
+    const id = value => {
+      if (typeof value !== 'number' && typeof value !== 'string') return null
+      const text = String(value)
+      return /^[1-9]\d{0,15}$/.test(text) && Number.isSafeInteger(Number(text)) ? text : null
+    }
+    const source = id(event.sender?.group_id)
+    const top = id(event.group_id)
+    const group = source || top
+    inbound.lanyaTemporaryPrivate = Object.freeze({ group: source && top && source !== top ? null : group })
   }
 
   foregroundBusy(scope) {
@@ -828,13 +847,14 @@ export class OneBotDecisionAdapter {
     const hasDirectEvidence = Boolean(directText?.trim()) || inbound.media?.some((item) => item.kind === 'voice') === true
     const observed = await this.policy.recordInbound({ scope: canonicalScope(inbound.chatId), messageId: inbound.messageId,
       sender: inbound.userId, origin: 'live', quoted: !hasDirectEvidence,
-      controlAllowed: this.deps.policy.adminUsers.includes(inbound.userId) })
+      controlAllowed: !inbound.lanyaTemporaryPrivate && this.deps.policy.adminUsers.includes(inbound.userId) })
     if (observed.accepted) this.latestInbound.set(scope, context.arrival)
     if (observed.accepted) {
       const checkout = androidCheckoutIntent(directText)
       context.binding = Object.freeze({ ...observed, origin: 'live' })
       if (checkout) context.binding = Object.freeze({ ...context.binding, checkout })
       context.binding = Object.freeze({ ...context.binding, backendStamp: context.backendStamp })
+      if (inbound.lanyaTemporaryPrivate) context.binding = Object.freeze({ ...context.binding, temporaryPrivate: inbound.lanyaTemporaryPrivate })
     }
     if (observed.accepted && group) {
       group.revision = observed.revision
@@ -872,6 +892,7 @@ export class OneBotDecisionAdapter {
   dispatchNative(chat, message, role, originalText) {
     if (!this.nativeClaims) throw new Error('Native claim mode is required')
     const binding = this.captureInbound(chat.chatId), state = this.state(chat)
+    if (binding?.temporaryPrivate) role = 'member'
     if (binding) state.preparing.delete(binding.messageId)
     if (!binding?.owner || !['admin', 'member'].includes(role) || typeof message?.id !== 'string' ||
         message.source?.kind !== (binding.origin === 'live' ? 'plugin:dsh-onebot' : 'plugin:dsh-lanya-observation') ||
@@ -894,11 +915,14 @@ export class OneBotDecisionAdapter {
     const sameOwner = previous && ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => previous.binding.owner[key] === binding.owner[key])
     const buffered = state.groupBuffer?.waiting === true && state.groupBuffer.agent === chat.agent &&
       state.groupBuffer.turn === state.active?.turn && !state.active?.binding && binding.scope.startsWith('group:')
+    const samePrivateRoute = entry => Boolean(entry.temporaryPrivate) === Boolean(binding.temporaryPrivate) &&
+      entry.temporaryPrivate?.group === binding.temporaryPrivate?.group
     const merge = chat.agent.status === 'running' && binding.origin === 'live' && previous?.agent === chat.agent &&
       previous.binding.origin === 'live' && (previous.role === role || buffered) && sameOwner &&
+      samePrivateRoute(previous.binding) &&
       previous.binding.scope === binding.scope && previous.fingerprint === identity(JSON.stringify(previousMessage)) &&
       previous.binding.revision < binding.revision
-    const preparing = [...state.preparing.values()].filter(entry => entry.revision < binding.revision &&
+    const preparing = [...state.preparing.values()].filter(entry => entry.revision < binding.revision && samePrivateRoute(entry) &&
       ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.owner[key] === binding.owner[key]))
     const chunks = preparing.map(entry => ({ revision: entry.revision, texts: [entry.text] }))
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
@@ -949,6 +973,7 @@ export class OneBotDecisionAdapter {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
     return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
+      + 'When sharing something you made or did, write a natural QQ message about the result. Omit tool receipts, message IDs, revision counters and local Markdown links. Use an actual image tool for a picture.\n'
       + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
   }
 
@@ -1678,7 +1703,7 @@ export class OneBotDecisionAdapter {
   async androidPhone(args, exec, ctx) {
     const record = this.captureExec(exec)
     const { scope, origin, observationKind } = record.binding
-    if (!scope.startsWith('private:') || !(origin === 'live' ||
+    if (record.binding.temporaryPrivate || !scope.startsWith('private:') || !(origin === 'live' ||
         origin === 'observation' && observationKind === 'activity.opportunity' && localOpportunity(record.binding))) {
       throw new PolicyDeliveryError('suppressed', 'android_private_activity_required')
     }
@@ -2106,6 +2131,16 @@ export class OneBotDecisionAdapter {
     } }
   }
 
+  temporaryPrivatePacket(action, params, scope, binding) {
+    if (!binding?.temporaryPrivate) return [action, params]
+    if (binding.origin !== 'live' || binding.recoveryRevision || !scope.startsWith('private:') ||
+        !binding.temporaryPrivate.group || !['send_msg', 'send_private_msg'].includes(action) ||
+        String(params.user_id) !== scope.slice(8)) {
+      throw new PolicyDeliveryError('suppressed', 'temporary_private_route_unavailable')
+    }
+    return ['send_private_msg', { ...params, group_id: Number(binding.temporaryPrivate.group) }]
+  }
+
   async guardConnectionCall(action, params, suppliedScope, transmit, egressPart = null) {
     if (!communicates(action)) return transmit()
     if (this.bridge.stopping) throw new PolicyDeliveryError('suppressed', 'bridge_stopping')
@@ -2114,6 +2149,7 @@ export class OneBotDecisionAdapter {
     if (!envelope || envelope.scope !== scope) throw new PolicyDeliveryError('suppressed', 'missing_or_cross_scope_ticket')
     if (!envelope.ticket) throw new PolicyDeliveryError('suppressed', 'decision_required')
     const accountAction = accountPublicationAction(action), authority = envelope.record?.accountActivityAuthority
+    const packet = this.temporaryPrivatePacket(action, params, scope, envelope.record?.binding)
     if (accountAction && (!publicationOnlyReply(envelope.record) || !authority || authority.operationId !== envelope.operationId ||
         authority.action !== action || authority.payloadHash !== identity(JSON.stringify(params)))) throw new PolicyDeliveryError('suppressed', 'registered_account_activity_required')
     if (!accountAction && publicationOnlyReply(envelope.record)) throw new PolicyDeliveryError('suppressed', 'publication_only_reply')
@@ -2185,7 +2221,7 @@ export class OneBotDecisionAdapter {
         }
         const login = envelope.record?.androidHelpDelivery
         if (login?.operationId === envelope.operationId) login.begin()
-        return Promise.resolve(accountAction ? authority.invoke(transmit) : transmit()).then(normalizeAck)
+        return Promise.resolve(accountAction ? authority.invoke(transmit) : transmit(...packet)).then(normalizeAck)
       })
     } catch (error) {
       if (voiceArtifact?.state === 'reserved') voiceArtifact.state = 'unknown'
@@ -2311,7 +2347,7 @@ export class OneBotDecisionAdapter {
         if (state) {
           while (state.preparing.size >= 20) state.preparing.delete(state.preparing.keys().next().value)
           state.preparing.set(current.binding.messageId, { owner: current.binding.owner, revision: current.binding.revision,
-            text: String(text).slice(-16000) })
+            temporaryPrivate: current.binding.temporaryPrivate, text: String(text).slice(-16000) })
         }
       }
     }

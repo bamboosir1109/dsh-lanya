@@ -84,3 +84,13 @@ test('internal-link-only output is suppressed without any transport or fake succ
     (error) => error.status === 'suppressed' && error.reason === 'empty_content')
   assert.equal(calls, 0)
 })
+
+test('a creative update keeps its prose while removing local Markdown and tool receipts', () => {
+  const picture = String.raw`E:\Fixture workspace\character\made\cup.png`
+  const note = String.raw`E:\Fixture workspace\character\notes\checklist.md`
+  const output = cleanText(`画了两版茶杯。用的是新票根\n\n\`123456789\`。\n记在 [检查清单](${note})。\n![成品](${picture})\n热气换手点才像往上飘。intent 已 CAS 到 revision 42。\n（\n\`message_id=-43210\`\n）。`)
+  assert.doesNotMatch(output, /Fixture|checklist|cup\.png|123456789|43210|revision|票根|!\[/u)
+  assert.match(output, /画了两版茶杯。/u)
+  assert.match(output, /热气换手点才像往上飘。/u)
+  assert.equal(cleanText('这是 `draw-cup.py` 里的写法。'), '这是 `draw-cup.py` 里的写法。')
+})

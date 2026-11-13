@@ -330,6 +330,11 @@ function activityPath(value) {
   return /(?:^|\/)notes\/activity[^/\r\n]*\.md(?::\d+)?(?:#[A-Za-z0-9_-]+)?$/i.test(path)
 }
 
+function workspaceLink(value) {
+  const target = value.trim().replace(/^<([^<>]+)>$/, '$1')
+  return /^(?:[A-Za-z]:[\\/]|file:\/\/)/i.test(target) || activityPath(value)
+}
+
 function localLinkEnd(text, start) {
   let at = start + 1, depth = 1
   for (; at < text.length; at++) {
@@ -380,8 +385,8 @@ function withoutActivityReferences(text, style) {
     for (let at = 0; at < value.length; at++) {
       if (value[at] !== '[' || (at && value[at - 1] === '\\')) continue
       const link = localLinkEnd(value, at)
-      if (!link || !activityPath(link.path)) continue
-      ranges.push({ start: at, end: link.end }); at = link.end - 1
+      if (!link || !workspaceLink(link.path)) continue
+      ranges.push({ start: value[at - 1] === '!' ? at - 1 : at, end: link.end }); at = link.end - 1
     }
     value = dropActivityReferences(value, ranges)
     // Bare internal notes have the same treatment. Other files and URLs are
@@ -390,6 +395,18 @@ function withoutActivityReferences(text, style) {
     return dropActivityReferences(value, [...value.matchAll(bare)].filter((match) => activityPath(match[0]))
       .map((match) => ({ start: match.index, end: match.index + match[0].length })))
   }).join('')
+}
+
+function withoutInternalReceipts(text, style) {
+  if (style.technical) return text
+  const receiptOnly = /^(?:\s*[（(]\s*)?\s*(?:\b(?:message_id|ticket_id)\s*[=:：]\s*-?\d+|\bintent\s*(?:已\s*)?CAS\s*(?:到|至|to)?\s*(?:revision\s*)?\d+)(?:\s*[）)])?[。.!！]?\s*$/iu
+  return spans(text).map(part => part.protected
+    ? (part.text.startsWith('`') && !part.text.startsWith('```') && receiptOnly.test(part.text.slice(1, -1)) ? '' : part.text)
+    : part.text
+    .replace(/(?:[（(]\s*)?`?\b(?:message_id|ticket_id)\s*[=:：]\s*-?\d+`?(?:\s*[）)])?/gi, '')
+    .replace(/(?:\bintent\s*(?:已\s*)?CAS\s*(?:到|至|to)?\s*(?:revision\s*)?\d+|\bCAS\s*(?:到|至|to)\s*revision\s*\d+)/gi, '')
+  ).join('').replace(/(?:用的是\s*)?(?:新票根|票根|回执编号)\s*[:：]?\s*`?\d{6,}`?/gu, '')
+    .replace(/^[ \t]*(?:[（(][\s\r\n]*[）)][。.!！]?|[。.!！？，,；;]+)[ \t]*$/gmu, '')
 }
 
 function cleanProse(text, style) {
@@ -409,7 +426,7 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (typeof value !== 'string') throw new TypeError('QQ text must be a string')
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
-  const withoutImages = withoutActivityReferences(withoutInlineImages(value), style)
+  const withoutImages = withoutActivityReferences(withoutInlineImages(withoutInternalReceipts(value, style)), style)
   return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
 }
 

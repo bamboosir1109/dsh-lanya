@@ -61,6 +61,8 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
   raw=bc.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
+gate='            if (!dmAllowed(userId, policy)) {';assert s.count(gate)==1
+s=s.replace(gate,gate+"\n                this.ctx.noteInboundDisposition?.(inbound, 'private_policy_denied');")
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
 if sys.argv[3]=='1':
  import patch_onebot_inbound_admission as admission
@@ -470,6 +472,57 @@ test('group member burst coalesces but a later administrator does not lend contr
   assert.equal(h.bridge.canEditFiles(h.agent.session.id), true)
   assert.equal((await h.decide('silence', { control_update: true, evidenceSource: 'current' })).accepted, true)
   assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 2)
+})
+
+test('temporary private replies use the original group route without granting admin or recovery authority', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('fixture private reply', { sub_type: 'group', sender: { user_id: 101, group_id: 303 } })
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start()
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply')).can_send, true)
+  await h.send('fixture answer')
+  const packets = h.calls.filter(call => /^send_/.test(call.action))
+  assert.equal(packets.length, 1)
+  assert.equal(packets[0].action, 'send_private_msg')
+  assert.equal(packets[0].params.user_id, 101)
+  assert.equal(packets[0].params.group_id, 303)
+  assert.equal((await adapter.policy.snapshot('private:101')).current.replyReview, undefined)
+  await h.end()
+})
+
+test('a temporary private event with conflicting group evidence never falls back to a friend send', async t => {
+  const h = await fixture(t)
+  await h.receive('fixture private reply', { sub_type: 'group', group_id: 404, sender: { user_id: 101, group_id: 303 } })
+  h.start(); await h.preStep(); await h.decide('reply')
+  await assert.rejects(h.send('fixture answer'), /temporary_private_route_unavailable/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('ordinary member private messages keep the ordinary send route and access policy', async t => {
+  const h = await fixture(t), scope = 'private:202'
+  h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+  h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+  h.deps.policy.allowAllUsers = false
+  await h.receive('blocked fixture', { user_id: 202 })
+  assert.equal(h.pending.length, 0)
+  h.deps.policy.allowAllUsers = true
+  await h.receive('allowed fixture', { user_id: 202, sub_type: 'friend', sender: { group_id: 303 } })
+  h.start(); assert.equal(h.chat.activeTurnRole, 'member')
+  await h.preStep(); await h.decide('reply')
+  const adapter = h.bridge.lanyaPolicy
+  const envelope = adapter.envelope(adapter.state(h.chat).active, 'fixture-member-send')
+  await adapter.runEnvelope(envelope, () => h.bridge.guardedConnectionCall('send_msg',
+    { user_id: 202, message: [{ type: 'text', data: { text: 'fixture answer' } }] }, scope))
+  const packets = h.calls.filter(call => /^send_/.test(call.action))
+  assert.equal(packets.length, 1)
+  assert.equal(packets[0].action, 'send_msg')
+  assert.equal(packets[0].params.group_id, undefined)
+  const log = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+  assert.match(log, /private_policy_denied/)
+  await h.end()
 })
 
 test('turn/start alone, reloaded unknown IDs and modified native content cannot grant authority', async t => {

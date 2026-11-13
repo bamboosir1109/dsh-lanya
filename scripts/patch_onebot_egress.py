@@ -68,7 +68,7 @@ import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply,
       return await dispatchEgress(action, params,
         envelope?.record?.binding?.egressStyle || NORMAL_STYLE,
         (nextAction, nextParams, egressPart) => this.guardConnectionCall(nextAction, nextParams, suppliedScope,
-          () => transmit(nextAction, nextParams), egressPart),
+          (wireAction = nextAction, wireParams = nextParams) => transmit(wireAction, wireParams), egressPart),
         { isMemeSegment: segment => isStagedMemeImage(segment, this.deps.config.mediaDir) })
     } catch (error) {
       if (error.partial && !isKnownMemeLimit(error)) envelope?.record?.outcomes.push('partial')

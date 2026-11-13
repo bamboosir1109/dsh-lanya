@@ -245,13 +245,13 @@ def transform(name, raw):
         text = replace_once(text, "import { healthReport, exportDiagnostics } from './health.js';",
                             "import { healthReport, exportDiagnostics } from './health.js';\nimport { OneBotDecisionAdapter } from './lanya-policy-adapter.js';")
         text = replace_once(text, "        this.deps = deps;", "        this.deps = deps;\n        this.lanyaPolicy = new OneBotDecisionAdapter(this, deps, { configFile: new URL('./lanya-policy.config.json', import.meta.url) });")
-        text = replace_once(text, "        this.inbound = new InboundPipeline({", "        this.inbound = new InboundPipeline({\n            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),")
+        text = replace_once(text, "        this.inbound = new InboundPipeline({", "        this.inbound = new InboundPipeline({\n            noteInboundDisposition: (inbound, reason) => this.lanyaPolicy.noteInboundDisposition(inbound, reason),\n            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),")
         text = replace_once(text, "    }\n    /** Start listening: wire connection handlers and the session event feed. */",
                             "        this.lanyaPolicy.attachOutbound(this.outbound);\n    }\n    /** Start listening: wire connection handlers and the session event feed. */")
         text = replace_once(text, "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');",
                             "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');\n            void this.lanyaPolicy.start().catch(error => this.deps.log('error', 'observation_pump_start_failed:' + error.name));")
         text = replace_once(text, "        this.stopping = true;", "        this.stopping = true;\n        await this.lanyaPolicy.stop();")
-        text = replace_once(text, "                await this.processInbound(inbound);", "                inbound.lanyaInjected = injected;\n                await this.processInbound(inbound);")
+        text = replace_once(text, "                await this.processInbound(inbound);", "                inbound.lanyaInjected = injected;\n                this.lanyaPolicy.bindPrivateInbound(inbound, event);\n                await this.processInbound(inbound);")
         text = replace_once(text, "        await this.inbound.processInbound(inbound);", "        await this.lanyaPolicy.processInbound(inbound, () => this.inbound.processInbound(inbound));")
         text = replace_once(text, "        const final = this.prefixTurn(chatId, text);", "        let final = this.prefixTurn(chatId, text);")
         text = replace_once(text, "        const chat = await this.ensureChat(chatId, nickname ?? fallback);",
@@ -268,6 +268,16 @@ def transform(name, raw):
                             "        return this.deps.connection.call(action, params);\n        });\n    }\n    // ------------------------------------------------------------ health (W1/T5)")
         text = replace_once(text, "        registerTools(agentCtx, this, this.deps.connection, {", "        registerTools(agentCtx, this, this.lanyaPolicy.connectionFacade(), {")
     elif name == "inbound.js":
+        for anchor, reason in [
+            ("            if (!dmAllowed(userId, policy)) {", "private_policy_denied"),
+            ("        if (content.trim() === '') {", "empty_inbound_content"),
+        ]:
+            if anchor in text:
+                indent = anchor[:len(anchor) - len(anchor.lstrip())] + '    '
+                text = replace_once(text, anchor, anchor + "\n" + indent + "this.ctx.noteInboundDisposition?.(inbound, '" + reason + "');")
+        command = '        if (await this.ctx.tryHandleCommand(chatId, inbound.text, userId)) {'
+        if command in text:
+            text = replace_once(text, command, command.replace('if (await', 'if (!inbound.lanyaTemporaryPrivate && await'))
         text = replace_once(text, "        const nickname = sanitizeNickname(inbound.nickname);",
                             "        const lanyaObserved = await this.ctx.observeInbound(inbound);\n        if (!lanyaObserved.accepted) return;\n        const nickname = sanitizeNickname(inbound.nickname);")
         start = "        // PATCHED (local): cross-chat awareness."
