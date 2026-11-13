@@ -218,11 +218,15 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
 
     def test_live_reaction_uses_one_candidate_without_restricting_user_image_understanding(self):
         before = self.snapshot()
-        guide = self.context(context_mode='live_chat')['tools']['qq_expression']['meme_delivery']
+        expression = self.context(context_mode='live_chat')['tools']['qq_expression']
+        guide = expression['meme_delivery']
         for boundary in ('limit: 1', 'one picker call per live turn', 'do not repeat',
                          'requires_visual_review=true', 'use concise text',
                          'necessary inspection of images supplied by the user', 'current reply ticket'):
             self.assertIn(boundary, guide)
+        self.assertIn('图库收集、分类和排查留到自主轮', expression['limits'])
+        self.assertIn('除非对方明确请你处理', expression['limits'])
+        self.assertIn('看懂来图或完成当前请求需要的工具照用', expression['limits'])
         self.assertEqual(self.snapshot(), before)
 
     def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
