@@ -1226,6 +1226,24 @@ test('reply review does not release the attempt after an ambiguous queue write',
   assert.equal(h.pending.length, 1)
 })
 
+test('reply review retries after a proven pre-inbox preparation failure', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const enrich = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async () => { throw new Error('Synthetic context preparation failure') }
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  adapter.enrichContext = enrich
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'Recovered answer' })).sent, true)
+  await h.end()
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('native heartbeat reports actual loaded transport and quote binding, not configured file names', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy; backendFixture(h)
   await adapter.budgetHeartbeat()
