@@ -42,6 +42,21 @@ test('accepted quiet, tool actions and persistent silence never become missed re
   })
 })
 
+test('an unqueued claim can be released by exact revision, but a stale release cannot undo the next claim', async t => {
+  const h = await fixture(t)
+  h.advance(60_000)
+  const first = await h.claim()
+  const released = { ...h.source, expectedRevision: first.revision }
+  assert.equal(await h.policy.releaseUnqueuedReplyReview(released), true)
+  const [candidate] = await h.policy.replyReviewCandidates()
+  const second = await h.policy.claimReplyReview({ ...candidate, expectedRevision: candidate.revision, canClaim: () => true })
+  assert.equal(second.accepted, true)
+  assert.equal(await h.policy.releaseUnqueuedReplyReview(released), false)
+  await h.policy.decide({ ...h.source, expectedRevision: second.revision, verdict: 'idle' })
+  assert.equal(await h.policy.releaseUnqueuedReplyReview({ ...released, expectedRevision: second.revision }), false)
+  assert.deepEqual(await h.policy.replyReviewCandidates(), [])
+})
+
 test('reply decision with zero egress can be reconsidered, but every actual egress state bars recovery', async t => {
   for (const delivery of ['none', 'sent', 'unknown', 'reserved', 'suppressed']) await t.test(delivery, async t => {
     const h = await fixture(t), decision = await h.decide('reply')

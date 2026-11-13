@@ -738,7 +738,9 @@ export class OneBotDecisionAdapter {
           canClaim: canReview })
         if (!claimed.accepted) continue
         checked += 1
-        if (!canReview()) continue
+        const release = () => this.policy.releaseUnqueuedReplyReview({ scope: claimed.scope,
+          expectedRevision: claimed.revision, messageId: claimed.messageId, owner })
+        if (!canReview()) { await release(); continue }
         const binding = Object.freeze({ ...claimed, text: undefined, owner: Object.freeze({ ...owner }),
           recoveryEpoch: epoch, backendStamp })
         // This is a review of an actual receipt, not a new human command or
@@ -750,7 +752,9 @@ export class OneBotDecisionAdapter {
           + '<historical_qq_input>\n' + JSON.stringify(claimed.text).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e')
           + '\n</historical_qq_input>'
         try {
-          await this.context.run({ binding }, () => this.bridge.dispatchFollowup(claimed.scope, text, 'member', ''))
+          const context = { binding }
+          await this.context.run(context, () => this.bridge.dispatchFollowup(claimed.scope, text, 'member', ''))
+          if (context.recoverySkippedBeforeEnqueue) { await release(); continue }
           const chat = this.bridge.chats.get(claimed.scope)
           if (chat && this.state(chat).liveRevision === claimed.revision) {
             this.diagnose(claimed.scope, claimed.messageId, 'reply_review_queued', { revision: claimed.revision })
@@ -953,7 +957,10 @@ export class OneBotDecisionAdapter {
     if (!binding?.owner) return false
     if (binding.recoveryRevision && (!this.replyReviewIdle(binding.scope, binding.recoveryEpoch) ||
         !this.replyReviewAllowed(binding.scope, binding.sender) ||
-        !this.backendGuard.edge(this.deps.connection, binding.backendStamp))) return false
+        !this.backendGuard.edge(this.deps.connection, binding.backendStamp))) {
+      this.context.getStore().recoverySkippedBeforeEnqueue = true
+      return false
+    }
     if (binding.origin !== 'live' || binding.revision > state.liveRevision) return true
     state.preparing.delete(binding.messageId)
     this.diagnose(binding.scope, binding.messageId, 'superseded_preparation')
@@ -2510,7 +2517,7 @@ export class OneBotDecisionAdapter {
       const current = this.context.getStore()
       if (!current?.binding || current.binding.scope !== canonicalScope(scope)) throw new Error('Native owner binding unavailable')
       current.binding = Object.freeze({ ...current.binding, owner: Object.freeze({ ...owner }) })
-      if (current.binding.origin === 'live') {
+      if (current.binding.origin === 'live' && !current.binding.recoveryRevision) {
         const chat = this.bridge.chats.get(scope), state = chat && this.state(chat)
         if (state) {
           while (state.preparing.size >= 20) state.preparing.delete(state.preparing.keys().next().value)

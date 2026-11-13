@@ -558,6 +558,23 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
+    /** The adapter calls this only when it proves the queue was never touched. */
+    async releaseUnqueuedReplyReview({ scope, expectedRevision, messageId, owner } = {}) {
+      canonicalScope(scope)
+      if (!replyOwnerValid(owner) || !identifier(messageId) || !Number.isSafeInteger(expectedRevision)) {
+        throw new PolicyStateError('Exact reply review claim required')
+      }
+      return transaction(state => {
+        const current = scopeState(state, scope), event = current?.current
+        if (current?.revision !== expectedRevision || event?.messageId !== messageId ||
+            event.origin !== 'live' || event.controlAllowed || !event.quoted || event.decided || event.ticket ||
+            event.replyReview?.attempted !== true || !replyOwnerSame(owner, event.replyReview.owner) ||
+            current.deliveries.some(item => item.revision === expectedRevision)) return false
+        event.replyReview.attempted = false
+        return true
+      })
+    },
+
     /** Trusted evidence pump only; never impersonates a live QQ user. An
      * undecided observation may be redriven after a crashed/aborted turn. A
      * decided one returns its durable summary and must not generate/send again.

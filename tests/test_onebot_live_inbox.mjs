@@ -923,7 +923,24 @@ test('reply review rechecks access and backend connection after queue preparatio
     await adapter.reviewUnansweredInputs()
     assert.equal(h.pending.length, 0)
     assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+    adapter.enrichContext = enrich
+    h.deps.policy.dmPolicy = 'open'
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
   })
+})
+
+test('reply review does not release the attempt after an ambiguous queue write', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const followup = h.agent.followup
+  h.agent.followup = message => { followup(message); throw new Error('synthetic error after queue write') }
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
 })
 
 test('native heartbeat reports actual loaded transport and quote binding, not configured file names', async t => {
