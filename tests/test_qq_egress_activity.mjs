@@ -106,6 +106,7 @@ test('ordinary image followups keep the result without report formatting or deli
 test('only a content-free final promise after a real sentence is removed', () => {
   assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
   assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
+  assert.equal(cleanText('片头没有字幕。最后一句也没标出来，我再去看一下。'), '片头没有字幕。最后一句也没标出来')
   for (const text of ['我再去看。', '好。我再去看。', '今晚没空，我再去看。', '字幕少了一段。我再去看第二集。', '原话是「我再去看。」']) {
     assert.equal(cleanText(text), text)
   }
