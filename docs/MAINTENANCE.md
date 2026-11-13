@@ -24,7 +24,7 @@
 
 每次按输入分别核对接收、准入、准备、原生入队、领取、决定、发送与客户端，不以在线状态代替回复成功。启用 native claim 时可用 `scripts/interaction_health.py --log ABSOLUTE_PRIVATE_INTERACTION_LOG` 只读汇总本机阶段日志；没有正文、不触发模型或发送，不自动重放。安静决定、拒发、未知回执与真正等待分别展示，来源达到容量或截断时保留部分状态。
 
-当前原生队列可在条件允许时接收并合并连发；非原生／诊断或拥挤边界继续按既有接收限制。独立 `patch_onebot_burst_intake.py` 只编译已审的 contextual group 层后 bridge／inbound，输出须精确输入 SHA 且独占创建，不自动安装。须与成对 adapter 受控部署，保留全部之前的准入、引用、权限和出口修改。详见 [交互可靠性检查](INTERACTION-RELIABILITY.md)。
+当前原生队列可在条件允许时接收并合并连发，非原生、诊断或拥挤边界继续按既有接收限制。独立 `patch_onebot_burst_intake.py` 编译已审的 contextual group 层后 bridge／inbound 和配套 registry。输出须精确输入 SHA 且独占创建。与 adapter 一起部署，保留既有准入、引用、权限和出口修改。详见 [交互可靠性检查](INTERACTION-RELIABILITY.md)。
 
 ## 人设语气与自主提示
 

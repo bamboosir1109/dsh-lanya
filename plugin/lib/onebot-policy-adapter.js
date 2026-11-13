@@ -570,7 +570,8 @@ export class OneBotDecisionAdapter {
         }
       } catch (error) { if (error.code !== 'ENOENT') return }
       const fields = Object.fromEntries(Object.entries(detail).filter(([key, value]) =>
-        ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status', 'budget_wait_ms'].includes(key) &&
+        ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status', 'budget_wait_ms',
+          'backend_wait_ms', 'inbound_prepare_ms'].includes(key) &&
         (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
       fs.appendFileSync(file, JSON.stringify({ schema: 'qq-interaction/v1', at: this.now(),
         scope: identity(scope).slice(0, 16), input: identity(scope, messageId).slice(0, 24), phase, ...fields }) + '\n', { mode: 0o600 })
@@ -583,6 +584,20 @@ export class OneBotDecisionAdapter {
     // A native pending suffix is bounded and coalesced in dispatchNative.
     // Legacy/replay paths retain their original intake limiter.
     return Boolean(chat && this.nativeScopes.has(chat.agent?.ctx) && this.state(chat).pending.size < 64)
+  }
+
+  sweepIdleChats(run) {
+    if (!this.nativeClaims) return run()
+    if (this.idleSweep || this.bridge.stopping) return
+    this.idleSweep = Promise.resolve().then(() => run())
+      .catch(error => this.log('warn', 'idle_chat_sweep_failed:' + error.name))
+      .finally(() => { this.idleSweep = null })
+  }
+
+  canEvictIdleChat(scope, chat) {
+    if (!this.nativeClaims) return true
+    return !this.bridge.stopping && this.bridge.chats.get(scope) === chat &&
+      chat.agent.status === 'idle' && !chat.agent.inbox?.hasPending && !this.foregroundBusy(scope)
   }
 
   registerIntentTools(ctx, defineTool) {
@@ -752,6 +767,7 @@ export class OneBotDecisionAdapter {
     for (const entry of this.observations.values()) entry.reject(new Error('Bridge stopped before observation settled'))
     this.observations.clear()
     await pumpStopped
+    await this.idleSweep
   }
 
   async processInbound(inbound, run) {
@@ -768,6 +784,7 @@ export class OneBotDecisionAdapter {
         this.diagnose(scope, inbound.messageId, 'blocked', { reason: backend.reason })
         return { accepted: false, reason: backend.reason }
       }
+      current.backendReadyAt = this.now()
       return await this.context.run(current, run)
     }
     catch (error) { this.diagnose(scope, inbound.messageId, 'preparation_failed', { reason: error?.code || 'inbound_error' }); throw error }
@@ -877,7 +894,12 @@ export class OneBotDecisionAdapter {
       group.revision = observed.revision
       if (addressed) group.engaged = true
     }
-    this.diagnose(scope, inbound.messageId, observed.accepted ? 'admitted' : 'admission_refused', { reason: observed.reason, revision: observed.revision })
+    const admittedAt = this.now()
+    this.diagnose(scope, inbound.messageId, observed.accepted ? 'admitted' : 'admission_refused', {
+      reason: observed.reason, revision: observed.revision,
+      backend_wait_ms: Math.max(0, context.backendReadyAt - context.arrivedAt),
+      inbound_prepare_ms: Math.max(0, admittedAt - context.backendReadyAt),
+    })
     return observed
     } finally {
       release()

@@ -74,6 +74,9 @@ if sys.argv[3]=='1':
   raw=b.transform('inbound.js',raw)
 raw=bc.transform('inbound.js',raw)
 f.write_bytes(raw)
+if sys.argv[4]=='1':
+ f=out/'lib/registry.js'
+ f.write_bytes(b.transform('registry.js',f.read_bytes()))
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
  (out/'lib'/name).write_bytes(raw)
@@ -486,6 +489,25 @@ test('a stale private reply survives an ended turn while the successor is still 
   await incoming
   assert.match(h.pending[0].content[0].text, /unanswered first question[\s\S]*later private detail/)
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('idle chat flush does not block a private inbound or dispose an active chat', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  const stale = { ...h.chat, agent: { ...h.agent, status: 'idle' },
+    chatId: 'private:202', sessionId: 'old-session', lastActivityAt: 0 }
+  h.bridge.chats.set(stale.chatId, stale)
+  const entered = defer(), resume = defer()
+  h.deps.sessions.flush = async () => { entered.resolve(); await resume.promise }
+  try {
+    await h.receive('reply while another chat flushes')
+    await entered.promise
+    assert.equal(h.pending.length, 1)
+    const running = a.idleSweep
+    await h.receive('another message during the same flush')
+    assert.equal(a.idleSweep, running)
+    stale.agent.status = 'running'
+  } finally { resume.resolve(); await a.idleSweep }
+  assert.equal(h.bridge.chats.get(stale.chatId), stale)
 })
 
 test('private burst carries a partially sent inline reply into the successor context', async t => {
