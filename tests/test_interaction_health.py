@@ -38,6 +38,21 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(value['status'],'partial');self.assertEqual(value['invalid_records'],1)
         with self.assertRaises(ValueError):module.summarize(b' '*(module.LIMIT+1),40000)
 
+    def test_recent_window_preserves_pending_parent_and_exposes_real_stage_samples(self):
+        def row(i,phase,at,**fields):
+            return dict(schema='qq-interaction/v1',scope='d'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
+        rows = [row(1,'received',900),row(1,'queued',950),row(2,'received',1200),
+                row(2,'admitted',1300,backend_wait_ms=27,inbound_prepare_ms=73),
+                row(2,'queued',1400,coalesced=True),row(2,'claimed',1500),row(2,'delivery',1600,status='sent'),
+                row(3,'received',1700),row(3,'admitted',1730,backend_wait_ms=-1,inbound_prepare_ms=80)]
+        result = module.summarize('\n'.join(json.dumps(x) for x in rows).encode(),2000,since_ms=1100)
+        self.assertEqual(result['input_count'],2)
+        self.assertEqual(result['missing_coalesced_parents'],0)
+        group = result['scopes'][0]
+        self.assertEqual(group['intake_latency']['backend_wait'],dict(samples=1,p50_ms=27,p95_ms=27))
+        self.assertEqual(group['intake_latency']['inbound_prepare'],dict(samples=1,p50_ms=73,p95_ms=73))
+        self.assertEqual(group['accepted_p50_ms'],400)
+
     def test_merged_input_is_not_a_stuck_queue_and_rejected_silence_is_not_a_quiet_decision(self):
         def row(i,phase,**fields):
             return dict(schema='qq-interaction/v1',scope='b'*16,input=f'{i:024x}',phase=phase,at=1000,**fields)

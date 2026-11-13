@@ -49,7 +49,13 @@ def latest_group_activity(log, scope, *, after, now):
     return latest
 
 
-def summarize(raw, now_ms):
+def _latency_stats(values):
+    values = sorted(values)
+    return dict(samples=len(values), p50_ms=values[len(values)//2] if values else None,
+                p95_ms=values[min(len(values)-1, int(len(values)*.95))] if values else None)
+
+
+def summarize(raw, now_ms, since_ms=None):
     if len(raw) > LIMIT:
         raise ValueError('diagnostic_log_too_large')
     inputs = {}; invalid = 0; pending = {}; claimed = set(); coalesced = set(); missing_parents = 0
@@ -83,6 +89,8 @@ def summarize(raw, now_ms):
     for key, events in inputs.items():
         scope, _ = key
         phases = {e['phase'] for e in events}; last = max(e['at'] for e in events)
+        if since_ms is not None and last < since_ms:
+            continue
         delivery = [e for e in events if e['phase'] == 'delivery']
         decisions = [e for e in events if e['phase'] == 'decision']
         quiet = any(e.get('verdict') in ('idle', 'defer', 'silence') and not e.get('reason')
@@ -104,7 +112,8 @@ def summarize(raw, now_ms):
                   'superseded_preparation' if 'superseded_preparation' in phases else
                   'ended_without_confirmed_transport' if 'turn_end' in phases else
                   'active' if 'claimed' in phases else 'pending' if 'queued' in phases else 'preparing')
-        group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [], 'long_open_inputs': 0})
+        group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [],
+                                          'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0})
         group['counts'][status] += 1
         if status in ('active', 'pending', 'preparing') and now_ms - last > 30000:
             group['long_open_inputs'] += 1
@@ -112,17 +121,25 @@ def summarize(raw, now_ms):
         accepted = [e['at'] for e in delivery if e.get('status') == 'sent']
         if received and accepted and min(accepted) >= min(received):
             group['accepted_latency_ms'].append(min(accepted) - min(received))
+        admitted = next((e for e in events if e['phase'] == 'admitted'), None)
+        if admitted and received and (since_ms is None or min(received) >= since_ms):
+            for stage in ('backend_wait_ms', 'inbound_prepare_ms'):
+                elapsed = admitted.get(stage)
+                if type(elapsed) is int and 0 <= elapsed <= admitted['at'] - min(received):
+                    group[stage].append(elapsed)
     result = []
     for scope, group in sorted(groups.items()):
-        values = sorted(group.pop('accepted_latency_ms'))
-        result.append(dict(scope=scope, **group, accepted_samples=len(values),
-            accepted_p50_ms=values[len(values)//2] if values else None,
-            accepted_p95_ms=values[min(len(values)-1, int(len(values)*.95))] if values else None))
+        accepted = _latency_stats(group.pop('accepted_latency_ms'))
+        stages = {stage: _latency_stats(group.pop(stage + '_ms')) for stage in ('backend_wait', 'inbound_prepare')}
+        result.append(dict(scope=scope, **group, accepted_samples=accepted['samples'],
+                           accepted_p50_ms=accepted['p50_ms'], accepted_p95_ms=accepted['p95_ms'],
+                           intake_latency=stages))
     return dict(schema='qq-interaction-health/v1', read_only=True,
         status='partial' if invalid or missing_parents or len(raw) >= 8 * 1024 * 1024 else 'ok', invalid_records=invalid,
         missing_coalesced_parents=missing_parents, queue_correlation='ordered_phase_metadata_only',
         capacity_limited=len(raw) >= 8 * 1024 * 1024,
-        input_count=len(inputs), scopes=result, receipt_boundary='transport_acceptance_only',
+        input_count=sum(sum(group['counts'].values()) for group in result),
+        since_ms=since_ms, scopes=result, receipt_boundary='transport_acceptance_only',
         history_replayed=False, models=0, messages=0)
 
 
@@ -150,11 +167,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--log', required=True)
     p.add_argument('--previous', action='store_true', help='Read the retained previous segment')
+    p.add_argument('--since-ms', type=int, help='Include inputs with a phase at or after this Unix timestamp in milliseconds')
     a = p.parse_args()
+    if a.since_ms is not None and a.since_ms < 0:
+        p.error('--since-ms must be nonnegative')
     path = Path(a.log)
     if a.previous:
         path = path.with_name(path.name + '.previous')
-    print(json.dumps(summarize(read_log(path), int(time.time()*1000)), ensure_ascii=True))
+    print(json.dumps(summarize(read_log(path), int(time.time()*1000), a.since_ms), ensure_ascii=True))
 
 
 if __name__ == '__main__': main()
