@@ -540,6 +540,27 @@ test('private burst carries a partially sent inline reply into the successor con
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('a queued private successor sees a partial reply discovered after its own enqueue', async t => {
+  const h = await fixture(t)
+  await h.receive('older question with two parts')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  h.deps.onTransmit = async action => {
+    if (/^send_/.test(action)) await h.receive('already queued private question')
+  }
+  const result = await h.decide('reply', { text: 'opening bubble\nremaining bubble' }).catch(error => error)
+  assert.equal(result.reason, 'stale_revision')
+  await h.end()
+  assert.equal(h.pending.length, 1)
+  assert.doesNotMatch(h.pending[0].content[0].text, /older question/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime')
+  assert.match(prompt.text({ agent: h.agent }), /opening portion[\s\S]*older question with two parts/)
+  await h.receive('a third private detail')
+  assert.match(h.pending[0].content[0].text, /older question[\s\S]*already queued private question[\s\S]*a third private detail/)
+  await h.end()
+})
+
 test('memory approvals for observations return promptly while live approvals keep their normal handler', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   await h.receive('current live question')

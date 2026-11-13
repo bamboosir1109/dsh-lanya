@@ -179,6 +179,15 @@ function androidCheckoutIntent(text) {
 }
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const interruptedInlineReply = record => record?.inlineTextStale === true && !record.outcomes.includes('unknown')
+const privateHandoffText = (entry, partial) => partial
+  ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
+    + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + entry.originalText
+  : entry.originalText
+const samePrivateReply = (entry, binding, role) => entry?.binding.origin === 'live' && !entry.binding.recoveryRevision &&
+  entry.binding.scope === binding.scope && entry.role === role && entry.binding.revision < binding.revision &&
+  Boolean(entry.binding.temporaryPrivate) === Boolean(binding.temporaryPrivate) &&
+  entry.binding.temporaryPrivate?.group === binding.temporaryPrivate?.group &&
+  ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === binding.owner[key])
 const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
 const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
@@ -978,16 +987,10 @@ export class OneBotDecisionAdapter {
     // The current private turn may be interrupted before its first output.
     // Carry its question into the successor as context, without its ticket.
     if (binding.origin === 'live' && !binding.recoveryRevision && binding.scope.startsWith('private:') &&
-        claimed?.binding.origin === 'live' && !claimed.binding.recoveryRevision &&
-        claimed.role === role && samePrivateRoute(claimed.binding) &&
-        ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => claimed.binding.owner[key] === binding.owner[key]) &&
-        claimed.binding.revision < binding.revision) {
+        samePrivateReply(claimed, binding, role)) {
       const partial = (interrupted && active.claimedInput === claimed && active.inlineTextReceiptCount > 0) ||
         (stale?.entry === claimed && stale.partial)
-      const earlier = partial ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
-        + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + claimed.originalText
-        : claimed.originalText
-      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, earlier] })
+      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, privateHandoffText(claimed, partial)] })
     }
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
     const history = [...new Set(chunks.sort((a, b) => a.revision - b.revision).flatMap(entry => entry.texts))]
@@ -1040,7 +1043,7 @@ export class OneBotDecisionAdapter {
   nativeCapabilityContext(agent) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
-    return (record.binding.capabilityContext || '') + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
+    return (record.binding.capabilityContext || '') + (record.privateReplyHandoff || '') + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
       + 'When sharing something you made or did, write a natural QQ message about the result. Omit tool receipts, message IDs, revision counters and local Markdown links. Use the actual image tool for a picture. For your own image choose expression:"text_meme"; send no caption when the image says enough, or add only a useful detail. Use expression:"meme" for an image-only reaction from the meme library.\n'
       + '中文聊天直接接对方的话。没有真实的后续动作，就省掉「我再去看一下」「我再确认一下」这类收尾。知道哪一点就说哪一点，有具体疑问再问。分享作品时挑一个有意思的细节；图片已经说清就收住。遇到真要讲步骤或解释的事，完整讲清，句数随内容。\n'
       + (record.binding.observationKind === 'activity.opportunity' && localOpportunity(record.binding)
@@ -1207,6 +1210,23 @@ export class OneBotDecisionAdapter {
       record.claimedInput = entry
       record.completion = entry.binding.completion
       record.claimedId = message.id
+      const handoff = state.unansweredPrivate
+      if (handoff && entry.binding.origin === 'live' && !entry.binding.recoveryRevision &&
+          entry.binding.revision > handoff.entry.binding.revision) {
+        state.unansweredPrivate = null
+        const earlier = handoff.entry
+        if (this.now() <= handoff.expiresAt && samePrivateReply(earlier, entry.binding, entry.role)) {
+          const text = privateHandoffText(earlier, handoff.partial)
+          if (!entry.history.includes(text)) {
+            const history = [...earlier.history, text]
+            record.claimedInput = Object.freeze({ ...entry, history: [...new Set([...history, ...entry.history])].slice(-20) })
+            record.privateReplyHandoff = '\nA prior private reply in this same conversation was interrupted. '
+              + 'The following is historical context only. Address any relevant unanswered points with the current message.\n'
+              + '<interrupted_private_context>\n' + JSON.stringify(history.join('\n\n').slice(-16000))
+                .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</interrupted_private_context>\n'
+          }
+        }
+      }
       chat.activeTurnRole = entry.role
       this.diagnose(record.binding.scope, record.binding.messageId, 'claimed', { turn, revision: record.binding.revision })
     })
@@ -2100,10 +2120,10 @@ export class OneBotDecisionAdapter {
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     const supersededReply = record.replySuperseded && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
     if (scope.startsWith('private:') && (supersededReply || interruptedInlineReply(record)) &&
-        record.claimedInput?.binding.origin === 'live' && !record.claimConflict &&
-        state.liveRevision === record.binding.revision) {
-      // Admission can invalidate the reply before the successor finishes
-      // enrichment. Keep the older question until that input is actually queued.
+        record.claimedInput?.binding.origin === 'live' && !record.binding.recoveryRevision &&
+        !record.claimConflict && state.active === record) {
+      // Admission can invalidate the reply before or after its successor is
+      // queued. Preserve the older question for dispatch or the next claim.
       state.unansweredPrivate = { entry: record.claimedInput, expiresAt: this.now() + 60_000,
         partial: interruptedInlineReply(record) && record.inlineTextReceiptCount > 0 }
     }
