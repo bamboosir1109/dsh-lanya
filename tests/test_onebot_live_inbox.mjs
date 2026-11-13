@@ -1829,7 +1829,7 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
 })
 
 test('reconnect recovers only a real configured-group mention as historical member input', async t => {
-  for (const scenario of ['missed mention', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
+  for (const scenario of ['missed mention', 'multiple speakers', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
@@ -1858,6 +1858,8 @@ test('reconnect recovers only a real configured-group mention as historical memb
         row(4, 95, 'different group', '999', { group_id: 404 }), row(5, 96, '/reset', '999'),
         row(5, 98, 'mismatched sender', '999', { user_id: 204 }),
         row(5, 99, 'anonymous sender', '999', { sub_type: 'anonymous' })]
+      if (scenario === 'multiple speakers') rows.push(row(6, 97, 'different question', '999', { sender: { user_id: 204 } }),
+        row(7, 100, 'one more detail from the first speaker', '999'))
       if (scenario === 'later bot reply') rows.push(row(6, 97, 'already replied', null, { sender: { user_id: 999 } }))
       return { messages: rows }
     }
@@ -1876,16 +1878,28 @@ test('reconnect recovers only a real configured-group mention as historical memb
       assert.ok(!state.seen.some(item => item.messageId === '91'))
       return
     }
-    assert.equal(state.current.messageId, '91')
+    const multiple = scenario === 'multiple speakers'
+    assert.equal(state.current.messageId, multiple ? '100' : '91')
     assert.equal(state.current.sender, '202')
     assert.equal(state.current.controlAllowed, false)
-    assert.equal(state.current.replyReview.text, 'missed actual question')
-    await h.receive('missed actual question', { message_id: 91, message: [
-      { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
-    ] })
+    if (multiple) {
+      assert.deepEqual(JSON.parse(state.current.replyReview.text), [
+        { group_member: 1, text: 'missed actual question' }, { group_member: 2, text: 'different question' },
+        { group_member: 1, text: 'one more detail from the first speaker' },
+      ])
+    } else assert.equal(state.current.replyReview.text, 'missed actual question')
+    for (const id of multiple ? [91, 97, 100] : [91]) {
+      await h.receive('missed actual question', { message_id: id, user_id: id === 97 ? 204 : 202, message: [
+        { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
+      ] })
+    }
     assert.equal(h.pending.length, 0)
     await a.reviewUnansweredInputs()
     assert.equal(h.pending.length, 1)
+    if (multiple) {
+      assert.match(JSON.stringify(h.pending), /distinct speakers/)
+      assert.match(JSON.stringify(h.pending), /different question/)
+    }
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     assert.equal(h.chat.activeTurnRole, 'member')
     assert.equal((await h.decide('resume', { control_update: true })).accepted, false)

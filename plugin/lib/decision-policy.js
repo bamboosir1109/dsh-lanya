@@ -531,21 +531,30 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
 
     async stageReconnectedInput({ scope, sender, expectedRevision, receipts, owner, canStage } = {}) {
       canonicalScope(scope)
+      const group = scope.startsWith('group:')
       if (typeof sender !== 'string' || !/^[1-9][0-9]*$/.test(sender) ||
-          (scope.startsWith('private:') ? scope.slice(8) !== sender : receipts?.length !== 1) ||
+          (!group && scope.slice(8) !== sender) ||
           !replyOwnerValid(owner) || typeof canStage !== 'function' ||
           !Number.isSafeInteger(expectedRevision) || !Array.isArray(receipts) || receipts.length < 1 || receipts.length > 8 ||
           receipts.some(receipt => !plain(receipt) || typeof receipt.messageId !== 'string' ||
             !/^-?[0-9]{1,16}$/.test(receipt.messageId) || !Number.isSafeInteger(Number(receipt.messageId)) ||
             !Number.isSafeInteger(receipt.at) || typeof receipt.text !== 'string' || !receipt.text.trim() ||
-            receipt.text.length > 2000 || /^\s*\//u.test(receipt.text))) {
+            receipt.text.length > 2000 || /^\s*\//u.test(receipt.text) || typeof receipt.sender !== 'string' ||
+            !/^[1-9][0-9]*$/.test(receipt.sender) || (!group && receipt.sender !== sender))) {
         throw new PolicyStateError('Invalid verified reconnect history')
       }
       const batch = clone(receipts), latest = batch.at(-1)
-      if (new Set(batch.map(receipt => receipt.messageId)).size !== batch.length ||
+      if (latest.sender !== sender || new Set(batch.map(receipt => receipt.messageId)).size !== batch.length ||
           batch.some((receipt, i) => i > 0 && receipt.at < batch[i - 1].at)) {
         throw new PolicyStateError('Unordered or repeated reconnect history')
       }
+      // Group speakers stay distinct within this review, without putting raw
+      // account IDs into the recovery text or granting any sender authority.
+      const speakers = [...new Set(batch.map(receipt => receipt.sender))]
+      const text = group && batch.length > 1
+        ? JSON.stringify(batch.map(receipt => ({ group_member: speakers.indexOf(receipt.sender) + 1,
+          text: receipt.text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/gu, '').slice(0, 1900).toWellFormed() })))
+        : batch.map(receipt => receipt.text).join('\n\n')
       return transaction(state => {
         const current = scopeState(state, scope), at = now()
         if (!current || current.revision !== expectedRevision || current.mode !== 'open' ||
@@ -563,8 +572,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         current.updatedAt = at
         current.current = { messageId: latest.messageId, sender, origin: 'live',
           controlAllowed: false, quoted: true, decided: false, ticket: null,
-          replyReview: { owner: clone(owner), text: batch.map(receipt => receipt.text).join('\n\n'),
-            at: latest.at, attempted: false } }
+          replyReview: { owner: clone(owner), text, at: latest.at, attempted: false } }
         return true
       })
     },
