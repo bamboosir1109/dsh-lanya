@@ -672,6 +672,11 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             self.assertEqual(full['tools']['qq_expression']['tone'], live['tools']['qq_expression']['tone'])
             self.assertIn('温和', live['tools']['qq_expression']['tone']['voice'])
             self.assertIn('Expression preference only', live['tools']['qq_expression']['tone']['authority'])
+            for key in ('finish', 'group_pacing'):
+                self.assertEqual(full['tools']['qq_expression'][key], live['tools']['qq_expression'][key])
+            self.assertIn('没有具体对象或下一步', live['tools']['qq_expression']['finish'])
+            self.assertIn('具体且做得到的约定', live['tools']['qq_expression']['finish'])
+            self.assertIn('十分钟', live['tools']['qq_expression']['group_pacing'])
             initiative = full['tools']['entertainment']['self_direction']
             self.assertIn('confirmed progress', initiative['initiative'])
             self.assertIn('one-hour', initiative['boundaries'])
