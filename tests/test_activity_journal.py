@@ -147,6 +147,24 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal._record(path), before)
         self.assertEqual(self.read()['status'], 'error')
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows volume serial')
+    def test_legacy_volume_serial_reads_the_same_facts_and_keeps_strict_file_identity(self):
+        self.update()
+        index_path = self.root / 'index.json'
+        index, _ = journal._read_index(self.root, self.owner)
+        record = index['days'][TODAY]['record']
+        serial = record['signature'][0]
+        record['signature'][0] = (serial & 0xffffffff) if serial > 0xffffffff else serial | (1 << 32)
+        index_path.write_bytes(journal._encoded(index))
+        self.assertEqual(self.read()['selected_status'], 'available')
+        result = journal.diary_facts(workspace=str(self.work), agent_preset='Fixture', data_directory=str(self.data),
+                                     day=TODAY, now=NOW)
+        self.assertEqual(result['status'], 'available')
+        self.assertEqual(self.update()['written_count'], 0)
+        self.current = catalog(facts(episodes=2))
+        self.assertEqual(self.update()['written_count'], 1)
+        self.assertEqual(self.read()['selected']['entries'], 2)
+
     def test_interruption_retains_original_backup_and_next_cycle_finishes_only_known_commit(self):
         self.update()
         old = (self.root / (TODAY + '.md')).read_bytes()
