@@ -29,7 +29,7 @@ assert.equal(hostSource.split(anchor).length, 2)
 const hostPath = path.join(temporary, 'host.mjs')
 fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }", "{ execFile: deny, spawn: deny, spawnSync: deny }").replace(anchor, `  const hooks = new Map(), guards = []
   agent.ctx = { on(name, fn) { const list = hooks.get(name) || []; list.push(fn); hooks.set(name, list) },
-    get: name => name === 'costMeter' ? deps.testMeter : undefined,
+    get: name => name === 'costMeter' ? deps.testMeter : name === 'attachments' ? deps.testAttachments : undefined,
     tools: { register: tool => { tools.set(tool.name, tool); return noop }, guard: fn => { guards.push(fn); return noop } },
     systemPrompt: { section: value => { (deps.nativePrompts ||= []).push(value); return noop } } }
   bridge.installChannelScope(agent.ctx)
@@ -1579,8 +1579,8 @@ test('terminal reminders cannot override an explicit idle/silence, cancellation 
   })
 })
 
-async function listeningGroup(t) {
-  const h = await fixture(t, {contextualGroupScope:'group:303'}), a = h.bridge.lanyaPolicy
+async function listeningGroup(t, options = {}) {
+  const h = await fixture(t, {contextualGroupScope:'group:303', ...options}), a = h.bridge.lanyaPolicy
   h.deps.config.requireMention = true
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId='group:303'
   h.bridge.chats.set(h.chat.chatId,h.chat); h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
@@ -1654,6 +1654,58 @@ test('group review reads listening arrivals after enqueue and discards expired c
   assert.deepEqual([row.speaker, row.at_targets, row.quoted_speaker, row.addressed_to_bot, row.age_seconds],
     ['202', ['777'], '777', false, 12])
   assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('a group opportunity can inspect one freshly received image without starting a live reply', async t => {
+  const h = await listeningGroup(t, { mislabeledImage: true })
+  const image = { type: 'image', data: { file: 'synthetic-hash', sub_type: '1' } }
+  const saved = []
+  h.deps.testAttachments = { saveImage: async data => { saved.push(data); return { attachmentId: 'fixture-group-image' } } }
+  const tool = h.tools.get('qq_view_group_image')
+  const unavailable = async args => assert.equal((await tool.execute(args, h.exec())).status, 'unavailable')
+  const refs = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+    .recent.flatMap(row => row.image_refs || [])
+  await h.receive('first image', { message: [image] })
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.requests.length, 0)
+  await h.opportunity()
+  await h.receive('second image', { message: [image] })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const ids = refs()
+  assert.equal(ids.length, 2)
+  assert.doesNotMatch(h.prompt(), /incoming\.jpg|media_format_/)
+  await unavailable({ image_ref: ids[1], group_id: '404' })
+  const observed = await tool.execute({ image_ref: ids[1] }, h.exec())
+  assert.equal(observed.status, 'observed')
+  assert.deepEqual(structuredClone(tool.output.render({}, observed)), [{ type: 'text', text: '{"status":"observed"}' },
+    { type: 'image', attachment: { attachmentId: 'fixture-group-image' } }])
+  await unavailable({ image_ref: ids[0] })
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].mediaType, 'image/gif')
+  assert.deepEqual(saved[0].data, fs.readFileSync(path.join(h.directory, 'media', 'incoming.jpg')))
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  await h.end()
+
+  const media = path.join(h.directory, 'media')
+  const cached = fs.readdirSync(media).find(name => name.startsWith('media_format_'))
+  fs.appendFileSync(path.join(media, cached), 'changed')
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), ids)
+  await unavailable({ image_ref: ids[1] })
+  assert.equal(saved.length, 1)
+  await h.end()
+
+  await h.mention(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), [])
+  await unavailable({ image_ref: ids[1] })
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  h.advance(11 * 60_000)
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), [])
+  await unavailable({ image_ref: ids[1] })
+  assert.equal(saved.length, 1)
   await h.end()
 })
 
