@@ -1020,6 +1020,42 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
   })
 })
 
+test('verified reconnect starts friend history review without waiting for the periodic timer', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('previously handled fixture message')
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  const mapping = defer()
+  h.bridge.registry.mappingLoaded = mapping.promise
+  const call = h.deps.connection.call
+  let reads = 0
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads++
+    return { messages: [] }
+  }
+  adapter.noteConnectionStatus(false)
+  h.advance(1000)
+  adapter.noteConnectionStatus(true)
+  const scan = adapter.friendReconnectAttempt
+  assert.ok(scan)
+  assert.equal(adapter.recoveryTimer, null)
+  assert.equal(reads, 0)
+  adapter.noteConnectionStatus(false)
+  h.deps.connection.socket = {}
+  h.advance(1000)
+  adapter.noteConnectionStatus(true)
+  mapping.resolve()
+  await scan
+  await adapter.friendReconnectAttempt
+  assert.equal(reads, 1)
+  assert.equal(adapter.friendReconnect, null)
+})
+
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const backend = backendFixture(h)

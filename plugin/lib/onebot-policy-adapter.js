@@ -658,6 +658,7 @@ export class OneBotDecisionAdapter {
       this.startRequested = true
       this.startEpoch += 1
       if (!this.friendReconnect && this.deps.connection?.connected === true) this.noteConnectionStatus(true)
+      else this.checkReconnectedFriends()
     }
     // Install recovery before the first asynchronous helper call. A temporary
     // budget failure or a still-living previous consumer must not permanently
@@ -665,7 +666,7 @@ export class OneBotDecisionAdapter {
     if (!this.recoveryTimer) {
       this.recoveryTimer = setInterval(() => {
         void this.ensureObservationConsumer().catch(error => this.log('warn', 'observation_pump_recovery_failed:' + error.name))
-        void this.recoverReconnectedFriends().catch(error => this.log('warn', 'friend_reconnect_review_failed:' + error.name))
+        this.checkReconnectedFriends()
         void this.reviewUnansweredInputs().catch(error => this.log('warn', 'reply_review_failed:' + error.name))
       }, 30000)
       this.recoveryTimer.unref?.()
@@ -684,6 +685,11 @@ export class OneBotDecisionAdapter {
     // Use a short lookback; policy and platform history still deduplicate it.
     const since = this.friendReconnect?.until === undefined ? this.friendReconnect?.since : undefined
     this.friendReconnect = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null }
+    if (this.startRequested) this.checkReconnectedFriends()
+  }
+
+  checkReconnectedFriends() {
+    void this.recoverReconnectedFriends().catch(error => this.log('warn', 'friend_reconnect_review_failed:' + error.name))
   }
 
   async recoverReconnectedFriends() {
@@ -768,7 +774,12 @@ export class OneBotDecisionAdapter {
     })()
     this.friendReconnectAttempt = attempt
     try { await attempt }
-    finally { if (this.friendReconnectAttempt === attempt) this.friendReconnectAttempt = null }
+    finally {
+      if (this.friendReconnectAttempt === attempt) {
+        this.friendReconnectAttempt = null
+        if (this.friendReconnect?.until && this.friendReconnect !== window) this.checkReconnectedFriends()
+      }
+    }
   }
 
   replyReviewAllowed(scope, sender) {
