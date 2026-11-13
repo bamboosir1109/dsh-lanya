@@ -587,6 +587,56 @@ test('inbox insertion failure retains recovery evidence for an admitted private 
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('first private message is reviewable after session creation fails before owner enrichment', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const ensure = h.bridge.ensureChat.bind(h.bridge)
+  h.bridge.ensureChat = async () => { throw new Error('synthetic session creation failure') }
+  await h.receive('first question while the session could not open')
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot(h.chat.chatId)
+  assert.match(state.current.replyReview.text, /first question/)
+  assert.equal(h.pending.length, 0)
+  h.bridge.ensureChat = ensure
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /historical_qq_input>[\s\S]*first question/)
+  h.start(); assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('reply', { text: 'a fresh answer' })
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+})
+
+test('late owner resolution for a failed dispatch cannot replace recovery evidence for a newer input', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const ensure = h.bridge.ensureChat.bind(h.bridge), owner = adapter.trustedOwner.bind(adapter)
+  const entered = defer(), release = defer()
+  adapter.trustedOwner = async scope => {
+    entered.resolve()
+    await release.promise
+    return owner(scope)
+  }
+  h.bridge.ensureChat = async () => { throw new Error('synthetic session creation failure') }
+  await h.receive('earlier failed dispatch')
+  await entered.promise
+  const [oldWrite] = adapter.replyReviewWrites
+  h.bridge.ensureChat = ensure
+  adapter.trustedOwner = owner
+  try {
+    await h.receive('newer valid question')
+  } finally { release.resolve(); await oldWrite }
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot(h.chat.chatId)
+  assert.match(state.current.replyReview.text, /newer valid question/)
+  assert.doesNotMatch(state.current.replyReview.text, /earlier failed dispatch/)
+  assert.equal(h.pending.length, 1)
+})
+
 test('group member burst coalesces but a later administrator does not lend control authority', async t => {
   const h = await fixture(t), scope = 'group:303'
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope

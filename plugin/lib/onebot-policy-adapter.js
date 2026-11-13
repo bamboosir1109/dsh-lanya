@@ -664,7 +664,7 @@ export class OneBotDecisionAdapter {
       policy.groupAllowFrom?.includes(scope.slice(6)) === true)
   }
 
-  rememberReplyInput(binding, text) {
+  rememberReplyInput(binding, text, resolveOwner = false) {
     const inbound = this.context.getStore()?.inbound
     if (!this.nativeClaims || binding.origin !== 'live' || binding.recoveryRevision || binding.temporaryPrivate || !inbound ||
         !this.replyReviewAllowed(binding.scope, inbound.userId)) return
@@ -675,8 +675,15 @@ export class OneBotDecisionAdapter {
     if (typeof text !== 'string' || !text.trim() || text.length > 32_000) return
     // Run alongside the original native input, never add a helper/model call
     // to the foreground path. A storage failure cannot authorize recovery.
-    const write = this.policy.rememberReplyInput({ scope: binding.scope, expectedRevision: binding.revision,
-      messageId: binding.messageId, owner: binding.owner, text })
+    if (!binding.owner && !resolveOwner) return
+    const write = (async () => {
+      // Session creation can fail before enrichment binds an owner. Resolve
+      // from the trusted registry and let policy match the original receipt.
+      const owner = binding.owner || await this.trustedOwner(binding.scope)
+      if (!this.replyReviewAllowed(binding.scope, inbound.userId)) return
+      return this.policy.rememberReplyInput({ scope: binding.scope, expectedRevision: binding.revision,
+        messageId: binding.messageId, owner, text })
+    })()
       .catch(error => this.log('warn', 'reply_review_evidence_unavailable:' + error.name))
     this.replyReviewWrites.add(write)
     void write.finally(() => this.replyReviewWrites.delete(write))
@@ -684,7 +691,7 @@ export class OneBotDecisionAdapter {
 
   rememberFailedDispatch(scope, text) {
     const binding = this.captureInbound(scope)
-    if (binding?.owner) this.rememberReplyInput(binding, text)
+    if (binding) this.rememberReplyInput(binding, text, true)
   }
 
   replyReviewIdle(scope, epoch) {
