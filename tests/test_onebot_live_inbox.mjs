@@ -946,13 +946,14 @@ function backendFixture(h, provider='snowluma') {
   h.deps.connection.call=async(action,params)=>{
     if(action==='get_version_info'){reads.push(action);return {app_name:app}}
     if(action==='get_login_info'){reads.push(action);return {user_id:999}}
+    if(action==='get_friend_list')return []
     return original(action,params)
   }
   return {select,reads,setApp:value=>{app=value}}
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'read fails until expiry',
+  for (const scenario of ['new', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
     'live arrived', 'later own message', 'same-second own message', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
     const warnings = []
@@ -979,6 +980,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       if (scenario === 'read fails until expiry' || scenario === 'read retries' && historyReads === 1) {
         throw new Error('Temporary history failure')
       }
+      if (scenario === 'invalid history retries' && historyReads === 1) return {}
       if (scenario === 'live arrived') await h.receive('a newer actual live message')
       if (scenario === 'socket changed') h.deps.connection.socket = {}
       const rows = [row(at - 2, 10, 'before disconnect'), row(at, 11, 'first missed question'),
@@ -997,18 +999,19 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       h.agent.status = 'idle'
       h.advance(expires ? 180_001 : 30_000)
     }
-    if (['read retries', 'read fails until expiry'].includes(scenario)) {
+    const retries = ['read retries', 'invalid history retries'].includes(scenario)
+    if (retries || scenario === 'read fails until expiry') {
       await adapter.recoverReconnectHistory()
       assert.equal(historyReads, 1, 'a failed history read is attempted only once per pass')
       assert.equal(h.pending.length, 0)
       assert.deepEqual(Array.from(adapter.reconnectReview.scopes), [h.chat.chatId])
-      h.advance(scenario === 'read retries' ? 30_000 : 180_001)
+      h.advance(retries ? 30_000 : 180_001)
     }
     await adapter.recoverReconnectHistory()
     const state = await adapter.policy.snapshot(h.chat.chatId)
-    const expectedReads = expires ? 0 : scenario === 'read retries' ? 2 : 1
+    const expectedReads = expires ? 0 : retries ? 2 : 1
     assert.equal(historyReads, expectedReads)
-    if (!['new', 'disconnect second', 'busy then idle', 'read retries'].includes(scenario)) {
+    if (!retries && !['new', 'disconnect second', 'busy then idle'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return
@@ -1051,8 +1054,12 @@ test('verified reconnect stages a first friend message without creating chats fo
   }
   const call = h.deps.connection.call
   const historyPeers = []
+  let friendListReads = 0
   h.deps.connection.call = async (action, params) => {
-    if (action === 'get_friend_list') return [101, 102, 103, 999].map(user_id => ({ user_id }))
+    if (action === 'get_friend_list') {
+      if (++friendListReads === 1) throw new Error('Temporary friend list failure')
+      return [101, 102, 103, 999].map(user_id => ({ user_id }))
+    }
     if (action !== 'get_friend_msg_history') return call(action, params)
     historyPeers.push(params.user_id)
     if (params.user_id !== 101) return { messages: [] }
@@ -1064,6 +1071,13 @@ test('verified reconnect stages a first friend message without creating chats fo
   h.advance(90_000); a.noteConnectionStatus(true)
   a.startRequested = true
   await a.recoverReconnectHistory()
+  assert.equal(friendListReads, 1)
+  assert.deepEqual(historyPeers, [])
+  assert.equal(opened, 0)
+  assert.equal(await a.policy.snapshot(scope), null)
+  h.advance(30_000)
+  await a.recoverReconnectHistory()
+  assert.equal(friendListReads, 2)
   assert.deepEqual(historyPeers, [101, 102])
   assert.equal(opened, 0)
   assert.equal(await a.policy.snapshot('private:102'), null)

@@ -689,7 +689,7 @@ export class OneBotDecisionAdapter {
     // A new process cannot know when the previous process lost its socket.
     // Use a short lookback; policy and platform history still deduplicate it.
     const since = this.reconnectReview?.until === undefined ? this.reconnectReview?.since : undefined
-    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null, friends: new Set() }
+    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null, friends: null }
     if (this.startRequested) this.checkReconnectHistory()
   }
 
@@ -716,27 +716,31 @@ export class OneBotDecisionAdapter {
       if (!backend.allowed || !backend.verified || !sameWindow()) return
       const ready = () => sameWindow() && this.now() - window.until <= FRIEND_RECONNECT_WINDOW_MS &&
         this.backendGuard.edge(connection, selected.stamp)
+      const privateAllowed = scope =>
+        /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
+          this.replyReviewAllowed(scope, scope.slice(8))
       if (!window.scopes) {
-        const privateAllowed = scope =>
-          /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
-            this.replyReviewAllowed(scope, scope.slice(8))
         window.scopes = [...this.bridge.chats.keys()].filter(privateAllowed)
-        try {
-          const list = this.intentPlanner.rows(await this.intentPlanner.readAction('get_friend_list', {}))
-          if (!ready()) return
-          for (const row of list) {
-            const scope = 'private:' + String(row?.user_id)
-            if (this.bridge.chats.has(scope) || !privateAllowed(scope)) continue
-            window.friends.add(scope)
-            if (window.friends.size === 24) break
-          }
-          window.scopes.push(...window.friends)
-        } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
         const group = this.config.contextualGroupScope
         if (this.contextualGroupEnabled(group) && this.bridge.chats.has(group) &&
             Number.isSafeInteger(Number(group.slice(6))) && this.groupReplyReviewAllowed(group)) {
           window.scopes.unshift(group)
         }
+      }
+      if (!window.friends) {
+        try {
+          const list = this.intentPlanner.rows(await this.intentPlanner.readAction('get_friend_list', {}))
+          if (!ready()) return
+          const friends = new Set()
+          for (const row of list) {
+            const scope = 'private:' + String(row?.user_id)
+            if (this.bridge.chats.has(scope) || !privateAllowed(scope)) continue
+            friends.add(scope)
+            if (friends.size === 24) break
+          }
+          window.scopes.push(...friends)
+          window.friends = friends
+        } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
       }
       const reviewScope = async scope => {
         if (!ready()) { window.scopes.push(scope); return }
@@ -747,7 +751,7 @@ export class OneBotDecisionAdapter {
           : (!group || this.contextualGroupEnabled(scope)) && this.replyReviewAllowed(scope, sender ?? peer)
         if (!allowed()) return
         const chat = this.bridge.chats.get(scope)
-        const newFriend = !chat && window.friends.has(scope)
+        const newFriend = !chat && window.friends?.has(scope)
         const canStage = (sender) => ready() && this.bridge.chats.get(scope) === chat &&
           (newFriend ? !this.foregroundBusy(scope) : this.replyReviewIdle(scope, epoch)) && allowed(sender)
         if (!canStage()) {
@@ -762,9 +766,9 @@ export class OneBotDecisionAdapter {
           if (!canStage()) { window.scopes.push(scope); return }
           const history = await this.intentPlanner.readAction(group ? 'get_group_msg_history' : 'get_friend_msg_history',
             group ? { group_id: Number(peer), count: 12 } : { user_id: Number(peer), count: 12 })
+          if (!Array.isArray(history?.messages) || history.messages.length > 12) throw new TypeError('Invalid reconnect history response')
           const latestOwner = await this.trustedOwner(scope)
-          if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key]) ||
-              !Array.isArray(history?.messages) || history.messages.length > 12) return
+          if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key])) return
           if (!canStage()) { window.scopes.push(scope); return }
           const now = this.now()
           // OneBot history rounds to seconds. Include the bucket containing
@@ -816,7 +820,7 @@ export class OneBotDecisionAdapter {
         while (batch.length) await reviewScope(batch.shift())
       }
       await Promise.all(Array.from({ length: Math.min(3, batch.length) }, reviewNext))
-      if (ready() && !window.scopes.length) this.reconnectReview = null
+      if (ready() && window.friends && !window.scopes.length) this.reconnectReview = null
     })()
     this.reconnectReviewAttempt = attempt
     try { await attempt }
