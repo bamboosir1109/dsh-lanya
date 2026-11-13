@@ -247,21 +247,21 @@ function buildReviewCandidate(base, event, completed, at) {
     })
     const name = observationKey(review.scope, review.event_id) + '.json'
     const target = path.join(pending, name)
-    if (fs.existsSync(path.join(done, name))) {
-      const existing = readObservationEvidence(base, name.slice(0, -5))
-      if (existing.completion && existing.value.payload.review_context?.freshness_anchor === undefined) {
-        if (stable(existing.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
-        // An exact completed legacy child needs no new work or freshness
-        // authority. Revalidate ancestry only at the unfinished frontier.
-        return null
-      }
+    const completedChild = fs.existsSync(path.join(done, name)) ? readObservationEvidence(base, name.slice(0, -5)) : null
+    if (completedChild?.completion && completedChild.value.payload.review_context?.freshness_anchor === undefined) {
+      if (stable(completedChild.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
+      // An exact completed legacy child needs no new work or freshness
+      // authority. Revalidate ancestry only at the unfinished frontier.
+      return null
     }
     review.payload.review_context.freshness_anchor = reviewAnchor(base, event)
     if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
-    if (!fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
+    if (!completedChild?.completion && !fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
       try { publish(target, review) } catch (error) { if (error.code !== 'EEXIST') throw error }
     }
-    const read = readObservationEvidence(base, name.slice(0, -5))
+    // Reuse only a verified terminal child. An executable child is read
+    // after publication and independently verified again before dispatch.
+    const read = completedChild?.completion ? completedChild : readObservationEvidence(base, name.slice(0, -5))
     validateObservation(read.value)
     if (stable(read.value) !== stable(review)) {
       const legacy = structuredClone(review)

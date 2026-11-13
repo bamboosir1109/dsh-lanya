@@ -344,7 +344,7 @@ test('an invalid claimed-terminal review is durably parked, not revived by its p
 
 // Pre-anchor histories remain real immutable evidence. Every existing child is
 // terminal; only the leaf has a future review, so polling has no work to create.
-function legacyHistory(t, count) {
+function legacyHistory(t, count, { anchored = false } = {}) {
   const root = fixture(t), rows = []
   fs.mkdirSync(path.join(root, 'done'), { recursive: true })
   for (let index = 0; index < count; index++) {
@@ -356,6 +356,8 @@ function legacyHistory(t, count) {
       payload: { subject: 'synthetic review history', review_context: {
         parent_observation_key: previous.key, parent_event_id: previous.value.event_id,
         previous_decision_id: previous.marker.decision_id, scheduled_at: index + 1,
+        ...(anchored ? { freshness_anchor: { key: rows[0].key, sha256: rows[0].marker.event_sha256,
+          created_at: rows[0].value.created_at } } : {}),
       } },
     } : event('history-root', { kind: 'social.notification', payload: { subject: 'synthetic review history' } })
     const name = write(root, value), key = name.slice(0, -5)
@@ -406,6 +408,27 @@ test('polling terminal legacy review history uses linear file work across shared
     assert.ok(samples[1][metric] <= samples[0][metric] * 2.8 + 16,
       'doubling terminal history must not quadruple ' + metric + ' calls: ' + JSON.stringify(samples))
   }
+})
+
+test('auditing anchored completed successors reads each child once per parent review', async t => {
+  const count = 40, { root, rows } = legacyHistory(t, count, { anchored: true })
+  const invalid = []
+  const p = await pump(t, root, () => assert.fail('completed successors must not dispatch'), {
+    now: () => 1000, log: (level, message) => { if (level === 'error') invalid.push(message) },
+  })
+  const io = await countHistoryIo(root, () => p.drain())
+  assert.ok(io.read <= 10 * count, JSON.stringify(io))
+  t.diagnostic('anchored history filesystem reads: ' + io.read)
+  assert.deepEqual(invalid, [])
+
+  const child = rows.at(-1), raw = JSON.stringify({ ...child.value,
+    payload: { ...child.value.payload, subject: 'changed fixture successor' } }) + '\n'
+  fs.writeFileSync(path.join(root, 'pending', child.name), raw)
+  fs.writeFileSync(path.join(root, 'done', child.name), JSON.stringify({ ...child.marker, event_raw: raw,
+    event_sha256: createHash('sha256').update(raw).digest('hex') }))
+  await p.drain()
+  assert.ok(invalid.some(message => message.startsWith('observation_invalid:' + rows.at(-2).name + ':')))
+  assert.equal(readEvents(root).length, count)
 })
 
 test('a new review still revalidates changed ancestry after a terminal-only poll', async (t) => {
