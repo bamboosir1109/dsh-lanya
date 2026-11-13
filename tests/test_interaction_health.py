@@ -15,12 +15,14 @@ class InteractionHealthTests(unittest.TestCase):
         digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
         received = dict(schema='qq-interaction/v1', phase='received', at=6000,
                         scope=digest(scope)[:16], input=digest(scope+'\0-12')[:24])
+        staged = dict(received, phase='friend_history_staged', input=digest(scope+'\0'+'17')[:24])
         rows = [dict(time=6, sub_type='friend', sender={'user_id': 101}, message_id=-12),
                 dict(time=7, sub_type='friend', sender={'user_id': 101}, message_id=13,
                      message='synthetic private body'),
                 dict(time=7, sub_type='friend', sender={'user_id': 999}, message_id=14),
                 dict(time=8, sub_type='group', sender={'user_id': 101}, message_id=15),
-                dict(time=4, sub_type='friend', sender={'user_id': 101}, message_id=16)]
+                dict(time=4, sub_type='friend', sender={'user_id': 101}, message_id=16),
+                dict(time=8, sub_type='friend', sender={'user_id': 101}, message_id=17)]
 
         def history(peer):
             if peer == '102':
@@ -29,11 +31,12 @@ class InteractionHealthTests(unittest.TestCase):
             return [*rows, rows[1]]
 
         result = module.compare_friend_ingress([scope, 'private:102', 'private:999', 'group:101'],
-            [json.dumps(received).encode(), b'{'], account='999', since_ms=5000, now_ms=9000, history=history)
+            [json.dumps(received).encode(), json.dumps(staged).encode(), b'{'],
+            account='999', since_ms=5000, now_ms=9000, history=history)
         self.assertEqual(result['status'], 'partial')
         self.assertTrue(result['partial_log'])
         self.assertEqual(result['counts'], {'history_checked': 1, 'history_unavailable': 1,
-            'friend_inputs': 2, 'matched_ingress': 1, 'without_ingress_evidence': 1})
+            'friend_inputs': 3, 'matched_ingress': 1, 'without_ingress_evidence': 1, 'staged_after_reconnect': 1})
         self.assertNotIn('synthetic private body', json.dumps(result))
 
     def test_listening_is_terminal_and_buffer_metadata_does_not_hide_real_pending_work(self):

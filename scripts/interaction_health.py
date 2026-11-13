@@ -17,7 +17,7 @@ import time
 LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
-          'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued'}
+          'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged'}
 
 
 def latest_group_activity(log, scope, *, after, now):
@@ -112,7 +112,8 @@ def summarize(raw, now_ms, since_ms=None):
                   'not_admitted' if 'not_admitted' in phases and not phases.intersection({'admitted', 'queued', 'claimed'}) else
                   'superseded_preparation' if 'superseded_preparation' in phases else
                   'ended_without_confirmed_transport' if 'turn_end' in phases else
-                  'active' if 'claimed' in phases else 'pending' if 'queued' in phases else 'preparing')
+                  'active' if 'claimed' in phases else 'pending' if 'queued' in phases else
+                  'friend_history_staged' if 'friend_history_staged' in phases else 'preparing')
         group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [],
                                           'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0})
         group['counts'][status] += 1
@@ -170,7 +171,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
         raise ValueError('comparison_window_out_of_range')
     peers = sorted({scope for scope in scopes if re.fullmatch(r'private:[1-9][0-9]{0,15}', scope)
                     and scope[8:] != account and int(scope[8:]) <= 2**53 - 1})
-    received = set()
+    received, staged = set(), set()
     partial_log = False
     for segment in raw:
         if len(segment) >= LIMIT:
@@ -185,6 +186,8 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
                     raise ValueError('invalid_record')
                 if row.get('phase') == 'received':
                     received.add((row['scope'], row['input']))
+                elif row.get('phase') == 'friend_history_staged':
+                    staged.add((row['scope'], row['input']))
             except (ValueError, TypeError, KeyError):
                 partial_log = True
 
@@ -225,7 +228,10 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
             seen.add(message_id)
             input_key = hashlib.sha256((scope + '\0' + message_id).encode()).hexdigest()[:24]
             summary['friend_inputs'] += 1
-            summary['matched_ingress' if (scope_key, input_key) in received else 'without_ingress_evidence'] += 1
+            key = (scope_key, input_key)
+            outcome = ('matched_ingress' if key in received else 'staged_after_reconnect' if key in staged
+                       else 'without_ingress_evidence')
+            summary[outcome] += 1
         if len(rows) == 50 and oldest >= since_ms:
             summary['history_window_limited'] += 1
         return summary

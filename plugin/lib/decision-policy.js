@@ -20,6 +20,7 @@ const CONTACT_INTERVAL_MS = 60 * 60_000
 const REST_REASONS = new Set(['autonomy_rest', 'observation_expired'])
 const REPLY_REVIEW_AGE = 60_000
 const REPLY_REVIEW_LIFETIME = 24 * 60 * 60_000
+export const FRIEND_RECONNECT_WINDOW_MS = 3 * 60_000
 const replyOwnerValid = owner => plain(owner) && ['cwd', 'preset', 'workspace_key', 'agent_key']
   .every(key => typeof owner[key] === 'string' && owner[key].length > 0 && owner[key].length <= 4096)
 const replyOwnerSame = (a, b) => replyOwnerValid(a) && replyOwnerValid(b) &&
@@ -524,6 +525,44 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
             current.current.origin !== 'live' || current.current.replyReview) return false
         current.current.replyReview = evidence
+        return true
+      })
+    },
+
+    async stageReconnectedFriend({ scope, expectedRevision, receipts, owner, canStage } = {}) {
+      canonicalScope(scope)
+      if (!scope.startsWith('private:') || !replyOwnerValid(owner) || typeof canStage !== 'function' ||
+          !Number.isSafeInteger(expectedRevision) || !Array.isArray(receipts) || receipts.length < 1 || receipts.length > 8 ||
+          receipts.some(receipt => !plain(receipt) || typeof receipt.messageId !== 'string' ||
+            !/^-?[0-9]{1,16}$/.test(receipt.messageId) || !Number.isSafeInteger(Number(receipt.messageId)) ||
+            !Number.isSafeInteger(receipt.at) || typeof receipt.text !== 'string' || !receipt.text.trim() ||
+            receipt.text.length > 2000 || /^\s*\//u.test(receipt.text))) {
+        throw new PolicyStateError('Invalid verified friend history')
+      }
+      const batch = clone(receipts), latest = batch.at(-1)
+      if (new Set(batch.map(receipt => receipt.messageId)).size !== batch.length ||
+          batch.some((receipt, i) => i > 0 && receipt.at < batch[i - 1].at)) {
+        throw new PolicyStateError('Unordered or repeated friend history')
+      }
+      return transaction(state => {
+        const current = scopeState(state, scope), at = now()
+        if (!current || current.revision !== expectedRevision || current.mode !== 'open' ||
+            replyReviewable(current, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
+            current.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
+              batch.some(receipt => item.messageId === receipt.messageId)) ||
+            current.deliveries.some(item => item.at >= batch[0].at || item.status === 'reserved') || canStage() !== true) return false
+        if (!Number.isSafeInteger(current.revision + batch.length)) throw new PolicyStateError('Revision exhausted')
+        for (const receipt of batch) {
+          current.revision += 1
+          current.seen.push({ messageId: receipt.messageId, origin: 'live', revision: current.revision, at: receipt.at })
+        }
+        current.seen = current.seen.slice(-maxInbound)
+        current.lastLiveRevision = current.revision
+        current.updatedAt = at
+        current.current = { messageId: latest.messageId, sender: scope.slice(8), origin: 'live',
+          controlAllowed: false, quoted: true, decided: false, ticket: null,
+          replyReview: { owner: clone(owner), text: batch.map(receipt => receipt.text).join('\n\n'),
+            at: latest.at, attempted: false } }
         return true
       })
     },

@@ -951,6 +951,66 @@ function backendFixture(h, provider='snowluma') {
   return {select,reads,setApp:value=>{app=value}}
 }
 
+test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
+  for (const scenario of ['new', 'live arrived', 'later own message', 'socket changed']) await t.test(scenario, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const warnings = []
+    adapter.log = (_level, message) => warnings.push(message)
+    backendFixture(h)
+    await h.receive('previously handled message')
+    await Promise.all([...adapter.replyReviewWrites])
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    await h.decide('idle'); await h.end()
+    h.agent.status = 'idle'; adapter.startRequested = true
+    h.advance(1000)
+    adapter.noteConnectionStatus(false)
+    const at = Math.floor(adapter.now() / 1000) + 1
+    h.advance(90_000)
+    adapter.noteConnectionStatus(true)
+    const row = (time, id, text, extra = {}) => ({ message_type: 'private', sub_type: 'friend', time, message_id: id,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }], ...extra })
+    const call = h.deps.connection.call
+    let historyReads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_friend_msg_history') return call(action, params)
+      historyReads++
+      assert.deepEqual({ ...params }, { user_id: 101, count: 12 })
+      if (scenario === 'live arrived') await h.receive('a newer actual live message')
+      if (scenario === 'socket changed') h.deps.connection.socket = {}
+      const rows = [row(at - 2, 10, 'before disconnect'), row(at, 11, 'first missed question'),
+        row(at + 1, -12, 'second missed question'), row(at + 2, 13, '/reset'),
+        row(at + 3, 14, 'not a friend', { sub_type: 'group' })]
+      if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
+      return { messages: rows }
+    }
+    await adapter.recoverReconnectedFriends()
+    const state = await adapter.policy.snapshot(h.chat.chatId)
+    assert.equal(historyReads, 1)
+    if (scenario !== 'new') {
+      assert.ok(!state.seen.some(item => item.messageId === '-12'))
+      assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+      return
+    }
+    assert.equal(state.current.controlAllowed, false, warnings.join('\n'))
+    assert.equal(state.current.replyReview.text, 'first missed question\n\nsecond missed question')
+    assert.equal(h.pending.length, 0, 'history is staged without native live dispatch')
+    await h.receive('second missed question', { message_id: -12 })
+    assert.equal(h.pending.length, 0, 'late duplicate does not enter the native inbox')
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a short answer' })).sent, true)
+    await h.end()
+    await adapter.recoverReconnectedFriends()
+    await adapter.reviewUnansweredInputs()
+    assert.equal(historyReads, 1)
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const backend = backendFixture(h)

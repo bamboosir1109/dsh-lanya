@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { createDecisionPolicy, canonicalScope, autonomousRestState } from './decision-policy.js'
+import { createDecisionPolicy, canonicalScope, autonomousRestState, FRIEND_RECONNECT_WINDOW_MS } from './decision-policy.js'
 import { createObservationPump, validateObservation, observationFreshness, ObservationForegroundBusy } from './observation-queue.js'
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
@@ -538,6 +538,8 @@ export class OneBotDecisionAdapter {
     this.replyReviewAttempt = null
     this.replyReviewWrites = new Set()
     this.replyReviewCursor = 0
+    this.friendReconnect = null
+    this.friendReconnectAttempt = null
     {
       const install = bridge.installChannelScope
       const adapter = this
@@ -640,6 +642,7 @@ export class OneBotDecisionAdapter {
     if (!this.startRequested) {
       this.startRequested = true
       this.startEpoch += 1
+      if (!this.friendReconnect && this.deps.connection?.connected === true) this.noteConnectionStatus(true)
     }
     // Install recovery before the first asynchronous helper call. A temporary
     // budget failure or a still-living previous consumer must not permanently
@@ -647,11 +650,100 @@ export class OneBotDecisionAdapter {
     if (!this.recoveryTimer) {
       this.recoveryTimer = setInterval(() => {
         void this.ensureObservationConsumer().catch(error => this.log('warn', 'observation_pump_recovery_failed:' + error.name))
+        void this.recoverReconnectedFriends().catch(error => this.log('warn', 'friend_reconnect_review_failed:' + error.name))
         void this.reviewUnansweredInputs().catch(error => this.log('warn', 'reply_review_failed:' + error.name))
       }, 30000)
       this.recoveryTimer.unref?.()
     }
     return this.ensureObservationConsumer()
+  }
+
+  noteConnectionStatus(connected) {
+    if (!this.nativeClaims || this.bridge.stopping) return
+    const at = this.now()
+    if (!connected) {
+      this.friendReconnect = { since: at }
+      return
+    }
+    // A new process cannot know when the previous process lost its socket.
+    // Use a short lookback; policy and platform history still deduplicate it.
+    const since = this.friendReconnect?.until === undefined ? this.friendReconnect?.since : undefined
+    this.friendReconnect = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, cursor: 0, scopes: null }
+  }
+
+  async recoverReconnectedFriends() {
+    const window = this.friendReconnect, connection = this.deps.connection
+    if (!this.nativeClaims || !this.startRequested || this.bridge.stopping ||
+        !window?.until || connection?.connected !== true) return
+    if (this.friendReconnectAttempt) return this.friendReconnectAttempt
+    if (this.now() - window.until > FRIEND_RECONNECT_WINDOW_MS) {
+      this.friendReconnect = null
+      return
+    }
+    const epoch = this.startEpoch, socket = connection.socket
+    const sameWindow = () => this.friendReconnect === window && this.startRequested && epoch === this.startEpoch &&
+      !this.bridge.stopping && connection.connected === true && connection.socket === socket
+    const attempt = (async () => {
+      await this.bridge.registry.mappingLoaded
+      if (!sameWindow()) return
+      const selected = this.backendGuard.selection(), backend = await this.backendGuard.verify(connection, selected.stamp)
+      if (!backend.allowed || !backend.verified || !sameWindow()) return
+      const ready = () => sameWindow() && this.backendGuard.edge(connection, selected.stamp)
+      if (!window.scopes) {
+        const scopes = [...this.bridge.chats.keys()]
+          .filter(scope => /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
+            this.replyReviewAllowed(scope, scope.slice(8)))
+        window.scopes = scopes
+      }
+      const end = Math.min(window.cursor + 8, window.scopes.length)
+      for (; window.cursor < end; window.cursor++) {
+        if (!ready()) return
+        const scope = window.scopes[window.cursor], peer = scope.slice(8)
+        const chat = this.bridge.chats.get(scope)
+        const canStage = () => ready() && this.bridge.chats.get(scope) === chat &&
+          this.replyReviewIdle(scope, epoch) && this.replyReviewAllowed(scope, peer)
+        if (!canStage()) continue
+        try {
+          const state = await this.policy.snapshot(scope)
+          if (!state || state.mode !== 'open' || !canStage()) continue
+          const owner = await this.trustedOwner(scope)
+          const history = await this.intentPlanner.readAction('get_friend_msg_history', { user_id: Number(peer), count: 12 })
+          const latestOwner = await this.trustedOwner(scope)
+          if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key]) ||
+              !canStage() || !Array.isArray(history?.messages) || history.messages.length > 12) continue
+          const since = Math.max(window.since, this.now() - FRIEND_RECONNECT_WINDOW_MS)
+          const now = this.now()
+          const rows = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
+            row.time * 1000 >= since && row.time * 1000 <= now)
+          // A later live/platform message can already have received a reply.
+          // Only consider the newest unanswered tail during this reconnect.
+          const lastOwnAt = Math.max(-1, ...rows.filter(row => String(row.sender?.user_id) === selected.expectedAccount)
+            .map(row => row.time * 1000))
+          const known = new Set(state.seen.map(row => row.messageId))
+          const lastKnownAt = Math.max(-1, ...rows.filter(row => known.has(String(row.message_id))).map(row => row.time * 1000))
+          const receipts = new Map()
+          for (const row of rows) {
+            const at = row.time * 1000, messageId = String(row.message_id)
+            if (at > window.until || at <= Math.max(lastOwnAt, lastKnownAt) || row.message_type !== 'private' ||
+                row.sub_type !== 'friend' || String(row.sender?.user_id) !== peer ||
+                !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
+                !Array.isArray(row.message) || !row.message.length || row.message.length > 12 ||
+                row.message.some(segment => segment?.type !== 'text' || typeof segment.data?.text !== 'string')) continue
+            const text = row.message.map(segment => segment.data.text).join('').trim()
+            if (text && text.length <= 2000 && !text.startsWith('/')) receipts.set(messageId, { messageId, at, text })
+          }
+          const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
+          if (batch.length && await this.policy.stageReconnectedFriend({ scope, expectedRevision: state.revision,
+            receipts: batch, owner, canStage })) {
+            for (const { messageId } of batch) this.diagnose(scope, messageId, 'friend_history_staged')
+          }
+        } catch (error) { this.log('warn', 'friend_history_scope_unavailable:' + error.name) }
+      }
+      if (ready() && window.cursor === window.scopes.length) this.friendReconnect = null
+    })()
+    this.friendReconnectAttempt = attempt
+    try { await attempt }
+    finally { if (this.friendReconnectAttempt === attempt) this.friendReconnectAttempt = null }
   }
 
   replyReviewAllowed(scope, sender) {
@@ -793,6 +885,7 @@ export class OneBotDecisionAdapter {
   async stop() {
     this.startRequested = false
     this.startEpoch += 1
+    this.friendReconnect = null
     for (const buffer of this.groupBuffers) buffer.abort.abort(new Error('Group buffer stopped; durable input retained'))
     for (const [agent, methods] of this.groupPreSteps) if (agent.preStep === methods.wrapped) agent.preStep = methods.original
     this.groupPreSteps.clear()

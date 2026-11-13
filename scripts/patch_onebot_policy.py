@@ -251,6 +251,10 @@ def transform(name, raw):
         text = replace_once(text, "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');",
                             "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');\n            void this.lanyaPolicy.start().catch(error => this.deps.log('error', 'observation_pump_start_failed:' + error.name));")
         text = replace_once(text, "        this.stopping = true;", "        this.stopping = true;\n        await this.lanyaPolicy.stop();")
+        status_hook = "        connection.onStatus = (connected) => {"
+        if status_hook in text:
+            text = replace_once(text, status_hook,
+                                status_hook + "\n            this.lanyaPolicy.noteConnectionStatus(connected);")
         text = replace_once(text, "                await this.processInbound(inbound);", "                inbound.lanyaInjected = injected;\n                this.lanyaPolicy.bindPrivateInbound(inbound, event);\n                await this.processInbound(inbound);")
         text = replace_once(text, "        await this.inbound.processInbound(inbound);", "        await this.lanyaPolicy.processInbound(inbound, () => this.inbound.processInbound(inbound));")
         text = replace_once(text, "        const final = this.prefixTurn(chatId, text);", "        let final = this.prefixTurn(chatId, text);")
