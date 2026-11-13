@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createDecisionPolicy, canonicalScope, autonomousRestState } from './decision-policy.js'
-import { createObservationPump, validateObservation, observationFreshness } from './observation-queue.js'
+import { createObservationPump, validateObservation, observationFreshness, ObservationForegroundBusy } from './observation-queue.js'
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
 import { createBackendGuard } from './qq-backend.js'
@@ -2663,6 +2663,7 @@ export class OneBotDecisionAdapter {
         status: sends.some((item) => ['reserved', 'unknown'].includes(item.status)) ? 'unknown'
           : sends.some((item) => item.status === 'sent') ? 'sent' : 'decided' }
     }
+    if (observed.reason === 'foreground_busy') throw new ObservationForegroundBusy()
     if (!observed.accepted) throw new Error('Observation could not be safely dispatched: ' + observed.reason)
     let autonomousCadence
     const groupOpportunity = event.scope.startsWith('group:') && event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)

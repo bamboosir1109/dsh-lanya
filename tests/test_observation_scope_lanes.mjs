@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createObservationPump, observationKey } from '../plugin/lib/observation-queue.js'
+import { createObservationPump, observationKey, ObservationForegroundBusy } from '../plugin/lib/observation-queue.js'
 
 const settled = (id, extra = {}) => ({ completed: true, status: 'decided', decision_id: 'decision-' + id, ...extra })
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
@@ -111,6 +111,31 @@ test('a retry head blocks only its own scope and preserves FIFO across later sca
   clock = 2101
   await f.drain(p)
   assert.deepEqual(calls, ['a-head', 'b-independent', 'a-head', 'a-tail'])
+})
+
+test('foreground chat defers its autonomous scope at the poll cadence without delaying another scope', async t => {
+  const f = fixture(t), calls = []
+  let clock = 100, busy = true
+  const group = f.write('busy-group', 'group:202')
+  const other = f.write('independent', 'private:101', 2)
+  const p = f.make(async event => {
+    calls.push(event.event_id)
+    if (event.event_id === 'busy-group' && busy) throw new ObservationForegroundBusy()
+    return settled(event.event_id)
+  }, { now: () => clock, intervalMs: 3000 })
+  await p.start({ poll: false })
+  await f.drain(p)
+  assert.equal(f.done(other), true)
+  clock += 3000
+  await f.drain(p)
+  clock += 2999
+  busy = false
+  await f.drain(p)
+  assert.equal(f.done(group), false)
+  clock++
+  await f.drain(p)
+  assert.equal(f.done(group), true)
+  assert.equal(calls.filter(id => id === 'busy-group').length, 3)
 })
 
 test('a newly completed scope schedules its due review while another scope remains in flight', async t => {

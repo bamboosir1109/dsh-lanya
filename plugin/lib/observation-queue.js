@@ -13,6 +13,9 @@ import { DatabaseSync } from 'node:sqlite'
 export class ObservationQueueError extends Error {
   constructor(message) { super(message); this.name = 'ObservationQueueError' }
 }
+export class ObservationForegroundBusy extends ObservationQueueError {
+  constructor() { super('Observation could not be safely dispatched: foreground_busy'); this.name = 'ObservationForegroundBusy' }
+}
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const hash = (x) => createHash('sha256').update(x).digest('hex')
 const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x)
@@ -601,6 +604,13 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, attempts, now() + delay)
   }
 
+  function deferForeground(key) {
+    // No native turn was queued. Keep any previous failure count and resume
+    // checking at the regular cadence once this scope is available.
+    leaseDb.prepare('INSERT INTO retry(event_key,attempts,next_after) VALUES (?,0,?) '
+      + 'ON CONFLICT(event_key) DO UPDATE SET next_after=excluded.next_after').run(key, now() + intervalMs)
+  }
+
   function parkInvalidTerminal(key) {
     // A claimed terminal result with invalid metadata may already have sent.
     // Keep evidence and durably require repair, never call the model again.
@@ -631,6 +641,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       if (stopped) return 0
       outcome = await dispatch(event)
     } catch (error) {
+      if (error instanceof ObservationForegroundBusy) {
+        deferForeground(name)
+        return 0
+      }
       failed(name)
       log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
       return 0
