@@ -571,13 +571,27 @@ def _diary_hint(primary):
 
 
 def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None, prior_rest_lifecycle=None):
+    evidence = {
+        **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
+        **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
+    }
+    if not primary:
+        return {"legacy_plan_reference": None, "mood": None, "interrupts": hits,
+                "activity_role": "conversation_social", **evidence,
+                "instruction": (
+                    "Read this group's latest shared topic and decide whether you actually have something to add. "
+                    "A specific thought, short joke, question or fitting meme is enough; you do not need a mention. "
+                    "If people are reacting to an available group image, inspect it once if it helps. "
+                    "Use one natural contribution, or choose idle/defer when the topic has moved on or you have nothing to add. "
+                    "Keep the current group's scope and silence. If a prior result is uncertain, leave that action alone "
+                    "and only consider the current topic. Use the current conversation's decision and ticket. "
+                    "Leisure and private plans belong to the primary session; do not start a second copy here.")}
     diary = _diary_hint(primary)
-    return {"legacy_plan_reference": mind.get("plan") if primary else None,
-            "mood": mind.get("mood") if primary else None, "interrupts": hits,
-            "activity_role": "internal_leisure" if primary else "conversation_social",
+    return {"legacy_plan_reference": mind.get("plan"),
+            "mood": mind.get("mood"), "interrupts": hits,
+            "activity_role": "internal_leisure",
             **({'memory': {'diary': diary}} if diary is not None else {}),
-            **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
-            **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
+            **evidence,
             "instruction": (
                 "If memory.diary.status=due, read qq_diary with that day and finish one grounded write "
                 "using its fact_revision, expected_revision and actual evidence refs before optional leisure. "
@@ -593,7 +607,7 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                 "earlier activity. Its old budget reservation remains unresolved; do not clear it, assume "
                 "the earlier activity did not happen, or repeat an uncertain external action. Read current "
                 "confirmed state before choosing a fresh activity or social response. "
-                + ("This primary private conversation owns internal leisure: actively consider continuing "
+                "This primary private conversation owns internal leisure: actively consider continuing "
                    "one small real game, browsing Bilibili, making something or using a configured Android app "
                    "for a concrete personal goal. Choose an app when you have something specific to explore "
                    "or a meaningful next step. Use tools.android.agent_navigation and keep a short visit. "
@@ -627,11 +641,7 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                     "The recipient independently decides with its own context and new ticket, using a user-only "
                     "private route; refusal or unknown delivery stops without retry or group fallback. "
                     "Actual group search and applying to join are unavailable; do not treat handling an inbound "
-                    "join request or opening a share link as applying to a new group. " if primary else
-                   "This group opportunity is for this conversation's social context and interests. Review the actual recent group conversation and choose for yourself whether to join with a relevant thought, a brief joke, a question or one fitting real meme; a personal mention is not required. Do not force participation or interpret every group sentence as directed to you. "
-                   "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
-                   "browsing and creative work are owned by the primary private opportunity; do not start "
-                   "a second copy of that activity here or borrow its private plan or notes. ") +
+                    "join request or opening a share link as applying to a new group. "
                 "Keep scoped plan/progress notes in this same agent session and only the activity-notes "
                 "location supplied by the trusted guide. Do not edit mind.json, decision-inbox, scheduler, "
                 "policy, agent/profile or configuration files to arrange activities or mark completion. "

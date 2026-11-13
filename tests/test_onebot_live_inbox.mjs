@@ -1623,8 +1623,31 @@ test('listening group retains bounded observations without live claims, model ad
   h.start(); await h.preStep()
   assert.match(h.prompt(),/ordinary 19/); assert.doesNotMatch(h.prompt(),/ordinary 0x/)
   assert.match(h.prompt(),/historical evidence only/)
+  assert.match(h.prompt(), /即使没人艾特/)
+  assert.doesNotMatch(h.prompt(), /玩一小局|用 qq_intent 或日记/)
   assert.equal((await h.decide('resume',{control_update:true})).accepted,false)
   await h.end()
+})
+
+test('a queued group review uses the current social prompt instead of an inherited activity instruction', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  a.runtimeCapabilities = async () => null
+  await h.receive('an actual shared topic')
+  const event = { version: 1, event_id: 'fixture-group-social-context', scope, kind: 'activity.opportunity',
+    producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
+    workspace_key: owner.workspace_key, agent_key: owner.agent_key,
+    payload: { instruction: 'old diary and maintenance instructions', activity_role: 'conversation_social' } }
+  const completion = a.dispatchObservationOnce(event)
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  assert.doesNotMatch(h.pending[0].content[0].text, /old diary and maintenance/)
+  assert.match(h.pending[0].content[0].text, /conversation_social/)
+  assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /an actual shared topic[\s\S]*即使没人艾特/)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end(); await completion
 })
 
 test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
