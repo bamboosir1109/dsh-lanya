@@ -29,6 +29,8 @@ const MAX_CONCURRENT_SCOPES = 4
 const TERMINAL_ACK_BATCH_SIZE = 64
 const TERMINAL_ACK_BATCH_BYTES = 4 * 1024 * 1024
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
+const reviewTime = (event, completion) => !['unknown', 'no_decision'].includes(completion.status) &&
+  !producerOwnedReview.has(event.kind) ? completion.next_review_at ?? Infinity : Infinity
 export const MAX_OBSERVATION_BYTES = 256 * 1024
 // Sixfold string escaping plus repeated event identities and bounded metadata.
 export const MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
@@ -235,8 +237,7 @@ function ownerAlive(pid) {
 
 function buildReviewCandidate(base, event, completed, at) {
   const pending = path.join(base, 'pending'), done = path.join(base, 'done')
-    if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
-        !('next_review_at' in completed) || completed.next_review_at > at) return null
+    if (reviewTime(event, completed) > at) return null
     const parentKey = observationKey(event.scope, event.event_id)
     const review = validateObservation({ ...event,
       event_id: 'main-review:' + parentKey + ':' + completed.next_review_at,
@@ -358,7 +359,8 @@ function fileScanner(directory, incremental = true) {
       if (!read.completion && history.has(name)) {
         throw new ObservationQueueError('Previously terminal evidence lost its completion; automatic replay refused')
       }
-      if (read.completion) reads.set(key, { sha256: read.sha256, completionSha256: read.completionSha256, version })
+      if (read.completion) reads.set(key, { sha256: read.sha256, completionSha256: read.completionSha256,
+        version, nextAt: reviewTime(read.value, read.completion) })
       if (reads.size > TERMINAL_ACK_BATCH_SIZE) throw new ObservationQueueError('Scanner read window exceeded')
       return read
     },
@@ -367,6 +369,12 @@ function fileScanner(directory, incremental = true) {
       reads.delete(key)
       if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256) {
         throw new ObservationQueueError('Review does not match this scanner read')
+      }
+      if (previous.nextAt > at) {
+        // No work derives from this read. Track its original watch version so
+        // a change during acknowledgement re-enters discovery on the next poll.
+        if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: previous.nextAt })
+        return null
       }
       const current = readObservationEvidence(base, key); metrics.reads++
       if (current.sha256 !== sha256 || current.completionSha256 !== completionSha256 || !current.completion) {
@@ -381,11 +389,7 @@ function fileScanner(directory, incremental = true) {
         if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
         throw error
       }
-      if (acknowledged === true) {
-        const future = !['unknown', 'no_decision'].includes(completion.status) && !producerOwnedReview.has(event.kind)
-          && Number.isSafeInteger(completion.next_review_at) && completion.next_review_at > at
-        history.set(key + '.json', { version: previous.version, nextAt: future ? completion.next_review_at : Infinity })
-      }
+      if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
       return result
     },
     verify({ key, sha256 }) {

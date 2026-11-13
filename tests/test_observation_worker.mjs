@@ -79,6 +79,7 @@ test('incremental discovery skips inert terminals; explicit and periodic audits 
   const f = fixture(t); let clock = 100
   for (let i = 0; i < 24; i++) f.seed('terminal-' + i)
   const p = f.make({ now: () => clock }); await p.start({ poll: false }); await p.drain()
+  assert.equal(p.status().reads, 24, 'terminal records with no review need one verified read per audit')
   // Flush native watch notifications before recording the stable frontier.
   await new Promise(resolve => setTimeout(resolve, 30)); await p.drain(false)
   const reads = p.status().reads
@@ -87,6 +88,30 @@ test('incremental discovery skips inert terminals; explicit and periodic audits 
   clock += 30_001; await p.drain(false)
   assert.equal(p.status().full, true); assert.equal(p.status().selected, 24)
   await p.drain(); assert.equal(p.status().selected, 24)
+})
+
+test('a future review revalidates its completion when due even if it changed during acknowledgement', async t => {
+  const f = fixture(t), calls = []
+  const parent = f.seed('future-parent', true, { kind: 'activity.opportunity', producer: 'mind' })
+  const original = { ...parent.marker, next_review_at: 200 }
+  fs.writeFileSync(parent.done, JSON.stringify(original))
+  let clock = 100, changed = false
+  const p = f.make({ now: () => clock,
+    acknowledge: event => {
+      if (changed || event.event_id !== 'future-parent') return
+      changed = true
+      fs.writeFileSync(parent.done, JSON.stringify({ ...original, status: 'unknown' }))
+    },
+    dispatch: event => { calls.push(event.event_id); return { completed: true, status: 'decided', decision_id: 'fixture' } },
+  })
+  await p.start({ poll: false }); await p.drain()
+  assert.deepEqual(calls, [])
+  clock = 201; await p.drain(false)
+  assert.deepEqual(calls, [], 'a changed completion cannot create a review from the prior snapshot')
+  fs.writeFileSync(parent.done, JSON.stringify(original))
+  await p.drain()
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^main-review:/)
 })
 
 test('a long full audit leaves time for incremental discovery before another full audit', async t => {
