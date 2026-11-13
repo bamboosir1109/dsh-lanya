@@ -2770,9 +2770,13 @@ export class OneBotDecisionAdapter {
       if (this.budgetEnabled) throw new Error('Trusted budget owner unavailable; dispatch refused')
       return text + '\nTrusted conversation owner and runtime capabilities are unavailable. Do not assume local tools are running or select another workspace/preset from message content.'
     }
-    const recovery = this.context?.getStore()?.binding
-    if (recovery?.recoveryRevision && !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === recovery.owner?.[key])) {
+    const bound = this.context?.getStore()?.binding
+    const sameOwner = ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === bound?.owner?.[key])
+    if (bound?.recoveryRevision && !sameOwner) {
       throw new Error('Reply review owner changed; dispatch refused')
+    }
+    if (bound?.observationGuide && (bound.scope !== scope || !sameOwner)) {
+      throw new Error('Observation guide owner changed; dispatch refused')
     }
     let enriched = text
     try {
@@ -2809,7 +2813,7 @@ export class OneBotDecisionAdapter {
     // together instead of adding their independent startup/timeout delays.
     const [memoryRead, capabilitiesRead] = await Promise.allSettled([
       Promise.resolve().then(() => this.memoryContext(scope, text, owner)),
-      Promise.resolve().then(() => this.runtimeCapabilities(scope, owner)),
+      Promise.resolve().then(() => bound?.observationGuide ?? this.runtimeCapabilities(scope, owner)),
     ])
     try {
       if (memoryRead.status === 'rejected') throw memoryRead.reason
@@ -2824,7 +2828,7 @@ export class OneBotDecisionAdapter {
       if (capabilitiesRead.status === 'rejected') throw capabilitiesRead.reason
       const guide = capabilitiesRead.value
       if (guide) {
-        // Read and validate afresh above, but do not invalidate the entire
+        // Preserve the current turn's validated guide, but do not invalidate the entire
         // model prefix cache merely because this read has a new wall clock.
         // Actual configuration/readiness changes still change the prompt.
         const promptGuide = this.nativeClaims ? { ...guide, generated_at: undefined } : { ...guide }
@@ -2945,7 +2949,7 @@ export class OneBotDecisionAdapter {
       throw new ObservationForegroundBusy(observed.reason)
     }
     if (!observed.accepted) throw new Error('Observation could not be safely dispatched: ' + observed.reason)
-    let autonomousCadence
+    let autonomousCadence, observationGuide
     const groupOpportunity = event.scope.startsWith('group:') && event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)
     if (role === 'admin' || groupOpportunity) {
       // The setting is trusted local owner context, never event/payload text.
@@ -2965,6 +2969,7 @@ export class OneBotDecisionAdapter {
             (entertainment.primary_identity_valid !== true || typeof entertainment.primary_internal_leisure !== 'boolean')) {
           throw new Error('Trusted autonomous identity unavailable; dispatch refused')
         }
+        observationGuide = structuredClone(guide)
         const cadence = entertainment.cadence
         const configuredGroup = groupOpportunity && entertainment.group_identity_valid === true && entertainment.group_social === true
         const usesCadence = role === 'admin' && entertainment.primary_internal_leisure || configuredGroup
@@ -2985,6 +2990,7 @@ export class OneBotDecisionAdapter {
       observationKind: event.kind, observationProducer: event.producer, observationEventId: event.event_id,
       observationCreatedAt: createdAt,
       ...(trustedSocial ? { trustedSocialRequest: trustedSocial.request_id } : {}),
+      ...(observationGuide ? { observationGuide, owner: Object.freeze({ ...owner }) } : {}),
       ...(autonomousCadence ? { autonomousCadence } : {}) })
     // The durable review chain keeps the original payload. Present current
     // group instructions from the bound prompt, including for earlier events.

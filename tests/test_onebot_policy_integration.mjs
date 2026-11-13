@@ -314,13 +314,18 @@ test('ordinary live group other-kind producer and nonprimary admin retain their 
 
 test('autonomous cadence belongs to the queued turn while later configurations and scopes change', async t => {
   const h = await setup(t), clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy, original = adapter.runtimeCapabilities
+  const reads = []
+  adapter.runtimeCapabilities = async (...args) => { reads.push(args[0]); return original(...args) }
   const first = await opportunity(h)
+  assert.deepEqual(reads, ['private:101'])
   clock.minutes(5); clock.advance(20_000)
   const result = await h.decide(first.chat, 'idle')
   assert.equal(result.next_review_at, clock.now() + 180_000)
   assert.equal(result.autonomous_cadence_min, 3)
   await first.end(); await first.completion
   const second = await opportunity(h, { producer: 'main-review' })
+  assert.deepEqual(reads, ['private:101', 'private:101'])
   const next = await h.decide(second.chat, 'idle')
   assert.equal(next.next_review_at, clock.now() + 300_000)
   await second.end(); await second.completion
@@ -329,7 +334,9 @@ test('autonomous cadence belongs to the queued turn while later configurations a
 
 test('configured group opportunity uses its trusted cadence independently of primary identity', async t => {
   const h = await setup(t), clock = await cadenceFixture(h), original = h.bridge.lanyaPolicy.runtimeCapabilities
+  let reads = 0
   h.bridge.lanyaPolicy.runtimeCapabilities = async (...args) => {
+    reads++
     const value = await original(...args)
     value.tools.entertainment.primary_identity_valid = false
     value.tools.entertainment.group_identity_valid = true
@@ -337,7 +344,9 @@ test('configured group opportunity uses its trusted cadence independently of pri
     return value
   }
   for (const requested of [undefined, clock.now() + 60_000, clock.now() + 30 * 60_000]) {
+    const before = reads
     const current = await opportunity(h, { scope: 'group:202', producer: 'main-review' })
+    assert.equal(reads - before, 1)
     assert.equal(current.chat.activeTurnRole, 'member')
     const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
     assert.equal(result.next_review_at, requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000))
