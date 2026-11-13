@@ -17,7 +17,8 @@ import time
 LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
-          'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged'}
+          'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged',
+          'group_history_staged'}
 
 
 def latest_group_activity(log, scope, *, after, now):
@@ -113,7 +114,8 @@ def summarize(raw, now_ms, since_ms=None):
                   'superseded_preparation' if 'superseded_preparation' in phases else
                   'ended_without_confirmed_transport' if 'turn_end' in phases else
                   'active' if 'claimed' in phases else 'pending' if 'queued' in phases else
-                  'friend_history_staged' if 'friend_history_staged' in phases else 'preparing')
+                  'friend_history_staged' if 'friend_history_staged' in phases else
+                  'group_history_staged' if 'group_history_staged' in phases else 'preparing')
         group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [],
                                           'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0})
         group['counts'][status] += 1

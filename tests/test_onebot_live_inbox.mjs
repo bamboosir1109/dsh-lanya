@@ -986,13 +986,13 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     const expires = scenario === 'busy through expiry'
     if (scenario === 'busy then idle' || expires) {
       h.agent.status = 'running'
-      await adapter.recoverReconnectedFriends()
+      await adapter.recoverReconnectHistory()
       assert.equal(historyReads, 0, 'a busy conversation is left alone')
       assert.equal(h.pending.length, 0)
       h.agent.status = 'idle'
       h.advance(expires ? 180_001 : 30_000)
     }
-    await adapter.recoverReconnectedFriends()
+    await adapter.recoverReconnectHistory()
     const state = await adapter.policy.snapshot(h.chat.chatId)
     assert.equal(historyReads, expires ? 0 : 1)
     if (!['new', 'busy then idle'].includes(scenario)) {
@@ -1012,7 +1012,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
     assert.equal((await h.decide('reply', { text: 'a short answer' })).sent, true)
     await h.end()
-    await adapter.recoverReconnectedFriends()
+    await adapter.recoverReconnectHistory()
     await adapter.reviewUnansweredInputs()
     assert.equal(historyReads, 1)
     assert.equal(h.pending.length, 0)
@@ -1041,7 +1041,7 @@ test('verified reconnect starts friend history review without waiting for the pe
   adapter.noteConnectionStatus(false)
   h.advance(1000)
   adapter.noteConnectionStatus(true)
-  const scan = adapter.friendReconnectAttempt
+  const scan = adapter.reconnectReviewAttempt
   assert.ok(scan)
   assert.equal(adapter.recoveryTimer, null)
   assert.equal(reads, 0)
@@ -1051,9 +1051,9 @@ test('verified reconnect starts friend history review without waiting for the pe
   adapter.noteConnectionStatus(true)
   mapping.resolve()
   await scan
-  await adapter.friendReconnectAttempt
+  await adapter.reconnectReviewAttempt
   assert.equal(reads, 1)
-  assert.equal(adapter.friendReconnect, null)
+  assert.equal(adapter.reconnectReview, null)
 })
 
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
@@ -1814,6 +1814,67 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
   await h.decide('reply',{group_conversation:'end'}); await h.send('closing answer'); await h.end()
   assert.equal((await h.state()).engaged,false)
   await h.receive('talking to someone else'); assert.equal(h.pending.length,0)
+})
+
+test('reconnect recovers only a real configured-group mention as historical member input', async t => {
+  for (const scenario of ['missed mention', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
+    await Promise.all([...a.replyReviewWrites])
+    h.agent.status = 'idle'
+    h.advance(1000)
+    a.noteConnectionStatus(false)
+    const at = Math.floor(a.now() / 1000) + 1
+    h.advance(90_000)
+    a.noteConnectionStatus(true)
+    const call = h.deps.connection.call
+    const row = (offset, id, text, target, fields = {}) => ({
+      message_type: 'group', group_id: 303, message_id: id, time: at + offset,
+      sender: { user_id: 202 }, message: [
+        ...(target ? [{ type: 'at', data: { qq: target } }] : []), { type: 'text', data: { text } },
+      ], ...fields,
+    })
+    let reads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      reads++
+      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      const rows = [row(0, 91, 'missed actual question', '999'), row(1, 92, '@999 only in text'),
+        row(2, 93, 'whole group', 'all'), row(3, 94, 'other recipient', '204'),
+        row(4, 95, 'different group', '999', { group_id: 404 }), row(5, 96, '/reset', '999'),
+        row(5, 98, 'mismatched sender', '999', { user_id: 204 }),
+        row(5, 99, 'anonymous sender', '999', { sub_type: 'anonymous' })]
+      if (scenario === 'later bot reply') rows.push(row(6, 97, 'already replied', null, { sender: { user_id: 999 } }))
+      return { messages: rows }
+    }
+    if (scenario === 'group disabled') h.deps.policy.groupPolicy = 'disabled'
+    a.startRequested = true
+    await a.recoverReconnectHistory()
+    const state = await a.policy.snapshot(scope)
+    assert.equal(reads, scenario === 'group disabled' ? 0 : 1)
+    if (scenario !== 'missed mention') {
+      assert.ok(!state.seen.some(item => item.messageId === '91'))
+      return
+    }
+    assert.equal(state.current.messageId, '91')
+    assert.equal(state.current.sender, '202')
+    assert.equal(state.current.controlAllowed, false)
+    assert.equal(state.current.replyReview.text, 'missed actual question')
+    await h.receive('missed actual question', { message_id: 91, message: [
+      { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
+    ] })
+    assert.equal(h.pending.length, 0)
+    await a.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a short group answer' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
 })
 
 test('quiet background checks do not keep an abandoned group exchange open', async t => {
