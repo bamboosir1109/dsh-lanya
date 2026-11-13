@@ -15,7 +15,7 @@ import time
 LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
-          'group_listening', 'group_buffer_wait', 'group_buffer_ready'}
+          'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued'}
 
 
 def summarize(raw, now_ms):
@@ -95,17 +95,25 @@ def summarize(raw, now_ms):
         history_replayed=False, models=0, messages=0)
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__); p.add_argument('--log', required=True); a = p.parse_args()
-    path = Path(a.log)
+def read_log(path):
     if not path.is_absolute(): raise ValueError('absolute_log_path_required')
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1: raise ValueError('ordinary_log_required')
     with path.open('rb') as f:
         opened = os.fstat(f.fileno())
         if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino): raise ValueError('log_changed')
-        raw = f.read(LIMIT+1)
-    print(json.dumps(summarize(raw, int(time.time()*1000)), ensure_ascii=True))
+        return f.read(LIMIT+1)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--log', required=True)
+    p.add_argument('--previous', action='store_true', help='Read the retained previous segment')
+    a = p.parse_args()
+    path = Path(a.log)
+    if a.previous:
+        path = path.with_name(path.name + '.previous')
+    print(json.dumps(summarize(read_log(path), int(time.time()*1000)), ensure_ascii=True))
 
 
 if __name__ == '__main__': main()

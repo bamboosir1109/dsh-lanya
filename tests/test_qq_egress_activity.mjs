@@ -94,3 +94,11 @@ test('a creative update keeps its prose while removing local Markdown and tool r
   assert.match(output, /热气换手点才像往上飘。/u)
   assert.equal(cleanText('这是 `draw-cup.py` 里的写法。'), '这是 `draw-cup.py` 里的写法。')
 })
+
+test('ordinary image followups keep the result without report formatting or delivery chatter', () => {
+  const reply = '- 蒸汽手画后才像**在往上冒**。\n图已经发到 QQ 了（\n`message_id=-1234`\n）。'
+  assert.equal(cleanText(reply), '蒸汽手画后才像在往上冒。')
+  assert.equal(cleanText('图已经发到 QQ 了（\n`message_id=-1234`\n）。'), '')
+  assert.equal(cleanText('图发给你之后，我才发现颜色偏灰。'), '图发给你之后，我才发现颜色偏灰。')
+  assert.equal(cleanText('周末有空我再去看那部片。'), '周末有空我再去看那部片。')
+})

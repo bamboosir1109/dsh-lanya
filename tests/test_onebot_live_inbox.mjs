@@ -455,6 +455,30 @@ test('busy burst collapses pending inputs, preserves canceled originals, reserve
   assert.equal(h.requests.filter(row => row.operation === 'settle').length, 1)
 })
 
+test('member private burst carries an unanswered claimed question into the next turn', async t => {
+  const h = await fixture(t), scope = 'private:202'
+  h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+  h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+  await h.receive('first question from member', { user_id: 202 })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.receive('newest detail from same member', { user_id: 202 })
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /first question from member[\s\S]*historical context\.[\s\S]*newest detail from same member/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('inbox insertion failure retains recovery evidence for an admitted private message', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  h.agent.followup = () => { throw new Error('synthetic inbox write failure') }
+  await h.receive('retained direct question')
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot('private:101')
+  assert.match(state.current.replyReview.text, /retained direct question/)
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('group member burst coalesces but a later administrator does not lend control authority', async t => {
   const h = await fixture(t), scope = 'group:303'
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
@@ -669,6 +693,20 @@ test('inline text preserves silence stale-budget unknown and no-receipt boundari
     assert.equal(h.calls.filter(x=>/^send_/.test(x.action)).length,mode==='unknown'?1:0)
     await h.end()
   })
+})
+
+test('an inline draft removed by egress can be rewritten without consuming its decision', async t => {
+  const h = await fixture(t)
+  await h.receive('ordinary question'); h.start(); await h.preStep()
+  let concluded = 0
+  const decide = text => h.tools.get('qq_decide').execute({ verdict: 'reply', text },
+    { ...h.exec(), concludeTurn: () => { concluded++ } })
+  assert.equal((await decide('（歪头）[表情: 笑]')).reason, 'empty_content')
+  assert.equal(concluded, 0)
+  assert.equal((await decide('有用的一句')).sent, true)
+  assert.equal(concluded, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  await h.end()
 })
 
 test('inline closing group reply returns to listening and blocks a second operation in the same turn',async t=>{

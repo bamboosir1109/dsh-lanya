@@ -405,7 +405,8 @@ function withoutInternalReceipts(text, style) {
     : part.text
     .replace(/(?:[（(]\s*)?`?\b(?:message_id|ticket_id)\s*[=:：]\s*-?\d+`?(?:\s*[）)])?/gi, '')
     .replace(/(?:\bintent\s*(?:已\s*)?CAS\s*(?:到|至|to)?\s*(?:revision\s*)?\d+|\bCAS\s*(?:到|至|to)\s*revision\s*\d+)/gi, '')
-  ).join('').replace(/(?:用的是\s*)?(?:新票根|票根|回执编号)\s*[:：]?\s*`?\d{6,}`?/gu, '')
+  ).join('').replace(/(?:[，,]\s*)?(?:用的是\s*)?(?:新票根|票根|回执编号)\s*[:：]?\s*`?\d{6,}`?/gu, '')
+    .replace(/(^|[。！？!?\n])[ \t]*(?:图(?:片)?|表情(?:包)?)\s*(?:已(?:经)?|刚刚)?\s*发到\s*QQ\s*(?:了)?\s*(?:[（(][\s\r\n]*[）)])?[。.!！]?(?=$|[\r\n])/giu, '$1')
     .replace(/^[ \t]*(?:[（(][\s\r\n]*[）)][。.!！]?|[。.!！？，,；;]+)[ \t]*$/gmu, '')
 }
 
@@ -413,6 +414,12 @@ function cleanProse(text, style) {
   let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
     result = withoutNarration(result)
+  }
+  if (!style.technical && !style.roleplay) {
+    // Keep the words in model-written prose. The protected spans bypass this
+    // cleanup so real code and URLs still travel intact.
+    result = result.replace(/^[ \t]*[-*][ \t]+/gmu, '')
+      .replace(/\*\*([^*\r\n]+)\*\*|__([^_\r\n]+)__/gu, (_match, bold, underscored) => bold ?? underscored)
   }
   // Recognizable leaked control/reasoning is not normal speech. Literal examples
   // remain protected by code spans; ordinary prose is never shortened for length.
@@ -428,6 +435,10 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
   const withoutImages = withoutActivityReferences(withoutInlineImages(withoutInternalReceipts(value, style)), style)
   return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+}
+
+export function hasReplyContent(value, style = NORMAL_STYLE) {
+  return Boolean(cleanText(value, style))
 }
 
 function ordinaryChunks(text) {

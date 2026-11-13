@@ -33,7 +33,7 @@ def transform(name, raw):
         raise PatchError('Egress partial/already layered state requires its private manifest')
     if name == 'lib/lanya-policy-adapter.js':
         text = replace_once(text, "import { AsyncLocalStorage } from 'node:async_hooks'", """import { AsyncLocalStorage } from 'node:async_hooks'
-import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply,
+import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply, hasReplyContent,
   isPreparedReply, isVerbatimReply, isLiteralReply, rememberParameters, bindReplyOptions,
   isStagedMemeImage, isKnownMemeLimit } from './lanya-qq-egress.js'""")
         text = replace_once(text, '    const observed = await this.policy.recordInbound({', """    // Copy trusted direct transport evidence before any storage/registry await.
@@ -44,6 +44,7 @@ import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply,
                             "context.binding = Object.freeze({ ...observed, origin: 'live', egressStyle })")
         text = replace_once(text, '  attachOutbound(outbound) {\n    const adapter = this', """  attachOutbound(outbound) {
     const adapter = this
+    this.inlineReplyHasContent = hasReplyContent
     outbound.ctx.lanyaEgressIsPrepared = isPreparedReply
     outbound.ctx.lanyaEgressIsVerbatim = isVerbatimReply
     outbound.ctx.lanyaEgressIsLiteral = isLiteralReply

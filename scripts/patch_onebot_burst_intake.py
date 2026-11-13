@@ -18,7 +18,12 @@ def transform(name, raw):
         anchor = '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),\n'
         text = replace_once(text, anchor, anchor + '            nativeBurstEnabled: scope => this.lanyaPolicy.nativeBurstEnabled(scope),\n')
         anchor = '        final = await this.lanyaPolicy.enrichContext(chatId, final);\n'
-        text = replace_once(text, anchor, anchor + '        if (this.lanyaPolicy.nativeClaims && !this.lanyaPolicy.preparedDispatchCurrent(chat)) return;\n')
+        guarded = ('            this.lanyaPolicy.rememberFailedDispatch(chatId, text);\n'
+                   '            throw error;\n        }\n')
+        check = '        if (this.lanyaPolicy.nativeClaims && !this.lanyaPolicy.preparedDispatchCurrent(chat)) return;\n'
+        if guarded in text:
+            anchor = guarded
+        text = replace_once(text, anchor, anchor + check)
     elif name == 'inbound.js':
         if 'LANYA_INBOUND_ADMISSION_V1' not in text: raise PatchError('Reviewed admission order required')
         anchor = '        if (this.rateLimited(chatId))\n            return;'
