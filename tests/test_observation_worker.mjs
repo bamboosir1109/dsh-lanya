@@ -126,6 +126,32 @@ test('an invalid derived review is revisited by full audit without recurring inc
   assert.equal(p.status().selected, 1)
 })
 
+test('legacy completion without its original stays reported but waits for a change or audit', async t => {
+  const f = fixture(t), errors = [], acknowledged = []
+  const legacy = f.seed('missing-legacy-original')
+  const original = path.join(f.root, 'pending', legacy.name)
+  const { event_raw, ...marker } = legacy.marker
+  fs.unlinkSync(original)
+  fs.writeFileSync(legacy.done, JSON.stringify({ ...marker, version: 1 }) + '\n')
+  const p = f.make({
+    now: () => 100,
+    log: (level, message) => { if (level === 'error') errors.push(message) },
+    dispatch: () => assert.fail('legacy completion cannot dispatch'),
+    acknowledge: event => { acknowledged.push(event.event_id) },
+  })
+  await p.start({ poll: false })
+  await p.drain()
+  assert.equal(errors.length, 1)
+  assert.deepEqual(acknowledged, [])
+  const reads = p.status().reads
+  await p.drain(false)
+  assert.equal(p.status().selected, 0)
+  assert.equal(p.status().reads, reads)
+  fs.writeFileSync(original, event_raw)
+  await p.drain(false)
+  assert.deepEqual(acknowledged, ['missing-legacy-original'])
+})
+
 test('cold recovery confirms terminal records in bounded batches without replay', async t => {
   const f = fixture(t)
   const sizes = [], handled = []

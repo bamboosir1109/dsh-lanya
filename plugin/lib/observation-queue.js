@@ -16,6 +16,7 @@ export class ObservationQueueError extends Error {
 export class ObservationForegroundBusy extends ObservationQueueError {
   constructor() { super('Observation could not be safely dispatched: foreground_busy'); this.name = 'ObservationForegroundBusy' }
 }
+class MissingLegacyObservation extends ObservationQueueError {}
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const hash = (x) => createHash('sha256').update(x).digest('hex')
 const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x)
@@ -129,6 +130,9 @@ export function readObservationEvidence(directory, key) {
     marker = markerRead.value
     completionSha256 = markerRead.sha256
     hasMarker = true
+    if (plain(marker) && marker.version === 1 && typeof marker.event_raw !== 'string') {
+      throw new MissingLegacyObservation('Missing original requires an exact terminal original')
+    }
     if (!plain(marker) || ![2, 3].includes(marker.version) || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires an exact terminal original')
     const raw = Buffer.from(marker.event_raw, 'utf8')
     if (raw.length > MAX_OBSERVATION_BYTES || raw.toString('utf8') !== marker.event_raw) throw new ObservationQueueError('Invalid UTF8 completion original')
@@ -278,7 +282,7 @@ const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.
 // Every executable candidate and review is read and validated again.
 function fileScanner(directory, incremental = true) {
   const base = path.resolve(directory), pending = path.join(base, 'pending'), done = path.join(base, 'done')
-  const history = new Map(), versions = new Map(), reads = new Map(), watchers = []
+  const history = new Map(), missingOriginals = new Map(), versions = new Map(), reads = new Map(), watchers = []
   let generation = 0, fullAt = null, fullStartedAt = null, reconcileAfter = RECONCILE_MS, reconcile = true, directories = null
   const metrics = { reads: 0, skipped: 0, selected: 0, entries: 0, full: true }
   const dirty = filename => {
@@ -308,16 +312,18 @@ function fileScanner(directory, incremental = true) {
       if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scanner timestamp')
       ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
       const identity = stable(directoryIdentity())
-      if (identity !== directories) { history.clear(); reads.clear(); reconcile = true; directories = identity }
-      const pendingNames = fs.readdirSync(pending), doneNames = new Set(fs.readdirSync(done))
+      if (identity !== directories) { history.clear(); missingOriginals.clear(); reads.clear(); reconcile = true; directories = identity }
+      const pendingNames = new Set(fs.readdirSync(pending)), doneNames = new Set(fs.readdirSync(done))
       const all = [...new Set([...pendingNames, ...doneNames])].filter(evidenceName)
       const names = new Set(all)
       for (const name of history.keys()) if (!names.has(name)) history.delete(name)
+      for (const name of missingOriginals.keys()) if (!doneNames.has(name) || pendingNames.has(name)) missingOriginals.delete(name)
       for (const name of versions.keys()) if (!names.has(name)) versions.delete(name)
       reads.clear()
       const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= reconcileAfter
       if (audit) { reconcile = false; fullStartedAt = at }
       const selected = audit ? all : all.filter(name => {
+        if (missingOriginals.get(name) === (versions.get(name) || 0)) return false
         const entry = history.get(name)
         return !entry || !doneNames.has(name) || entry.version !== (versions.get(name) || 0) || entry.nextAt <= at
       })
@@ -333,7 +339,17 @@ function fileScanner(directory, incremental = true) {
     },
     read({ key }) {
       const name = key + '.json', version = versions.get(name) || 0
-      const read = readObservationEvidence(base, key); metrics.reads++
+      metrics.reads++
+      let read
+      try { read = readObservationEvidence(base, key) }
+      catch (error) {
+        // A legacy completion without its original cannot be acknowledged
+        // or used to derive work. Keep reporting it and revisit on change or
+        // full audit without reading it on every poll.
+        if (error instanceof MissingLegacyObservation) missingOriginals.set(name, version)
+        throw error
+      }
+      missingOriginals.delete(name)
       if (!read.completion && history.has(name)) {
         throw new ObservationQueueError('Previously terminal evidence lost its completion; automatic replay refused')
       }
@@ -395,7 +411,7 @@ function fileScanner(directory, incremental = true) {
       return { sha256: hash(JSON.stringify(marker) + '\n') }
     },
     stats() { return { ...metrics, cached: history.size, watchers: watchers.length } },
-    close() { for (const watcher of watchers) watcher.close(); history.clear(); reads.clear(); versions.clear() },
+    close() { for (const watcher of watchers) watcher.close(); history.clear(); missingOriginals.clear(); reads.clear(); versions.clear() },
   }
 }
 
