@@ -130,6 +130,34 @@ class MainDecisionObserverTests(unittest.TestCase):
         self.mind.one_cycle()
         self.assertEqual(len(self.pending()), 3)
 
+    def test_new_group_activity_reopens_only_its_own_unknown_opportunity(self):
+        (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
+        self.mind.one_cycle()
+        original = self.pending()
+        for event in original:
+            self.complete(status="unknown", event=event)
+        self.mind.one_cycle()
+        log = self.data / "interaction-health.jsonl"
+        def row(scope, stamp):
+            return json.dumps(dict(schema="qq-interaction/v1", phase="group_listening", at=stamp,
+                                   scope=hashlib.sha256(scope.encode()).hexdigest()[:16], input="b" * 24)) + "\n"
+        log.write_text(row("group:202", 999_999) + row("group:303", 1_000_001), encoding="utf-8")
+        self.clock.return_value = 1500
+        self.mind.one_cycle(force=True)
+        self.assertEqual(set(self.pending()), set(original))
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(row("group:202", 1_499_999))
+        self.mind.one_cycle()
+        event_path, = set(self.pending()) - set(original)
+        event = json.loads(event_path.read_bytes())
+        self.assertEqual(event["scope"], "group:202")
+        self.assertEqual(event["payload"]["fresh_group_activity_at"], 1_499_999)
+        self.assertNotIn("review_context", event["payload"])
+        self.assertIn("never repeat the previous message", event["payload"]["instruction"])
+        self.mind.one_cycle(force=True)
+        self.assertEqual(len(self.pending()), 3)
+        self.ask.assert_not_called(); self.send.assert_not_called()
+
     def test_admin_group_opportunities_are_independent_without_private_context_leak(self):
         (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
         self.mind.save(self.mind.MIND, {"plan": {"goal": "private legacy reference"}, "mood": "private mood reference"})

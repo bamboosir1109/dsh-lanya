@@ -905,7 +905,18 @@ def _observe_cycle(mind, dry=False, force=False):
         changed = signature != state.get("completed_signature")
         due = state.get("next_opportunity_at")
         if state.get("last_status") == "unknown" and not changed:
-            continue
+            from interaction_health import latest_group_activity
+            completed_at = state.get("last_completed_at")
+            activity = (latest_group_activity(os.path.join(DATA, "interaction-health.jsonl"), scope,
+                                              after=max(completed_at, now - 60 * 60_000), now=now)
+                        if not primary and _valid_ms(completed_at) and now >= completed_at + interval else None)
+            if activity is None:
+                continue
+            payload["fresh_group_activity_at"] = activity
+            payload["instruction"] += (" This is a fresh group activity opportunity based on a later live message. "
+                                       "Read the recent group context, contribute only if there is a new topic you can join, "
+                                       "and never repeat the previous message with an uncertain outcome.")
+            changed = True
         if not changed and not force and (due is None or due > now):
             continue
         if state["generation"] >= 2**53 - 1:

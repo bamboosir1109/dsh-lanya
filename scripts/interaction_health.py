@@ -5,6 +5,7 @@ reply; missing phases and partial logs remain explicit. No automatic recovery.
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,36 @@ LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
           'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued'}
+
+
+def latest_group_activity(log, scope, *, after, now):
+    """Return only a timestamp from the bounded private bridge diagnostics."""
+    if not re.fullmatch(r'group:[1-9][0-9]*', scope):
+        return None
+    key = hashlib.sha256(scope.encode()).hexdigest()[:16]
+    latest = None
+    for path in (Path(log), Path(str(log) + '.previous')):
+        try:
+            with open_log(path) as stream:
+                offset = max(0, os.fstat(stream.fileno()).st_size - 512 * 1024)
+                stream.seek(offset)
+                if offset:
+                    stream.readline(4096)
+                raw = stream.read(512 * 1024)
+        except (OSError, ValueError):
+            continue
+        for line in raw.splitlines():
+            try:
+                row = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(row, dict) or row.get('schema') != 'qq-interaction/v1' or row.get('scope') != key:
+                continue
+            stamp = row.get('at')
+            if (type(stamp) is int and after < stamp <= now and row.get('phase') in ('group_listening', 'admitted')
+                    and isinstance(row.get('input'), str) and re.fullmatch('[a-f0-9]{24}', row['input'])):
+                latest = max(latest or stamp, stamp)
+    return latest
 
 
 def summarize(raw, now_ms):
@@ -95,13 +126,23 @@ def summarize(raw, now_ms):
         history_replayed=False, models=0, messages=0)
 
 
-def read_log(path):
+def open_log(path):
     if not path.is_absolute(): raise ValueError('absolute_log_path_required')
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1: raise ValueError('ordinary_log_required')
-    with path.open('rb') as f:
+    f = path.open('rb')
+    try:
         opened = os.fstat(f.fileno())
-        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino): raise ValueError('log_changed')
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError('log_changed')
+    except BaseException:
+        f.close()
+        raise
+    return f
+
+
+def read_log(path):
+    with open_log(path) as f:
         return f.read(LIMIT+1)
 
 
