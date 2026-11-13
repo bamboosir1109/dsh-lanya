@@ -140,4 +140,4 @@ OneBot 接入由 `scripts/patch_onebot_policy.py` 生成可预览补丁，仅识
 
 真人来信出现未发终稿却没有决定时，原生结束前仅向同轮主 LLM 提醒一次 `qq_decide`；已有决定、静默、取消、冲突或更新的待处理真人输入不触发补决策。提醒没有发送票，伪造来源不能充当已登记上下文，历史消息不自动重放。
 
-可信部署配置可指定 `contextualGroupScope`，必须为规范 `group:` 范围。增量构建 `patch_onebot_group_context.py` 只给该群开放接话入口，其他群保留原艾特门控。该群默认旁听，普通消息仅为既有自主机会保留有界历史观察；真实艾特、核实的引用回复或实际自主发言成功后才参与。`qq_decide` 可用 `group_conversation:end` 结束话题，`idle/defer/silence` 默认结束，`continue` 仅保留已有参与。进程重启或归属变更从旁听开始。已部署版本的寻址回调与工具字段可用 `patch_onebot_group_engagement.py` 构建精确增量候选。它只影响入站可见性，不改变实际艾特、说话人、引用或控制权限，回复由同群主 LLM 按最新对话判断。默认预览不安装；输出要求原文件精确 SHA，拒绝覆盖及重复编译。
+可信部署配置可指定 `contextualGroupScope`，必须为规范 `group:` 范围。增量构建 `patch_onebot_group_context.py` 只给该群开放接话入口，其他群保留原艾特门控。该群默认旁听，普通消息仅为既有自主机会保留有界历史观察；真实艾特、核实的引用回复或实际自主发言成功后才参与。`qq_decide` 可用 `group_conversation:end` 结束话题，自主检查的 `idle/defer` 保留状态，真人消息触发的 `idle/defer` 和 `silence` 默认结束，`continue` 仅保留已有参与。进程重启或归属变更从旁听开始。已部署版本的寻址回调与工具字段可用 `patch_onebot_group_engagement.py` 构建精确增量候选。它只影响入站可见性，不改变实际艾特、说话人、引用或控制权限，回复由同群主 LLM 按最新对话判断。默认预览不安装；输出要求原文件精确 SHA，拒绝覆盖及重复编译。

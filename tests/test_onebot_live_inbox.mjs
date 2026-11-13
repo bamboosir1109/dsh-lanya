@@ -1449,13 +1449,16 @@ async function listeningGroup(t) {
   const receive = (text, extra={}) => h.receive(text,{message_type:'group',group_id:303,user_id:202,...extra})
   const mention = () => receive('question',{message:[{type:'at',data:{qq:'999'}},{type:'text',data:{text:'question'}}]})
   const state = async () => a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId))
+  let generation = 0
   const opportunity = async () => {
-    const observed = await a.policy.recordObservation({scope:h.chat.chatId,eventId:'opportunity-'+serial,
+    const eventId = 'group-op-' + serial + '-' + ++generation
+    const observed = await a.policy.recordObservation({scope:h.chat.chatId,eventId,
       kind:'activity.opportunity',producer:'mind',createdAt:a.now()})
+    assert.equal(observed.accepted, true)
     let text
-    await a.context.run({binding:Object.freeze({...observed,origin:'observation',observationKind:'activity.opportunity',observationCreatedAt:a.now()})},async()=>{
+    await a.context.run({binding:Object.freeze({...observed,origin:'observation',observationKind:'activity.opportunity',observationProducer:'mind',observationCreatedAt:a.now()})},async()=>{
       text=await a.enrichContext(h.chat.chatId,'eligible group opportunity')
-      a.dispatchNative(h.chat,{id:'group-op-'+serial,source:{kind:'plugin:dsh-lanya-observation'},content:[{type:'text',text}]},'member',text)
+      a.dispatchNative(h.chat,{id:eventId,source:{kind:'plugin:dsh-lanya-observation'},content:[{type:'text',text}]},'member',text)
     })
     return text
   }
@@ -1542,13 +1545,53 @@ test('only confirmed actual autonomous message delivery opens participation', as
   })
 })
 
-test('idle ends by default, continue can retain an existing exchange but cannot open one', async t => {
+test('live idle ends by default, continue can retain an existing exchange but cannot open one', async t => {
   for(const engaged of [false,true])for(const keep of [false,true])await t.test(`${engaged}/${keep}`,async t=>{
     const h=await listeningGroup(t)
     if(engaged)await h.mention(); else await h.opportunity()
     h.start(); await h.preStep(); await h.decide('idle',keep?{group_conversation:'continue'}:{})
     await h.end(); assert.equal((await h.state()).engaged,engaged&&keep)
     await h.receive('ordinary'); assert.equal(h.pending.length,engaged&&keep?1:0)
+  })
+})
+
+test('the first confirmed autonomous message can open a group with an empty listener buffer', async t => {
+  const h = await listeningGroup(t)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.equal(h.bridge.lanyaPolicy.groupConversations.size, 0)
+  assert.equal((await h.decide('reply', { text: 'a short original contribution' })).sent, true)
+  await h.end()
+  assert.equal((await h.state()).engaged, true)
+  await h.receive('ordinary follow-up to the contribution')
+  assert.equal(h.pending.length, 1)
+})
+
+test('an autonomous quiet review keeps a joined topic open until the model explicitly ends it', async t => {
+  for (const verdict of ['idle', 'defer']) await t.test(verdict, async t => {
+    const h = await listeningGroup(t)
+    await h.mention()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+    await h.end()
+    await h.opportunity()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide(verdict)).accepted, true)
+    await h.end()
+    assert.equal((await h.state()).engaged, true)
+    await h.receive('ordinary follow-up without a mention')
+    assert.equal(h.pending.length, 1)
+    h.start(); await h.preStep()
+    assert.equal((await h.decide('idle', { group_conversation: 'continue' })).accepted, true)
+    await h.end()
+    await h.opportunity()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide(verdict, { group_conversation: 'end' })).accepted, true)
+    await h.end()
+    assert.equal((await h.state()).engaged, false)
+    await h.receive('ordinary message after the topic ends')
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   })
 })
 
