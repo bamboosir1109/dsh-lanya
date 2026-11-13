@@ -102,3 +102,15 @@ test('ordinary image followups keep the result without report formatting or deli
   assert.equal(cleanText('图发给你之后，我才发现颜色偏灰。'), '图发给你之后，我才发现颜色偏灰。')
   assert.equal(cleanText('周末有空我再去看那部片。'), '周末有空我再去看那部片。')
 })
+
+test('only a content-free final promise after a real sentence is removed', () => {
+  assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
+  assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
+  for (const text of ['我再去看。', '好。我再去看。', '今晚没空，我再去看。', '字幕少了一段。我再去看第二集。', '原话是「我再去看。」']) {
+    assert.equal(cleanText(text), text)
+  }
+  const technical = styleFromInbound(live('给我详细的排查步骤'))
+  const reply = '启动日志停在初始化。我再去确认一下。'
+  assert.equal(cleanText(reply, technical), reply)
+  assert.equal(cleanText(reply, styleFromInbound(live('我们来角色扮演，开始吧'))), reply)
+})

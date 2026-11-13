@@ -434,7 +434,16 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
   const withoutImages = withoutActivityReferences(withoutInlineImages(withoutInternalReceipts(value, style)), style)
-  return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+  const cleaned = spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+  if (!style.technical && !style.roleplay) {
+    const suffix = /([。！？!?\n])[ \t]*我(?:回头|稍后|等会儿|待会儿|等下)?再(?:去)?(?:看|查|确认|核对)(?:一下|一眼)?[。.!！~～]*\s*$/u
+    const match = suffix.exec(cleaned)
+    if (match && !spans(cleaned).at(-1)?.protected) {
+      const prefix = cleaned.slice(0, match.index + 1).trimEnd()
+      if (/[\p{L}\p{N}]/u.test(prefix) && !/^(?:好(?:的|呀|哦)?|行(?:吧)?|嗯+|收到)[。！？!?]*$/u.test(prefix)) return prefix
+    }
+  }
+  return cleaned
 }
 
 export function hasReplyContent(value, style = NORMAL_STYLE) {
