@@ -738,35 +738,34 @@ export class OneBotDecisionAdapter {
           window.scopes.unshift(group)
         }
       }
-      const count = Math.min(8, window.scopes.length)
-      for (let checked = 0; checked < count; checked++) {
-        if (!ready()) return
-        const scope = window.scopes.shift(), group = scope.startsWith('group:')
+      const reviewScope = async scope => {
+        if (!ready()) { window.scopes.push(scope); return }
+        const group = scope.startsWith('group:')
         const peer = scope.slice(group ? 6 : 8)
         const allowed = (sender) => group && sender === undefined
           ? this.contextualGroupEnabled(scope) && this.groupReplyReviewAllowed(scope)
           : (!group || this.contextualGroupEnabled(scope)) && this.replyReviewAllowed(scope, sender ?? peer)
-        if (!allowed()) continue
+        if (!allowed()) return
         const chat = this.bridge.chats.get(scope)
         const newFriend = !chat && window.friends.has(scope)
         const canStage = (sender) => ready() && this.bridge.chats.get(scope) === chat &&
           (newFriend ? !this.foregroundBusy(scope) : this.replyReviewIdle(scope, epoch)) && allowed(sender)
         if (!canStage()) {
           if (chat || newFriend) window.scopes.push(scope)
-          continue
+          return
         }
         try {
           const state = await this.policy.snapshot(scope)
-          if (state ? state.mode !== 'open' : !newFriend) continue
-          if (!canStage()) { window.scopes.push(scope); continue }
+          if (state ? state.mode !== 'open' : !newFriend) return
+          if (!canStage()) { window.scopes.push(scope); return }
           const owner = await this.trustedOwner(scope)
-          if (!canStage()) { window.scopes.push(scope); continue }
+          if (!canStage()) { window.scopes.push(scope); return }
           const history = await this.intentPlanner.readAction(group ? 'get_group_msg_history' : 'get_friend_msg_history',
             group ? { group_id: Number(peer), count: 12 } : { user_id: Number(peer), count: 12 })
           const latestOwner = await this.trustedOwner(scope)
           if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key]) ||
-              !Array.isArray(history?.messages) || history.messages.length > 12) continue
-          if (!canStage()) { window.scopes.push(scope); continue }
+              !Array.isArray(history?.messages) || history.messages.length > 12) return
+          if (!canStage()) { window.scopes.push(scope); return }
           const now = this.now()
           // OneBot history rounds to seconds. Include the bucket containing
           // the disconnect, while keeping the absolute lookback and dedup.
@@ -810,6 +809,13 @@ export class OneBotDecisionAdapter {
           this.log('warn', 'reconnect_history_scope_unavailable:' + error.name)
         }
       }
+      // Distinct scopes use independent history reads. Only the current pass
+      // takes these entries; busy or failed entries wait for the next pass.
+      const batch = window.scopes.splice(0, 8)
+      const reviewNext = async () => {
+        while (batch.length) await reviewScope(batch.shift())
+      }
+      await Promise.all(Array.from({ length: Math.min(3, batch.length) }, reviewNext))
       if (ready() && !window.scopes.length) this.reconnectReview = null
     })()
     this.reconnectReviewAttempt = attempt
