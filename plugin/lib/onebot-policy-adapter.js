@@ -170,6 +170,11 @@ const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exha
 const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
   'repeat-tool-reminder', 'compact-checkpoint'])
 const GROUP_CONTEXT_MS = 10 * 60_000
+const groupHistorySender = row => {
+  const sender = String(row.sender?.user_id)
+  return /^[1-9][0-9]*$/.test(sender) && row.anonymous == null && row.sub_type !== 'anonymous' &&
+    (row.user_id == null || String(row.user_id) === sender) ? sender : null
+}
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
 function androidCheckoutIntent(text) {
@@ -751,9 +756,10 @@ export class OneBotDecisionAdapter {
           if (!canStage()) { window.scopes.push(scope); continue }
           const since = Math.max(window.since, this.now() - FRIEND_RECONNECT_WINDOW_MS)
           const now = this.now()
-          const rows = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
-            row.time * 1000 >= since && row.time * 1000 <= now &&
-            (!group || row.message_type === 'group' && String(row.group_id) === peer))
+          const recent = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
+            row.time * 1000 <= now && (!group || row.message_type === 'group' && String(row.group_id) === peer))
+          if (group) this.restoreRecentGroupText(scope, owner, recent, now, selected.expectedAccount)
+          const rows = recent.filter(row => row.time * 1000 >= since)
           // A later live/platform message can already have received a reply.
           // Only consider the newest unanswered tail during this reconnect.
           const lastOwnAt = Math.max(-1, ...rows.filter(row => String(row.sender?.user_id) === selected.expectedAccount)
@@ -765,7 +771,7 @@ export class OneBotDecisionAdapter {
             const at = row.time * 1000, messageId = String(row.message_id)
             const sender = String(row.sender?.user_id)
             if (at > window.until || at <= Math.max(lastOwnAt, lastKnownAt) || sender === selected.expectedAccount || !allowed(sender) ||
-                (group && (row.anonymous != null || row.sub_type === 'anonymous' || row.user_id != null && String(row.user_id) !== sender)) ||
+                (group && !groupHistorySender(row)) ||
                 (!group && (row.message_type !== 'private' || row.sub_type !== 'friend')) ||
                 !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
                 !Array.isArray(row.message) || !row.message.length || row.message.length > 12) continue
@@ -1026,6 +1032,27 @@ export class OneBotDecisionAdapter {
     const now = this.now()
     if (state.engagedAt !== null && (state.engagedAt > now || now - state.engagedAt > GROUP_CONTEXT_MS)) state.engagedAt = null
     return state
+  }
+
+  restoreRecentGroupText(scope, owner, rows, now, bot) {
+    if (this.recentGroupContext(scope, owner, now).length) return
+    const group = this.groupConversation(scope, owner)
+    if (!group) return
+    const recent = new Map()
+    for (const row of rows) {
+      const at = row.time * 1000, speaker = groupHistorySender(row), messageId = String(row.message_id)
+      if (at < now - GROUP_CONTEXT_MS || !speaker || speaker === bot ||
+          !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
+          !Array.isArray(row.message) || row.message.length > 12) continue
+      const text = row.message.filter(segment => segment?.type === 'text' && typeof segment.data?.text === 'string')
+        .map(segment => segment.data.text).join('').trim()
+      if (!text || text.startsWith('/')) continue
+      const at_targets = row.message.filter(segment => segment?.type === 'at').map(segment => String(segment.data?.qq))
+        .filter(target => /^(?:[1-9][0-9]*|all)$/.test(target)).slice(0, 8)
+      recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600), at, images: [], at_targets,
+        quoted_speaker: null, addressed_to_bot: at_targets.includes(bot) })
+    }
+    group.recent = [...recent.values()].sort((a, b) => a.at - b.at).map((row, i) => ({ ...row, arrival: i - recent.size }))
   }
 
   groupAddressed(inbound, address) {
