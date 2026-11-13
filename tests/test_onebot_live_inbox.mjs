@@ -1884,6 +1884,47 @@ test('a real group contact stays eligible for recovery when merged with an ordin
   })
 })
 
+test('an unanswered group mention survives a newer ordinary message before or after enqueue', async t => {
+  for (const timing of ['preparing', 'queued']) await t.test(timing, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+    await h.mention(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const entered = defer(), resume = defer(), enrich = a.enrichContext.bind(a)
+    if (timing === 'preparing') a.enrichContext = async (...args) => {
+      entered.resolve(); await resume.promise; return enrich(...args)
+    }
+    const busy = defer()
+    if (timing === 'queued') a.track(a.state(h.chat).active, busy.promise)
+    const incoming = h.receive('latest remark from another member', { user_id: 204 })
+    if (timing === 'preparing') {
+      await entered.promise
+      assert.equal((await h.decide('reply', { text: 'stale reply' })).reason, 'stale_revision')
+      await h.end(); resume.resolve(); await incoming
+      assert.match(h.pending[0].content[0].text, /question[\s\S]*latest remark/)
+    } else {
+      await incoming
+      assert.doesNotMatch(h.pending[0].content[0].text, /question/)
+      busy.resolve(); await new Promise(resolve => setImmediate(resolve))
+      assert.equal((await h.preStep()).reason, 'superseded_live_input')
+      await h.end()
+    }
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    if (timing === 'queued') assert.match(h.prompt(), /<interrupted_group_context>[\s\S]*question/)
+    const entry = a.state(h.chat).active.claimedInput
+    assert.equal(entry.directGroupContact, true)
+    assert.equal(entry.sender, '204')
+    await Promise.all([...a.replyReviewWrites])
+    const current = (await a.policy.snapshot(h.chat.chatId)).current
+    assert.equal(current.sender, '204')
+    assert.equal(current.controlAllowed, false)
+    assert.match(current.replyReview?.text || '', /question[\s\S]*latest remark/)
+    assert.equal((await h.decide('reply', { text: 'answer both' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('a delayed old end decision cannot close a newer direct mention',async t=>{
   const h=await listeningGroup(t),a=h.bridge.lanyaPolicy,entered=defer(),release=defer()
   await h.mention();h.start();await h.preStep()

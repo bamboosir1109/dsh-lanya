@@ -186,15 +186,16 @@ function androidCheckoutIntent(text) {
 }
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const interruptedInlineReply = record => record?.inlineTextStale === true && !record.outcomes.includes('unknown')
-const privateHandoffText = (entry, partial) => partial
+const replyHandoffText = (entry, partial) => partial
   ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
     + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + entry.originalText
   : entry.originalText
-const samePrivateReply = (entry, binding, role) => entry?.binding.origin === 'live' && !entry.binding.recoveryRevision &&
-  entry.binding.scope === binding.scope && entry.role === role && entry.binding.revision < binding.revision &&
-  Boolean(entry.binding.temporaryPrivate) === Boolean(binding.temporaryPrivate) &&
-  entry.binding.temporaryPrivate?.group === binding.temporaryPrivate?.group &&
-  ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === binding.owner[key])
+const sameReplyConversation = (entry, binding, role) => entry?.binding.origin === 'live' && !entry.binding.recoveryRevision &&
+  entry.binding.scope === binding.scope && entry.binding.revision < binding.revision &&
+  ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === binding.owner[key]) &&
+  (binding.scope.startsWith('group:') ? entry.directGroupContact : entry.role === role &&
+    Boolean(entry.binding.temporaryPrivate) === Boolean(binding.temporaryPrivate) &&
+    entry.binding.temporaryPrivate?.group === binding.temporaryPrivate?.group)
 const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
 const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
@@ -779,6 +780,10 @@ export class OneBotDecisionAdapter {
     const directMention = inbound.segments?.some(segment => segment?.type === 'at' &&
       bot.includes(String(segment.data?.qq))) === true
     if (binding.scope.startsWith('group:') && !directMention && !binding.verifiedGroupReply && !includesGroupContact) return
+    this.persistReplyInput(binding, text, inbound.userId, resolveOwner)
+  }
+
+  persistReplyInput(binding, text, sender, resolveOwner = false) {
     if (typeof text !== 'string' || !text.trim() || text.length > 32_000) return
     // Run alongside the original native input, never add a helper/model call
     // to the foreground path. A storage failure cannot authorize recovery.
@@ -787,7 +792,7 @@ export class OneBotDecisionAdapter {
       // Session creation can fail before enrichment binds an owner. Resolve
       // from the trusted registry and let policy match the original receipt.
       const owner = binding.owner || await this.trustedOwner(binding.scope)
-      if (!this.replyReviewAllowed(binding.scope, inbound.userId)) return
+      if (!this.replyReviewAllowed(binding.scope, sender)) return
       return this.policy.rememberReplyInput({ scope: binding.scope, expectedRevision: binding.revision,
         messageId: binding.messageId, owner, text })
     })()
@@ -1128,17 +1133,16 @@ export class OneBotDecisionAdapter {
     const unacknowledged = active && !active.ended && !active.claimConflict && !active.inlineTextAttempted &&
       !active.inFlight.size && !active.outcomes.length && (!active.decision || active.decision.verdict === 'reply')
       ? active.claimedInput : null
-    const stale = state.unansweredPrivate
-    if (stale && this.now() > stale.expiresAt) state.unansweredPrivate = null
+    const stale = state.unansweredReply
+    if (stale && this.now() > stale.expiresAt) state.unansweredReply = null
     const interrupted = !active?.ended && !active?.claimConflict && interruptedInlineReply(active)
-    const claimed = unacknowledged || (interrupted ? active.claimedInput : null) || state.unansweredPrivate?.entry
-    // The current private turn may be interrupted before its first output.
-    // Carry its question into the successor as context, without its ticket.
-    if (binding.origin === 'live' && !binding.recoveryRevision && binding.scope.startsWith('private:') &&
-        samePrivateReply(claimed, binding, role)) {
+    const claimed = unacknowledged || (interrupted ? active.claimedInput : null) || state.unansweredReply?.entry
+    const carryReply = binding.origin === 'live' && !binding.recoveryRevision && sameReplyConversation(claimed, binding, role)
+    // Carry an interrupted question as context. The current sender still owns the turn.
+    if (carryReply) {
       const partial = (interrupted && active.claimedInput === claimed && active.inlineTextReceiptCount > 0) ||
         (stale?.entry === claimed && stale.partial)
-      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, privateHandoffText(claimed, partial)] })
+      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, replyHandoffText(claimed, partial)] })
     }
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
     const history = [...new Set(chunks.sort((a, b) => a.revision - b.revision).flatMap(entry => entry.texts))]
@@ -1154,12 +1158,14 @@ export class OneBotDecisionAdapter {
     // its sender, role or control authority to the newest message.
     const original = String(originalText)
     const groupContactText = binding.verifiedGroupReply && binding.origin === 'live' ? original
-      : merge && previous.groupContactText && excerpt.includes(previous.groupContactText) ? previous.groupContactText : null
+      : [merge ? previous.groupContactText : null, carryReply ? claimed.groupContactText : null]
+        .find(contact => contact && excerpt.includes(contact)) ?? null
     const directGroupContact = groupContactText !== null
     const now = this.now(), arrivedAt = this.context.getStore()?.arrivedAt
     const receivedAt = Number.isSafeInteger(arrivedAt) && arrivedAt >= 0 && arrivedAt <= now ? arrivedAt : now
     const batchFirstAt = merge && Number.isSafeInteger(previous.batchFirstAt) ? Math.min(previous.batchFirstAt, receivedAt) : receivedAt
-    const entry = Object.freeze({ binding, role, originalText: original, history: recent, directGroupContact, groupContactText,
+    const sender = this.context.getStore()?.inbound?.userId
+    const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContactText,
       receivedAt, batchFirstAt,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
@@ -1170,12 +1176,12 @@ export class OneBotDecisionAdapter {
     try {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
-        if (binding.origin === 'live') state.unansweredPrivate = null
+        if (binding.origin === 'live') state.unansweredReply = null
         this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: true, revision: binding.revision })
         return { dispatched: true, coalesced: true }
       }
       chat.agent.followup(finalMessage)
-      if (binding.origin === 'live') state.unansweredPrivate = null
+      if (binding.origin === 'live') state.unansweredReply = null
       this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: false, revision: binding.revision })
       return { dispatched: true, coalesced: false }
     } catch (error) {
@@ -1193,7 +1199,7 @@ export class OneBotDecisionAdapter {
   nativeCapabilityContext(agent) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
-    return (record.binding.capabilityContext || '') + (record.privateReplyHandoff || '')
+    return (record.binding.capabilityContext || '') + (record.replyHandoff || '')
       + this.groupPromptContext(chat.chatId, record.binding.owner, this.canViewGroupImage(record.binding))
       + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
       + 'When sharing something you made or did, write a natural QQ message about the result. Omit tool receipts, message IDs, revision counters and local Markdown links. Use the actual image tool for a picture. For your own image choose expression:"text_meme"; send no caption when the image says enough, or add only a useful detail. Use expression:"meme" for an image-only reaction from the meme library.\n'
@@ -1407,20 +1413,28 @@ export class OneBotDecisionAdapter {
       record.claimedInput = entry
       record.completion = entry.binding.completion
       record.claimedId = message.id
-      const handoff = state.unansweredPrivate
+      const handoff = state.unansweredReply
       if (handoff && entry.binding.origin === 'live' && !entry.binding.recoveryRevision &&
           entry.binding.revision > handoff.entry.binding.revision) {
-        state.unansweredPrivate = null
+        state.unansweredReply = null
         const earlier = handoff.entry
-        if (this.now() <= handoff.expiresAt && samePrivateReply(earlier, entry.binding, entry.role)) {
-          const text = privateHandoffText(earlier, handoff.partial)
+        if (this.now() <= handoff.expiresAt && sameReplyConversation(earlier, entry.binding, entry.role)) {
+          const text = replyHandoffText(earlier, handoff.partial)
           if (!entry.history.includes(text)) {
             const history = [...earlier.history, text]
-            record.claimedInput = Object.freeze({ ...entry, history: [...new Set([...history, ...entry.history])].slice(-20) })
-            record.privateReplyHandoff = '\nA prior private reply in this same conversation was interrupted. '
+            const retained = [...new Set([...history, ...entry.history])].slice(-20)
+            const excerpt = retained.join('\n\n').slice(-16000)
+            const group = entry.binding.scope.startsWith('group:')
+            const inheritedContact = group && earlier.groupContactText && excerpt.includes(earlier.groupContactText)
+              ? earlier.groupContactText : null
+            const groupContactText = entry.groupContactText ?? inheritedContact
+            record.claimedInput = Object.freeze({ ...entry, history: retained, groupContactText,
+              directGroupContact: groupContactText !== null })
+            if (inheritedContact && !entry.directGroupContact) this.persistReplyInput(entry.binding, excerpt + '\n' + entry.originalText, entry.sender)
+            const tag = group ? 'interrupted_group_context' : 'interrupted_private_context'
+            record.replyHandoff = '\nA prior ' + (group ? 'group' : 'private') + ' reply in this same conversation was interrupted. '
               + 'The following is historical context only. Address any relevant unanswered points with the current message.\n'
-              + '<interrupted_private_context>\n' + JSON.stringify(history.join('\n\n').slice(-16000))
-                .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</interrupted_private_context>\n'
+              + '<' + tag + '>\n' + JSON.stringify(excerpt).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</' + tag + '>\n'
           }
         }
       }
@@ -2321,13 +2335,14 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     record.ended = true
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
-    const supersededReply = record.replySuperseded && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
-    if (scope.startsWith('private:') && (supersededReply || interruptedInlineReply(record)) &&
+    const supersededReply = (record.replySuperseded || record.supersededIdleWake &&
+      (!record.decision || record.decision.verdict === 'reply')) && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
+    if ((scope.startsWith('private:') || record.claimedInput?.directGroupContact) && (supersededReply || interruptedInlineReply(record)) &&
         record.claimedInput?.binding.origin === 'live' && !record.binding.recoveryRevision &&
         !record.claimConflict && state.active === record) {
       // Admission can invalidate the reply before or after its successor is
       // queued. Preserve the older question for dispatch or the next claim.
-      state.unansweredPrivate = { entry: record.claimedInput, expiresAt: this.now() + 60_000,
+      state.unansweredReply = { entry: record.claimedInput, expiresAt: this.now() + 60_000,
         partial: interruptedInlineReply(record) && record.inlineTextReceiptCount > 0 }
     }
     if (state.active === record) state.active = null
