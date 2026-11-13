@@ -984,6 +984,12 @@ export class OneBotDecisionAdapter {
         !Array.isArray(chat.agent?.inbox?.nextTurn) || typeof chat.agent.inbox.replace !== 'function') {
       throw new Error('Native dispatch binding unavailable')
     }
+    // Preparing an observation can await the registry, memory and tool guide.
+    // Give a newer live receipt priority even if its turn has already ended.
+    if (binding.origin === 'observation' && binding.inboundAtPin !== undefined &&
+        (this.foregroundBusy(binding.scope) || (this.latestInbound.get(binding.scope) || 0) !== binding.inboundAtPin)) {
+      throw new ObservationForegroundBusy()
+    }
     if (binding.origin === 'live' && binding.revision <= state.liveRevision) {
       this.diagnose(binding.scope, binding.messageId, 'superseded_preparation')
       return { dispatched: false, reason: 'superseded_before_dispatch' }
@@ -2656,9 +2662,14 @@ export class OneBotDecisionAdapter {
       event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer) &&
       Array.isArray(administrators) && administrators.every(value => typeof value === 'string' && /^[1-9][0-9]*$/.test(value)) &&
       administrators.includes(peer) ? 'admin' : 'member'
+    let inboundAtPin = 0
     const observed = await this.policy.recordObservation({ scope: event.scope, eventId: event.event_id,
       kind: event.kind, producer: event.producer, createdAt: event.created_at, redrive: true,
-      canRecord: () => !this.foregroundBusy(event.scope) })
+      canRecord: () => {
+        if (this.foregroundBusy(event.scope)) return false
+        inboundAtPin = this.latestInbound.get(event.scope) || 0
+        return true
+      } })
     if (observed.reason === 'already_completed_without_decision') {
       return { completed: true, ...observed.local_outcome }
     }
@@ -2709,7 +2720,7 @@ export class OneBotDecisionAdapter {
     let resolve, reject
     const promise = new Promise((yes, no) => { resolve = yes; reject = no })
     const completion = { promise, resolve, reject }
-    const binding = Object.freeze({ ...observed, origin: 'observation', completion, backendStamp,
+    const binding = Object.freeze({ ...observed, origin: 'observation', completion, backendStamp, inboundAtPin,
       observationKind: event.kind, observationProducer: event.producer, observationEventId: event.event_id,
       observationCreatedAt: createdAt,
       ...(trustedSocial ? { trustedSocialRequest: trustedSocial.request_id } : {}),

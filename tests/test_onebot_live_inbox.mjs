@@ -196,6 +196,52 @@ test('an unanswered direct message defers an autonomous turn without failure bac
   assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
 })
 
+test('autonomous preparation yields to a private reply that arrived after its observation was pinned', async t => {
+  for (const stage of ['queued', 'answered']) await t.test(stage, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const entered = defer(), release = defer()
+    const event = await primaryEvent(h, 'synthetic-racing-opportunity')
+    adapter.memoryContext = async (_scope, text) => {
+      if (text.includes(event.event_id)) {
+        entered.resolve()
+        await release.promise
+      }
+      return null
+    }
+    const outcome = adapter.dispatchObservation(event).then(
+      value => ({ value }), error => ({ error }))
+    await entered.promise
+    try {
+      await h.receive('new human question during autonomous preparation')
+      assert.equal(h.pending.length, 1)
+      if (stage === 'answered') {
+        h.start(); assert.equal((await h.preStep()).kind, 'enter')
+        assert.equal((await h.decide('reply', { text: 'live answer' })).sent, true)
+        await h.end()
+      }
+    } finally { release.resolve() }
+    const result = await Promise.race([outcome, new Promise(resolve => setTimeout(() => resolve({ waiting: true }), 250))])
+    assert.equal(result.error?.name, 'ObservationForegroundBusy')
+    assert.equal(adapter.observations.size, 0)
+    assert.equal(h.pending.length, stage === 'queued' ? 1 : 0)
+    assert.equal(h.requests.filter(request => request.origin === 'observation').length, 0)
+
+    if (stage === 'queued') {
+      h.start(); assert.equal((await h.preStep()).kind, 'enter')
+      assert.equal((await h.decide('reply', { text: 'live answer' })).sent, true)
+      await h.end()
+    }
+    const next = adapter.dispatchObservation(event)
+    for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('idle')).accepted, true)
+    await h.end()
+    assert.equal((await next).completed, true)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('reply review never interrupts busy work, pending input, disconnect or changed permissions', async t => {
   for (const mode of ['busy', 'pending-step', 'disconnected', 'acl', 'owner', 'stopped']) await t.test(mode, async t => {
     const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy, before = h.followups.length
