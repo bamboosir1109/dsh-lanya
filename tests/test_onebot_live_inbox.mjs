@@ -2143,6 +2143,38 @@ test('a real group contact stays eligible for recovery when merged with an ordin
   })
 })
 
+test('a verified group contact survives when its own enrichment is slower than an ordinary follow-up', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, entered = defer(), resume = defer()
+  a.memoryContext = async (_scope, text) => {
+    if (text.includes('slow original question')) { entered.resolve(); await resume.promise }
+    return null
+  }
+  const slow = h.receive('slow original question', { message: [
+    { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'slow original question' } },
+  ] })
+  await entered.promise
+  try {
+    await h.receive('fast ordinary follow-up', { user_id: 204 })
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /slow original question[\s\S]*fast ordinary follow-up/)
+    const entry = a.state(h.chat).pending.get(h.pending[0].id)
+    assert.equal(entry.directGroupContact, true)
+    assert.equal(entry.sender, '204')
+  } finally { resume.resolve(); await slow }
+  await Promise.all([...a.replyReviewWrites])
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.equal(current.controlAllowed, false)
+  assert.match(current.replyReview?.text || '', /slow original question[\s\S]*fast ordinary follow-up/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; a.startRequested = true; h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer both' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('an unanswered group mention survives a newer ordinary message before or after enqueue', async t => {
   for (const timing of ['preparing', 'queued']) await t.test(timing, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy

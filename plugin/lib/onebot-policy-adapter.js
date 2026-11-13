@@ -1247,7 +1247,8 @@ export class OneBotDecisionAdapter {
     // its sender, role or control authority to the newest message.
     const original = String(originalText)
     const groupContactText = binding.verifiedGroupReply && binding.origin === 'live' ? original
-      : [merge ? previous.groupContactText : null, carryReply ? claimed.groupContactText : null]
+      : [merge ? previous.groupContactText : null, carryReply ? claimed.groupContactText : null,
+        ...preparing.filter(entry => entry.verifiedGroupReply).map(entry => entry.text)]
         .find(contact => contact && excerpt.includes(contact)) ?? null
     const directGroupContact = groupContactText !== null
     const now = this.now(), arrivedAt = this.context.getStore()?.arrivedAt
@@ -2806,7 +2807,8 @@ export class OneBotDecisionAdapter {
         if (state) {
           while (state.preparing.size >= 20) state.preparing.delete(state.preparing.keys().next().value)
           state.preparing.set(current.binding.messageId, { owner: current.binding.owner, revision: current.binding.revision,
-            temporaryPrivate: current.binding.temporaryPrivate, text: String(text).slice(-16000) })
+            temporaryPrivate: current.binding.temporaryPrivate, verifiedGroupReply: current.binding.verifiedGroupReply,
+            text: String(text).slice(-16000) })
         }
       }
     }
