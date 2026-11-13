@@ -488,6 +488,21 @@ test('a stale private reply survives an ended turn while the successor is still 
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('memory approvals for observations return promptly while live approvals keep their normal handler', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('current live question')
+  h.start()
+  const [approval] = h.deps.nativeHooks.get('approval/request')
+  const request = { agent: h.agent, toolName: 'memory', reason: '[dsh-memento] remove agent/workspace\nfixture' }
+  const normal = async () => 'unavailable'
+  assert.equal(await approval(request, normal), 'unavailable')
+  const turn = adapter.state(h.chat).active
+  turn.binding = { ...turn.binding, origin: 'observation' }
+  assert.equal(await approval(request, () => assert.fail('background memory must not block on manual approval')), 'rejected')
+  assert.equal(await approval({ ...request, toolName: 'other' }, normal), 'unavailable')
+  await h.end()
+})
+
 test('inbox insertion failure retains recovery evidence for an admitted private message', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   h.agent.followup = () => { throw new Error('synthetic inbox write failure') }

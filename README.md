@@ -26,7 +26,7 @@
 
 **[观看 48 秒卡通短片 ▶](https://bamboosir1109.github.io/dsh-lanya/#story)** &nbsp; · &nbsp; **[体验控制台](https://bamboosir1109.github.io/dsh-lanya/#demo)** &nbsp; · &nbsp; **[开始部署](#quick-start)** &nbsp; · &nbsp; **[阅读文档](#documentation)** &nbsp; · &nbsp; **[反馈问题](https://github.com/bamboosir1109/dsh-lanya/issues)**
 
-<sub>v1.4.0-dev.86 · 一个主 LLM 统一决策 · 工具与服务按需集成 · Windows 本地控制台</sub>
+<sub>v1.4.0-dev.87 · 一个主 LLM 统一决策 · 工具与服务按需集成 · Windows 本地控制台</sub>
 
 </div>
 
@@ -41,7 +41,7 @@
 <p align="center"><sub>↑ 无需登录，点击体验。画面全部使用示例数据，不代表真实活动或发送结果。</sub></p>
 
 > [!NOTE]
-> 当前为 **v1.4.0-dev.86 开发预览**。安卓操作与原生 2048 的开发进展见 [Android](docs/ANDROID.md)。公开主页与安装说明见默认分支 [main](https://github.com/bamboosir1109/dsh-lanya/tree/main)。
+> 当前为 **v1.4.0-dev.87 开发预览**。安卓操作与原生 2048 的开发进展见 [Android](docs/ANDROID.md)。公开主页与安装说明见默认分支 [main](https://github.com/bamboosir1109/dsh-lanya/tree/main)。
 >
 > 这是插件与配套服务的集成包，QQ 后端、B 站及语音引擎需分别安装配置，详见[组件接入表](docs/INTEGRATIONS.md)。
 >
