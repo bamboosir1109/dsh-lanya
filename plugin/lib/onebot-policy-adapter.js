@@ -941,16 +941,20 @@ export class OneBotDecisionAdapter {
     const preparing = [...state.preparing.values()].filter(entry => entry.revision < binding.revision && samePrivateRoute(entry) &&
       ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.owner[key] === binding.owner[key]))
     const chunks = preparing.map(entry => ({ revision: entry.revision, texts: [entry.text] }))
-    const active = state.active, claimed = active?.claimedInput
+    const active = state.active
+    const unacknowledged = active && !active.ended && !active.claimConflict && !active.inlineTextAttempted &&
+      !active.inFlight.size && !active.outcomes.length && (!active.decision || active.decision.verdict === 'reply')
+      ? active.claimedInput : null
+    const stale = state.unansweredPrivate
+    if (stale && this.now() > stale.expiresAt) state.unansweredPrivate = null
+    const claimed = unacknowledged || state.unansweredPrivate?.entry
     // The current private turn may be interrupted before its first output.
     // Carry its question into the successor as context, without its ticket.
     if (binding.origin === 'live' && !binding.recoveryRevision && binding.scope.startsWith('private:') &&
         claimed?.binding.origin === 'live' && !claimed.binding.recoveryRevision &&
         claimed.role === role && samePrivateRoute(claimed.binding) &&
         ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => claimed.binding.owner[key] === binding.owner[key]) &&
-        claimed.binding.revision < binding.revision && (!active.decision || active.decision.verdict === 'reply') &&
-        !active.inlineTextAttempted &&
-        !active.ended && !active.claimConflict && !active.inFlight.size && !active.outcomes.length) {
+        claimed.binding.revision < binding.revision) {
       chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, claimed.originalText] })
     }
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
@@ -981,10 +985,12 @@ export class OneBotDecisionAdapter {
     try {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
+        if (binding.origin === 'live') state.unansweredPrivate = null
         this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: true, revision: binding.revision })
         return { dispatched: true, coalesced: true }
       }
       chat.agent.followup(finalMessage)
+      if (binding.origin === 'live') state.unansweredPrivate = null
       this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: false, revision: binding.revision })
       return { dispatched: true, coalesced: false }
     } catch (error) {
@@ -1607,6 +1613,9 @@ export class OneBotDecisionAdapter {
       ? await this.policy.check(result.ticket, { kind: args.expression === 'publication' ? 'publication' : 'text' }) : null
     if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_decision_turn')
     const canSend = sendPermission?.allowed === true
+    if (args.verdict === 'reply' && (result.reason === 'stale_revision' || sendPermission?.reason === 'stale_revision')) {
+      record.replySuperseded = true
+    }
     this.diagnose(record.binding.scope, record.binding.messageId, 'decision', { verdict: args.verdict, reason: result.reason, turn: record.turn })
     // The real SDK concludes this native turn after committing the tool result.
     // No second model/compaction step is needed to narrate an idle decision.
@@ -2046,6 +2055,13 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     record.ended = true
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
+    if (scope.startsWith('private:') && record.replySuperseded && record.claimedInput?.binding.origin === 'live' &&
+        !record.claimConflict && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length &&
+        state.liveRevision === record.binding.revision) {
+      // Admission can invalidate the reply before the successor finishes
+      // enrichment. Keep the older question until that input is actually queued.
+      state.unansweredPrivate = { entry: record.claimedInput, expiresAt: this.now() + 60_000 }
+    }
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
     if (record.supersededIdleWake || memeOnlyReply(record) || publicationOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null

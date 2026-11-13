@@ -468,6 +468,26 @@ test('member private burst carries an unanswered claimed question into the next 
   await h.end()
 })
 
+test('a stale private reply survives an ended turn while the successor is still being prepared', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('unanswered first question')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const entered = defer(), resume = defer(), original = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async (...args) => {
+    entered.resolve()
+    await resume.promise
+    return original(...args)
+  }
+  const incoming = h.receive('later private detail')
+  await entered.promise
+  assert.equal((await h.decide('reply', { text: 'expired answer' })).reason, 'stale_revision')
+  await h.end()
+  resume.resolve()
+  await incoming
+  assert.match(h.pending[0].content[0].text, /unanswered first question[\s\S]*later private detail/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('inbox insertion failure retains recovery evidence for an admitted private message', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   h.agent.followup = () => { throw new Error('synthetic inbox write failure') }
