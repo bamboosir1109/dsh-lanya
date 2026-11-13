@@ -110,6 +110,10 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertIn("preserving the full content", guide["reply_length"])
                 self.assertIn("unverified", guide["registration"])
                 self.assertIn("Selection is not delivery", guide["meme_selection"])
+                self.assertIn("only when you need to verify a specific image or qq_send_meme is not registered", guide["meme_selection"])
+                self.assertIn("limit: 1", guide["meme_selection"])
+                self.assertIn("indexed fast_meme route first", guide["meme_preference"])
+                self.assertIn("no_indexed_tag_match before a decision", guide["fast_meme"])
                 self.assertIn("empty/missing image", guide["meme_selection"])
                 self.assertIn("requires_visual_review", guide["meme_selection"])
                 self.assertIn("read_image({file_path: chosen_path})", guide["meme_selection"])
@@ -220,6 +224,8 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         before = self.snapshot()
         expression = self.context(context_mode='live_chat')['tools']['qq_expression']
         guide = expression['meme_delivery']
+        self.assertIn('specific image needs visual verification or qq_send_meme is not registered', guide)
+        self.assertIn('prefer qq_send_meme', expression['fast_meme'])
         for boundary in ('limit: 1', 'one picker call per live turn', 'do not repeat',
                          'requires_visual_review=true', 'use concise text',
                          'necessary inspection of images supplied by the user', 'current reply ticket'):
