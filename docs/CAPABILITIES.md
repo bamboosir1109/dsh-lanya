@@ -28,7 +28,7 @@ guide 提供实际角色目录下 `browser/cmd.json`、`result.json`、`shot.png
 
 ## B站内容与互动
 
-B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗，按时间轴读取有界字幕，再按需要查看同 CID 的 `bili_frames` 故事板图片。无字幕、片段截断与画面未读取分别保留，不宣称完整播放；长视频可在之后机会继续。`bili_social_inbox` 读取回复与提及，`bili_thread` 核对同视频根评论及目标，`bili_reply` 用 `rpid` 指定目标、`root` 指定根评论。新模型调用须明确选择 `mention_admin:true` 或 `false`；视频内容结果的 `social_next` 提供可信互动偏好，由同一主 LLM 判断是否邀请管理员，旧调用省略仍为 false。普通评论、接话及 `mention_admin` 使用可信项目偏好，不借 QQ 票据，也不把发出请求当作已公开或已通知。
+B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗，按时间轴读取有界字幕，再按需要查看同 CID 的 `bili_frames` 故事板图片。字幕截断时 `subtitle.resume` 提供同一分 P 的续读位置，可保存到下次自主活动。`advances:false` 表示应换一段或查看画面。无字幕、片段截断与画面未读取分别保留，不宣称完整播放。`bili_social_inbox` 读取回复与提及，`bili_thread` 核对同视频根评论及目标，`bili_reply` 用 `rpid` 指定目标、`root` 指定根评论。新模型调用须明确选择 `mention_admin:true` 或 `false`；视频内容结果的 `social_next` 提供可信互动偏好，由同一主 LLM 判断是否邀请管理员，旧调用省略仍为 false。普通评论、接话及 `mention_admin` 使用可信项目偏好，不借 QQ 票据，也不把发出请求当作已公开或已通知。
 
 ## 主动联系与关系候选
 

@@ -72,10 +72,23 @@ class VideoContentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(by_count["subtitle"]["segments"]), 1)
         self.assertTrue(by_count["subtitle"]["truncated"])
         self.assertEqual(by_count["status"], "partial")
+        self.assertEqual(by_count["subtitle"]["resume"], {"start_sec": 5, "end_sec": 100, "advances": True})
         by_chars = await self.observe(max_chars=4)
         self.assertEqual(sum(len(row["text"]) for row in by_chars["subtitle"]["segments"]), 4)
         self.assertTrue(by_chars["subtitle"]["segments"][0]["text_truncated"])
         self.assertTrue(by_chars["subtitle"]["truncated"])
+        self.assertEqual(by_chars["subtitle"]["resume"], {"start_sec": 0, "end_sec": 100, "advances": False})
+
+    async def test_resume_includes_the_first_omitted_overlapping_caption(self):
+        self.body["body"] = [{"from": 0, "to": 7, "content": "Long caption"},
+                             {"from": 4, "to": 6, "content": "Overlapping caption"},
+                             {"from": 8, "to": 12, "content": "Later caption"}]
+        first = await self.observe(start_sec=1, end_sec=10, max_segments=1)
+        resume = first["subtitle"]["resume"]
+        self.assertEqual(resume, {"start_sec": 4, "end_sec": 10, "advances": True})
+        continued = await self.observe(start_sec=resume["start_sec"], end_sec=resume["end_sec"])
+        self.assertIn("Overlapping caption", [row["text"] for row in continued["subtitle"]["segments"]])
+        self.assertNotIn("resume", continued["subtitle"])
 
     async def test_no_subtitle_still_returns_real_selected_details_and_frame_route(self):
         self.video.subtitle = {"subtitles": []}
@@ -84,6 +97,7 @@ class VideoContentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["title"], "A fixture video")
         self.assertEqual(result["subtitle"]["status"], "unavailable")
+        self.assertNotIn("resume", result["subtitle"])
         self.assertEqual(result["evidence"]["kind"], "metadata")
         self.assertEqual(result["frames_next"]["arguments"], {"bvid": BV, "page": 2, "at": [50.0, 100.0, 150.0]})
         self.assertEqual(self.requests, [])
