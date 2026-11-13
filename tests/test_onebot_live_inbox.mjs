@@ -1813,6 +1813,59 @@ test('a queued group review uses the current social prompt instead of an inherit
   await h.end(); await completion
 })
 
+test('a verified group opportunity fills an empty listener from current history without making a live reply', async t => {
+  for (const scenario of ['empty', 'current live context', 'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    const owner = await a.trustedOwner(scope)
+    a.runtimeCapabilities = async () => null
+    if (scenario === 'current live context') await h.receive('current live group topic')
+    const call = h.deps.connection.call
+    const time = Math.floor(a.now() / 1000)
+    let historyReads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      historyReads++
+      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      if (scenario === 'live context arrives during lookup') await h.receive('current live group topic')
+      if (scenario === 'changed socket') h.deps.connection.socket = {}
+      if (scenario === 'lookup failure') throw new Error('Synthetic history unavailable')
+      const row = (message_id, text, extra = {}) => ({ message_id, message_type: 'group', group_id: 303,
+        sender: { user_id: 202 }, time: time - 30, message: [{ type: 'text', data: { text } }], ...extra })
+      return { messages: [row(71, 'recent group history topic'), row(72, 'expired group topic', { time: time - 601 }),
+        row(73, 'other group topic', { group_id: 404 }), row(74, 'own group output', { sender: { user_id: 999 } })] }
+    }
+    const event = { version: 1, event_id: 'fixture-group-history-opportunity', scope, kind: 'activity.opportunity',
+      producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
+      workspace_key: owner.workspace_key, agent_key: owner.agent_key, payload: { activity_role: 'conversation_social' } }
+    if (scenario === 'changed socket') {
+      const selected = a.backendGuard.selection()
+      assert.equal((await a.backendGuard.verify(h.deps.connection, selected.stamp)).verified, true)
+      await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
+      assert.equal(historyReads, 1)
+      assert.equal(a.recentGroupContext(scope, owner).length, 0)
+      assert.equal(h.pending.length, 0)
+      return
+    }
+    const completion = a.dispatchObservationOnce(event)
+    for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(h.pending.length, 1)
+    assert.equal(historyReads, scenario === 'current live context' ? 0 : 1)
+    assert.ok(h.pending[0].source.kind.includes('observation'))
+    assert.doesNotMatch(JSON.stringify(h.pending), /recent group history topic/)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.prompt()
+    const expected = scenario === 'empty' ? /recent group history topic/
+      : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
+    assert.match(prompt, expected)
+    assert.doesNotMatch(prompt, /expired group topic|other group topic|own group output/)
+    if (scenario !== 'empty') assert.doesNotMatch(prompt, /recent group history topic/)
+    assert.equal((await h.decide('idle')).accepted, true)
+    await h.end(); await completion
+    assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 0)
+  })
+})
+
 test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
   const h = await listeningGroup(t)
   await h.receive('expired topic')

@@ -1066,6 +1066,8 @@ export class OneBotDecisionAdapter {
     if (!group) return
     const recent = new Map()
     for (const row of rows) {
+      if (!plain(row) || row.message_type !== 'group' || String(row.group_id) !== scope.slice(6) ||
+          !Number.isSafeInteger(row.time) || row.time <= 0 || row.time * 1000 > now) continue
       const at = row.time * 1000, speaker = groupHistorySender(row), messageId = String(row.message_id)
       if (at < now - GROUP_CONTEXT_MS || !speaker || speaker === bot ||
           !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
@@ -1079,6 +1081,26 @@ export class OneBotDecisionAdapter {
         quoted_speaker: null, addressed_to_bot: at_targets.includes(bot) })
     }
     group.recent = [...recent.values()].sort((a, b) => a.at - b.at).map((row, i) => ({ ...row, arrival: i - recent.size }))
+  }
+
+  async refreshGroupOpportunityContext(scope, owner, backendStamp) {
+    if (!this.nativeClaims || !this.contextualGroupEnabled(scope) || !this.groupReplyReviewAllowed(scope) ||
+        this.foregroundBusy(scope) || this.recentGroupContext(scope, owner).length) return
+    const groupId = Number(scope.slice(6)), connection = this.deps.connection, socket = connection?.socket
+    if (!socket || !Number.isSafeInteger(groupId) || this.bridge.stopping) return
+    const epoch = this.startEpoch
+    const current = () => this.startEpoch === epoch && !this.bridge.stopping && connection.socket === socket &&
+      connection.connected === true && this.backendGuard.edge(connection, backendStamp) && this.groupReplyReviewAllowed(scope)
+    try {
+      const selection = this.backendGuard.selection()
+      if (!selection.explicit || !current()) return
+      const history = await this.intentPlanner.readAction('get_group_msg_history', { group_id: groupId, count: 12 })
+      if (!current() || !Array.isArray(history?.messages) || history.messages.length > 12) return
+      const latestOwner = await this.trustedOwner(scope)
+      if (!current() || this.foregroundBusy(scope) ||
+          !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key])) return
+      this.restoreRecentGroupText(scope, owner, history.messages, this.now(), selection.expectedAccount)
+    } catch (error) { this.log('warn', 'group_opportunity_context_unavailable:' + error.name) }
   }
 
   groupAddressed(inbound, address) {
@@ -2962,6 +2984,10 @@ export class OneBotDecisionAdapter {
       event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer) &&
       Array.isArray(administrators) && administrators.every(value => typeof value === 'string' && /^[1-9][0-9]*$/.test(value)) &&
       administrators.includes(peer) ? 'admin' : 'member'
+    const groupOpportunity = event.scope.startsWith('group:') && event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)
+    if (groupOpportunity && backend.verified && local.reason === 'within_autonomous_hours') {
+      await this.refreshGroupOpportunityContext(event.scope, owner, backendStamp)
+    }
     let inboundAtPin = 0
     const observed = await this.policy.recordObservation({ scope: event.scope, eventId: event.event_id,
       kind: event.kind, producer: event.producer, createdAt: event.created_at, redrive: true,
@@ -2985,7 +3011,6 @@ export class OneBotDecisionAdapter {
     }
     if (!observed.accepted) throw new Error('Observation could not be safely dispatched: ' + observed.reason)
     let autonomousCadence, observationGuide
-    const groupOpportunity = event.scope.startsWith('group:') && event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)
     if (role === 'admin' || groupOpportunity) {
       // The setting is trusted local owner context, never event/payload text.
       // Capture it before this turn is queued; later asynchronous turns cannot
