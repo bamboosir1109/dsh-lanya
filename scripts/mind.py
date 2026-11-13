@@ -836,7 +836,8 @@ def _observe_cycle(mind, dry=False, force=False):
         raise ValueError("invalid autonomous opportunity interval")
     interval = int(value * 60_000)
     now = int(time.time() * 1000)
-    if autonomous_rest_state(now)["resting"]:
+    rest = autonomous_rest_state(now)
+    if rest["resting"]:
         log("Shanghai rest window; no autonomous opportunity or overdue greeting is submitted")
         return 0
     states = _observer_states(mind, scopes, now, interval)
@@ -917,13 +918,15 @@ def _observe_cycle(mind, dry=False, force=False):
         if state.get("last_status") == "unknown" and not changed:
             from interaction_health import latest_group_activity
             completed_at = state.get("last_completed_at")
+            new_group_day = not primary and _valid_ms(completed_at) and completed_at < rest["current_day_wake_at"]
             activity = (latest_group_activity(os.path.join(DATA, "interaction-health.jsonl"), scope,
                                               after=max(completed_at, now - 60 * 60_000), now=now)
-                        if not primary and _valid_ms(completed_at) and now >= completed_at + interval else None)
-            if activity is None:
+                        if not primary and not new_group_day and _valid_ms(completed_at) and now >= completed_at + interval else None)
+            if activity is None and not new_group_day:
                 continue
-            payload["fresh_group_activity_at"] = activity
-            payload["instruction"] += (" This is a fresh group activity opportunity based on a later live message. "
+            if activity is not None:
+                payload["fresh_group_activity_at"] = activity
+            payload["instruction"] += (" This is a fresh group activity opportunity after the daily rest or a later live message. "
                                        "Read the recent group context, contribute only if there is a new topic you can join, "
                                        "and never repeat the previous message with an uncertain outcome.")
             changed = True

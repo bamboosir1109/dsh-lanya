@@ -158,6 +158,31 @@ class MainDecisionObserverTests(unittest.TestCase):
         self.assertEqual(len(self.pending()), 3)
         self.ask.assert_not_called(); self.send.assert_not_called()
 
+    def test_new_day_allows_one_fresh_group_opportunity_after_uncertain_send(self):
+        (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
+        self.mind.one_cycle()
+        original = set(self.pending())
+        for event in original:
+            self.complete(status="unknown", event=event)
+        done = self.data / "decision-inbox" / "done"
+        receipts = {event.name: (done / event.name).read_bytes() for event in original}
+        self.mind.one_cycle(force=True)
+        self.assertEqual(set(self.pending()), original)
+        self.clock.return_value = 86_399
+        self.mind.one_cycle(force=True)
+        self.assertEqual(set(self.pending()), original)
+        self.clock.return_value = 86_400
+        self.mind.one_cycle()
+        event_path, = set(self.pending()) - original
+        event = json.loads(event_path.read_bytes())
+        self.assertEqual(event["scope"], "group:202")
+        self.assertNotIn("review_context", event["payload"])
+        self.assertNotIn("fresh_group_activity_at", event["payload"])
+        self.mind.one_cycle(force=True)
+        self.assertEqual(set(self.pending()), original | {event_path})
+        self.assertEqual({name: (done / name).read_bytes() for name in receipts}, receipts)
+        self.ask.assert_not_called(); self.send.assert_not_called()
+
     def test_admin_group_opportunities_are_independent_without_private_context_leak(self):
         (self.data / "lanya-config.json").write_text(json.dumps({"adminQQ": ["101"], "fanGroupQQ": "202"}), encoding="utf-8")
         self.mind.save(self.mind.MIND, {"plan": {"goal": "private legacy reference"}, "mood": "private mood reference"})
