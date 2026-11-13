@@ -757,7 +757,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
     },
 
     async ackObservations(requests) {
-      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 8 || requests.some(request => !plain(request))) {
+      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 64 || requests.some(request => !plain(request))) {
         throw new PolicyStateError('Expected a bounded observation acknowledgement batch')
       }
       const batch = clone(requests)

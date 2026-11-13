@@ -26,6 +26,8 @@ const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256
 const terminalStatus = (x) => ['decided', 'sent', 'unknown', 'suppressed'].includes(x)
 const decisionIdentity = (x) => identity(x) && x.trim().length > 0
 const MAX_CONCURRENT_SCOPES = 4
+const TERMINAL_ACK_BATCH_SIZE = 64
+const TERMINAL_ACK_BATCH_BYTES = 4 * 1024 * 1024
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
 export const MAX_OBSERVATION_BYTES = 256 * 1024
 // Sixfold string escaping plus repeated event identities and bounded metadata.
@@ -356,15 +358,14 @@ function fileScanner(directory, incremental = true) {
       if (!read.completion && history.has(name)) {
         throw new ObservationQueueError('Previously terminal evidence lost its completion; automatic replay refused')
       }
-      if (read.completion) reads.set(key, { read, version })
-      // Only one terminal read is awaiting its parent-side acknowledgement.
-      if (reads.size > 16) throw new ObservationQueueError('Scanner read window exceeded')
+      if (read.completion) reads.set(key, { sha256: read.sha256, completionSha256: read.completionSha256, version })
+      if (reads.size > TERMINAL_ACK_BATCH_SIZE) throw new ObservationQueueError('Scanner read window exceeded')
       return read
     },
     review({ key, sha256, completionSha256, at, acknowledged }) {
       const previous = reads.get(key)
       reads.delete(key)
-      if (!previous || previous.read.sha256 !== sha256 || previous.read.completionSha256 !== completionSha256) {
+      if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256) {
         throw new ObservationQueueError('Review does not match this scanner read')
       }
       const current = readObservationEvidence(base, key); metrics.reads++
@@ -748,9 +749,11 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           reportScanner('scanning')
           try {
             const terminals = []
+            let terminalBytes = 0
             const flushTerminals = async () => {
               if (!terminals.length) return
               const records = terminals.splice(0)
+              terminalBytes = 0
               const outcomes = await acknowledgeScanned(records)
               for (const { event, name, read } of records) {
                 if (stopped) break
@@ -791,7 +794,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                   // A crash after durable completion but before core acknowledgement
                   // is recovered here, without running the model or sending again.
                   terminals.push({ event, name, read, fingerprint: read.sha256 + ':' + read.completionSha256 })
-                  if (terminals.length >= (acknowledgeBatch ? 8 : 1)) await flushTerminals()
+                  terminalBytes += read.raw.length
+                  if (!acknowledgeBatch || terminals.length >= TERMINAL_ACK_BATCH_SIZE || terminalBytes >= TERMINAL_ACK_BATCH_BYTES) {
+                    await flushTerminals()
+                  }
                   continue
                 }
                 // Permanently parked uncertain terminal claims remain evidence, not

@@ -155,7 +155,7 @@ test('legacy completion without its original stays reported but waits for a chan
 test('cold recovery confirms terminal records in bounded batches without replay', async t => {
   const f = fixture(t)
   const sizes = [], handled = []
-  for (let i = 0; i < 64; i++) f.seed('historical-' + i)
+  for (let i = 0; i < 128; i++) f.seed('historical-' + i)
   f.seed('fresh', false)
   const p = f.make({
     acknowledge: event => assert.equal(event.event_id, 'fresh'),
@@ -173,11 +173,27 @@ test('cold recovery confirms terminal records in bounded batches without replay'
   })
   await p.start({ poll: false })
   assert.equal((await p.drain()).processed, 1)
-  assert.deepEqual(sizes, Array(8).fill(8))
+  assert.deepEqual(sizes, [64, 64])
   assert.deepEqual(handled, ['fresh'])
   await p.drain()
-  assert.deepEqual(sizes, Array(8).fill(8))
+  assert.deepEqual(sizes, [64, 64])
   assert.deepEqual(handled, ['fresh'])
+})
+
+test('large terminal originals flush before the maximum batch count', async t => {
+  const f = fixture(t), sizes = []
+  for (let i = 0; i < 40; i++) f.seed('large-terminal-' + i, true, { payload: { text: 'x'.repeat(128 * 1024) } })
+  const p = f.make({
+    acknowledge: () => assert.fail('large terminal batches should remain valid'),
+    acknowledgeBatch: records => {
+      sizes.push(records.length)
+      return records.map(() => ({ acknowledged: true }))
+    },
+    dispatch: () => assert.fail('terminal records cannot dispatch'),
+  })
+  await p.start({ poll: false })
+  assert.equal((await p.drain()).processed, 0)
+  assert.deepEqual(sizes, [32, 8])
 })
 
 test('cached terminal loss cannot replay; restored evidence is revalidated', async t => {

@@ -304,6 +304,9 @@ test('observations have no user/control authority and a separate pinned dedup na
   ])
   assert.deepEqual(batch, [{ acknowledged: false, reason: 'unknown_observation' },
     { acknowledged: false, reason: 'decision_mismatch' }, { acknowledged: true }])
+  const history = Array.from({ length: 64 }, (_, i) => ({ scope, eventId: 'obs:history-' + i, decisionId: 'missing' }))
+  assert.equal((await policy.ackObservations(history)).length, 64)
+  await assert.rejects(() => policy.ackObservations([...history, history[0]]), /bounded/)
   assert.equal((await policy.recordObservation({ ...event, eventId: 'obs:two' })).accepted, true)
 })
 
