@@ -952,7 +952,7 @@ function backendFixture(h, provider='snowluma') {
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'live arrived', 'later own message', 'socket changed']) await t.test(scenario, async t => {
+  for (const scenario of ['new', 'busy then idle', 'busy through expiry', 'live arrived', 'later own message', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
     const warnings = []
     adapter.log = (_level, message) => warnings.push(message)
@@ -983,10 +983,19 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
       return { messages: rows }
     }
+    const expires = scenario === 'busy through expiry'
+    if (scenario === 'busy then idle' || expires) {
+      h.agent.status = 'running'
+      await adapter.recoverReconnectedFriends()
+      assert.equal(historyReads, 0, 'a busy conversation is left alone')
+      assert.equal(h.pending.length, 0)
+      h.agent.status = 'idle'
+      h.advance(expires ? 180_001 : 30_000)
+    }
     await adapter.recoverReconnectedFriends()
     const state = await adapter.policy.snapshot(h.chat.chatId)
-    assert.equal(historyReads, 1)
-    if (scenario !== 'new') {
+    assert.equal(historyReads, expires ? 0 : 1)
+    if (!['new', 'busy then idle'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return

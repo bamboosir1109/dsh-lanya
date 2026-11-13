@@ -683,7 +683,7 @@ export class OneBotDecisionAdapter {
     // A new process cannot know when the previous process lost its socket.
     // Use a short lookback; policy and platform history still deduplicate it.
     const since = this.friendReconnect?.until === undefined ? this.friendReconnect?.since : undefined
-    this.friendReconnect = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, cursor: 0, scopes: null }
+    this.friendReconnect = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null }
   }
 
   async recoverReconnectedFriends() {
@@ -703,29 +703,37 @@ export class OneBotDecisionAdapter {
       if (!sameWindow()) return
       const selected = this.backendGuard.selection(), backend = await this.backendGuard.verify(connection, selected.stamp)
       if (!backend.allowed || !backend.verified || !sameWindow()) return
-      const ready = () => sameWindow() && this.backendGuard.edge(connection, selected.stamp)
+      const ready = () => sameWindow() && this.now() - window.until <= FRIEND_RECONNECT_WINDOW_MS &&
+        this.backendGuard.edge(connection, selected.stamp)
       if (!window.scopes) {
         const scopes = [...this.bridge.chats.keys()]
           .filter(scope => /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
             this.replyReviewAllowed(scope, scope.slice(8)))
         window.scopes = scopes
       }
-      const end = Math.min(window.cursor + 8, window.scopes.length)
-      for (; window.cursor < end; window.cursor++) {
+      const count = Math.min(8, window.scopes.length)
+      for (let checked = 0; checked < count; checked++) {
         if (!ready()) return
-        const scope = window.scopes[window.cursor], peer = scope.slice(8)
+        const scope = window.scopes.shift(), peer = scope.slice(8)
+        if (!this.replyReviewAllowed(scope, peer)) continue
         const chat = this.bridge.chats.get(scope)
         const canStage = () => ready() && this.bridge.chats.get(scope) === chat &&
           this.replyReviewIdle(scope, epoch) && this.replyReviewAllowed(scope, peer)
-        if (!canStage()) continue
+        if (!canStage()) {
+          if (chat) window.scopes.push(scope)
+          continue
+        }
         try {
           const state = await this.policy.snapshot(scope)
-          if (!state || state.mode !== 'open' || !canStage()) continue
+          if (!state || state.mode !== 'open') continue
+          if (!canStage()) { window.scopes.push(scope); continue }
           const owner = await this.trustedOwner(scope)
+          if (!canStage()) { window.scopes.push(scope); continue }
           const history = await this.intentPlanner.readAction('get_friend_msg_history', { user_id: Number(peer), count: 12 })
           const latestOwner = await this.trustedOwner(scope)
           if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key]) ||
-              !canStage() || !Array.isArray(history?.messages) || history.messages.length > 12) continue
+              !Array.isArray(history?.messages) || history.messages.length > 12) continue
+          if (!canStage()) { window.scopes.push(scope); continue }
           const since = Math.max(window.since, this.now() - FRIEND_RECONNECT_WINDOW_MS)
           const now = this.now()
           const rows = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
@@ -748,13 +756,15 @@ export class OneBotDecisionAdapter {
             if (text && text.length <= 2000 && !text.startsWith('/')) receipts.set(messageId, { messageId, at, text })
           }
           const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
-          if (batch.length && await this.policy.stageReconnectedFriend({ scope, expectedRevision: state.revision,
-            receipts: batch, owner, canStage })) {
-            for (const { messageId } of batch) this.diagnose(scope, messageId, 'friend_history_staged')
+          if (batch.length) {
+            const staged = await this.policy.stageReconnectedFriend({ scope, expectedRevision: state.revision,
+              receipts: batch, owner, canStage })
+            if (staged) for (const { messageId } of batch) this.diagnose(scope, messageId, 'friend_history_staged')
+            else if (ready() && !canStage()) window.scopes.push(scope)
           }
         } catch (error) { this.log('warn', 'friend_history_scope_unavailable:' + error.name) }
       }
-      if (ready() && window.cursor === window.scopes.length) this.friendReconnect = null
+      if (ready() && !window.scopes.length) this.friendReconnect = null
     })()
     this.friendReconnectAttempt = attempt
     try { await attempt }
