@@ -105,7 +105,25 @@ test('a long full audit leaves time for incremental discovery before another ful
   assert.equal(p.status().selected, 1)
   clock += 30_001
   await p.drain(false)
+  assert.equal(p.status().full, false)
+  clock += 150_000
+  await p.drain(false)
   assert.equal(p.status().full, true)
+})
+
+test('an invalid derived review is revisited by full audit without recurring incremental reads', async t => {
+  const f = fixture(t)
+  const record = f.seed('main-review:' + 'a'.repeat(64) + ':1', true,
+    { producer: 'main-review', kind: 'activity.opportunity' })
+  fs.writeFileSync(record.done, JSON.stringify({ ...record.marker, next_review_at: 20 }) + '\n')
+  const p = f.make({ now: () => 100, dispatch: () => assert.fail('terminal must never dispatch') })
+  await p.start({ poll: false })
+  await p.drain()
+  assert.equal(p.status().cached, 1)
+  await p.drain(false)
+  assert.equal(p.status().selected, 0)
+  await p.drain()
+  assert.equal(p.status().selected, 1)
 })
 
 test('cold recovery confirms terminal records in bounded batches without replay', async t => {

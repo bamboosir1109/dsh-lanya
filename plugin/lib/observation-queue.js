@@ -267,6 +267,7 @@ function buildReviewCandidate(base, event, completed, at) {
 
 const SCANNER_PROTOCOL = 'dsh-observation-file-scanner/v1'
 const RECONCILE_MS = 30_000
+const MAX_RECONCILE_MS = 10 * 60_000
 const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.test(name)
 
 // This object runs in a worker in production. Its cache is a discovery index:
@@ -275,7 +276,7 @@ const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.
 function fileScanner(directory, incremental = true) {
   const base = path.resolve(directory), pending = path.join(base, 'pending'), done = path.join(base, 'done')
   const history = new Map(), versions = new Map(), reads = new Map(), watchers = []
-  let generation = 0, fullAt = null, reconcile = true, directories = null
+  let generation = 0, fullAt = null, fullStartedAt = null, reconcileAfter = RECONCILE_MS, reconcile = true, directories = null
   const metrics = { reads: 0, skipped: 0, selected: 0, entries: 0, full: true }
   const dirty = filename => {
     if (filename === null || filename === undefined) { reconcile = true; return }
@@ -311,8 +312,8 @@ function fileScanner(directory, incremental = true) {
       for (const name of history.keys()) if (!names.has(name)) history.delete(name)
       for (const name of versions.keys()) if (!names.has(name)) versions.delete(name)
       reads.clear()
-      const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= RECONCILE_MS
-      if (audit) reconcile = false
+      const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= reconcileAfter
+      if (audit) { reconcile = false; fullStartedAt = at }
       const selected = audit ? all : all.filter(name => {
         const entry = history.get(name)
         return !entry || !doneNames.has(name) || entry.version !== (versions.get(name) || 0) || entry.nextAt <= at
@@ -322,7 +323,10 @@ function fileScanner(directory, incremental = true) {
     },
     finishScan({ at }) {
       if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scan completion timestamp')
-      if (metrics.full) fullAt = at
+      if (metrics.full) {
+        fullAt = at
+        reconcileAfter = Math.min(MAX_RECONCILE_MS, Math.max(RECONCILE_MS, (at - fullStartedAt) * 4))
+      }
     },
     read({ key }) {
       const name = key + '.json', version = versions.get(name) || 0
@@ -346,7 +350,14 @@ function fileScanner(directory, incremental = true) {
         throw new ObservationQueueError('Evidence changed during acknowledgement')
       }
       const event = current.value, completion = current.completion
-      const result = buildReviewCandidate(base, event, completion, at)
+      let result
+      try { result = buildReviewCandidate(base, event, completion, at) }
+      catch (error) {
+        // Recheck failed derivations at the next audit or on file change.
+        // A verified terminal is never treated as executable work.
+        if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
+        throw error
+      }
       if (acknowledged === true) {
         const future = !['unknown', 'no_decision'].includes(completion.status) && !producerOwnedReview.has(event.kind)
           && Number.isSafeInteger(completion.next_review_at) && completion.next_review_at > at
