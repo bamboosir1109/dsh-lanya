@@ -1304,7 +1304,8 @@ async function bufferedGroupFixture(t) {
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
   h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
   // This fixture models an exchange already opened by a confirmed contribution.
-  h.bridge.lanyaPolicy.groupConversation(h.chat.chatId, await h.bridge.lanyaPolicy.trustedOwner(h.chat.chatId)).engaged = true
+  const adapter = h.bridge.lanyaPolicy
+  adapter.groupConversation(h.chat.chatId, await adapter.trustedOwner(h.chat.chatId)).engagedAt = adapter.now()
   const entered = defer(), release = defer()
   let first = true
   h.bridge.lanyaPolicy.groupBufferPause = async (ms, signal) => {
@@ -1380,7 +1381,7 @@ test('continuous group input is released within the bounded buffer without a mod
 test('native group queue time counts toward the buffer instead of adding a fresh two seconds',async t=>{
   const h=await nativeDriverFixture(t,{contextualGroupScope:'group:303'}),a=h.bridge.lanyaPolicy
   h.bridge.chats.delete(h.chat.chatId);h.chat.chatId='group:303';h.bridge.chats.set(h.chat.chatId,h.chat);h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
-  a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId)).engaged=true
+  a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId)).engagedAt=a.now()
   const entered=defer(),release=defer();let steps=0,pauses=0
   a.groupBufferPause=async ms=>{pauses+=ms;h.advance(ms)}
   h.agent.step=async()=>{if(++steps===1){entered.resolve();await release.promise}else await h.decide('idle');return {kind:'completed'}}
@@ -1480,7 +1481,10 @@ async function listeningGroup(t) {
   a.runtimeCapabilities = async () => ({schema:'dsh-runtime-capabilities/v1'})
   const receive = (text, extra={}) => h.receive(text,{message_type:'group',group_id:303,user_id:202,...extra})
   const mention = () => receive('question',{message:[{type:'at',data:{qq:'999'}},{type:'text',data:{text:'question'}}]})
-  const state = async () => a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId))
+  const state = async () => {
+    const group = a.groupConversation(h.chat.chatId, await a.trustedOwner(h.chat.chatId))
+    return { ...group, engaged: group.engagedAt !== null }
+  }
   let generation = 0
   const opportunity = async () => {
     const eventId = 'group-op-' + serial + '-' + ++generation
@@ -1559,6 +1563,53 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
   await h.decide('reply',{group_conversation:'end'}); await h.send('closing answer'); await h.end()
   assert.equal((await h.state()).engaged,false)
   await h.receive('talking to someone else'); assert.equal(h.pending.length,0)
+})
+
+test('quiet background checks do not keep an abandoned group exchange open', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+  await h.end()
+
+  h.advance(9 * 60_000)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  assert.equal((await h.state()).engaged, true)
+
+  h.advance(60_001)
+  await h.receive('new topic addressed to other group members')
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, false)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.match(h.prompt(), /"state":"listening"/)
+  assert.match(h.prompt(), /new topic addressed to other group members/)
+  await h.decide('idle')
+  await h.end()
+
+  await h.mention()
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+})
+
+test('a live follow-up can retain an existing group exchange beyond the original mention', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+  await h.end()
+  h.advance(9 * 60_000)
+  await h.receive('follow-up without a mention')
+  assert.equal(h.pending.length, 1)
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('idle', { group_conversation: 'continue' })).accepted, true)
+  await h.end()
+  h.advance(2 * 60_000)
+  await h.receive('another follow-up')
+  assert.equal(h.pending.length, 1)
 })
 
 test('only confirmed actual autonomous message delivery opens participation', async t => {
