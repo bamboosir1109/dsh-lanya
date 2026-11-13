@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -9,6 +10,32 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class InteractionHealthTests(unittest.TestCase):
+    def test_friend_ingress_comparison_counts_missing_events_and_keeps_bodies_private(self):
+        scope = 'private:101'
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        received = dict(schema='qq-interaction/v1', phase='received', at=6000,
+                        scope=digest(scope)[:16], input=digest(scope+'\0-12')[:24])
+        rows = [dict(time=6, sub_type='friend', sender={'user_id': 101}, message_id=-12),
+                dict(time=7, sub_type='friend', sender={'user_id': 101}, message_id=13,
+                     message='synthetic private body'),
+                dict(time=7, sub_type='friend', sender={'user_id': 999}, message_id=14),
+                dict(time=8, sub_type='group', sender={'user_id': 101}, message_id=15),
+                dict(time=4, sub_type='friend', sender={'user_id': 101}, message_id=16)]
+
+        def history(peer):
+            if peer == '102':
+                raise RuntimeError('synthetic unavailable')
+            self.assertEqual(peer, '101')
+            return [*rows, rows[1]]
+
+        result = module.compare_friend_ingress([scope, 'private:102', 'private:999', 'group:101'],
+            [json.dumps(received).encode(), b'{'], account='999', since_ms=5000, now_ms=9000, history=history)
+        self.assertEqual(result['status'], 'partial')
+        self.assertTrue(result['partial_log'])
+        self.assertEqual(result['counts'], {'history_checked': 1, 'history_unavailable': 1,
+            'friend_inputs': 2, 'matched_ingress': 1, 'without_ingress_evidence': 1})
+        self.assertNotIn('synthetic private body', json.dumps(result))
+
     def test_listening_is_terminal_and_buffer_metadata_does_not_hide_real_pending_work(self):
         def row(i,phase):
             return dict(schema='qq-interaction/v1',scope='c'*16,input=f'{i:024x}',phase=phase,at=1000)
