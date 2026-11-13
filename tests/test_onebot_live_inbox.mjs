@@ -1033,6 +1033,52 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
   })
 })
 
+test('verified reconnect stages a first friend message without creating chats for the friend list', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  backendFixture(h)
+  h.bridge.chats.delete(scope)
+  h.deps.policy.dmPolicy = 'allowlist'
+  h.deps.policy.allowFrom = ['101', '102']
+  h.agent.status = 'idle'
+  let opened = 0
+  const ensure = h.bridge.ensureChat.bind(h.bridge)
+  h.bridge.ensureChat = async requested => {
+    assert.equal(requested, scope)
+    if (h.bridge.chats.has(scope)) return ensure(requested)
+    opened++
+    h.bridge.chats.set(scope, h.chat)
+    return h.chat
+  }
+  const call = h.deps.connection.call
+  const historyPeers = []
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return [101, 102, 103, 999].map(user_id => ({ user_id }))
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    historyPeers.push(params.user_id)
+    if (params.user_id !== 101) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 411,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'first friend question' } }] }] }
+  }
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(90_000); a.noteConnectionStatus(true)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.deepEqual(historyPeers, [101, 102])
+  assert.equal(opened, 0)
+  assert.equal(await a.policy.snapshot('private:102'), null)
+  assert.equal((await a.policy.snapshot(scope)).current.replyReview.text, 'first friend question')
+  await a.reviewUnansweredInputs()
+  assert.equal(opened, 1)
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.decide('reply', { text: 'answer to first question' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 1)
+})
+
 test('verified reconnect starts friend history review without waiting for the periodic timer', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   backendFixture(h)

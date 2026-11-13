@@ -689,7 +689,7 @@ export class OneBotDecisionAdapter {
     // A new process cannot know when the previous process lost its socket.
     // Use a short lookback; policy and platform history still deduplicate it.
     const since = this.reconnectReview?.until === undefined ? this.reconnectReview?.since : undefined
-    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null }
+    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null, friends: new Set() }
     if (this.startRequested) this.checkReconnectHistory()
   }
 
@@ -717,9 +717,21 @@ export class OneBotDecisionAdapter {
       const ready = () => sameWindow() && this.now() - window.until <= FRIEND_RECONNECT_WINDOW_MS &&
         this.backendGuard.edge(connection, selected.stamp)
       if (!window.scopes) {
-        window.scopes = [...this.bridge.chats.keys()].filter(scope =>
+        const privateAllowed = scope =>
           /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
-            this.replyReviewAllowed(scope, scope.slice(8)))
+            this.replyReviewAllowed(scope, scope.slice(8))
+        window.scopes = [...this.bridge.chats.keys()].filter(privateAllowed)
+        try {
+          const list = this.intentPlanner.rows(await this.intentPlanner.readAction('get_friend_list', {}))
+          if (!ready()) return
+          for (const row of list) {
+            const scope = 'private:' + String(row?.user_id)
+            if (this.bridge.chats.has(scope) || !privateAllowed(scope)) continue
+            window.friends.add(scope)
+            if (window.friends.size === 24) break
+          }
+          window.scopes.push(...window.friends)
+        } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
         const group = this.config.contextualGroupScope
         if (this.contextualGroupEnabled(group) && this.bridge.chats.has(group) &&
             Number.isSafeInteger(Number(group.slice(6))) && this.groupReplyReviewAllowed(group)) {
@@ -736,15 +748,16 @@ export class OneBotDecisionAdapter {
           : (!group || this.contextualGroupEnabled(scope)) && this.replyReviewAllowed(scope, sender ?? peer)
         if (!allowed()) continue
         const chat = this.bridge.chats.get(scope)
+        const newFriend = !chat && window.friends.has(scope)
         const canStage = (sender) => ready() && this.bridge.chats.get(scope) === chat &&
-          this.replyReviewIdle(scope, epoch) && allowed(sender)
+          (newFriend ? !this.foregroundBusy(scope) : this.replyReviewIdle(scope, epoch)) && allowed(sender)
         if (!canStage()) {
-          if (chat) window.scopes.push(scope)
+          if (chat || newFriend) window.scopes.push(scope)
           continue
         }
         try {
           const state = await this.policy.snapshot(scope)
-          if (!state || state.mode !== 'open') continue
+          if (state ? state.mode !== 'open' : !newFriend) continue
           if (!canStage()) { window.scopes.push(scope); continue }
           const owner = await this.trustedOwner(scope)
           if (!canStage()) { window.scopes.push(scope); continue }
@@ -766,7 +779,7 @@ export class OneBotDecisionAdapter {
           // Only consider the newest unanswered tail during this reconnect.
           const lastOwnAt = Math.max(-1, ...rows.filter(row => String(row.sender?.user_id) === selected.expectedAccount)
             .map(row => row.time * 1000))
-          const known = new Set(state.seen.map(row => row.messageId))
+          const known = new Set(state?.seen.map(row => row.messageId))
           const lastKnownAt = Math.max(-1, ...rows.filter(row => known.has(String(row.message_id))).map(row => row.time * 1000))
           const receipts = new Map()
           for (const row of rows) {
@@ -786,7 +799,7 @@ export class OneBotDecisionAdapter {
           const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
           if (batch.length) {
             const sender = batch.at(-1).sender
-            const staged = await this.policy.stageReconnectedInput({ scope, sender, expectedRevision: state.revision,
+            const staged = await this.policy.stageReconnectedInput({ scope, sender, expectedRevision: state?.revision ?? 0,
               receipts: batch, owner, canStage: () => batch.every(receipt => canStage(receipt.sender)) })
             if (staged) for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')
             else if (ready() && !canStage(sender)) window.scopes.push(scope)

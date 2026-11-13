@@ -556,12 +556,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           text: receipt.text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/gu, '').slice(0, 1900).toWellFormed() })))
         : batch.map(receipt => receipt.text).join('\n\n')
       return transaction(state => {
-        const current = scopeState(state, scope), at = now()
-        if (!current || current.revision !== expectedRevision || current.mode !== 'open' ||
-            replyReviewable(current, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
-            current.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
+        const existing = scopeState(state, scope), at = now()
+        if ((!existing && (group || expectedRevision !== 0)) ||
+            (existing && (existing.revision !== expectedRevision || existing.mode !== 'open')) ||
+            replyReviewable(existing, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
+            existing?.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
               batch.some(receipt => item.messageId === receipt.messageId)) ||
-            current.deliveries.some(item => item.at >= batch[0].at || item.status === 'reserved') || canStage() !== true) return false
+            existing?.deliveries.some(item => item.at >= batch[0].at || item.status === 'reserved') || canStage() !== true) return false
+        const current = existing || scopeState(state, scope, true)
         if (!Number.isSafeInteger(current.revision + batch.length)) throw new PolicyStateError('Revision exhausted')
         for (const receipt of batch) {
           current.revision += 1
