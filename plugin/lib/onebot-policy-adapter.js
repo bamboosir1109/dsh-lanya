@@ -1321,7 +1321,10 @@ export class OneBotDecisionAdapter {
         ? (chat.chatId.startsWith('group:')
           ? '群聊自主机会：看大家这会儿在聊什么。即使没人艾特，有具体想法、能接上一个梗、想问一句或有合适的表情，也可以自然参与。先看话题和说话对象，聊过去了就安静。上次结果不明的操作别重做，从眼下的话题判断。\n'
           : '自主机会：有可继续的想法就做一个实际步骤，接着看一段视频、玩一小局、继续作品，或就近期共同话题自然聊一句。一个卡点没有新证据时换一件能做的事。用 qq_intent 或日记保存自己的进展；需要人工审批的长期记忆改动留给人工处理。选择 tool_action 时，把结果留在活动记录。以后真有想分享的事，再在合适的机会自然聊一句。\n') : '')
-      + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
+      + (record.binding.origin === 'live'
+        ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n'
+          + '看完对方发来的图，有话就直接回。除非对方明确要求收藏、标注或处理文件，实时聊天里省去表情入库、分类、排查失败和用终端重试。可收藏的图留给后台采集。对方只是发图或接梗时，一句自然回应或一张合适的表情就够。\n'
+        : '')
   }
 
   memeSelectionPolicy(exec) {

@@ -98,7 +98,8 @@ def summarize(raw, now_ms, since_ms=None):
         quiet = any(e.get('verdict') in ('idle', 'defer', 'silence') and not e.get('reason')
                     or e.get('verdict') == 'reply' and e.get('reason') == 'silent' for e in decisions)
         refused = 'delivery_refused' in phases or any(e.get('status') != 'sent' for e in delivery)
-        superseded = any(e['phase'] == 'blocked' and e.get('reason') == 'superseded_live_input' for e in events)
+        superseded = (any(e['phase'] == 'blocked' and e.get('reason') == 'superseded_live_input' for e in events)
+                      or any(e.get('verdict') == 'reply' and e.get('reason') == 'stale_revision' for e in decisions))
         status = ('delivery_uncertain' if any(e.get('status') == 'unknown' for e in delivery) else
                   'partial_transport' if refused and any(e.get('status') == 'sent' for e in delivery) else
                   'transport_accepted' if any(e.get('status') == 'sent' for e in delivery) else

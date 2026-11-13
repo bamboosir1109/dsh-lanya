@@ -68,6 +68,16 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(value['status'],'partial');self.assertEqual(value['invalid_records'],1)
         with self.assertRaises(ValueError):module.summarize(b' '*(module.LIMIT+1),40000)
 
+    def test_stale_reply_decision_is_superseded_and_preserves_transport_outcome(self):
+        def row(i, phase, **fields):
+            return dict(schema='qq-interaction/v1', scope='a'*16, input=f'{i:024x}', phase=phase, at=1000, **fields)
+        rows = [row(1, 'decision', verdict='reply', reason='stale_revision'), row(1, 'turn_end'),
+                row(2, 'decision', verdict='reply', reason='stale_revision'), row(2, 'delivery', status='unknown'),
+                row(3, 'decision', verdict='reply', reason='already_decided'), row(3, 'turn_end')]
+        result = module.summarize('\n'.join(json.dumps(item) for item in rows).encode(), 2000)
+        self.assertEqual(result['scopes'][0]['counts'], {'superseded_turn': 1, 'delivery_uncertain': 1,
+                                                       'ended_without_confirmed_transport': 1})
+
     def test_recent_window_preserves_pending_parent_and_exposes_real_stage_samples(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='d'*16,input=f'{i:024x}',phase=phase,at=at,**fields)

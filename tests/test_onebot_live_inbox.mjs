@@ -319,6 +319,8 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   assert.match(first, /"generation":1/)
   assert.match(first, /\\u003c\/trusted_runtime_capabilities\\u003e/)
   assert.match(first, /no QQ sending or silence-control authority/)
+  assert.match(first, /看完对方发来的图，有话就直接回。除非对方明确要求收藏、标注或处理文件/)
+  assert.match(first, /可收藏的图留给后台采集/)
   assert.equal(prompt.text({agent:{session:h.agent.session}}), '')
   assert.equal(prompt.text(), '')
   await h.receive('second short question')
@@ -1806,6 +1808,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic[\s\S]*即使没人艾特/)
+  assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   assert.equal((await h.decide('idle')).accepted, true)
   await h.end(); await completion
 })
