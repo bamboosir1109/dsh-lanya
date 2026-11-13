@@ -250,8 +250,30 @@ async function opportunity(h, change = {}) {
     control_allowed: false, payload: {}, ...change })
   await waitUntil(() => (h.bridge.chats.get(scope)?.messages.length || 0) === before + 1, 'cadence-bound observation')
   const chat = h.bridge.chats.get(scope), turn = h.start(chat)
-  return { chat, completion, end: () => h.end(chat, turn) }
+  return { chat, turn, completion, end: () => h.end(chat, turn) }
 }
+
+test('an internal activity keeps its summary in the session and completes without attempting QQ delivery', async t => {
+  const h = await setup(t)
+  await cadenceFixture(h)
+  const activity = await opportunity(h)
+  const adapter = h.bridge.lanyaPolicy
+  const record = adapter.state(activity.chat).active
+  const decision = await h.decide(activity.chat, 'tool_action')
+  assert.equal(decision.accepted, true)
+  const attempted = []
+  h.bridge.interim.onAssistantMessage = () => { attempted.push('assistant') }
+  h.bridge.interim.onTurnEnd = () => { attempted.push('flush') }
+  record.shadow.loopPending = 'draft from before the action'
+  h.assistant(activity.chat, activity.turn, 'internal activity summary')
+  assert.equal(record.shadow.loopPending, null)
+  record.shadow.loopPending = 'pending flush'
+  await activity.end()
+  assert.equal(record.shadow.loopPending, null)
+  assert.equal((await activity.completion).status, 'decided')
+  assert.deepEqual(attempted, [])
+  assert.deepEqual(h.calls, [])
+})
 
 test('primary autonomous reviews cap eight hours and fill omission using one trusted bound cadence', async t => {
   const h = await setup(t), clock = await cadenceFixture(h)

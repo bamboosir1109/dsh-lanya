@@ -1044,7 +1044,7 @@ export class OneBotDecisionAdapter {
       + 'When sharing something you made or did, write a natural QQ message about the result. Omit tool receipts, message IDs, revision counters and local Markdown links. Use the actual image tool for a picture. For your own image choose expression:"text_meme"; send no caption when the image says enough, or add only a useful detail. Use expression:"meme" for an image-only reaction from the meme library.\n'
       + '中文聊天直接接对方的话。没有真实的后续动作，就省掉「我再去看一下」「我再确认一下」这类收尾。知道哪一点就说哪一点，有具体疑问再问。分享作品时挑一个有意思的细节；图片已经说清就收住。遇到真要讲步骤或解释的事，完整讲清，句数随内容。\n'
       + (record.binding.observationKind === 'activity.opportunity' && localOpportunity(record.binding)
-        ? '自主机会：有可继续的想法就做一个实际步骤，接着看一段视频、玩一小局、继续作品，或就近期共同话题自然聊一句。一个卡点没有新证据时换一件能做的事。用 qq_intent 或日记保存自己的进展；需要人工审批的长期记忆改动留给人工处理。分享一件真想说的事即可，不用汇报过程、收据、进度和下一步。群里有话可接才参与，已有休息与会话节奏继续生效。\n' : '')
+        ? '自主机会：有可继续的想法就做一个实际步骤，接着看一段视频、玩一小局、继续作品，或就近期共同话题自然聊一句。一个卡点没有新证据时换一件能做的事。用 qq_intent 或日记保存自己的进展；需要人工审批的长期记忆改动留给人工处理。选择 tool_action 时，把结果留在活动记录。以后真有想分享的事，再在合适的机会自然聊一句。群里有话可接才参与，已有休息与会话节奏继续生效。\n' : '')
       + (record.binding.origin === 'live' ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n' : '')
   }
 
@@ -2084,9 +2084,10 @@ export class OneBotDecisionAdapter {
           !content.some(item => item.type === 'tool-call')) record.undecidedDraft = true
       return
     }
-    // The native session keeps the assistant message. A chosen image-only
-    // response must not turn its narration or tool receipt into a QQ bubble.
-    if (memeOnlyReply(record) || publicationOnlyReply(record) || record.inlineTextAttempted) { record.shadow.loopPending = null; return }
+    // The native session keeps the assistant message. An internal action or
+    // a reply handled by its own tool has no separate QQ text to stream.
+    if (record.decision?.verdict === 'tool_action' || memeOnlyReply(record) ||
+        publicationOnlyReply(record) || record.inlineTextAttempted) { record.shadow.loopPending = null; return }
     const envelope = this.envelope(record, identity('assistant', chat.sessionId, event.data.turn, event.data.message.id))
     this.runEnvelope(envelope, () => this.bridge.interim.onAssistantMessage(scope, record.shadow, event.data.message))
   }
@@ -2108,7 +2109,8 @@ export class OneBotDecisionAdapter {
     }
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
-    if (record.supersededIdleWake || memeOnlyReply(record) || publicationOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null
+    if (record.supersededIdleWake || record.decision?.verdict === 'tool_action' || memeOnlyReply(record) ||
+        publicationOnlyReply(record) || record.inlineTextAttempted) record.shadow.loopPending = null
     else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     const settled = (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
