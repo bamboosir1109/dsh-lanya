@@ -1015,24 +1015,33 @@ export class OneBotDecisionAdapter {
     this.inboundAdmissions.set(scope, current)
     try {
       await prior
-      if (!Number.isSafeInteger(context.arrival) || context.arrival <= (this.latestInbound.get(scope) || 0)) {
+      if (!Number.isSafeInteger(context.arrival)) {
         return { accepted: false, reason: 'superseded_before_admission' }
       }
+    const superseded = context.arrival <= (this.latestInbound.get(scope) || 0)
     let group, addressed = false
     if (this.contextualGroupEnabled(scope)) {
       group = this.groupConversation(scope, await this.trustedOwner(scope))
       addressed = this.groupAddressed(inbound, address)
-      group.recent.push({ speaker: inbound.userId, text: String(inbound.text || '').slice(0, 1600), at: context.arrivedAt,
-        images: (inbound.media || []).map(ref => this.groupInboundImages.get(ref)).filter(Boolean).slice(0, 2),
-        at_targets: address?.explicit_at_ids?.slice(0, 8) ?? [],
-        quoted_speaker: address?.reply_status === 'available' ? address.quoted_author_id : null,
-        addressed_to_bot: addressed })
-      group.recent = group.recent.slice(-12)
-      if (!addressed && group.engagedAt === null) {
+      if (!group.recent.some(row => row.messageId === inbound.messageId)) {
+        group.recent.push({ messageId: inbound.messageId, arrival: context.arrival,
+          speaker: inbound.userId, text: String(inbound.text || '').slice(0, 1600), at: context.arrivedAt,
+          images: (inbound.media || []).map(ref => this.groupInboundImages.get(ref)).filter(Boolean).slice(0, 2),
+          at_targets: address?.explicit_at_ids?.slice(0, 8) ?? [],
+          quoted_speaker: address?.reply_status === 'available' ? address.quoted_author_id : null,
+          addressed_to_bot: addressed })
+        group.recent.sort((a, b) => a.arrival - b.arrival)
+        group.recent = group.recent.slice(-12)
+      }
+      if (!superseded && !addressed && group.engagedAt === null) {
         context.groupListening = true
         this.diagnose(scope, inbound.messageId, 'group_listening', { reason: 'await_autonomous_join' })
         return { accepted: false, reason: 'await_autonomous_join' }
       }
+    }
+    if (superseded) {
+      this.noteInboundDisposition(inbound, 'superseded_before_admission')
+      return { accepted: false, reason: 'superseded_before_admission' }
     }
     // Parsed text also contains synthetic [引用]/[图片] placeholders. Those
     // are not a new human control request: inspect only current text segments.
@@ -2679,7 +2688,7 @@ export class OneBotDecisionAdapter {
     const group = this.groupConversation(scope, owner, false)
     const now = this.now()
     const recent = this.recentGroupContext(scope, owner, now)
-      .map(({ images, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
+      .map(({ images, messageId, arrival, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
         ...(canViewImage && images.length ? { image_refs: images.map(image => image.id) } : {}) }))
     return '\n<observed_group_context>\n' + JSON.stringify({
       state: group && group.engagedAt !== null ? 'engaged' : 'listening', recent,

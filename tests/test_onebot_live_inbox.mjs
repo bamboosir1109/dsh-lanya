@@ -1741,6 +1741,31 @@ test('a group opportunity can inspect one freshly received image without startin
   await h.end()
 })
 
+test('a slow group image stays in arrival order after newer text is admitted', async t => {
+  const h = await listeningGroup(t, { mislabeledImage: true })
+  const entered = defer(), release = defer(), resolve = h.deps.media.resolve
+  h.deps.media.resolve = async (...args) => {
+    entered.resolve(); await release.promise; return resolve(...args)
+  }
+  await h.mention(); h.start(); await h.preStep()
+  const old = h.receive('earlier image', { message_id: 72001,
+    message: [{ type: 'image', data: { file: 'synthetic-hash', sub_type: '1' } }] })
+  await entered.promise
+  try {
+    await h.receive('later text', { message_id: 72002 })
+    assert.equal(h.pending.length, 1)
+  } finally { release.resolve(); await old }
+  const state = await h.state()
+  assert.deepEqual(Array.from(state.recent, row => row.text), ['@999question', '[图片]', 'later text'])
+  assert.equal(state.recent[1].images.length, 1)
+  assert.equal(h.pending.length, 1)
+  assert.equal(h.bridge.lanyaPolicy.state(h.chat).pending.get(h.pending[0].id).binding.messageId, '72002')
+  const block = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(block.recent.map(row => row.text), ['@999question', '[图片]', 'later text'])
+  assert.ok(block.recent.every(row => !('messageId' in row) && !('arrival' in row)))
+  await h.end()
+})
+
 test('actual personal mention opens the exchange, ordinary follow-ups need no new mention and end closes it', async t => {
   const h=await listeningGroup(t)
   await h.receive('before'); assert.equal(h.pending.length,0)
