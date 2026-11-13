@@ -2072,7 +2072,7 @@ test('other targets, at-all, fake quote text and quote of another person never o
   assert.equal(h.pending.length,0);assert.equal((await h.state()).engaged,false)
 })
 
-test('an explicit mention to another member stays in context without replacing an engaged group reply', async t => {
+test('a mention or verified quote to another member stays in context without replacing an engaged group reply', async t => {
   const h = await listeningGroup(t)
   await h.mention()
   assert.equal(h.pending.length, 1)
@@ -2080,16 +2080,28 @@ test('an explicit mention to another member stays in context without replacing a
   await h.receive('side question', { message: [
     { type: 'at', data: { qq: '777' } }, { type: 'text', data: { text: 'side question' } },
   ] })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_msg'
+    ? { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 777 },
+      message: [{ type: 'text', data: { text: 'historical message' } }] }
+    : call(action, params)
+  const quote = { type: 'reply', data: { id: '77' } }
+  await h.receive('side reply', { message: [quote, { type: 'text', data: { text: 'side reply' } }] })
   const after = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
   assert.equal(after.revision, before.revision)
   assert.equal(h.pending.length, 1)
   assert.equal((await h.state()).engaged, true)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /side question/)
+  assert.match(h.prompt(), /side reply/)
   assert.equal((await h.decide('reply', { text: 'answer to my question' })).sent, true)
   await h.end()
   await h.receive('ordinary follow-up')
   assert.equal(h.pending.length, 1)
+  await h.receive('question for bot about the quoted message', { message: [quote,
+    { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'question for bot about the quoted message' } },
+  ] })
+  assert.ok(h.pending.some(message => JSON.stringify(message).includes('question for bot about the quoted message')))
 })
 
 test('verified same-group reply to bot opens participation without a fabricated mention',async t=>{

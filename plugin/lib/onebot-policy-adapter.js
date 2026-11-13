@@ -1099,7 +1099,9 @@ export class OneBotDecisionAdapter {
         group.recent = group.recent.slice(-12)
       }
       const addressedToOthers = inbound.segments?.some(segment => segment?.type === 'at' &&
-        /^[1-9][0-9]*$/.test(String(segment.data?.qq))) === true
+        /^[1-9][0-9]*$/.test(String(segment.data?.qq))) === true ||
+        (address?.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
+          address.reply_status === 'available' && address.reply_to === 'other')
       if (!superseded && !addressed && (group.engagedAt === null || addressedToOthers)) {
         context.groupListening = true
         const reason = addressedToOthers ? 'addressed_to_other_member' : 'await_autonomous_join'
