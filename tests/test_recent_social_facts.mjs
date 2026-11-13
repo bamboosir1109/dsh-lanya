@@ -123,6 +123,7 @@ test('partial histories, unknown endings, mixed origins and preset boundaries re
 async function context(session, scope = 'private:101') {
   let snapshots = 0
   const adapter = Object.create(OneBotDecisionAdapter.prototype)
+  adapter.config = {}
   const agent = { session }
   adapter.bridge = { chats: new Map([[scope, { agent }], ['group:202', { get agent() { throw new Error('foreign scope read') } }]]),
     effectiveCwd: value => { assert.equal(value, scope); return process.cwd() },

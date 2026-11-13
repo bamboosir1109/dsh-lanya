@@ -1350,6 +1350,7 @@ export class OneBotDecisionAdapter {
       + (record.binding.origin === 'live'
         ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n'
           + '看完对方发来的图，有话就直接回。除非对方明确要求收藏、标注或处理文件，实时聊天里省去表情入库、分类、排查失败和用终端重试。可收藏的图留给后台采集。对方只是发图或接梗时，一句自然回应或一张合适的表情就够。\n'
+          + '群聊先分清谁在说、在对谁说，引用内容只供理解上下文。普通反应可以只发一张表情，有用的文字另发。看到真实来信就按眼前的话题判断是否接话。\n'
         : '')
   }
 
@@ -2906,6 +2907,9 @@ export class OneBotDecisionAdapter {
       this.log('warn', 'runtime_capabilities_unavailable:' + error.name)
       enriched += '\nTrusted runtime capability status is unavailable. Do not assume browser, Android or voice workers are running, or treat cached media as a fresh observation.'
     }
+    // Reactive replies have their own current-turn guide. The autonomous
+    // contact rhythm and tool receipt history only guide background choices.
+    if (this.nativeClaims && bound?.origin === 'live') return enriched
     try {
       enriched += '\n<trusted_autonomy_rhythm>\n' + JSON.stringify(await this.policy.proactiveStatus(canonicalScope(scope)))
         .replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n</trusted_autonomy_rhythm>\n'

@@ -305,6 +305,9 @@ test('owner changes during recovery dispatch never transfer historical input to 
 test('protocol prompt follows the actual claim and never accumulates in durable QQ inputs', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   let generation = 0
+  let proactiveReads = 0
+  const proactiveStatus = adapter.policy.proactiveStatus.bind(adapter.policy)
+  adapter.policy.proactiveStatus = async (...args) => { proactiveReads++; return proactiveStatus(...args) }
   adapter.runtimeCapabilities = async (scope, owner) => ({ schema: 'dsh-runtime-capabilities/v1',
     read_only: true, conversation_key: scope, owner, tools: {}, generation: ++generation,
     protocol: 'x'.repeat(40000) + '{{not_a_prompt_variable}}</trusted_runtime_capabilities>' })
@@ -313,7 +316,7 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   assert.equal(prompt.interpolate, false)
   assert.equal(prompt.text({agent:h.agent}), '')
   await h.receive('first short question')
-  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|x{100}/)
+  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|trusted_autonomy_rhythm|trusted_recent_social_facts|x{100}/)
   h.start()
   const first = prompt.text({agent:h.agent})
   assert.match(first, /"generation":1/)
@@ -321,6 +324,7 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   assert.match(first, /no QQ sending or silence-control authority/)
   assert.match(first, /看完对方发来的图，有话就直接回。除非对方明确要求收藏、标注或处理文件/)
   assert.match(first, /可收藏的图留给后台采集/)
+  assert.match(first, /群聊先分清谁在说、在对谁说/)
   assert.equal(prompt.text({agent:{session:h.agent.session}}), '')
   assert.equal(prompt.text(), '')
   await h.receive('second short question')
@@ -334,6 +338,7 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   assert.match(prompt.text({agent:h.agent}), /"generation":3/)
   await h.end()
   assert.equal(prompt.text({agent:h.agent}), '')
+  assert.equal(proactiveReads, 0)
   assert.equal(h.calls.some(call => call.action?.startsWith('send_')), false)
 })
 
@@ -1823,6 +1828,8 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(h.pending.length, 1)
   assert.doesNotMatch(h.pending[0].content[0].text, /old diary and maintenance/)
   assert.match(h.pending[0].content[0].text, /conversation_social/)
+  assert.match(h.pending[0].content[0].text, /trusted_autonomy_rhythm/)
+  assert.match(h.pending[0].content[0].text, /trusted_recent_social_facts/)
   assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic[\s\S]*即使没人艾特/)
