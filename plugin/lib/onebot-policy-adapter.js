@@ -754,8 +754,10 @@ export class OneBotDecisionAdapter {
           if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key]) ||
               !Array.isArray(history?.messages) || history.messages.length > 12) continue
           if (!canStage()) { window.scopes.push(scope); continue }
-          const since = Math.max(window.since, this.now() - FRIEND_RECONNECT_WINDOW_MS)
           const now = this.now()
+          // OneBot history rounds to seconds. Include the bucket containing
+          // the disconnect, while keeping the absolute lookback and dedup.
+          const since = Math.max(Math.floor(window.since / 1000) * 1000, now - FRIEND_RECONNECT_WINDOW_MS)
           const recent = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
             row.time * 1000 <= now && (!group || row.message_type === 'group' && String(row.group_id) === peer))
           if (group) this.restoreRecentGroupText(scope, owner, recent, now, selected.expectedAccount)
