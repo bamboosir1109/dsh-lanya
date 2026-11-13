@@ -1741,6 +1741,37 @@ test('verified same-group reply to bot opens participation without a fabricated 
   assert.match(JSON.stringify(h.pending),/verified_reply/)
 })
 
+test('a real group contact stays eligible for recovery when merged with an ordinary follow-up', async t => {
+  for (const contact of ['mention', 'verified reply']) await t.test(contact, async t => {
+    const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+    if (contact === 'mention') await h.mention()
+    else {
+      const call = h.deps.connection.call
+      h.deps.connection.call = async () => ({ message_id: 77, message_type: 'group', group_id: 303,
+        sender: { user_id: 999 }, message: [{ type: 'text', data: { text: 'prior bot answer' } }] })
+      try {
+        await h.receive('question', { message: [{ type: 'reply', data: { id: '77' } }, { type: 'text', data: { text: 'question' } }] })
+      } finally { h.deps.connection.call = call }
+    }
+    await h.receive('ordinary follow-up')
+    await Promise.all([...adapter.replyReviewWrites])
+    assert.equal(h.pending.length, 1)
+    const scope = h.chat.chatId, current = (await adapter.policy.snapshot(scope)).current
+    assert.match(current.replyReview?.text || '', /question[\s\S]*ordinary follow-up/)
+    assert.equal(adapter.state(h.chat).pending.get(h.pending[0].id).directGroupContact, true)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+    h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a single useful answer' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('a delayed old end decision cannot close a newer direct mention',async t=>{
   const h=await listeningGroup(t),a=h.bridge.lanyaPolicy,entered=defer(),release=defer()
   await h.mention();h.start();await h.preStep()
