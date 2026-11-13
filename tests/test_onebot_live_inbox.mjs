@@ -237,7 +237,7 @@ test('owner changes during recovery dispatch never transfer historical input to 
   let reads = 0
   h.bridge.resolvePresetId = async () => ++reads === 1 ? 'fixture' : 'different'
   const before = h.followups.length
-  await assert.rejects(adapter.reviewUnansweredInputs(), /owner changed/)
+  await adapter.reviewUnansweredInputs()
   assert.equal(h.followups.length, before)
 })
 
@@ -889,6 +889,42 @@ function backendFixture(h, provider='snowluma') {
   }
   return {select,reads,setApp:value=>{app=value}}
 }
+
+test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const backend = backendFixture(h)
+  backend.setApp('NapCat.Onebot')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  h.deps.connection.socket = {}
+  backend.setApp('SnowLuma')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  backend.select('napcat', 2)
+  assert.equal((await h.preStep()).reason, 'backend_selection_changed')
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('reply review rechecks access and backend connection after queue preparation', async t => {
+  for (const change of ['access', 'socket']) await t.test(change, async t => {
+    const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+    backendFixture(h)
+    const enrich = adapter.enrichContext.bind(adapter)
+    adapter.enrichContext = async (...args) => {
+      const result = await enrich(...args)
+      if (change === 'access') h.deps.policy.dmPolicy = 'disabled'
+      else h.deps.connection.socket = {}
+      return result
+    }
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  })
+})
 
 test('native heartbeat reports actual loaded transport and quote binding, not configured file names', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy; backendFixture(h)
