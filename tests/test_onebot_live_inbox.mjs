@@ -488,6 +488,36 @@ test('a stale private reply survives an ended turn while the successor is still 
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('private burst carries a partially sent inline reply into the successor context', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('original question with two parts')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const entered = defer(), resume = defer(), original = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async (...args) => {
+    entered.resolve()
+    await resume.promise
+    return original(...args)
+  }
+  let incoming
+  h.deps.onTransmit = async action => {
+    if (!/^send_/.test(action)) return
+    assert.equal(incoming, undefined)
+    incoming = h.receive('later private question')
+    await entered.promise
+  }
+  try {
+    await h.decide('reply', { text: 'first reply bubble\nsecond reply bubble' })
+  } catch (error) {
+    assert.equal(error.reason, 'stale_revision')
+  }
+  assert.ok(incoming)
+  await h.end()
+  resume.resolve()
+  await incoming
+  assert.match(h.pending[0].content[0].text, /only an opening portion[\s\S]*original question with two parts[\s\S]*later private question/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('memory approvals for observations return promptly while live approvals keep their normal handler', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   await h.receive('current live question')

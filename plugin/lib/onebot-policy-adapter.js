@@ -178,6 +178,7 @@ function androidCheckoutIntent(text) {
   return maxTotalFen > 0 ? Object.freeze({ action: 'begin', app, maxTotalFen }) : null
 }
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
+const interruptedInlineReply = record => record?.inlineTextStale === true && !record.outcomes.includes('unknown')
 const publicationOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'publication'
 const SOCIAL_EVENT_LIMIT = 4096, SOCIAL_TURN_LIMIT = 12
 const SOCIAL_TOOLS = new Set(['qq_decide', 'send_meme', 'qq_send_image'])
@@ -947,7 +948,8 @@ export class OneBotDecisionAdapter {
       ? active.claimedInput : null
     const stale = state.unansweredPrivate
     if (stale && this.now() > stale.expiresAt) state.unansweredPrivate = null
-    const claimed = unacknowledged || state.unansweredPrivate?.entry
+    const interrupted = !active?.ended && !active?.claimConflict && interruptedInlineReply(active)
+    const claimed = unacknowledged || (interrupted ? active.claimedInput : null) || state.unansweredPrivate?.entry
     // The current private turn may be interrupted before its first output.
     // Carry its question into the successor as context, without its ticket.
     if (binding.origin === 'live' && !binding.recoveryRevision && binding.scope.startsWith('private:') &&
@@ -955,7 +957,12 @@ export class OneBotDecisionAdapter {
         claimed.role === role && samePrivateRoute(claimed.binding) &&
         ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => claimed.binding.owner[key] === binding.owner[key]) &&
         claimed.binding.revision < binding.revision) {
-      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, claimed.originalText] })
+      const partial = (interrupted && active.claimedInput === claimed && active.inlineTextReceiptCount > 0) ||
+        (stale?.entry === claimed && stale.partial)
+      const earlier = partial ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
+        + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + claimed.originalText
+        : claimed.originalText
+      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, earlier] })
     }
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
     const history = [...new Set(chunks.sort((a, b) => a.revision - b.revision).flatMap(entry => entry.texts))]
@@ -2065,12 +2072,14 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     record.ended = true
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
-    if (scope.startsWith('private:') && record.replySuperseded && record.claimedInput?.binding.origin === 'live' &&
-        !record.claimConflict && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length &&
+    const supersededReply = record.replySuperseded && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
+    if (scope.startsWith('private:') && (supersededReply || interruptedInlineReply(record)) &&
+        record.claimedInput?.binding.origin === 'live' && !record.claimConflict &&
         state.liveRevision === record.binding.revision) {
       // Admission can invalidate the reply before the successor finishes
       // enrichment. Keep the older question until that input is actually queued.
-      state.unansweredPrivate = { entry: record.claimedInput, expiresAt: this.now() + 60_000 }
+      state.unansweredPrivate = { entry: record.claimedInput, expiresAt: this.now() + 60_000,
+        partial: interruptedInlineReply(record) && record.inlineTextReceiptCount > 0 }
     }
     if (state.active === record) state.active = null
     const envelope = this.envelope(record, identity('turn-end', chat.sessionId, event.data.turn))
@@ -2294,6 +2303,8 @@ export class OneBotDecisionAdapter {
       if (envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
       throw error
     }
+    if (result.status === 'suppressed' && result.reason === 'stale_revision' && envelope.record?.inlineTextAttempted &&
+        envelope.operationId === envelope.record.inlineTextOperationId) envelope.record.inlineTextStale = true
     envelope.record?.outcomes.push(result.status)
     if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId, 'delivery', { status: result.status, reason: result.reason })
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
