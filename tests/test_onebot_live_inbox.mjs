@@ -181,6 +181,21 @@ test('periodic reply review queues a bounded one-shot current-model review and r
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('an unanswered direct message defers an autonomous turn without failure backoff', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const scope = h.chat.chatId, owner = await adapter.trustedOwner(scope)
+  const before = await adapter.policy.snapshot(scope)
+  const event = { version: 1, event_id: 'fixture-autonomous-after-reply', scope, kind: 'activity.opportunity',
+    producer: 'mind', created_at: adapter.now(), payload: {}, workspace_key: owner.workspace_key,
+    agent_key: owner.agent_key, origin: 'observation', control_allowed: false }
+  await assert.rejects(adapter.dispatchObservationOnce(event), {
+    name: 'ObservationForegroundBusy', message: /unanswered_live_input/,
+  })
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.snapshot(scope)).revision, before.revision)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+})
+
 test('reply review never interrupts busy work, pending input, disconnect or changed permissions', async t => {
   for (const mode of ['busy', 'pending-step', 'disconnected', 'acl', 'owner', 'stopped']) await t.test(mode, async t => {
     const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy, before = h.followups.length

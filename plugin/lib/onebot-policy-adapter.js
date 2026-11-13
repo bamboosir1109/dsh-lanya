@@ -2663,7 +2663,9 @@ export class OneBotDecisionAdapter {
         status: sends.some((item) => ['reserved', 'unknown'].includes(item.status)) ? 'unknown'
           : sends.some((item) => item.status === 'sent') ? 'sent' : 'decided' }
     }
-    if (observed.reason === 'foreground_busy') throw new ObservationForegroundBusy()
+    if (['foreground_busy', 'unanswered_live_input'].includes(observed.reason)) {
+      throw new ObservationForegroundBusy(observed.reason)
+    }
     if (!observed.accepted) throw new Error('Observation could not be safely dispatched: ' + observed.reason)
     let autonomousCadence
     const groupOpportunity = event.scope.startsWith('group:') && event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)

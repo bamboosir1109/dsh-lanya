@@ -14,7 +14,10 @@ export class ObservationQueueError extends Error {
   constructor(message) { super(message); this.name = 'ObservationQueueError' }
 }
 export class ObservationForegroundBusy extends ObservationQueueError {
-  constructor() { super('Observation could not be safely dispatched: foreground_busy'); this.name = 'ObservationForegroundBusy' }
+  constructor(reason = 'foreground_busy') {
+    super('Observation could not be safely dispatched: ' + reason)
+    this.name = 'ObservationForegroundBusy'
+  }
 }
 class MissingLegacyObservation extends ObservationQueueError {}
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
