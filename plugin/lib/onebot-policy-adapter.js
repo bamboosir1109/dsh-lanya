@@ -783,7 +783,11 @@ export class OneBotDecisionAdapter {
             if (staged) for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')
             else if (ready() && !canStage(sender)) window.scopes.push(scope)
           }
-        } catch (error) { this.log('warn', 'reconnect_history_scope_unavailable:' + error.name) }
+        } catch (error) {
+          // Keep transient lookup failures eligible for the next recovery pass.
+          if (ready()) window.scopes.push(scope)
+          this.log('warn', 'reconnect_history_scope_unavailable:' + error.name)
+        }
       }
       if (ready() && !window.scopes.length) this.reconnectReview = null
     })()

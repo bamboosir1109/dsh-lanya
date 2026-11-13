@@ -952,7 +952,8 @@ function backendFixture(h, provider='snowluma') {
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'busy then idle', 'busy through expiry', 'live arrived', 'later own message', 'socket changed']) await t.test(scenario, async t => {
+  for (const scenario of ['new', 'busy then idle', 'busy through expiry', 'read retries', 'read fails until expiry',
+    'live arrived', 'later own message', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
     const warnings = []
     adapter.log = (_level, message) => warnings.push(message)
@@ -975,6 +976,9 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       if (action !== 'get_friend_msg_history') return call(action, params)
       historyReads++
       assert.deepEqual({ ...params }, { user_id: 101, count: 12 })
+      if (scenario === 'read fails until expiry' || scenario === 'read retries' && historyReads === 1) {
+        throw new Error('Temporary history failure')
+      }
       if (scenario === 'live arrived') await h.receive('a newer actual live message')
       if (scenario === 'socket changed') h.deps.connection.socket = {}
       const rows = [row(at - 2, 10, 'before disconnect'), row(at, 11, 'first missed question'),
@@ -992,10 +996,18 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       h.agent.status = 'idle'
       h.advance(expires ? 180_001 : 30_000)
     }
+    if (['read retries', 'read fails until expiry'].includes(scenario)) {
+      await adapter.recoverReconnectHistory()
+      assert.equal(historyReads, 1, 'a failed history read is attempted only once per pass')
+      assert.equal(h.pending.length, 0)
+      assert.deepEqual(Array.from(adapter.reconnectReview.scopes), [h.chat.chatId])
+      h.advance(scenario === 'read retries' ? 30_000 : 180_001)
+    }
     await adapter.recoverReconnectHistory()
     const state = await adapter.policy.snapshot(h.chat.chatId)
-    assert.equal(historyReads, expires ? 0 : 1)
-    if (!['new', 'busy then idle'].includes(scenario)) {
+    const expectedReads = expires ? 0 : scenario === 'read retries' ? 2 : 1
+    assert.equal(historyReads, expectedReads)
+    if (!['new', 'busy then idle', 'read retries'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return
@@ -1014,7 +1026,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     await h.end()
     await adapter.recoverReconnectHistory()
     await adapter.reviewUnansweredInputs()
-    assert.equal(historyReads, 1)
+    assert.equal(historyReads, expectedReads)
     assert.equal(h.pending.length, 0)
     assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   })
@@ -1817,7 +1829,7 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
 })
 
 test('reconnect recovers only a real configured-group mention as historical member input', async t => {
-  for (const scenario of ['missed mention', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
+  for (const scenario of ['missed mention', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
@@ -1840,6 +1852,7 @@ test('reconnect recovers only a real configured-group mention as historical memb
       if (action !== 'get_group_msg_history') return call(action, params)
       reads++
       assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      if (scenario === 'read retries' && reads === 1) throw new Error('Temporary history failure')
       const rows = [row(0, 91, 'missed actual question', '999'), row(1, 92, '@999 only in text'),
         row(2, 93, 'whole group', 'all'), row(3, 94, 'other recipient', '204'),
         row(4, 95, 'different group', '999', { group_id: 404 }), row(5, 96, '/reset', '999'),
@@ -1851,9 +1864,15 @@ test('reconnect recovers only a real configured-group mention as historical memb
     if (scenario === 'group disabled') h.deps.policy.groupPolicy = 'disabled'
     a.startRequested = true
     await a.recoverReconnectHistory()
+    if (scenario === 'read retries') {
+      assert.equal(reads, 1)
+      assert.equal(h.pending.length, 0)
+      h.advance(30_000)
+      await a.recoverReconnectHistory()
+    }
     const state = await a.policy.snapshot(scope)
-    assert.equal(reads, scenario === 'group disabled' ? 0 : 1)
-    if (scenario !== 'missed mention') {
+    assert.equal(reads, scenario === 'group disabled' ? 0 : scenario === 'read retries' ? 2 : 1)
+    if (['later bot reply', 'group disabled'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '91'))
       return
     }
