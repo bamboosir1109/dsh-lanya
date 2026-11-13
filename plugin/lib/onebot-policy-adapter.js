@@ -1098,10 +1098,13 @@ export class OneBotDecisionAdapter {
         group.recent.sort((a, b) => a.arrival - b.arrival)
         group.recent = group.recent.slice(-12)
       }
-      if (!superseded && !addressed && group.engagedAt === null) {
+      const addressedToOthers = inbound.segments?.some(segment => segment?.type === 'at' &&
+        /^[1-9][0-9]*$/.test(String(segment.data?.qq))) === true
+      if (!superseded && !addressed && (group.engagedAt === null || addressedToOthers)) {
         context.groupListening = true
-        this.diagnose(scope, inbound.messageId, 'group_listening', { reason: 'await_autonomous_join' })
-        return { accepted: false, reason: 'await_autonomous_join' }
+        const reason = addressedToOthers ? 'addressed_to_other_member' : 'await_autonomous_join'
+        this.diagnose(scope, inbound.messageId, 'group_listening', { reason })
+        return { accepted: false, reason }
       }
     }
     if (superseded) {

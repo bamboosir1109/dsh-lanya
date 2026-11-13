@@ -2072,6 +2072,26 @@ test('other targets, at-all, fake quote text and quote of another person never o
   assert.equal(h.pending.length,0);assert.equal((await h.state()).engaged,false)
 })
 
+test('an explicit mention to another member stays in context without replacing an engaged group reply', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  assert.equal(h.pending.length, 1)
+  const before = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
+  await h.receive('side question', { message: [
+    { type: 'at', data: { qq: '777' } }, { type: 'text', data: { text: 'side question' } },
+  ] })
+  const after = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
+  assert.equal(after.revision, before.revision)
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /side question/)
+  assert.equal((await h.decide('reply', { text: 'answer to my question' })).sent, true)
+  await h.end()
+  await h.receive('ordinary follow-up')
+  assert.equal(h.pending.length, 1)
+})
+
 test('verified same-group reply to bot opens participation without a fabricated mention',async t=>{
   const h=await listeningGroup(t)
   h.deps.connection.call=async()=>({message_id:77,message_type:'group',group_id:303,sender:{user_id:999},message:[{type:'text',data:{text:'prior bot answer'}}]})
