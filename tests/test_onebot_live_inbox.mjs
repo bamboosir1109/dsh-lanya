@@ -2557,9 +2557,9 @@ test('real decision after a terminal reminder sends fresh inline text without a 
   assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
 })
 
-test('the next private message or group mention retains an unanswered question after an unsent draft', async t => {
-  for (const mode of ['private draft', 'group mention', 'explicit idle', 'expired handoff']) await t.test(mode, async t => {
-    const group = mode === 'group mention', retain = group || mode === 'private draft'
+test('the next private message or group mention retains an unanswered question after a completed turn without a decision', async t => {
+  for (const mode of ['private draft', 'group mention', 'no draft', 'group no draft', 'explicit idle', 'expired handoff']) await t.test(mode, async t => {
+    const group = mode.startsWith('group '), retain = !['explicit idle', 'expired handoff'].includes(mode)
     const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
     const adapter = h.bridge.lanyaPolicy
     if (group) {
@@ -2575,7 +2575,7 @@ test('the next private message or group mention retains an unanswered question a
       const record = adapter.state(h.chat).active
       if (record.turn === 1) {
         if (mode === 'explicit idle') assert.equal((await h.decide('idle')).accepted, true)
-        h.agent.session.append('assistant/message', { turn: record.turn, step: h.agent.phase.step,
+        if (!mode.endsWith('no draft')) h.agent.session.append('assistant/message', { turn: record.turn, step: h.agent.phase.step,
           message: { id: 'fixture-draft', content: [{ type: 'text', text: 'unsent assistant text' }] } })
       } else {
         const retained = record.claimedInput.history.join('\n')

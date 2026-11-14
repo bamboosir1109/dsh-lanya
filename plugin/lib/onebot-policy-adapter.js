@@ -3028,8 +3028,8 @@ export class OneBotDecisionAdapter {
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     const supersededReply = (record.replySuperseded || record.supersededIdleWake &&
       (!record.decision || record.decision.verdict === 'reply')) && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
-    const unsentDraft = event.data.reason?.kind === 'completed' && record.undecidedDraft
-    const undecidedReply = (record.replyDeferredByBudget || unsentDraft) && !record.decision && !record.ticket &&
+    const completedWithoutDecision = event.data.reason?.kind === 'completed'
+    const undecidedReply = (record.replyDeferredByBudget || completedWithoutDecision) && !record.decision && !record.ticket &&
       !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
     if ((scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
         (supersededReply || undecidedReply || inlineReplyAwaitingBudget(record) || interruptedInlineReply(record)) &&
