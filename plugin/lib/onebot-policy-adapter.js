@@ -865,7 +865,7 @@ export class OneBotDecisionAdapter {
     this.persistReplyInput(binding, text, inbound.userId, resolveOwner)
   }
 
-  persistReplyInput(binding, text, sender, resolveOwner = false) {
+  persistReplyInput(binding, text, sender, resolveOwner = false, previousText) {
     if (typeof text !== 'string' || !text.trim() || text.length > 32_000) return
     // Run alongside the original native input, never add a helper/model call
     // to the foreground path. A storage failure cannot authorize recovery.
@@ -876,7 +876,7 @@ export class OneBotDecisionAdapter {
       const owner = binding.owner || await this.trustedOwner(binding.scope)
       if (!this.replyReviewAllowed(binding.scope, sender)) return
       return this.policy.rememberReplyInput({ scope: binding.scope, expectedRevision: binding.revision,
-        messageId: binding.messageId, owner, text })
+        messageId: binding.messageId, owner, text, previousText })
     })()
       .catch(error => this.log('warn', 'reply_review_evidence_unavailable:' + error.name))
     this.replyReviewWrites.add(write)
@@ -1325,14 +1325,15 @@ export class OneBotDecisionAdapter {
     const receivedAt = Number.isSafeInteger(arrivedAt) && arrivedAt >= 0 && arrivedAt <= now ? arrivedAt : now
     const batchFirstAt = merge && Number.isSafeInteger(previous.batchFirstAt) ? Math.min(previous.batchFirstAt, receivedAt) : receivedAt
     const sender = this.context.getStore()?.inbound?.userId
+    const replyEvidenceText = excerpt ? excerpt + '\n' + original : original
     const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContactText,
-      receivedAt, batchFirstAt,
+      receivedAt, batchFirstAt, replyEvidenceText,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
     // Keep recovery evidence even if insertion throws. The one-shot reviewer
     // still waits for an idle inbox and verifies there was no egress attempt.
-    this.rememberReplyInput(binding, excerpt ? excerpt + '\n' + original : original, false, directGroupContact)
+    this.rememberReplyInput(binding, replyEvidenceText, false, directGroupContact)
     try {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
@@ -1596,7 +1597,9 @@ export class OneBotDecisionAdapter {
             const groupContactText = entry.groupContactText ?? inheritedContact
             record.claimedInput = Object.freeze({ ...entry, history: retained, groupContactText,
               directGroupContact: groupContactText !== null })
-            if (inheritedContact && !entry.directGroupContact) this.persistReplyInput(entry.binding, excerpt + '\n' + entry.originalText, entry.sender)
+            if (!group || groupContactText) {
+              this.persistReplyInput(entry.binding, excerpt + '\n' + entry.originalText, entry.sender, false, entry.replyEvidenceText)
+            }
             const tag = group ? 'interrupted_group_context' : 'interrupted_private_context'
             record.replyHandoff = '\nA prior ' + (group ? 'group' : 'private') + ' reply in this same conversation was interrupted. '
               + 'The following is historical context only. Address any relevant unanswered points with the current message.\n'

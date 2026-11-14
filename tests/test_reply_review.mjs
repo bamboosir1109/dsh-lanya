@@ -104,3 +104,18 @@ test('corrupt review evidence fails closed and staging cannot overwrite current 
   fs.writeFileSync(h.options.stateFile, JSON.stringify(state))
   await assert.rejects(h.policy.replyReviewCandidates(), /Corrupt reply review/)
 })
+
+test('handoff evidence can extend only the exact pending receipt before a decision', async t => {
+  const h = await fixture(t)
+  const extend = (previousText, extra = {}) => h.policy.rememberReplyInput({
+    ...h.source, text: 'earlier interrupted question\noriginal question', previousText, ...extra,
+  })
+  assert.equal(await extend('different content'), false)
+  assert.equal(await extend('original question', { owner: { ...owner, agent_key: 'changed' } }), false)
+  const outcomes = await Promise.all([extend('original question'), extend('original question')])
+  assert.equal(outcomes.filter(Boolean).length, 1)
+  await h.decide('reply')
+  assert.equal(await extend('earlier interrupted question\noriginal question'), false)
+  h.advance(60_000)
+  assert.equal((await h.claim()).text, 'earlier interrupted question\noriginal question')
+})

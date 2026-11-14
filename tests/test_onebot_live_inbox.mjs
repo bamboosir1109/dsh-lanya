@@ -2553,6 +2553,42 @@ test('an unanswered group mention survives a newer ordinary message before or af
   })
 })
 
+test('a private question carried at claim remains in the unanswered reply evidence', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  await h.receive('first question still needs an answer')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const busy = defer()
+  a.track(a.state(h.chat).active, busy.promise)
+  await h.receive('second question')
+  assert.doesNotMatch(h.pending[0].content[0].text, /first question/)
+  await Promise.all([...a.replyReviewWrites])
+  const before = (await a.policy.snapshot(h.chat.chatId)).current.replyReview
+  assert.doesNotMatch(before.text, /first question/)
+  busy.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal((await h.preStep()).reason, 'superseded_live_input')
+  await h.end()
+  h.advance(5_000)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await Promise.all([...a.replyReviewWrites])
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.match(current.replyReview.text, /first question still needs an answer[\s\S]*second question/)
+  assert.equal(current.replyReview.at, before.at)
+  await h.end()
+  h.agent.status = 'idle'
+  a.startRequested = true
+  h.advance(55_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /first question still needs an answer[\s\S]*second question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.decide('reply', { text: 'a single answer covering both' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('a delayed old end decision cannot close a newer direct mention',async t=>{
   const h=await listeningGroup(t),a=h.bridge.lanyaPolicy,entered=defer(),release=defer()
   await h.mention();h.start();await h.preStep()

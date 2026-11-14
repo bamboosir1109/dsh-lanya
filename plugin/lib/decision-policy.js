@@ -513,8 +513,9 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
 
     /** Persist only the verified current live input, not the diagnostic log or
      * caller-supplied history. Storage is on the existing private policy file;
-     * staging never issues a ticket or changes the live revision. */
-    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text } = {}) {
+     * staging never issues a ticket or changes the live revision. The claim
+     * handler can enrich its exact pending text with an interrupted question. */
+    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text, previousText } = {}) {
       canonicalScope(scope)
       if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000) {
         throw new PolicyStateError('Bounded owned reply input required')
@@ -523,7 +524,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       return transaction(state => {
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
-            current.current.origin !== 'live' || current.current.replyReview) return false
+            current.current.origin !== 'live') return false
+        const previous = current.current.replyReview
+        if (previousText !== undefined && (current.current.decided ||
+            current.deliveries.some(item => item.revision === expectedRevision))) return false
+        if (previous) {
+          if (previous.attempted || previous.text !== previousText || !replyOwnerSame(owner, previous.owner)) return false
+          evidence.at = previous.at
+        }
         current.current.replyReview = evidence
         return true
       })
