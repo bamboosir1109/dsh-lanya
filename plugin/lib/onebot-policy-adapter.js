@@ -189,7 +189,7 @@ const groupTopicSegment = segment => historyTextSegment(segment) || segment?.typ
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
 const historyDiscussionSegment = segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply'
 const groupAttachmentPlaceholder = /^(?:\[(?:图片|表情包|语音|视频|文件|合并转发|引用)\]\s*)+$/u
-const sharedGroupRemark = row => !row.addressed_to_bot &&
+const sharedGroupRemark = row => !row.addressed_to_bot && !row.unresolved_reply &&
   (row.at_targets?.every(target => target === 'all') !== false || row.quoted_speaker && row.at_targets.includes(row.quoted_speaker)) &&
   Boolean(row.quoted_text || row.forwarded_excerpt || row.images.length ||
     row.text.trim() && !groupAttachmentPlaceholder.test(row.text.trim()))
@@ -1358,6 +1358,7 @@ export class OneBotDecisionAdapter {
       if (!text && !unloadedMedia.length) continue
       recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600).toWellFormed(), at, images: [], at_targets: targets.slice(0, 8),
         ...(unloadedMedia.length ? { media_not_loaded: unloadedMedia } : {}),
+        ...(!quoted && row.message.some(segment => segment?.type === 'reply') ? { unresolved_reply: true } : {}),
         ...(quotedText && !quotedText.startsWith('/') ? { quoted_text: quotedText.slice(0, 160).toWellFormed() } : {}),
         quoted_speaker, addressed_to_bot: groupHistoryAddressed(targets, bot, quoted_speaker) })
     }
@@ -1455,6 +1456,7 @@ export class OneBotDecisionAdapter {
           ...(forwarded ? { forwarded_excerpt: forwarded } : {}),
           ...(quotedText && !quotedText.startsWith('/') ? { quoted_text: quotedText.slice(0, 160).toWellFormed() } : {}),
           images,
+          ...(inbound.replyId !== undefined && !quotedSpeaker ? { unresolved_reply: true } : {}),
           ...(!images.length && segments?.some(segment => segment?.type === 'image') ? { media_not_loaded: ['图片'] } : {}),
           at_targets: inbound.segments?.filter(historyMention).slice(0, 8).map(segment => String(segment.data.qq)) ?? [],
           quoted_speaker: quotedSpeaker,
@@ -3497,6 +3499,7 @@ export class OneBotDecisionAdapter {
       + (groupActivityReview ? ' Start with any new_shared_remark rows. They identify fresh shared remarks you have not reviewed. A question addressed to one person without a shared discussion is background. Join if you have a specific reaction, joke or question that fits. If only familiar discussion remains, use a genuinely different angle or leave it there.' : '')
       + (buffered.length ? ' The new_shared_topics field contains unread shared discussion still within the last ten minutes, even though newer messages have pushed it out of the recent list. Check whether the discussion is still relevant before joining.' : '')
       + (recent.some(row => row.quoted_text) ? ' A row\'s quoted_text is a short excerpt from the preceding message by quoted_speaker. The row\'s text is what the current speaker said. Use both to follow the topic.' : '')
+      + (groupActivityReview && recent.some(row => row.unresolved_reply) ? ' A row marked unresolved_reply answers an unavailable message. Treat it as background and do not assume who it addresses.' : '')
       + (earlier.length ? ' Earlier topics are shared interests, even if recent discussion has already been reviewed. When a row includes quoted_text, that is what the member was replying to. A fresh observation or concrete question can start a new exchange. Bring something of your own to the topic and leave it alone if you have nothing new to add.' : '')
       + (own.length ? ' The own_recent_messages field contains your recent QQ text in this same group. Use it to avoid repeating a topic, question or greeting you already sent.' : '')
       + (recent.some(row => row.forwarded_excerpt) ? ' A forwarded excerpt contains quoted speakers inside the forward. They are separate from the current sender; do not treat them as addressing you.' : '')

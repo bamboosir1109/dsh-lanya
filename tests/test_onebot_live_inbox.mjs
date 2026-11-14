@@ -2796,12 +2796,18 @@ test('a queued group review uses the current social prompt instead of an inherit
     { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'Question for another member' } },
   ] })
   await h.receive('Attachment alone', { message: [{ type: 'image', data: { file: 'unavailable-image' } }] })
+  await h.receive('Live reply to a missing message', { message: [
+    { type: 'reply', data: { id: '700' } }, { type: 'text', data: { text: 'Live reply to a missing message' } },
+  ] })
   const directedElsewhere = a.dispatchObservationOnce({ ...event, event_id: 'fixture-directed-elsewhere', created_at: a.now() })
   for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(h.pending.length, 1)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   const laterContext = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.equal(laterContext.recent.find(row => row.text.includes('Question for another member')).new_shared_remark, undefined)
+  const unresolved = laterContext.recent.find(row => row.text.includes('Live reply to a missing message'))
+  assert.equal(unresolved.unresolved_reply, true)
+  assert.equal(unresolved.new_shared_remark, undefined)
   assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
   await h.end(); await directedElsewhere
   a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
@@ -3048,11 +3054,13 @@ test('restored shared group discussion survives a history batch dominated by per
   const mention = { type: 'at', data: { qq: '204' } }
   const history = [row(680, 'discussion from a different group', [], 404),
     row(681, 'would crosshatching work for pixel art?'), row(682, 'can you send the palette privately?', [mention]),
-    ...Array.from({ length: 12 }, (_, i) => row(683 + i, 'a personal aside', [mention]))]
+    row(683, 'please send it just to me', [{ type: 'reply', data: { id: '700' } }]),
+    ...Array.from({ length: 11 }, (_, i) => row(684 + i, 'a personal aside', [mention]))]
   adapter.restoreRecentGroupText(scope, owner, history, adapter.now(), '999', true)
   await h.opportunity(); h.start(); await h.preStep()
   const context = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.equal(context.recent.length, 12)
+  assert.ok(context.recent.some(item => item.text === 'please send it just to me' && !item.new_shared_remark))
   assert.deepEqual(context.new_shared_topics?.map(item => item.text), ['would crosshatching work for pixel art?'])
   assert.equal((await h.decide('reply', { text: 'Try a two-color pattern on the edges' })).sent, true)
   await h.end()
