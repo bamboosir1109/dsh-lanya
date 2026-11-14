@@ -2408,16 +2408,19 @@ export class OneBotDecisionAdapter {
       // budget without giving the group a new conversation to join.
       const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
       nextReview = requestedReview === null || quietGroup ? now + interval : Math.min(requestedReview, now + interval)
-      // The daytime budget is shared with group reviews. Slow the personal
-      // series when settled spend is more than ten percentage points ahead.
+      // Leave room in the shared budget for later opportunities. Fresh group
+      // discussion retains its cadence even when personal spending runs ahead.
       const budget = record.binding.budget
-      if (record.binding.scope.startsWith('private:') && budget?.category === 'autonomy' && budget.limited) {
+      const personal = scope.startsWith('private:')
+      if ((personal || quietGroup) && budget?.category === 'autonomy' && budget.limited) {
         const { spent_cny: spent, reserved_cny: reserved, remaining_cny: remaining } = budget.state ?? {}
         if ([spent, reserved, remaining].every(value => Number.isFinite(value) && value >= 0)) {
           const { resting, current_day_wake_at: wake } = autonomousRestState(now)
           const dayProgress = (now - wake) / (16 * 3600_000)
           const budgetUsed = spent / (spent + reserved + remaining)
-          if (!resting && budgetUsed > dayProgress + 0.1) {
+          if (!resting && budgetUsed > dayProgress + 0.25) {
+            nextReview = now + Math.min(cadence.intervalMs * 4, 60 * 60_000)
+          } else if (!resting && personal && budgetUsed > dayProgress + 0.1) {
             nextReview = now + Math.min(cadence.intervalMs * 2, 60 * 60_000)
           }
         }

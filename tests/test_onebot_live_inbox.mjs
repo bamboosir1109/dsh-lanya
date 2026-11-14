@@ -3889,9 +3889,14 @@ test('other native admission failures reject rather than claim the unresolved-re
   })
 })
 
-test('autonomous budget pacing slows personal reviews ahead of spend without slowing group reviews', async t => {
-  for (const scenario of ['primary-ahead', 'primary-on-track', 'primary-later', 'group-ahead']) await t.test(scenario, async t => {
-    const group = scenario === 'group-ahead'
+test('autonomous budget pacing saves headroom for later activity and fresh group discussion', async t => {
+  const cases = [
+    ['primary-ahead', 1.5, 12], ['primary-slightly-ahead', 0.6, 6],
+    ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
+    ['group-fresh', 1.5, 1], ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
+  ]
+  for (const [scenario, spent, reviewMinutes] of cases) await t.test(scenario, async t => {
+    const group = scenario.startsWith('group-')
     const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
     const adapter = h.bridge.lanyaPolicy
     if (group) {
@@ -3901,7 +3906,7 @@ test('autonomous budget pacing slows personal reviews ahead of spend without slo
       h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
     }
     if (scenario === 'primary-later') h.advance(8 * 3600_000)
-    if (group) await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
+    if (scenario === 'group-fresh') await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
     const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
     const capabilities = adapter.runtimeCapabilities
     adapter.runtimeCapabilities = async (...args) => {
@@ -3913,9 +3918,7 @@ test('autonomous budget pacing slows personal reviews ahead of spend without slo
     adapter.budgetProvider = async request => {
       const result = await budget(request)
       if (request.operation === 'reserve') {
-        result.state = scenario === 'primary-on-track'
-          ? { spent_cny: 0.1, reserved_cny: 0.05, remaining_cny: 2.85 }
-          : { spent_cny: 1.5, reserved_cny: 0.05, remaining_cny: 1.45 }
+        result.state = { spent_cny: spent, reserved_cny: 0.05, remaining_cny: 2.95 - spent }
       }
       return result
     }
@@ -3928,7 +3931,7 @@ test('autonomous budget pacing slows personal reviews ahead of spend without slo
     const outcome = await adapter.dispatchObservation(event)
     await driverSettled(h)
     assert.equal(decision.accepted, true)
-    assert.equal(decision.next_review_at, adapter.now() + (scenario === 'primary-ahead' ? 360_000 : 60_000))
+    assert.equal(decision.next_review_at, adapter.now() + reviewMinutes * 60_000)
     assert.equal(outcome.next_review_at, decision.next_review_at)
     assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
   })
