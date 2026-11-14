@@ -279,14 +279,14 @@ test('an internal activity keeps its summary in the session and completes withou
   assert.deepEqual(h.calls, [])
 })
 
-test('primary autonomous reviews cap eight hours and fill omission using one trusted bound cadence', async t => {
+test('an idle primary review uses the quiet interval of its trusted cadence', async t => {
   const h = await setup(t), clock = await cadenceFixture(h)
   // Primary identity comes from the helper, not the allowlist's first element.
   h.deps.policy.adminUsers = ['303', '101']
   for (const requested of [clock.now() + 8 * 3600_000, undefined, clock.now() + 60_000]) {
     const current = await opportunity(h, { payload: { opportunityMin: 60, primary_internal_leisure: false } })
     const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
-    const accepted = requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000)
+    const accepted = clock.now() + 360_000
     assert.equal(result.accepted, true)
     assert.equal(result.next_review_at, accepted)
     assert.equal(result.requested_next_review_at, requested ?? null)
@@ -325,18 +325,19 @@ test('autonomous cadence belongs to the queued turn while later configurations a
   assert.deepEqual(reads, ['private:101'])
   clock.minutes(5); clock.advance(20_000)
   const result = await h.decide(first.chat, 'idle')
-  assert.equal(result.next_review_at, clock.now() + 180_000)
+  assert.equal(result.next_review_at, clock.now() + 360_000)
   assert.equal(result.autonomous_cadence_min, 3)
   await first.end(); await first.completion
   const second = await opportunity(h, { producer: 'main-review' })
   assert.deepEqual(reads, ['private:101', 'private:101'])
   const next = await h.decide(second.chat, 'idle')
-  assert.equal(next.next_review_at, clock.now() + 300_000)
+  assert.equal(next.next_review_at, clock.now() + 600_000)
+  assert.equal(next.autonomous_cadence_min, 5)
   await second.end(); await second.completion
   assert.equal(h.calls.length, 0)
 })
 
-test('configured group opportunity uses its trusted cadence independently of primary identity', async t => {
+test('group opportunity uses its trusted cadence independently of primary identity', async t => {
   const h = await setup(t), clock = await cadenceFixture(h), original = h.bridge.lanyaPolicy.runtimeCapabilities
   let reads = 0
   h.bridge.lanyaPolicy.runtimeCapabilities = async (...args) => {
@@ -353,7 +354,7 @@ test('configured group opportunity uses its trusted cadence independently of pri
     assert.equal(reads - before, 1)
     assert.equal(current.chat.activeTurnRole, 'member')
     const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
-    assert.equal(result.next_review_at, requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000))
+    assert.equal(result.next_review_at, requested === undefined ? clock.now() + 360_000 : Math.min(requested, clock.now() + 360_000))
     assert.equal(result.autonomous_cadence_min, 3)
     await current.end(); await current.completion
   }
