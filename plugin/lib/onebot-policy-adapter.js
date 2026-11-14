@@ -1368,8 +1368,13 @@ export class OneBotDecisionAdapter {
   async refreshGroupOpportunityContext(scope, owner, backendStamp) {
     const now = this.now()
     if (!this.nativeClaims || !this.contextualGroupEnabled(scope) || !this.groupReplyReviewAllowed(scope) ||
-        this.foregroundBusy(scope) ||
-        this.recentGroupContext(scope, owner, now).some(row => row.at >= now - GROUP_RECENT_CONTEXT_MS)) return
+        this.foregroundBusy(scope)) return
+    const group = this.groupConversation(scope, owner, false)
+    // A recent question for someone else or a remark already shown to the
+    // model is not evidence that the listener has a fresh shared topic.
+    if (group && this.recentGroupContext(scope, owner, now).some(row =>
+      row.arrival > 0 && row.at >= now - GROUP_RECENT_CONTEXT_MS &&
+      !group.reviewedMessages?.has(row.messageId) && sharedGroupRemark(row))) return
     const groupId = Number(scope.slice(6)), connection = this.deps.connection, socket = connection?.socket
     if (!socket || !Number.isSafeInteger(groupId) || this.bridge.stopping) return
     const epoch = this.startEpoch

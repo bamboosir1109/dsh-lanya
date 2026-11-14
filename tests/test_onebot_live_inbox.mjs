@@ -2680,12 +2680,19 @@ test('a group activity review searches recent group text and falls back to the s
 })
 
 test('a verified group opportunity refreshes stale listening context without making a live reply', async t => {
-  for (const scenario of ['empty', 'stale context', 'current live context', 'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
+  for (const scenario of ['empty', 'stale context', 'current live context', 'already reviewed', 'addressed elsewhere',
+    'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     const owner = await a.trustedOwner(scope)
     a.runtimeCapabilities = async () => null
-    if (scenario === 'current live context') await h.receive('current live group topic')
+    if (['current live context', 'already reviewed'].includes(scenario)) {
+      await h.receive('current live group topic', { message_id: 75 })
+      if (scenario === 'already reviewed') a.groupConversation(scope, owner).reviewedMessages = new Set(['75'])
+    }
+    if (scenario === 'addressed elsewhere') await h.receive('side question', { message: [
+      { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'side question' } },
+    ] })
     if (scenario === 'stale context') {
       await h.receive('older live group topic', { message_id: 70 })
       h.advance(121_000)
@@ -2729,12 +2736,15 @@ test('a verified group opportunity refreshes stale listening context without mak
     if (scenario === 'stale context') await h.receive('recent group history topic, now with the live payload', { message_id: 71 })
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     const prompt = h.prompt()
-    const freshest = ['empty', 'stale context', 'live context arrives during lookup'].includes(scenario)
+    const freshest = ['empty', 'stale context', 'already reviewed', 'addressed elsewhere', 'live context arrives during lookup'].includes(scenario)
     const expected = freshest ? /recent group history topic/
       : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
     assert.match(prompt, expected)
     assert.doesNotMatch(prompt, /expired group topic|other group topic/)
     const observed = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+    if (['already reviewed', 'addressed elsewhere'].includes(scenario)) {
+      assert.deepEqual(observed.recent.filter(row => row.new_shared_remark).map(row => row.text), ['different duplicate body', 'recent group history topic'])
+    }
     assert.equal(observed.own_recent_messages?.[0]?.text, freshest ? 'own group output' : undefined)
     assert.ok(observed.recent.every(row => row.text !== 'own group output'))
     if (!freshest) assert.doesNotMatch(prompt, /recent group history topic/)
