@@ -40,6 +40,8 @@ test('native shaped accepted decisions, picker selection and image receipts rema
   assert.equal(facts.trailing_tool_action_decisions.count, 2)
   assert.equal(facts.turns[0].origin, 'observation')
   h.start(3, 'plugin:dsh-onebot')
+  h.append('user/message', { source: { kind: 'plugin:dsh-lanya-decision-reminder' },
+    get content() { throw new Error('reminder content accessed') } })
   h.tool(3, 'qq_decide', { verdict: 'reply', expression: 'meme' },
     { accepted: true, can_send: true, expression_plan: { choice: 'meme' } })
   h.tool(3, 'send_meme', { query: 'PRIVATE_QUERY', path: 'PRIVATE_PATH' },

@@ -265,7 +265,7 @@ export function reduceRecentSocialFacts(events, { fromSeq = 0, truncated = false
       // The SDK materializes only already claimed/admitted native Message
       // metadata here (firstAttempt). Its content is deliberately never read.
       if (event.type === 'user/message') {
-        if (['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint'].includes(data.source?.kind)) continue
+        if (NATIVE_CONTEXT_KINDS.has(data.source?.kind) || data.source?.kind === 'plugin:dsh-lanya-decision-reminder') continue
         active.origins.push(data.source?.kind === 'plugin:dsh-onebot' ? 'live'
           : data.source?.kind === 'plugin:dsh-lanya-observation' ? 'observation' : 'unknown')
         continue

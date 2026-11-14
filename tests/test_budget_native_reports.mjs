@@ -64,6 +64,10 @@ test('one trusted input plus an unknown input cannot borrow its category',()=>{
 test('explicit host context is not another delivery input',()=>{
   const value=fixture();value.sessions[0].origins.push({seq:2,kind:'repeat-tool-reminder'});
   assert.equal(buildNativeDaily(value,priced).days[1].autonomy,0.0123);
+  value.sessions[0].origins[1].kind='plugin:dsh-lanya-decision-reminder';
+  assert.equal(buildNativeDaily(value,priced).days[1].autonomy,0.0123);
+  value.sessions[0].origins.shift();
+  assert.equal(buildNativeDaily(value,priced).days[1].unclassified_count,1);
 });
 test('ledger mismatch never fabricates a pending or unknown turn',()=>{
   const value=fixture();value.sessions[0].expected_days['2026-11-02']=9;

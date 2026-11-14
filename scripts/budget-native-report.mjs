@@ -7,7 +7,8 @@ const categories = ['autonomy', 'private', 'group'];
 const amountConvention = Object.freeze({currency:'CNY', basis:'owner_confirmed_numeric_cny_estimate',
   source_estimate_currency:'USD', source_estimate_basis:'cost_meter_default_price_estimate', numeric_scale:1});
 // Native host context projections are not additional user/observation inputs.
-const hostContextKinds = new Set(['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint']);
+const hostContextKinds = new Set(['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint',
+  'plugin:dsh-lanya-decision-reminder']);
 const safeInteger = n => Number.isSafeInteger(n) && n >= 0;
 const amount = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const dayOf = stamp => new Date(stamp + 8 * 3600_000).toISOString().slice(0, 10);

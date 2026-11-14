@@ -59,7 +59,8 @@ NAMED_TOOL_LABELS = {
     'android_screenshot': '获取手机截图', 'android_tap': '点击手机界面',
 }
 DECISION_VERDICTS = {'reply', 'idle', 'defer', 'tool_action'}
-HOST_CONTEXT_KINDS = {'agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint'}
+HOST_CONTEXT_KINDS = {'agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint',
+                      'plugin:dsh-lanya-decision-reminder'}
 CHINA = dt.timezone(dt.timedelta(hours=8))
 
 
