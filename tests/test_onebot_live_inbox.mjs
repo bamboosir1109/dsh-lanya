@@ -4555,6 +4555,39 @@ test('budget refusal cannot mint an internal idle wake for another pending input
   assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, 1)
 })
 
+test('an autonomous budget refusal wakes the live QQ message that arrived during admission', async t => {
+  for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
+    const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+    const reserving = defer(), release = defer(), budgetProvider = adapter.budgetProvider
+    adapter.budgetProvider = async request => {
+      if (request.operation !== 'reserve' || request.origin !== 'observation') return budgetProvider(request)
+      reserving.resolve()
+      await release.promise
+      return { allowed: false, category: 'autonomy', limited: true, reason: 'budget_exhausted' }
+    }
+    const event = await primaryEvent(h, 'fixture-foreground-after-budget-refusal')
+    if (kind === 'reminder.due') Object.assign(event, { kind, producer: 'reminder-scheduler' })
+    const blocked = assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+    await reserving.promise
+    try {
+      await h.receive('a live question while the activity was waiting')
+      assert.equal(h.agent.inbox.nextTurn.length, 1)
+      const [queued] = h.agent.inbox.nextTurn
+      h.agent.step = async () => {
+        assert.equal(adapter.state(h.chat).active.claimedId, queued.id)
+        assert.equal((await h.decide('reply', { text: 'a timely answer' })).sent, true)
+        return { kind: 'completed' }
+      }
+    } finally { release.resolve() }
+    await blocked
+    await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+    assert.equal(h.requests.filter(request => request.operation === 'reserve' && request.origin === 'live').length, 1)
+  })
+})
+
 test('owned observation input uses the same reviewed wake and native admission', async t => {
   const entered = defer(), gate = defer(); let assemblies = 0
   const h = await nativeDriverFixture(t, { assemble: async () => { if (++assemblies === 1) { entered.resolve(); await gate.promise } } })

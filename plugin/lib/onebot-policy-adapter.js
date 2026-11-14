@@ -1900,7 +1900,9 @@ export class OneBotDecisionAdapter {
     const internal = binding?.origin === 'observation' && localOpportunity(binding) &&
       (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
     const unstartedActivity = internal && binding.observationKind === 'activity.opportunity'
-    if (!(binding?.origin === 'live' || internal) || (!record.nativeStepEntered && !unstartedActivity) ||
+    const budgetRefusedObservation = binding?.origin === 'observation' && record.nativeAdmissionRefused?.reason === 'budget_exhausted'
+    if (!(binding?.origin === 'live' || internal || budgetRefusedObservation) ||
+        (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation) ||
         record.claimConflict || record.ended || record.inFlight.size) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
     if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
@@ -2080,6 +2082,11 @@ export class OneBotDecisionAdapter {
               record.outcomes.length === 0 && record.inFlight.size === 0) {
             record.nativeAdmissionRefused = Object.freeze({ binding, turn: request.turn, signal: request.signal,
               reason })
+            if (reason === 'budget_exhausted') {
+              const successor = this.supersedingLiveInput(chat, record)
+              if (successor) record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+                turn: request.turn, epoch: this.startEpoch, binding, revision: successor.binding.revision })
+            }
           }
           return { kind: 'reject', reason: reason || 'budget_admission_refused' }
         }
@@ -3079,7 +3086,7 @@ export class OneBotDecisionAdapter {
       if (!completion) return
       if (!record.decision) {
         const superseded = record.supersededIdleWake
-        if (event.data.reason?.kind === 'blocked' && superseded?.turn === record.turn &&
+        if (!record.nativeAdmissionRefused && event.data.reason?.kind === 'blocked' && superseded?.turn === record.turn &&
             superseded.binding === record.binding && !superseded.signal?.aborted &&
             record.binding.origin === 'observation' && record.binding.observationKind === 'activity.opportunity' &&
             localOpportunity(record.binding) && !record.ticket && record.outcomes.length === 0) {
