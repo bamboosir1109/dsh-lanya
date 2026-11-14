@@ -3038,10 +3038,10 @@ export class OneBotDecisionAdapter {
     const completedWithoutDecision = event.data.reason?.kind === 'completed'
     const undecidedReply = (record.replyDeferredByBudget || completedWithoutDecision) && !record.decision && !record.ticket &&
       !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
-    if ((scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
+    if (!record.claimConflict && record.binding?.origin === 'live' && !record.binding.recoveryRevision &&
+        (scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
         (supersededReply || undecidedReply || inlineReplyAwaitingBudget(record) || interruptedInlineReply(record)) &&
-        record.claimedInput?.binding.origin === 'live' && !record.binding.recoveryRevision &&
-        !record.claimConflict && state.active === record) {
+        record.claimedInput?.binding.origin === 'live' && state.active === record) {
       // Admission can invalidate the reply before or after its successor is
       // queued. Preserve the older question for dispatch or the next claim.
       state.unansweredReply = { entry: record.claimedInput, expiresAt: this.now() + 60_000,
