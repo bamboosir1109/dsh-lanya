@@ -417,7 +417,7 @@ test('auditing anchored completed successors reads each child once per parent re
     now: () => 1000, log: (level, message) => { if (level === 'error') invalid.push(message) },
   })
   const io = await countHistoryIo(root, () => p.drain())
-  assert.ok(io.read <= 10 * count, JSON.stringify(io))
+  assert.ok(io.read <= 6 * count, JSON.stringify(io))
   t.diagnostic('anchored history filesystem reads: ' + io.read)
   assert.deepEqual(invalid, [])
 

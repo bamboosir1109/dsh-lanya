@@ -193,9 +193,7 @@ function reviewAnchor(readEvidence, event, depth = 0, seen = new Set()) {
   }
   const anchor = context.freshness_anchor
   if (anchor !== undefined) {
-    if (!plain(anchor) || Object.keys(anchor).sort().join(',') !== 'created_at,key,sha256' ||
-        !/^[0-9a-f]{64}$/.test(anchor.key) || !/^[0-9a-f]{64}$/.test(anchor.sha256) ||
-        !Number.isSafeInteger(anchor.created_at) || anchor.created_at < 0 || anchor.created_at > parent.value.created_at) {
+    if (!validFreshnessAnchor(anchor) || anchor.created_at > parent.value.created_at) {
       throw new ObservationQueueError('Review freshness anchor is invalid')
     }
     const inherited = queuedReview(parent.value) ? parent.value.payload.review_context?.freshness_anchor : null
@@ -215,6 +213,12 @@ function reviewAnchor(readEvidence, event, depth = 0, seen = new Set()) {
   }
   // Only pre-upgrade unanchored reviews use this bounded migration walk.
   return reviewAnchor(readEvidence, parent.value, depth + 1, seen)
+}
+
+function validFreshnessAnchor(anchor) {
+  return plain(anchor) && Object.keys(anchor).sort().join(',') === 'created_at,key,sha256' &&
+    /^[0-9a-f]{64}$/.test(anchor.key) && /^[0-9a-f]{64}$/.test(anchor.sha256) &&
+    Number.isSafeInteger(anchor.created_at) && anchor.created_at >= 0
 }
 
 /** Queue-generated reviews inherit real source age, not a fresh greeting at
@@ -241,7 +245,7 @@ function ownerAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
 }
 
-function buildReviewCandidate(base, event, completed, at, readEvidence, checkDirectories) {
+function buildReviewCandidate(base, event, completed, at, readEvidence, checkDirectories, eventHash) {
   const pending = path.join(base, 'pending'), done = path.join(base, 'done')
     if (reviewTime(event, completed) > at) return null
     const parentKey = observationKey(event.scope, event.event_id)
@@ -262,6 +266,17 @@ function buildReviewCandidate(base, event, completed, at, readEvidence, checkDir
       // An exact completed legacy child needs no new work or freshness
       // authority. Revalidate ancestry only at the unfinished frontier.
       return null
+    }
+    if (completedChild?.completion) {
+      // The pair was physically validated and is already terminal. Exact
+      // continuity with its source is enough to skip this edge of the audit.
+      // An unfinished or conflicting edge still traverses the physical anchor.
+      const inherited = queuedReview(event) ? event.payload.review_context?.freshness_anchor
+        : { key: parentKey, sha256: eventHash, created_at: event.created_at }
+      if (validFreshnessAnchor(inherited) && inherited.created_at <= event.created_at) {
+        review.payload.review_context.freshness_anchor = inherited
+        if (stable(completedChild.value) === stable(review)) return null
+      }
     }
     review.payload.review_context.freshness_anchor = reviewAnchor(readEvidence, event)
     if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
@@ -417,7 +432,7 @@ function fileScanner(directory, incremental = true) {
       }
       const event = current.value, completion = current.completion
       let result
-      try { result = buildReviewCandidate(base, event, completion, at, readEvidence, checkDirectories) }
+      try { result = buildReviewCandidate(base, event, completion, at, readEvidence, checkDirectories, current.sha256) }
       catch (error) {
         // Recheck failed derivations at the next audit or on file change.
         // A verified terminal is never treated as executable work.
