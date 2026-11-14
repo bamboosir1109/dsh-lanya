@@ -15,6 +15,7 @@ const KINDS = new Set(['text', 'media', 'forward', 'api', 'publication', 'tool_a
 const VERDICTS = new Set(['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action'])
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const acknowledgeBatch = Symbol('acknowledgeBatch')
 const identifier = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value)
 const CONTACT_INTERVAL_MS = 60 * 60_000
 const REST_REASONS = new Set(['autonomy_rest', 'observation_expired'])
@@ -390,6 +391,17 @@ export function createJsonPolicyStorage({ stateFile, lockTimeoutMs = 2500, retry
   }
 
   return {
+    async [acknowledgeBatch](fn) {
+      const release = await acquire()
+      try {
+        const state = read()
+        // This callback only removes matched observations. An empty match
+        // leaves the already validated state untouched.
+        const results = fn(state)
+        if (results.some(result => result.acknowledged === true)) write(state)
+        return results
+      } finally { release() }
+    },
     async transact(fn) {
       const release = await acquire()
       try {
@@ -772,7 +784,8 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       }
       const batch = clone(requests)
       for (const request of batch) validateObservationAck(request)
-      return transaction(state => batch.map(request => acknowledgeObservation(state, request)))
+      const acknowledge = state => batch.map(request => acknowledgeObservation(state, request))
+      return store[acknowledgeBatch] ? store[acknowledgeBatch](acknowledge) : transaction(acknowledge)
     },
 
     async decide({ scope, messageId, expectedRevision, verdict, controlUpdate = false, evidenceSource = 'current', nextReviewAt = null } = {}) {
