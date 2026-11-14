@@ -2647,6 +2647,8 @@ export class OneBotDecisionAdapter {
       if (group && record.binding.revision >= group.revision) {
         if (this.isGroupActivityReview(record.binding)) {
           group.quietReviewAt = ['idle', 'defer'].includes(args.verdict) ? this.now() : undefined
+          group.quietUnreadUntil = group.quietReviewAt === undefined || result.next_review_at == null ? undefined
+            : Math.min(result.next_review_at, group.quietReviewAt + 60 * 60_000) + 5 * 60_000
         }
         if (record.groupReviewMessageIds?.length) {
           // A message that arrives during generation remains new for the next review.
@@ -3535,9 +3537,11 @@ export class OneBotDecisionAdapter {
 
   unreviewedBufferedTopics(group, recent, now) {
     // The shared topic buffer outlasts the display window when personal asides
-    // push messages out. Also cover a quiet review interval plus scheduling lag.
+    // push messages out. Also cover the scheduled quiet wait and brief lag.
+    const waitingForReview = now <= group?.quietUnreadUntil
     return (group?.sharedTopics || []).filter(row => row.at <= now &&
-      (row.at >= now - GROUP_CONTEXT_MS || row.at >= now - GROUP_UNREAD_CONTEXT_MS && row.at > group.quietReviewAt) &&
+      (row.at >= now - GROUP_CONTEXT_MS ||
+        row.at > group.quietReviewAt && (waitingForReview || row.at >= now - GROUP_UNREAD_CONTEXT_MS)) &&
       !group.reviewedMessages?.has(row.messageId) && !recent.some(current => current.messageId === row.messageId)).slice(-3)
   }
 

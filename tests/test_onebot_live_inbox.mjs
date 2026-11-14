@@ -3168,6 +3168,31 @@ test('a shared remark that nearly ages out during a quiet wait still reaches the
   assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /new_shared_topics/)
 })
 
+test('a budget-paced group review retains new shared context until its scheduled review', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  await h.receive('initial collective topic', { message_id: 651 })
+  await h.opportunity(); h.start(); await h.preStep()
+  const record = a.state(h.chat).active
+  record.binding = Object.freeze({ ...record.binding, autonomousCadence: { minutes: 8, intervalMs: 480_000 },
+    budget: { ...record.binding.budget, category: 'autonomy', limited: true,
+      state: { spent_cny: 0.9, reserved_cny: 0.05, remaining_cny: 2.05 } } })
+  h.prompt()
+  const idle = await h.decide('idle')
+  assert.equal(idle.next_review_at, a.now() + 32 * 60_000)
+  await h.end()
+  h.advance(60_000)
+  await h.receive('fresh idea to share with the group', { message_id: 652 })
+  h.advance(31 * 60_000)
+  const context = () => JSON.parse(a.groupPromptContext(scope, owner, true)
+    .match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(context().new_shared_topics, [{ text: 'fresh idea to share with the group', age_seconds: 1860 }])
+  assert.equal(context().earlier_topics, undefined)
+  h.advance(5 * 60_000 + 1)
+  assert.equal(context().new_shared_topics, undefined)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('personal asides cannot displace an unreviewed shared group topic from autonomous context', async t => {
   const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await adapter.trustedOwner(scope)
