@@ -2964,6 +2964,29 @@ test('a quiet group can find older shared interests while recently reviewed mess
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('same-group photo captions survive as topic clues with missing media clearly indicated', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const image = { type: 'image', data: { file: 'fixture-unresolved-photo' } }
+  h.deps.media.resolve = async () => undefined
+  await h.receive('', { message_id: 671, message: [{ type: 'text', data: { text: 'I sketched a teacup' } }, image] })
+  await h.receive('', { message_id: 672, message: [image] })
+  const owner = await adapter.trustedOwner(scope)
+  const context = () => JSON.parse(adapter.groupPromptContext(scope, owner, true)
+    .match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(h.pending.length, 0)
+  assert.deepEqual(context().recent[0].media_not_loaded, ['图片'])
+  assert.equal(context().recent[0].image_refs, undefined)
+  assert.equal(context().recent[1].new_shared_remark, undefined)
+  h.advance(11 * 60_000)
+  const photo = (id, text, group_id) => ({ message_id: id, group_id, message_type: 'group',
+    sender: { user_id: 202 }, time: Math.floor(adapter.now() / 1000) - 620,
+    message: [{ type: 'text', data: { text } }, image] })
+  adapter.restoreRecentGroupText(scope, owner, [photo(673, 'The first set of sketches', 303),
+    photo(674, 'different group topic', 404), photo(675, '[表情包]', 303)], adapter.now(), '999', true)
+  assert.deepEqual(context().earlier_topics.map(row => row.text), ['I sketched a teacup', 'The first set of sketches'])
+  assert.equal(h.calls.some(call => /^send_/.test(call.action)), false)
+})
+
 test('autonomous group reviews retain the verified text that a current group remark quotes', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)

@@ -185,9 +185,10 @@ const groupHistorySender = row => {
     (row.user_id == null || String(row.user_id) === sender) ? sender : null
 }
 const historyTextSegment = segment => segment?.type === 'text' && typeof segment.data?.text === 'string'
+const groupTopicSegment = segment => historyTextSegment(segment) || segment?.type === 'image'
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
 const historyDiscussionSegment = segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply'
-const groupAttachmentPlaceholder = /^(?:\[(?:图片|语音|视频|文件|合并转发|引用)\]\s*)+$/u
+const groupAttachmentPlaceholder = /^(?:\[(?:图片|表情包|语音|视频|文件|合并转发|引用)\]\s*)+$/u
 const sharedGroupRemark = row => !row.addressed_to_bot &&
   (row.at_targets?.every(target => target === 'all') !== false || row.quoted_speaker && row.at_targets.includes(row.quoted_speaker)) &&
   Boolean(row.quoted_text || row.forwarded_excerpt || row.images.length ||
@@ -1340,10 +1341,10 @@ export class OneBotDecisionAdapter {
         ? quoted.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim() : ''
       if (at < now - GROUP_CONTEXT_MS) {
         if (!text) continue
-        const plainTopic = row.message.every(historyTextSegment)
+        const plainTopic = row.message.every(groupTopicSegment)
         const memberExchange = quoted_speaker && quoted_speaker !== bot && !targets.includes(bot) &&
           row.message.every(historyDiscussionSegment)
-        if (plainTopic || memberExchange) {
+        if ((plainTopic || memberExchange) && !groupAttachmentPlaceholder.test(text)) {
           const original = quotedText && memberExchange &&
             !quoted.message.some(segment => historyMention(segment) && String(segment.data.qq) === bot) &&
             groupHistoryQuotedSpeaker(quoted, rows) !== bot
@@ -1439,21 +1440,24 @@ export class OneBotDecisionAdapter {
           item.messageId === String(inbound.replyId) && item.speaker === quotedSpeaker &&
           item.arrival < context.arrival && item.at <= context.arrivedAt && item.at >= context.arrivedAt - GROUP_CONTEXT_MS)
         const quotedText = quoted ? quoted.text.trim() : ''
+        const segments = inbound.segments
+        const images = (inbound.media || []).map(ref => this.directInboundImages.get(ref)).filter(Boolean).slice(0, 2)
         const row = { messageId: inbound.messageId, arrival: context.arrival,
           speaker: inbound.userId, text: String(inbound.text || '').slice(0, 1600 - forwarded.length).toWellFormed(), at: context.arrivedAt,
           ...(forwarded ? { forwarded_excerpt: forwarded } : {}),
           ...(quotedText && !quotedText.startsWith('/') ? { quoted_text: quotedText.slice(0, 160).toWellFormed() } : {}),
-          images: (inbound.media || []).map(ref => this.directInboundImages.get(ref)).filter(Boolean).slice(0, 2),
+          images,
+          ...(!images.length && segments?.some(segment => segment?.type === 'image') ? { media_not_loaded: ['图片'] } : {}),
           at_targets: inbound.segments?.filter(historyMention).slice(0, 8).map(segment => String(segment.data.qq)) ?? [],
           quoted_speaker: quotedSpeaker,
           addressed_to_bot: addressed }
-        const segments = inbound.segments
         const memberExchange = quoted && !quoted.addressed_to_bot && quotedSpeaker !== this.deps.connection?.selfId &&
           quotedSpeaker !== this.deps.config.botQQ && quotedText && !quotedText.startsWith('/')
         if (!addressed && Array.isArray(segments) && segments.length &&
-            (segments.every(historyTextSegment) || memberExchange && segments.every(historyDiscussionSegment))) {
+            (segments.every(groupTopicSegment) ||
+              memberExchange && segments.every(historyDiscussionSegment))) {
           const text = segments.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
-          if (text && !text.startsWith('/')) {
+          if (text && !text.startsWith('/') && !groupAttachmentPlaceholder.test(text)) {
             const previous = (group.liveTopics || []).filter(topic => topic.messageId !== row.messageId)
             group.liveTopics = [...previous, { messageId: row.messageId, at: row.at,
               text: text.slice(0, 320).toWellFormed(), ...(memberExchange ? { quoted_text: row.quoted_text } : {}) }]
