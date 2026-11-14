@@ -2099,7 +2099,7 @@ test('a verified group opportunity refreshes stale listening context without mak
     h.deps.connection.call = async (action, params) => {
       if (action !== 'get_group_msg_history') return call(action, params)
       historyReads++
-      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      assert.deepEqual({ ...params }, { group_id: 303, count: 24 })
       if (scenario === 'live context arrives during lookup') await h.receive('current live group topic', { message_id: 70 })
       if (scenario === 'changed socket') h.deps.connection.socket = {}
       if (scenario === 'lookup failure') throw new Error('Synthetic history unavailable')
@@ -2154,6 +2154,47 @@ test('a verified group opportunity refreshes stale listening context without mak
     await h.end(); await completion
     assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 0)
   })
+})
+
+test('a quiet group gets bounded same-group topic clues only during its autonomous review', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  backendFixture(h)
+  const selected = a.backendGuard.selection()
+  await a.backendGuard.verify(h.deps.connection, selected.stamp)
+  const time = Math.floor(a.now() / 1000)
+  const row = (message_id, age, body, fields = {}) => ({ message_id, message_type: 'group', group_id: 303,
+    sender: { user_id: 202 }, time: time - age, message: [{ type: 'text', data: { text: body } }], ...fields })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_group_msg_history') return call(action, params)
+    assert.equal(params.count, 24)
+    const direct = row(8, 750, 'a stale direct question')
+    direct.message.push({ type: 'at', data: { qq: '999' } })
+    const reply = row(9, 720, 'a stale reply')
+    reply.message.push({ type: 'reply', data: { id: '8' } })
+    return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
+      row(3, 800, 'group interest two'), row(4, 700, 'group interest three'),
+      row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
+      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply] }
+  }
+  await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
+  assert.equal((await h.state()).engaged, false)
+  assert.equal(h.pending.length, 0)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /earlier_topics|group interest/)
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.prompt()
+  const group = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(group.state, 'listening')
+  assert.equal(group.recent.length, 0)
+  assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest one', 'group interest two', 'group interest three'])
+  assert.doesNotMatch(prompt, /a stale direct question|a stale reply|foreign group|own announcement|outside the .* bound/)
+  assert.match(prompt, /fresh thought or question/)
+  await h.receive('live group topic')
+  assert.doesNotMatch(h.prompt(), /earlier_topics|group interest/)
+  await h.end()
+  h.advance(7 * 60 * 60_000)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest/)
 })
 
 test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
