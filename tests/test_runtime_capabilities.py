@@ -448,7 +448,8 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                     self.assertIs(guide["group_social"], expected)
                     self.assertEqual(guide["cadence"]["configured_opportunity_min"], 2)
                     self.assertIn("configured group activity.opportunity", guide["cadence"]["explicit_review"])
-                    self.assertIn("recent discussion still uses its normal interval", guide["cadence"]["explicit_review"])
+                    self.assertIn("new recent discussion still uses its normal interval", guide["cadence"]["explicit_review"])
+                    self.assertIn("even when an earlier review was requested", guide["cadence"]["explicit_review"])
                     self.assertIn("genuine incoming replies keep their own timing", guide["cadence"]["explicit_review"])
                     if expected:
                         self.assertIn("need not wait for an @ mention", guide["proactive_sharing"]["primary_choice"])

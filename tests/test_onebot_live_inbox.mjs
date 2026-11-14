@@ -2451,7 +2451,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(h.pending.length, 1)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic/)
-  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  assert.equal((await h.decide('idle', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 240_000)
   await h.end(); await repeated
   await h.receive('a new contribution on the same topic')
   const newTopic = a.dispatchObservationOnce({ ...event, event_id: 'fixture-new-group-remark', created_at: a.now() })
@@ -2460,7 +2460,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /a new contribution on the same topic/)
   await h.receive('arrived after prompt assembly')
-  assert.equal((await h.decide('defer')).next_review_at, a.now() + 120_000)
+  assert.equal((await h.decide('defer', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 60_000)
   await h.end(); await newTopic
   const group = await h.state()
   const unseen = group.recent.find(row => row.text === 'arrived after prompt assembly')
@@ -3901,6 +3901,7 @@ test('autonomous budget pacing slows personal reviews ahead of spend without slo
       h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
     }
     if (scenario === 'primary-later') h.advance(8 * 3600_000)
+    if (group) await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
     const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
     const capabilities = adapter.runtimeCapabilities
     adapter.runtimeCapabilities = async (...args) => {

@@ -2403,10 +2403,11 @@ export class OneBotDecisionAdapter {
       const activeGroup = group && this.recentGroupContext(scope, owner, now)
         .some(row => row.at > now - cadence.intervalMs && !group.reviewedMessages?.has(row.messageId) &&
           (row.text.trim() || row.forwarded_excerpt || row.images.length))
-      // A quiet review with no fresh discussion can use a longer default.
-      // Explicit earlier reviews still fit; active work uses the normal cadence.
       const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, 60 * 60_000) : cadence.intervalMs
-      nextReview = requestedReview === null ? now + interval : Math.min(requestedReview, now + interval)
+      // Rechecking the same discussion sooner spends the shared autonomy
+      // budget without giving the group a new conversation to join.
+      const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
+      nextReview = requestedReview === null || quietGroup ? now + interval : Math.min(requestedReview, now + interval)
       // The daytime budget is shared with group reviews. Slow the personal
       // series when settled spend is more than ten percentage points ahead.
       const budget = record.binding.budget
