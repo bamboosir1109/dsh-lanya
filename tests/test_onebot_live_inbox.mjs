@@ -2584,6 +2584,51 @@ test('a QQ reply review can retry if prompt assembly fails before the first mode
   assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
 })
 
+test('an interrupted private recovery carries evidence into the new live turn only before any send', async t => {
+  for (const mode of ['interrupted', 'already sent', 'send uncertain']) await t.test(mode, async t => {
+    const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+    adapter.startRequested = true
+    const previous = 'Is the blue version easier to read?'
+    await h.receive(previous, { message_id: 701 })
+    await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+    await Promise.all([...adapter.replyReviewWrites])
+    h.advance(60_000)
+    const started = defer(), proceed = defer()
+    h.agent.step = async () => {
+      const record = adapter.state(h.chat).active
+      if (record.binding.recoveryRevision) {
+        assert.equal(h.chat.activeTurnRole, 'member')
+        if (mode === 'already sent') assert.equal((await h.decide('reply', { text: 'The blue version is clearer.' })).sent, true)
+        if (mode === 'send uncertain') {
+          h.deps.onTransmit = () => { throw new Error('synthetic ambiguous transport') }
+          try { assert.equal((await h.decide('reply', { text: 'The blue version is clearer.' })).sent, false) }
+          finally { h.deps.onTransmit = undefined }
+        }
+        started.resolve()
+        await proceed.promise
+        return { kind: 'completed' }
+      }
+      assert.equal(h.chat.activeTurnRole, 'admin')
+      const retained = record.claimedInput.history.join('\n') + (record.replyHandoff || '')
+      assert.equal(retained.includes(previous), mode === 'interrupted')
+      assert.doesNotMatch(retained, /perform requested side effects|Prior assistant drafts/)
+      assert.equal((await h.decide('reply', { text: 'Yes, send the smaller version.' })).sent, true)
+      return { kind: 'completed' }
+    }
+    await adapter.reviewUnansweredInputs()
+    await started.promise
+    try { await h.receive('Can I send the smaller version too?', { message_id: 702 }) }
+    finally { proceed.resolve() }
+    await driverSettled(h, () => h.agent.status === 'idle' && !h.agent.inbox.hasPending && !adapter.state(h.chat).turns.size)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, mode === 'interrupted' ? 1 : 2)
+    const log = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    const key = id => createHash('sha256').update(h.chat.chatId + '\0' + id).digest('hex').slice(0, 24)
+    const handoffs = log.trim().split('\n').map(JSON.parse)
+      .filter(row => row.phase === 'reply_handoff' && row.input === key('702') && row.prior_input === key('701'))
+    assert.equal(handoffs.length, mode === 'interrupted' ? 1 : 0)
+  })
+})
+
 test('native QQ timing records only compaction before the first model step', async t => {
   const h = await nativeDriverFixture(t)
   const compact = (id, turn, elapsed, error) => {
