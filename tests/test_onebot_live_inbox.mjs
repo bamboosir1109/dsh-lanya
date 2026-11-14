@@ -2514,6 +2514,45 @@ test('expired live group discussion remains a shared-interest clue if platform h
   assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
 })
 
+test('autonomous group reviews retain the verified text that a current group remark quotes', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  const time = Math.floor(a.now() / 1000)
+  const row = (message_id, user_id, age, text) => ({ message_id, group_id: 303, message_type: 'group',
+    sender: { user_id }, time: time - age, message: [{ type: 'text', data: { text } }] })
+  const source = row(81, 204, 610, 'the earlier topic is a pixel-art challenge')
+  const reply = row(82, 202, 1, '32 pixels should be enough')
+  reply.message.unshift({ type: 'reply', data: { id: '81', text: 'untrusted preview' } })
+  a.restoreRecentGroupText(scope, owner, [source, reply], a.now(), '999', true)
+  const context = prompt => JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  const restored = context(a.groupPromptContext(scope, owner, true)).recent[0]
+  assert.equal(restored.text, '32 pixels should be enough')
+  assert.equal(restored.quoted_text, 'the earlier topic is a pixel-art challenge')
+  assert.doesNotMatch(JSON.stringify(restored), /untrusted preview/)
+  const foreign = row(80, 204, 610, 'foreign quote body')
+  foreign.group_id = 404
+  const other = row(79, 202, 2, 'standalone remark')
+  other.message.unshift({ type: 'reply', data: { id: '80' } })
+  a.restoreRecentGroupText(scope, owner, [foreign, other], a.now(), '999', true)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /foreign quote body/)
+
+  await h.receive('I chose the teacup theme', { message_id: 83, user_id: 204 })
+  h.deps.connection.call = async () => row(83, 204, 0, 'I chose the teacup theme')
+  await h.receive('that works for a tiny canvas', { message_id: 84, message: [
+    { type: 'reply', data: { id: '83', text: 'untrusted preview' } },
+    { type: 'text', data: { text: 'that works for a tiny canvas' } },
+  ] })
+  assert.equal(h.pending.length, 0)
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const live = context(h.prompt()).recent.at(-1)
+  assert.equal(live.quoted_text, 'I chose the teacup theme')
+  assert.equal(live.quoted_speaker, '204')
+  assert.equal(live.addressed_to_bot, false)
+  assert.doesNotMatch(h.prompt(), /untrusted preview/)
+  assert.ok(context(a.groupPromptContext(scope, owner)).recent.every(item => !('quoted_text' in item)))
+  await h.end()
+})
+
 test('a quiet group gets bounded same-group topic clues only during its autonomous review', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)
