@@ -169,12 +169,12 @@ const queuedReview = event => event.producer === 'main-review' && event.event_id
 function sameReviewOwner(left, right) {
   return ['scope', 'workspace_key', 'agent_key', 'kind'].every(key => left[key] === right[key])
 }
-function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
+function reviewAnchor(readEvidence, event, depth = 0, seen = new Set()) {
   const key = observationKey(event.scope, event.event_id)
   if (depth >= 128 || seen.has(key)) throw new ObservationQueueError('Review freshness ancestry is not bounded and acyclic')
   seen.add(key)
   if (!queuedReview(event)) {
-    const original = readObservationEvidence(directory, key)
+    const original = readEvidence(key)
     if (stable(original.value) !== stable(event)) throw new ObservationQueueError('Review freshness original conflicts')
     return { key, sha256: original.sha256, created_at: event.created_at }
   }
@@ -185,7 +185,7 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
       event.event_id !== 'main-review:' + context.parent_observation_key + ':' + context.scheduled_at) {
     throw new ObservationQueueError('Review freshness requires exact parent metadata')
   }
-  const parent = readObservationEvidence(directory, context.parent_observation_key), completed = parent.completion
+  const parent = readEvidence(context.parent_observation_key), completed = parent.completion
   if (!sameReviewOwner(event, parent.value) || parent.value.event_id !== context.parent_event_id ||
       !completed || ['unknown', 'no_decision'].includes(completed.status) ||
       completed.decision_id !== context.previous_decision_id || completed.next_review_at !== context.scheduled_at) {
@@ -202,11 +202,11 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
     if (inherited) {
       if (stable(inherited) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor differs from parent')
     } else {
-      const expected = queuedReview(parent.value) ? reviewAnchor(directory, parent.value, depth + 1, seen)
+      const expected = queuedReview(parent.value) ? reviewAnchor(readEvidence, parent.value, depth + 1, seen)
         : { key: context.parent_observation_key, sha256: parent.sha256, created_at: parent.value.created_at }
       if (stable(expected) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor is not the original')
     }
-    const original = anchor.key === context.parent_observation_key ? parent : readObservationEvidence(directory, anchor.key)
+    const original = anchor.key === context.parent_observation_key ? parent : readEvidence(anchor.key)
     if (original.sha256 !== anchor.sha256 || !sameReviewOwner(event, original.value) ||
         original.value.created_at !== anchor.created_at || queuedReview(original.value)) {
       throw new ObservationQueueError('Review freshness anchor original conflicts')
@@ -214,14 +214,14 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
     return { ...anchor }
   }
   // Only pre-upgrade unanchored reviews use this bounded migration walk.
-  return reviewAnchor(directory, parent.value, depth + 1, seen)
+  return reviewAnchor(readEvidence, parent.value, depth + 1, seen)
 }
 
 /** Queue-generated reviews inherit real source age, not a fresh greeting at
  * each due timestamp. Model payload fields never override the physical root. */
 export function observationFreshness(directory, event) {
   validateObservation(event)
-  return queuedReview(event) ? reviewAnchor(directory, event).created_at : event.created_at
+  return queuedReview(event) ? reviewAnchor(key => readObservationEvidence(directory, key), event).created_at : event.created_at
 }
 
 function publish(file, value) {
@@ -241,7 +241,7 @@ function ownerAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
 }
 
-function buildReviewCandidate(base, event, completed, at) {
+function buildReviewCandidate(base, event, completed, at, readEvidence, checkDirectories) {
   const pending = path.join(base, 'pending'), done = path.join(base, 'done')
     if (reviewTime(event, completed) > at) return null
     const parentKey = observationKey(event.scope, event.event_id)
@@ -256,21 +256,22 @@ function buildReviewCandidate(base, event, completed, at) {
     })
     const name = observationKey(review.scope, review.event_id) + '.json'
     const target = path.join(pending, name)
-    const completedChild = fs.existsSync(path.join(done, name)) ? readObservationEvidence(base, name.slice(0, -5)) : null
+    const completedChild = fs.existsSync(path.join(done, name)) ? readEvidence(name.slice(0, -5)) : null
     if (completedChild?.completion && completedChild.value.payload.review_context?.freshness_anchor === undefined) {
       if (stable(completedChild.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
       // An exact completed legacy child needs no new work or freshness
       // authority. Revalidate ancestry only at the unfinished frontier.
       return null
     }
-    review.payload.review_context.freshness_anchor = reviewAnchor(base, event)
+    review.payload.review_context.freshness_anchor = reviewAnchor(readEvidence, event)
     if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
     if (!completedChild?.completion && !fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
+      checkDirectories()
       try { publish(target, review) } catch (error) { if (error.code !== 'EEXIST') throw error }
     }
     // Reuse only a verified terminal child. An executable child is read
     // after publication and independently verified again before dispatch.
-    const read = completedChild?.completion ? completedChild : readObservationEvidence(base, name.slice(0, -5))
+    const read = completedChild?.completion ? completedChild : readEvidence(name.slice(0, -5))
     validateObservation(read.value)
     if (stable(read.value) !== stable(review)) {
       const legacy = structuredClone(review)
@@ -398,7 +399,7 @@ function fileScanner(directory, incremental = true) {
       }
       return remembered
     },
-    review({ key, sha256, completionSha256, at, acknowledged }) {
+    review({ key, sha256, completionSha256, at, acknowledged }, readEvidence, checkDirectories) {
       const previous = reads.get(key)
       reads.delete(key)
       if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256) {
@@ -410,13 +411,13 @@ function fileScanner(directory, incremental = true) {
         if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: previous.nextAt })
         return null
       }
-      const current = readObservationEvidence(base, key); metrics.reads++
+      const current = readEvidence(key); metrics.reads++
       if (current.sha256 !== sha256 || current.completionSha256 !== completionSha256 || !current.completion) {
         throw new ObservationQueueError('Evidence changed during acknowledgement')
       }
       const event = current.value, completion = current.completion
       let result
-      try { result = buildReviewCandidate(base, event, completion, at) }
+      try { result = buildReviewCandidate(base, event, completion, at, readEvidence, checkDirectories) }
       catch (error) {
         // Recheck failed derivations at the next audit or on file change.
         // A verified terminal is never treated as executable work.
@@ -426,11 +427,25 @@ function fileScanner(directory, incremental = true) {
       if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
       return result
     },
+    reviewBatch({ records, at }) {
+      if (!Array.isArray(records) || records.length > SCANNER_READ_BATCH_SIZE) throw new ObservationQueueError('Invalid review batch')
+      const checkDirectories = () => {
+        if (stable(directoryIdentity()) !== directories) throw new ObservationQueueError('Inbox directory changed during scan')
+      }
+      checkDirectories()
+      const readEvidence = key => readEvidenceFiles(pending, done, key)
+      const result = records.map(record => {
+        try { return { review: this.review({ ...record, at }, readEvidence, checkDirectories) } }
+        catch (error) { return { error: error.name } }
+      })
+      checkDirectories()
+      return result
+    },
     verify({ key, sha256 }) {
       const current = readObservationEvidence(base, key); metrics.reads++
       if (current.completion || current.sha256 !== sha256) throw new ObservationQueueError('Executable evidence changed before dispatch')
       // An unfinished review must still have its real, current parent ancestry.
-      if (queuedReview(current.value)) reviewAnchor(base, current.value)
+      if (queuedReview(current.value)) reviewAnchor(key => readObservationEvidence(base, key), current.value)
       return { verified: true }
     },
     complete({ key, sha256, raw: text, marker }) {
@@ -675,14 +690,6 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, 1, Number.MAX_SAFE_INTEGER)
   }
 
-  async function scheduleReview(event, completed, read, acknowledged) {
-    const review = await scanner.call('review', { key: observationKey(event.scope, event.event_id),
-      sha256: read.sha256, completionSha256: read.completionSha256, at: now(), acknowledged })
-    if (!review) return null
-    if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(review.name)?.next_after || 0) > now()) return null
-    return { ...review, raw: Buffer.from(review.raw) }
-  }
-
   async function processEntry({ event, name, sha256, raw }) {
     const retained = unsettledWrites.get(name)
     if (retained) {
@@ -799,6 +806,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                   key: name.slice(0, -5), sha256: read.sha256, completionSha256: read.completionSha256,
                 })),
               }) : [])
+              const reviewRecords = []
               for (const { event, name, read } of records) {
                 if (stopped) break
                 try {
@@ -806,14 +814,28 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                   const acknowledged = outcomes.has(name) ? outcomes.get(name)
                     : await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
                   if (acknowledged) unsettledWrites.delete(name)
-                  if (!remembered.has(name.slice(0, -5))) {
-                    const review = await scheduleReview(event, completed, read, acknowledged)
-                    if (review) backlog.set(review.name, review)
-                  }
-                  invalidEvidence.delete(name)
+                  const key = name.slice(0, -5)
+                  if (remembered.has(key)) invalidEvidence.delete(name)
+                  else reviewRecords.push({ key, sha256: read.sha256, completionSha256: read.completionSha256, acknowledged })
                 } catch (error) {
                   if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
                   invalidEvidence.add(name)
+                }
+              }
+              for (let index = 0; index < reviewRecords.length && !stopped; index += SCANNER_READ_BATCH_SIZE) {
+                const batch = reviewRecords.slice(index, index + SCANNER_READ_BATCH_SIZE)
+                const completed = await scanner.call('reviewBatch', { records: batch, at: now() })
+                for (const [offset, { error, review }] of completed.entries()) {
+                  const name = batch[offset].key + '.json'
+                  if (error) {
+                    if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error)
+                    invalidEvidence.add(name)
+                  } else {
+                    invalidEvidence.delete(name)
+                    if (review && (leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(review.name)?.next_after || 0) <= now()) {
+                      backlog.set(review.name, { ...review, raw: Buffer.from(review.raw) })
+                    }
+                  }
                 }
               }
             }
@@ -990,7 +1012,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
 
 if (!isMainThread && workerData?.protocol === SCANNER_PROTOCOL) {
   const files = fileScanner(workerData.directory)
-  const methods = new Set(['list', 'readBatch', 'rememberTerminals', 'review', 'verify', 'complete', 'finishScan'])
+  const methods = new Set(['list', 'readBatch', 'rememberTerminals', 'reviewBatch', 'verify', 'complete', 'finishScan'])
   files.start()
   parentPort.on('message', message => {
     if (!message || !Number.isSafeInteger(message.id) || !methods.has(message.method)) return
