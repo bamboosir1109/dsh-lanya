@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,27 @@ class BudgetRuntimeTests(unittest.TestCase):
         state = budget.get_snapshot(self.now)['usage']['buckets']['autonomy']
         self.assertEqual(state['reserved_cny'], 0.1)
         self.assertTrue(state['exhausted'])
+
+    def test_reply_check_can_read_committed_reservation_while_another_turn_prepares_a_write(self):
+        live = {'origin': 'live'}
+        self.assertTrue(self.run_op(**live)['allowed'])
+        writer = sqlite3.connect(budget._paths()[1])
+        try:
+            writer.execute('BEGIN IMMEDIATE')
+            writer.execute('UPDATE budget_turns SET status=? WHERE turn_key=?', ('unknown', self.request['turn_key']))
+            self.assertTrue(self.run_op(operation='check', **live)['allowed'])
+            writer.commit()
+            self.assertFalse(self.run_op(operation='check', **live)['allowed'])
+        finally:
+            writer.close()
+
+    def test_reply_check_refuses_a_configuration_revision_that_changes_during_the_read(self):
+        live = {'origin': 'live'}
+        self.assertTrue(self.run_op(**live)['allowed'])
+        config, revision = budget._config()
+        with patch.object(budget, '_config', side_effect=[(config, revision), (config, 'changed')]):
+            with self.assertRaisesRegex(budget.BudgetError, 'budget_configuration_changed'):
+                self.run_op(operation='check', **live)
 
     def test_actual_turn_receipt_settles_once_and_conflicting_receipt_refused(self):
         self.run_op()
