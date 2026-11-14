@@ -4583,6 +4583,36 @@ test('a model error leaves the newer QQ input runnable and retains the earlier u
   assert.equal(h.agent.inbox.hasPending, false)
 })
 
+test('a prompt assembly failure does not strand the newer QQ message', async t => {
+  const entered = defer(), release = defer()
+  let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => {
+    if (++assemblies !== 1) return
+    entered.resolve()
+    await release.promise
+    throw new Error('synthetic prompt assembly failure')
+  } })
+  const adapter = h.bridge.lanyaPolicy
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    assert.match(record.claimedInput.history.join('\n'), /older question before assembly/)
+    assert.match(record.claimedInput.originalText, /newer question during assembly/)
+    assert.equal((await h.decide('reply', { text: 'answer to both questions' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('older question before assembly')
+  await entered.promise
+  try {
+    await h.receive('newer question during assembly')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
 test('a background model error wakes a queued live QQ message in the same conversation', async t => {
   for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
     const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
