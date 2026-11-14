@@ -261,14 +261,29 @@ const replyHandoffText = (entry, partial) => partial
   ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
     + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + entry.originalText
   : entry.originalText
+const REPLY_EVIDENCE_LIMIT = 32_000
+const REPLY_HANDOFF_LIMIT = 4_000
+function excerptReplyEvidence(text, limit) {
+  if (text.length <= limit) return text
+  const omitted = '\n[较长的消息已节选]\n'
+  const head = Math.floor((limit - omitted.length) / 2)
+  return text.slice(0, head).toWellFormed() + omitted + text.slice(-(limit - omitted.length - head)).toWellFormed()
+}
+
+function baseReplyEvidence(history, current) {
+  // Reserve space for questions that finish preparing after this input.
+  const limit = REPLY_EVIDENCE_LIMIT - REPLY_HANDOFF_LIMIT
+  const latest = excerptReplyEvidence(current, history ? limit - REPLY_HANDOFF_LIMIT : limit)
+  return history ? excerptReplyEvidence(history, limit - latest.length - 1) + '\n' + latest : latest
+}
+
 function replyEvidenceWithLateText(text, late) {
   if (!late?.size) return text
   const notes = lateReplyNotes(late)
-  if (notes[0].speaker) {
-    return '[本群较早直接对你说的话，只保留各发言人的原文，未包含引用或附件]\n' +
-      JSON.stringify(notes) + '\n\n' + text
-  }
-  return '[同一私聊中较早的原话，引用或附件内容未包含]\n' + notes.map(note => note.text).join('\n') + '\n\n' + text
+  const prefix = notes[0].speaker
+    ? '[本群较早直接对你说的话，只保留各发言人的原文，未包含引用或附件]\n' + JSON.stringify(notes)
+    : '[同一私聊中较早的原话，引用或附件内容未包含]\n' + notes.map(note => note.text).join('\n')
+  return excerptReplyEvidence(prefix, REPLY_HANDOFF_LIMIT - 2) + '\n\n' + text
 }
 const lateReplyNotes = late => [...late.values()].sort((a, b) => a.arrival - b.arrival)
   .map(({ text, speaker }) => ({ text: text || '[较早收到一张图片]', ...(speaker && { speaker }) }))
@@ -1057,7 +1072,8 @@ export class OneBotDecisionAdapter {
   }
 
   persistReplyInput(binding, text, sender, resolveOwner = false, previousText, nativePending) {
-    if (typeof text !== 'string' || !text.trim() || text.length > 32_000) return
+    if (typeof text !== 'string' || !text.trim()) return
+    text = excerptReplyEvidence(text, REPLY_EVIDENCE_LIMIT)
     // Run alongside the original native input, never add a helper/model call
     // to the foreground path. A storage failure cannot authorize recovery.
     if (!binding.owner && !resolveOwner) return
@@ -1734,15 +1750,15 @@ export class OneBotDecisionAdapter {
     const receivedAt = Number.isSafeInteger(arrivedAt) && arrivedAt >= 0 && arrivedAt <= now ? arrivedAt : now
     const batchFirstAt = merge && Number.isSafeInteger(previous.batchFirstAt) ? Math.min(previous.batchFirstAt, receivedAt) : receivedAt
     const sender = this.context.getStore()?.inbound?.userId
-    const baseReplyEvidence = excerpt ? excerpt + '\n' + original : original
-    const replyEvidenceText = replyEvidenceWithLateText(baseReplyEvidence, lateReplyText)
+    const replyEvidenceBase = baseReplyEvidence(excerpt, original)
+    const replyEvidenceText = replyEvidenceWithLateText(replyEvidenceBase, lateReplyText)
     const priorInput = carriedText && excerpt.includes(carriedText) ? claimed.binding.messageId : null
     const preparedInputs = binding.origin === 'live' && !binding.recoveryRevision
       ? preparing.filter(item => item.complete && item.text.trim() && recent.includes(item.text) && excerpt.includes(item.text))
         .map(item => item.messageId) : []
     const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContacts,
       receivedAt, batchFirstAt, replyEvidenceText, arrival: current?.arrival, lateReplyText,
-      baseReplyEvidence, priorInput, preparedInputs,
+      baseReplyEvidence: replyEvidenceBase, priorInput, preparedInputs,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
@@ -2048,7 +2064,7 @@ export class OneBotDecisionAdapter {
             record.claimedInput = Object.freeze({ ...entry, history: retained, groupContacts, lateReplyText,
               directGroupContact: groupContacts.length > 0 })
             if (!group || groupContacts.length || lateReplyText.size) {
-              record.baseReplyEvidence = excerpt + '\n' + entry.originalText
+              record.baseReplyEvidence = baseReplyEvidence(excerpt, entry.originalText)
               const evidence = replyEvidenceWithLateText(record.baseReplyEvidence, lateReplyText)
               this.persistReplyInput(entry.binding, evidence, entry.sender, false, entry.replyEvidenceText)
               record.replyEvidenceText = evidence

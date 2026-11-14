@@ -182,6 +182,32 @@ test('periodic reply review queues a bounded one-shot current-model review and r
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('long merged private inputs retain a durable reply recovery after the native turn ends', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  const older = 'Is the paper size important?'
+  const newer = 'Does this draft fit? ' + 'text '.repeat(3500) + ' Should I shorten it?'
+  await h.receive(older, { message_id: 501 })
+  await h.receive('Working draft: ' + 'detail '.repeat(2080), { message_id: 502 })
+  await h.receive(newer, { message_id: 503 })
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /Does this draft fit\?[\s\S]*Should I shorten it\?/)
+  await Promise.all([...a.replyReviewWrites])
+  const stored = (await a.policy.snapshot(h.chat.chatId)).current.replyReview.text
+  assert.ok(stored.length <= 32_000)
+  assert.match(stored, /\[较长的消息已节选\]/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; a.startRequested = true; h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /Is the paper size important\?[\s\S]*Does this draft fit\?[\s\S]*Should I shorten it\?/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'Keep the paper size and trim the middle.' })).sent, true)
+  await h.end()
+  h.agent.status = 'idle'; await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('an unanswered direct message defers an autonomous turn without failure backoff', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const scope = h.chat.chatId, owner = await adapter.trustedOwner(scope)
