@@ -1098,7 +1098,6 @@ export class OneBotDecisionAdapter {
     const group = this.groupConversation(scope, owner)
     if (!group) return
     const local = this.recentGroupContext(scope, owner, now)
-    if (local.some(row => row.at >= now - GROUP_RECENT_CONTEXT_MS)) return
     const localIds = new Set(local.map(row => row.messageId))
     const recent = new Map()
     for (const row of rows) {

@@ -2042,7 +2042,7 @@ test('a verified group opportunity refreshes stale listening context without mak
       if (action !== 'get_group_msg_history') return call(action, params)
       historyReads++
       assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
-      if (scenario === 'live context arrives during lookup') await h.receive('current live group topic')
+      if (scenario === 'live context arrives during lookup') await h.receive('current live group topic', { message_id: 70 })
       if (scenario === 'changed socket') h.deps.connection.socket = {}
       if (scenario === 'lookup failure') throw new Error('Synthetic history unavailable')
       const row = (message_id, text, extra = {}) => ({ message_id, message_type: 'group', group_id: 303,
@@ -2074,12 +2074,16 @@ test('a verified group opportunity refreshes stale listening context without mak
     if (scenario === 'stale context') await h.receive('recent group history topic, now with the live payload', { message_id: 71 })
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     const prompt = h.prompt()
-    const freshest = ['empty', 'stale context'].includes(scenario)
+    const freshest = ['empty', 'stale context', 'live context arrives during lookup'].includes(scenario)
     const expected = freshest ? /recent group history topic/
       : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
     assert.match(prompt, expected)
     assert.doesNotMatch(prompt, /expired group topic|other group topic|own group output/)
     if (!freshest) assert.doesNotMatch(prompt, /recent group history topic/)
+    if (scenario === 'live context arrives during lookup') {
+      const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+      assert.deepEqual(context.recent.map(row => row.text), ['recent group history topic', 'current live group topic'])
+    }
     if (scenario === 'stale context') {
       const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
       assert.deepEqual(context.recent.map(row => row.text), [
@@ -2460,14 +2464,14 @@ test('verified reconnect restores recent group text as listening context without
     row(99, -5, 'future topic'),
   ] } : call(action, params)
   const before = await a.policy.snapshot(scope)
+  await h.receive('new live topic', { message_id: 100 })
+  assert.equal(h.pending.length, 0)
   a.startRequested = true
   await a.recoverReconnectHistory()
   assert.equal((await a.policy.snapshot(scope)).revision, before.revision)
   assert.equal(h.pending.length, 0)
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
   assert.equal((await h.state()).engaged, false)
-  await h.receive('new live topic', { message_id: 100 })
-  assert.equal(h.pending.length, 0)
   await h.opportunity(); h.start(); await h.preStep()
   const prompt = h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1]
   assert.doesNotMatch(prompt, /<\/observed_group_context>/u)
