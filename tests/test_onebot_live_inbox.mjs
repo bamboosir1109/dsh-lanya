@@ -985,7 +985,7 @@ function backendFixture(h, provider='snowluma') {
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
+  for (const scenario of ['new', 'mixed friend history', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
     'live arrived', 'later own message', 'same-second own message', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
     const warnings = []
@@ -1018,6 +1018,12 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       const rows = [row(at - 2, 10, 'before disconnect'), row(at, 11, 'first missed question'),
         row(at + 1, -12, 'second missed question'), row(at + 2, 13, '/reset'),
         row(at + 3, 14, 'not a friend', { sub_type: 'group' })]
+      if (scenario === 'mixed friend history') {
+        rows[1].message.unshift({ type: 'reply', data: { id: '10', text: 'unverified preview' } })
+        rows[2].message.push({ type: 'image', data: { url: 'https://example.invalid/private-fixture' } })
+        rows.push(row(at + 4, 15, 'wrong friend route', { target_id: 444 }),
+          row(at + 5, 16, '', { message: [{ type: 'image', data: { file: 'attachment-only' } }] }))
+      }
       if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
       if (scenario === 'same-second own message') rows.push(row(at + 1, 15, 'possibly answered', { sender: { user_id: 999 } }))
       return { messages: rows }
@@ -1043,13 +1049,14 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     const state = await adapter.policy.snapshot(h.chat.chatId)
     const expectedReads = expires ? 0 : retries ? 2 : 1
     assert.equal(historyReads, expectedReads)
-    if (!retries && !['new', 'disconnect second', 'busy then idle'].includes(scenario)) {
+    if (!retries && !['new', 'mixed friend history', 'disconnect second', 'busy then idle'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return
     }
     assert.equal(state.current.controlAllowed, false, warnings.join('\n'))
-    assert.equal(state.current.replyReview.text, 'first missed question\n\nsecond missed question')
+    const supplement = scenario === 'mixed friend history' ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
+    assert.equal(state.current.replyReview.text, 'first missed question' + supplement + '\n\nsecond missed question' + supplement)
     assert.equal(h.pending.length, 0, 'history is staged without native live dispatch')
     await h.receive('second missed question', { message_id: -12 })
     assert.equal(h.pending.length, 0, 'late duplicate does not enter the native inbox')
@@ -2428,7 +2435,8 @@ test('reconnect recovers quote follow-ups only with a real mention or the bot in
   const state = await a.policy.snapshot(scope)
   assert.deepEqual(Array.from(state.seen, item => item.messageId), ['903', '905', '910', '911'])
   assert.equal(state.current.controlAllowed, false)
-  assert.match(state.current.replyReview.text, /quoted bot follow-up.*mention with quote outside the window/u)
+  assert.match(state.current.replyReview.text, /quoted bot follow-up[\s\S]*mention with quote outside the window/u)
+  assert.match(state.current.replyReview.text, /引用或附件未展开/u)
   assert.doesNotMatch(state.current.replyReview.text, /untrusted preview|own group result|another member follow-up/u)
   const owner = await a.trustedOwner(scope)
   const byId = new Map(a.recentGroupContext(scope, owner).map(item => [item.messageId, item]))

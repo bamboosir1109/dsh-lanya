@@ -179,6 +179,7 @@ const groupHistorySender = row => {
 }
 const historyTextSegment = segment => segment?.type === 'text' && typeof segment.data?.text === 'string'
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
+const historySupplement = new Set(['reply', 'image', 'record', 'face', 'video', 'file', 'forward'])
 const groupHistoryAddressed = (targets, bot, quoted) => targets.includes(bot) ||
   quoted === bot && !targets.some(target => target !== 'all')
 function groupHistoryQuotedSpeaker(row, rows) {
@@ -820,15 +821,21 @@ export class OneBotDecisionAdapter {
             const sender = String(row.sender?.user_id)
             if (at > window.verifiedAt || at <= Math.max(lastOwnAt, lastKnownAt) || sender === selected.expectedAccount || !allowed(sender) ||
                 (group && !groupHistorySender(row)) ||
-                (!group && (row.message_type !== 'private' || row.sub_type !== 'friend')) ||
+                (!group && (row.message_type !== 'private' || row.sub_type !== 'friend' ||
+                  row.user_id != null && String(row.user_id) !== sender ||
+                  row.peer_id != null && String(row.peer_id) !== peer ||
+                  row.target_id != null && String(row.target_id) !== selected.expectedAccount)) ||
                 !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
                 !Array.isArray(row.message) || !row.message.length || row.message.length > 12) continue
             if (row.message.some(segment => !historyTextSegment(segment) &&
-                !(group && (historyMention(segment) || segment?.type === 'reply')))) continue
+                !historySupplement.has(segment?.type) && !(group && historyMention(segment)))) continue
             if (group && !groupHistoryAddressed(row.message.filter(historyMention).map(segment => String(segment.data.qq)),
               selected.expectedAccount, groupHistoryQuotedSpeaker(row, recent))) continue
-            const text = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
-            if (text && text.length <= 2000 && !text.startsWith('/')) receipts.set(messageId, { messageId, at, text, sender })
+            const body = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
+            if (!body || body.startsWith('/')) continue
+            const text = row.message.some(segment => historySupplement.has(segment?.type))
+              ? body + '\n[补查只保留了新写的文字，引用或附件未展开]' : body
+            if (text.length <= 2000) receipts.set(messageId, { messageId, at, text, sender })
           }
           const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
           if (batch.length) {
