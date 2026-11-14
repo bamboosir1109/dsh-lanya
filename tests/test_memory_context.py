@@ -224,6 +224,20 @@ class MemoryContextTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_zero_memory_limit_searches_conversation_without_opening_the_memory_store(self):
+        self.insert("workspace-fact", text="synthetic umbrella")
+        scope = "group:fixture"
+        event = dict(id="group-topic", source="fixture", text="synthetic umbrella",
+                     role="user", created_at=10, conversation_key=scope,
+                     **self.context.session_owner(self.cwd, self.preset))
+        with mock.patch.object(self.context, 'connect_readonly', side_effect=AssertionError('memory store opened')):
+            packet = self.context.build_context(self.cwd, self.preset, "synthetic umbrella", [event],
+                                                conversation_key=scope, db_path=str(self.db), limit=0)
+        self.assertEqual(packet['retrieval']['coverage'], 'store_not_requested')
+        self.assertEqual(packet['memories'], [])
+        self.assertEqual(packet['originals'], [])
+        self.assertEqual([row['id'] for row in packet['recent_events']], ['group-topic'])
+
     def test_panel_owner_choices_keep_empty_values_without_default_selection(self):
         self.insert("current")
         self.insert("shared", workspace_key="", agent_key="")

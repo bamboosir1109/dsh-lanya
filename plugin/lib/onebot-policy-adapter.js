@@ -1400,7 +1400,7 @@ export class OneBotDecisionAdapter {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
     return (record.binding.capabilityContext || '') + (record.replyHandoff || '')
-      + this.groupPromptContext(chat.chatId, record.binding.owner, this.canViewGroupImage(record.binding))
+      + this.groupPromptContext(chat.chatId, record.binding.owner, this.isGroupActivityReview(record.binding))
       + '\nQQ delivery protocol: ordinary text replies should use qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) once. This decides and sends through the current guards in one call, then ends the turn: do not narrate the receipt or write the text again. Use qq_send_meme({tags:[one_or_two_labels]}) for a suitable indexed image reaction; this one tool decides and sends one real image, without extra vision for a label reaction. Neither path bypasses silence, freshness, budget or scope. Other media/detailed workflows may still decide once and reuse the ticket. A draft alone is never delivered. Choose idle, defer or authorized silence/resume when appropriate.\n'
       + 'When sharing something you made or did, write a natural QQ message about the result. Omit tool receipts, message IDs, revision counters and local Markdown links. Use the actual image tool for a picture. For your own image choose expression:"text_meme"; send no caption when the image says enough, or add only a useful detail. Use expression:"meme" for an image-only reaction from the meme library.\n'
       + '中文聊天直接接对方的话。没有真实的后续动作，就省掉「我再去看一下」「我再确认一下」这类收尾。知道哪一点就说哪一点，有具体疑问再问。分享作品时挑一个有意思的细节；图片已经说清就收住。遇到真要讲步骤或解释的事，完整讲清，句数随内容。\n'
@@ -1437,7 +1437,7 @@ export class OneBotDecisionAdapter {
       isConcurrencySafe: () => false, execute: (args, exec) => this.reviewMemes(args, exec) }
   }
 
-  canViewGroupImage(binding) {
+  isGroupActivityReview(binding) {
     return binding.origin === 'observation' && binding.observationKind === 'activity.opportunity' &&
       localOpportunity(binding) && this.contextualGroupEnabled(binding.scope)
   }
@@ -1455,7 +1455,7 @@ export class OneBotDecisionAdapter {
 
   async viewGroupImage(args, exec, ctx) {
     const record = this.captureExec(exec), binding = record.binding
-    if (!this.canViewGroupImage(binding) || !plain(args) || Object.keys(args).length !== 1 ||
+    if (!this.isGroupActivityReview(binding) || !plain(args) || Object.keys(args).length !== 1 ||
         typeof args.image_ref !== 'string' || record.groupImageViewed) return { status: 'unavailable' }
     const select = () => this.recentGroupContext(binding.scope, binding.owner)
       .flatMap(row => row.images).find(image => image.id === args.image_ref)
@@ -2848,10 +2848,20 @@ export class OneBotDecisionAdapter {
     const ownSession = session?.id !== undefined && this.bridge.chatForSession(String(session.id)) === canonicalScope(scope)
     const recent = readScopedMemoryEvents(ownSession ? session : null, scope, owner)
     const inbound = this.context.getStore()
-    if (inbound?.binding?.scope === scope && typeof inbound.inbound?.text === 'string') query = inbound.inbound.text
+    const binding = inbound?.binding
+    const groupReview = binding?.scope === scope && this.isGroupActivityReview(binding)
+    if (binding?.scope === scope && typeof inbound.inbound?.text === 'string') query = inbound.inbound.text
+    let recentEvents = recent.events
+    if (groupReview) {
+      // QQ activity reviews need shared group conversations, not the agent-wide memory store.
+      recentEvents = recentEvents.filter(row => row.role === 'user')
+      const groupText = this.recentGroupContext(scope, owner).map(row => row.text.trim()).filter(Boolean)
+      const topics = groupText.length ? groupText : recentEvents.map(row => row.text.trim())
+      query = topics.slice(-2).map(topic => topic.slice(0, 768).toWellFormed()).join('\n')
+    }
     const script = this.config.memoryContextScript || path.join(this.deps.config.workspacePath || path.dirname(path.dirname(this.stateFile)), 'napcat', 'memory_context.py')
     const request = { cwd: owner.cwd, agent_preset: owner.preset, query: String(query).slice(0, 2048),
-      recent_events: recent.events, conversation_key: canonicalScope(scope), limit: 8 }
+      recent_events: recentEvents, conversation_key: canonicalScope(scope), limit: groupReview ? 0 : 8 }
     const value = await this.readTrustedHelper(script, request)
     this.validateOwnerContext(value, 'dsh-memento-context/v1', scope, owner)
     if (value.read_only !== true) throw new Error('Scoped memory helper must be read-only')

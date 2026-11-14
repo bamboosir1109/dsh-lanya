@@ -2033,6 +2033,43 @@ test('a queued group review uses the current social prompt instead of an inherit
   await h.end(); await completion
 })
 
+test('a group activity review searches recent group text and falls back to the same chat history', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  const session = h.agent.session
+  const events = [
+    { seq: 0, type: 'user/message', data: { role: 'user', source: { kind: 'plugin:dsh-onebot' },
+      content: [{ type: 'text', text: 'earlier group conversation' }] } },
+    { seq: 1, type: 'assistant/message', data: { message: { role: 'assistant',
+      content: [{ type: 'text', text: 'internal draft' }] } } },
+  ]
+  Object.assign(session, { header: { id: session.id, cwd: owner.cwd, agentPreset: owner.preset },
+    seq: events.length, inheritedEventCount: 0, snapshotEvents: (from, to) => events.slice(from, to) })
+  let request
+  a.readTrustedHelper = async (_script, value) => {
+    request = value
+    return { schema: 'dsh-memento-context/v1', conversation_key: scope, owner, read_only: true }
+  }
+  a.memoryContext = (...args) => a.readMemoryContext(...args)
+  await h.receive('superseded group topic')
+  await h.receive('new group topic')
+  await h.receive('latest group comment')
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  assert.equal(request.limit, 0)
+  assert.deepEqual(Array.from(request.recent_events, row => row.text), ['earlier group conversation'])
+  h.advance(601_000)
+  await h.opportunity()
+  assert.equal(request.query, 'earlier group conversation')
+  Object.assign(session, { seq: 0, snapshotEvents: () => [] })
+  await h.opportunity()
+  assert.equal(request.query, '')
+  assert.equal(request.recent_events.length, 0)
+  await a.readMemoryContext(scope, 'ordinary reply query', owner)
+  assert.equal(request.query, 'ordinary reply query')
+  assert.equal(request.limit, 8)
+})
+
 test('a verified group opportunity refreshes stale listening context without making a live reply', async t => {
   for (const scenario of ['empty', 'stale context', 'current live context', 'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
