@@ -1080,6 +1080,27 @@ test('a lost budget reservation response can be recovered without losing the liv
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('a newer private message carries the earlier reply blocked by the budget helper', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+  await h.receive('a question interrupted by the ledger', { message_id: 601 })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  a.budgetProvider = request => {
+    if (request.operation === 'check') throw new Error('synthetic ledger failure')
+    return provider(request)
+  }
+  assert.equal((await h.decide('reply', { text: 'reply awaiting ledger' })).reason, 'budget_unavailable')
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  a.budgetProvider = provider
+  await h.receive('a new detail about the same question', { message_id: 602 })
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /a question interrupted by the ledger[\s\S]*a new detail about the same question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer to the two messages' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('a live reply blocked before any send by budget errors gets one recovery after the ledger returns', async t => {
   for (const operation of ['reserve', 'check']) await t.test(operation, async t => {
     const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
