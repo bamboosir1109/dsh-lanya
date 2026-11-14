@@ -2171,12 +2171,18 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
     assert.equal(params.count, 24)
     const direct = row(8, 750, 'a stale direct question')
     direct.message.push({ type: 'at', data: { qq: '999' } })
-    const reply = row(9, 720, 'a stale reply')
-    reply.message.push({ type: 'reply', data: { id: '8' } })
+    const reply = row(9, 720, 'a stale reply to an unknown message')
+    reply.message.push({ type: 'reply', data: { id: '19' } })
+    const memberReply = row(10, 690, 'verified member exchange', { sender: { user_id: 204 } })
+    memberReply.message.push({ type: 'reply', data: { id: '3' } }, { type: 'at', data: { qq: '202' } })
+    const botReply = row(11, 680, 'a stale reply to the bot')
+    botReply.message.push({ type: 'reply', data: { id: '7' } })
+    const mixedTarget = row(12, 675, 'a stale question with a bot mention')
+    mixedTarget.message.push({ type: 'reply', data: { id: '3' } }, { type: 'at', data: { qq: '999' } })
     return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
       row(3, 800, 'group interest two'), row(4, 700, 'group interest three'),
       row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
-      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply] }
+      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget] }
   }
   await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
   assert.equal((await h.state()).engaged, false)
@@ -2187,11 +2193,11 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
   const group = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.equal(group.state, 'listening')
   assert.equal(group.recent.length, 0)
-  assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest one', 'group interest two', 'group interest three'])
-  assert.doesNotMatch(prompt, /a stale direct question|a stale reply|foreign group|own announcement|outside the .* bound/)
-  assert.match(prompt, /fresh thought or question/)
+  assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest two', 'group interest three', 'verified member exchange'])
+  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|own announcement|outside the .* bound/)
+  assert.match(prompt, /ask a concrete related question/)
   await h.receive('live group topic')
-  assert.doesNotMatch(h.prompt(), /earlier_topics|group interest/)
+  assert.doesNotMatch(h.prompt(), /earlier_topics|group interest|verified member exchange/)
   await h.end()
   h.advance(7 * 60 * 60_000)
   assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest/)
