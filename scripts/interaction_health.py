@@ -178,12 +178,17 @@ def read_log(path):
         return f.read(LIMIT+1)
 
 
-def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
+def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, friend_ids=None):
     """Compare bounded provider history with retained inbound diagnostics."""
     if not 0 <= now_ms - since_ms <= 24 * 60 * 60_000:
         raise ValueError('comparison_window_out_of_range')
-    peers = sorted({scope for scope in scopes if re.fullmatch(r'private:[1-9][0-9]{0,15}', scope)
-                    and scope[8:] != account and int(scope[8:]) <= 2**53 - 1})
+    valid_peer = lambda peer: (isinstance(peer, str) and re.fullmatch(r'[1-9][0-9]{0,15}', peer)
+                               and peer != account and int(peer) <= 2**53 - 1)
+    mapped = {scope[8:] for scope in scopes if scope.startswith('private:') and valid_peer(scope[8:])}
+    verified = {peer for peer in friend_ids if valid_peer(peer)} if friend_ids is not None else None
+    # Check never-mapped friends first. Missing inbound delivery may be the
+    # reason there is no mapping in the first place.
+    peers = sorted(mapped) if verified is None else sorted(verified - mapped) + sorted(verified & mapped)
     received, staged = set(), set()
     acknowledged_outputs = collections.defaultdict(set)
     partial_log = False
@@ -210,8 +215,8 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
             except (ValueError, TypeError, KeyError):
                 partial_log = True
 
-    def inspect(scope):
-        peer = scope[8:]
+    def inspect(peer):
+        scope = 'private:' + peer
         try:
             rows = history(peer)
         except RuntimeError:
@@ -280,6 +285,9 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
                ('history_unavailable', 'invalid_history_rows', 'unclassified_history_rows', 'history_window_limited')))
     return {'schema': 'qq-friend-ingress-audit/v1', 'status': 'partial' if partial else 'ok',
             'since_ms': since_ms, 'scopes_eligible': len(peers), 'scopes_sampled': min(len(peers), 32),
+            'coverage': {'friend_list_verified': verified is not None,
+                         'without_session': len(verified - mapped) if verified is not None else None,
+                         'without_session_sampled': min(len(verified - mapped), 32) if verified is not None else None},
             'partial_log': partial_log, 'counts': dict(totals), 'read_only': True,
             'reply_evidence': 'exact_outbound_id_in_friend_history'}
 
@@ -319,12 +327,26 @@ def audit_friend_ingress(path, mapping_path, since_ms, now_ms):
         segments = []
     segments.append(read_log(path))
 
+    friend_ids = None
+    try:
+        friends = call('get_friend_list', {}, connection=connection, timeout=4)['data']
+        if isinstance(friends, list) and all(isinstance(row, dict) and
+                re.fullmatch(r'[1-9][0-9]{0,15}', str(row.get('user_id'))) and
+                int(row['user_id']) <= 2**53 - 1 for row in friends):
+            friend_ids = {str(row['user_id']) for row in friends}
+    except BackendError:
+        pass
+
     def history(peer):
         value = call('get_friend_msg_history', {'user_id': int(peer), 'count': 50},
                      connection=connection, timeout=4)['data']
         return value.get('messages') if isinstance(value, dict) else None
 
-    return compare_friend_ingress(mapping, segments, account=account, since_ms=since_ms, now_ms=now_ms, history=history)
+    result = compare_friend_ingress(mapping, segments, account=account, since_ms=since_ms, now_ms=now_ms,
+                                    history=history, friend_ids=friend_ids)
+    if friend_ids is None:
+        result['status'] = 'partial'
+    return result
 
 
 def main():
@@ -332,7 +354,7 @@ def main():
     p.add_argument('--log', required=True)
     p.add_argument('--previous', action='store_true', help='Read the retained previous segment')
     p.add_argument('--since-ms', type=int, help='Include inputs with a phase at or after this Unix timestamp in milliseconds')
-    p.add_argument('--friend-mapping', help='Compare recent mapped friend history with both diagnostic segments')
+    p.add_argument('--friend-mapping', help='Compare verified friend history with both diagnostic segments, prioritizing friends without a session')
     a = p.parse_args()
     if a.since_ms is not None and a.since_ms < 0:
         p.error('--since-ms must be nonnegative')

@@ -70,6 +70,24 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertNotIn(key(-1), json.dumps(report))
         self.assertNotIn('synthetic body', json.dumps(report))
 
+    def test_friend_audit_checks_first_contacts_before_mapped_friends(self):
+        mapped = {str(i) for i in range(101, 133)}
+        checked = set()
+
+        def history(peer):
+            checked.add(peer)
+            return [dict(time=6, sub_type='friend', sender={'user_id': 201}, message_id=42)] if peer == '201' else []
+
+        result = module.compare_friend_ingress(['private:' + peer for peer in mapped] + ['private:777'], [],
+            account='999', since_ms=5000, now_ms=9000, history=history, friend_ids=mapped | {'201', '999'})
+        self.assertIn('201', checked)
+        self.assertNotIn('777', checked)
+        self.assertNotIn('999', checked)
+        self.assertEqual(len(checked), 32)
+        self.assertEqual(result['coverage'], {'friend_list_verified': True, 'without_session': 1, 'without_session_sampled': 1})
+        self.assertEqual(result['counts']['without_ingress_evidence'], 1)
+        self.assertEqual(result['status'], 'partial')
+
     def test_transport_acceptance_quiet_pending_and_unknown_remain_distinct(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
