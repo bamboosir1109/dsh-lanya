@@ -457,9 +457,11 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
       if (match.index === 0) return ''
       const comma = /[，,]/u.test(cleaned[match.index])
       const prefix = cleaned.slice(0, match.index + (comma ? 0 : 1)).trimEnd()
-      // A comma often introduces a real next action. Trim only when it
-      // follows a separate complete sentence and adds no object or detail.
-      if ((!comma || /[。！？!?]/u.test(prefix)) && /[\p{L}\p{N}]/u.test(prefix)) {
+      // A comma can connect a concrete condition or time to the next action.
+      // Inspect that clause, not a punctuation mark from an earlier sentence.
+      const clause = prefix.split(/[。！？!?\n]/u).at(-1).trim()
+      const condition = /^(?:等|如果|要是|只要|一旦|你(?:先|再|把|给|发|贴|传)|请|麻烦|明早|明天|后天|今晚|今早|周[一二三四五六日天]|[零〇一二两三四五六七八九十\d]{1,3}(?:点|时))/u
+      if ((!comma || /[。！？!?]/u.test(prefix) && !condition.test(clause)) && /[\p{L}\p{N}]/u.test(prefix)) {
         return comma ? prefix + '。' : prefix
       }
     }

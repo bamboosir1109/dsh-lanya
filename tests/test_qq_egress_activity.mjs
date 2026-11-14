@@ -119,6 +119,7 @@ test('content-free promises are removed while specific plans and quoted speech s
   assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
   assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
   assert.equal(cleanText('片头没有字幕。最后一句也没标出来，我再去看一下。'), '片头没有字幕。最后一句也没标出来。')
+  assert.equal(cleanText('两张都看到了。你这张颜色挺好，我再去看。'), '两张都看到了。你这张颜色挺好。')
   assert.equal(cleanText('第二段听着有点闷。我再去看看吧。'), '第二段听着有点闷。')
   assert.equal(cleanText('链接刚才打不开。等会我再查查哈'), '链接刚才打不开。')
   assert.equal(cleanText('片头没有字幕。回头我再核对一下啊。'), '片头没有字幕。')
@@ -135,7 +136,9 @@ test('content-free promises are removed while specific plans and quoted speech s
   assert.equal(cleanText('好嘞！我再去看一看。'), '好嘞！')
   for (const text of ['今晚没空，我再去看。', '明早我再去看看。', '你把截图发我，我再去确认。',
     '字幕少了一段。我再去看第二集。', '链接打不开。八点我再去看看。', '字幕少了一段。我再去看看？', '原话是「我再去看。」',
-    '> 他说链接还没开。我再去看看。', '图片没发过来，我再去核实一下。']) {
+    '> 他说链接还没开。我再去看看。', '图片没发过来，我再去核实一下。',
+    '这个链接打不开。等你发来新链接，我再去看。', '先休息吧。你把截图发我，我再去确认。',
+    '今天有点晚了。明早八点，我再去看看。']) {
     assert.equal(cleanText(text), text)
   }
   const technical = styleFromInbound(live('给我详细的排查步骤'))
