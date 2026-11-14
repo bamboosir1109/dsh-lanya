@@ -1914,7 +1914,7 @@ export class OneBotDecisionAdapter {
     const failedObservation = afterTurnError && binding?.origin === 'observation'
     if (!(binding?.origin === 'live' || internal || budgetRefusedObservation || failedObservation) ||
         (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation && !afterTurnError) ||
-        record.claimConflict || record.ended || record.inFlight.size) return null
+        record.claimConflict || record.ended || (!afterTurnError && record.inFlight.size)) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
     if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
         entry.binding.scope !== record.binding.scope || entry.binding.revision <= record.binding.revision ||
@@ -3179,8 +3179,8 @@ export class OneBotDecisionAdapter {
         : record.outcomes.some((item) => ['suppressed', 'duplicate'].includes(item)) ? 'suppressed' : 'decided'
       completion.resolve({ completed: true, status, decision_id: record.decisionId, next_review_at: record.decision.next_review_at })
     })().catch((error) => this.log('error', 'policy_turn_settlement_failed:' + error.name))
-    // Rejected turns stop the SDK driver. Continue the owned input only after
-    // accounting; never replay it or transfer the old turn's reservation.
+    // Rejected and failed turns stop the SDK driver. Continue the owned input
+    // after pending sends and accounting settle, using its own reservation.
     void settled.then(() => this.wakeOwnedPendingAfterUnbound(chat, record, event))
       .catch(error => this.log('warn', 'native_internal_idle_wake_unavailable:' + error.name))
   }

@@ -4647,6 +4647,43 @@ test('a model error leaves the newer QQ input runnable and retains the earlier u
   assert.equal(h.agent.inbox.hasPending, false)
 })
 
+test('a model error waits for its open QQ send before waking the queued incoming message', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const sending = defer(), finishSend = defer(), failStep = defer()
+  let firstSend
+  h.deps.onTransmit = async () => {
+    if (h.calls.filter(call => /^send_/.test(call.action)).length === 1) {
+      sending.resolve()
+      await finishSend.promise
+    }
+  }
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    if (record.turn === 1) {
+      assert.equal((await h.decide('reply')).can_send, true)
+      firstSend = h.send('first answer').catch(error => error)
+      await failStep.promise
+      throw new Error('synthetic model interruption during send')
+    }
+    assert.match(record.claimedInput.originalText, /next question/)
+    assert.equal((await h.decide('reply', { text: 'second answer' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('first question')
+  await sending.promise
+  try {
+    await h.receive('next question')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+    failStep.resolve()
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  } finally { failStep.resolve(); finishSend.resolve() }
+  await firstSend
+  await driverSettled(h, () => h.agent.status === 'idle' && !adapter.state(h.chat).turns.size && !h.agent.inbox.hasPending)
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 2)
+})
+
 test('a prompt assembly failure does not strand the newer QQ message', async t => {
   const entered = defer(), release = defer()
   let assemblies = 0
