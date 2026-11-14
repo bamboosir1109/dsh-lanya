@@ -78,6 +78,11 @@ class AutonomyRestTests(unittest.TestCase):
                     events._validated_completion({**marker, "reason": "native_admission_refused"}, event, raw)
 
     def test_wake_creates_one_fresh_generation_not_a_batch_of_old_greetings(self):
+        for reason, completed_at in [("autonomy_rest", MIDNIGHT), ("observation_expired", WAKE)]:
+            with self.subTest(reason=reason):
+                self.check_wake_generation(reason, completed_at)
+
+    def check_wake_generation(self, reason, completed_at):
         mind = self.load_mind()
         old_event = dict(event_id="old-night-event", scope="private:101", created_at=MIDNIGHT - 1)
         value = {"decision_observers_version": 2, "decision_scopes": {"private:101": {
@@ -86,8 +91,8 @@ class AutonomyRestTests(unittest.TestCase):
         published = []
         def chain(_scope, event_id):
             if event_id == old_event["event_id"]:
-                return {"event": old_event, "completion": {"status": "no_decision", "reason": "autonomy_rest",
-                    "native_turn_completed": False, "completed_at": MIDNIGHT}, "waiting_review": False}
+                return {"event": old_event, "completion": {"status": "no_decision", "reason": reason,
+                    "native_turn_completed": False, "completed_at": completed_at}, "waiting_review": False}
             return {"event": {"event_id": event_id}, "completion": None, "waiting_review": False}
         with mock.patch.object(events, "project_scopes", return_value=["private:101"]), \
              mock.patch.object(events, "observation_review_chain", side_effect=chain), \

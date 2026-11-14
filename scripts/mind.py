@@ -885,7 +885,8 @@ def _observe_cycle(mind, dry=False, force=False):
                 continue
             state["last_status"] = completed["status"]
             state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
-            if completed["status"] == "no_decision" and completed.get("reason") in ("autonomy_rest", "observation_expired"):
+            rest_closure = completed["status"] == "no_decision" and completed.get("reason") in ("autonomy_rest", "observation_expired")
+            if rest_closure:
                 state["last_rest_lifecycle"] = {
                     "event_id": chain["event"]["event_id"], "completed_at": completed["completed_at"],
                     "reason": completed["reason"], "previous_activity_status": "unknown",
@@ -906,8 +907,14 @@ def _observe_cycle(mind, dry=False, force=False):
                 # retains its producer clock until its next opportunity.
                 continue
             state["completed_signature"] = _observation_signature(mind, [], primary)
-            state["next_opportunity_at"] = (None if completed["status"] == "unknown" else
-                                              (review if review is not None else state["last_completed_at"] + interval))
+            if completed["status"] == "unknown":
+                state["next_opportunity_at"] = None
+            elif rest_closure and chain["event"]["created_at"] < rest["current_day_wake_at"]:
+                # The rest window already provided the wait. An expired
+                # overnight opportunity was never a new morning model turn.
+                state["next_opportunity_at"] = now
+            else:
+                state["next_opportunity_at"] = review if review is not None else state["last_completed_at"] + interval
             _acknowledge_scope_hits(pending["interrupts"], scope, primary)
             state.pop("pending")
             hits = _read_observer_hits()
