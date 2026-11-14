@@ -2156,6 +2156,11 @@ test('listening group retains bounded observations without live claims, model ad
 test('a queued group review uses the current social prompt instead of an inherited activity instruction', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)
+  let intentReads = 0
+  a.intentPlanner.context = () => {
+    intentReads++
+    return { intents: [{ goal: 'fixture stale wait for a mention' }] }
+  }
   a.runtimeCapabilities = async () => ({ schema: 'dsh-runtime-capabilities/v1', conversation_key: scope,
     owner, read_only: true, generated_at: a.now(), tools: {
       entertainment: { group_identity_valid: true, group_social: true, rest_window: { timezone: 'Asia/Shanghai' },
@@ -2183,10 +2188,18 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.match(h.prompt(), /trusted_recent_social_facts/)
   assert.match(h.prompt(), /fixture group tone[\s\S]*fixture real meme/)
   assert.match(h.prompt(), /configured_opportunity_min":2/)
+  assert.match(h.prompt(), /自己以前定的旁听计划只是当时的想法/)
+  assert.doesNotMatch(h.prompt(), /fixture stale wait for a mention|scoped_agent_intentions/)
+  assert.equal(intentReads, 0)
   assert.doesNotMatch(h.prompt(), /fixture (game inventory|phone protocol|private friend lookup)|wait_for_live_reply/)
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   assert.equal((await h.decide('idle')).accepted, true)
   await h.end(); await completion
+  await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /fixture stale wait for a mention/)
+  assert.equal(intentReads, 1)
+  await h.end()
 })
 
 test('a group activity review searches recent group text and falls back to the same chat history', async t => {
