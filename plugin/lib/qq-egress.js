@@ -450,16 +450,16 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
     ? withoutImageSendConfirmation(withoutImages) : withoutImages
   const cleaned = spans(prose, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
   if (!style.technical && !style.roleplay) {
-    const suffix = /(?:[。！？!?\n，,][ \t\r\n]*(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看一看|看看?|查一查|查查?|确认|核对|核实)(?:一下|一眼)?(?:吧|哈|啊|哦|啦)?[ \t]*){1,8}[。.!！~～]*[ \t]*$/u
+    const suffix = /(?:(?:^|[。！？!?\n，,])[ \t\r\n]*(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看一看|看看?|查一查|查查?|确认|核对|核实)(?:一下|一眼)?(?:吧|哈|啊|哦|啦)?[ \t]*){1,8}[。.!！~～]*[ \t]*$/u
     const match = suffix.exec(cleaned)
     const quotedTail = match && literalQuotations(cleaned).some(quote => quote.index + quote[0].length > match.index)
     if (match && !quotedTail && !spans(cleaned).at(-1)?.protected) {
+      if (match.index === 0) return ''
       const comma = /[，,]/u.test(cleaned[match.index])
       const prefix = cleaned.slice(0, match.index + (comma ? 0 : 1)).trimEnd()
       // A comma often introduces a real next action. Trim only when it
       // follows a separate complete sentence and adds no object or detail.
-      if ((!comma || /[。！？!?]/u.test(prefix)) && /[\p{L}\p{N}]/u.test(prefix) &&
-          !/^(?:好(?:的|呀|哦|啊|嘞)?|行(?:吧|啊)?|嗯+|收到|知道了|明白了|没问题)[。！？!?~～]*$/u.test(prefix)) {
+      if ((!comma || /[。！？!?]/u.test(prefix)) && /[\p{L}\p{N}]/u.test(prefix)) {
         return comma ? prefix + '。' : prefix
       }
     }

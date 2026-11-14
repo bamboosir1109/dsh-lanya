@@ -1059,6 +1059,7 @@ test('an inline draft removed by egress can be rewritten without consuming its d
   const decide = text => h.tools.get('qq_decide').execute({ verdict: 'reply', text },
     { ...h.exec(), concludeTurn: () => { concluded++ } })
   assert.equal((await decide('（歪头）[表情: 笑]')).reason, 'empty_content')
+  assert.equal((await decide('我再去看。')).reason, 'empty_content')
   assert.equal(concluded, 0)
   assert.equal((await decide('有用的一句')).sent, true)
   assert.equal(concluded, 1)

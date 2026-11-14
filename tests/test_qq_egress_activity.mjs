@@ -115,7 +115,7 @@ test('an acknowledged image makes standalone send confirmations redundant', () =
   assert.equal(cleanText(report, { ...confirmed, technical: true }), report)
 })
 
-test('only a content-free final promise after a real sentence is removed', () => {
+test('content-free promises are removed while specific plans and quoted speech stay', () => {
   assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
   assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
   assert.equal(cleanText('片头没有字幕。最后一句也没标出来，我再去看一下。'), '片头没有字幕。最后一句也没标出来。')
@@ -128,10 +128,14 @@ test('only a content-free final promise after a real sentence is removed', () =>
   assert.equal(cleanText('链接打不开。回头我再查一查！\n我再核实一下啦。'), '链接打不开。')
   assert.equal(cleanText('第一张有点糊。' + '我再去看。'.repeat(5)), '第一张有点糊。')
   assert.deepEqual(textParts('字幕开头少了一段。\n晚点我再去看看。').map(part => part.text), ['字幕开头少了一段。'])
-  for (const text of ['我再去看。', '好。我再去看。', '明白了。我再去看看。', '今晚没空，我再去看。',
-    '好。我再去看。晚点我再核对。', '明早我再去看看。', '你把截图发我，我再去确认。',
+  assert.deepEqual(textParts('我再去看。'), [])
+  assert.equal(cleanText('我再去看。晚点我再核对。'), '')
+  assert.equal(cleanText('好。我再去看。晚点我再核对。'), '好。')
+  assert.equal(cleanText('明白了。我再去看看。'), '明白了。')
+  assert.equal(cleanText('好嘞！我再去看一看。'), '好嘞！')
+  for (const text of ['今晚没空，我再去看。', '明早我再去看看。', '你把截图发我，我再去确认。',
     '字幕少了一段。我再去看第二集。', '链接打不开。八点我再去看看。', '字幕少了一段。我再去看看？', '原话是「我再去看。」',
-    '> 他说链接还没开。我再去看看。', '好嘞！我再去看一看。', '图片没发过来，我再去核实一下。']) {
+    '> 他说链接还没开。我再去看看。', '图片没发过来，我再去核实一下。']) {
     assert.equal(cleanText(text), text)
   }
   const technical = styleFromInbound(live('给我详细的排查步骤'))
