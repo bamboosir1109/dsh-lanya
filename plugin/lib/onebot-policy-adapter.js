@@ -249,6 +249,8 @@ function androidCheckoutIntent(text) {
 }
 const memeOnlyReply = record => record?.decision?.verdict === 'reply' && record.decision.expression === 'meme'
 const interruptedInlineReply = record => record?.inlineTextStale === true && !record.outcomes.includes('unknown')
+const inlineReplyAwaitingBudget = record => record?.inlineReplyDeferredByBudget === true &&
+  record.inlineTextReceiptCount === 0 && !record.inFlight.size && !record.outcomes.length
 const replyHandoffText = (entry, partial) => partial
   ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
     + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + entry.originalText
@@ -1632,7 +1634,8 @@ export class OneBotDecisionAdapter {
     const stale = state.unansweredReply
     if (stale && this.now() > stale.expiresAt) state.unansweredReply = null
     const interrupted = !active?.ended && !active?.claimConflict && interruptedInlineReply(active)
-    const claimed = unacknowledged || (interrupted ? active.claimedInput : null) || state.unansweredReply?.entry
+    const budgetBlocked = !active?.ended && !active?.claimConflict && inlineReplyAwaitingBudget(active)
+    const claimed = unacknowledged || (interrupted || budgetBlocked ? active.claimedInput : null) || state.unansweredReply?.entry
     const carryReply = binding.origin === 'live' && !binding.recoveryRevision && sameReplyConversation(claimed, binding, role)
     // Carry an interrupted question as context. The current sender still owns the turn.
     let carriedText
@@ -3010,7 +3013,7 @@ export class OneBotDecisionAdapter {
     const undecidedReply = (record.replyDeferredByBudget || unsentDraft) && !record.decision && !record.ticket &&
       !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
     if ((scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
-        (supersededReply || undecidedReply || interruptedInlineReply(record)) &&
+        (supersededReply || undecidedReply || inlineReplyAwaitingBudget(record) || interruptedInlineReply(record)) &&
         record.claimedInput?.binding.origin === 'live' && !record.binding.recoveryRevision &&
         !record.claimConflict && state.active === record) {
       // Admission can invalidate the reply before or after its successor is
@@ -3198,7 +3201,16 @@ export class OneBotDecisionAdapter {
     if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
     await this.intentPlanner.verifyDelivery(envelope.record, scope, action, params)
     const budget = await this.checkBudget(envelope.record)
-    if (!budget.allowed) throw new PolicyDeliveryError('suppressed', budget.reason)
+    if (!budget.allowed) {
+      const record = envelope.record
+      // This check occurs before runGuarded creates a transport reservation.
+      // Only a live inline reply with no acknowledged or uncertain part can
+      // carry the original question into a new turn after this failure.
+      if (budget.reason === 'budget_unavailable' && record?.binding?.origin === 'live' &&
+          record.inlineTextAttempted && envelope.operationId === record.inlineTextOperationId &&
+          record.inlineTextReceiptCount === 0 && record.outcomes.length === 0) record.inlineReplyDeferredByBudget = true
+      throw new PolicyDeliveryError('suppressed', budget.reason)
+    }
     if (envelope.record?.claimConflict) throw new PolicyDeliveryError('suppressed', 'conflicting_native_input')
     // Input aliases and raw base64 cannot evade this turn's generated-audio
     // state: match real packet content as well as the tool's canonical path.

@@ -1101,6 +1101,42 @@ test('a newer private message carries the earlier reply blocked by the budget he
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('inline replies blocked at the transport budget check preserve only wholly unsent questions', async t => {
+  for (const mode of ['follow-up after end', 'follow-up before end', 'partial delivery', 'periodic review']) await t.test(mode, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy, provider = adapter.budgetProvider
+    const partial = mode === 'partial delivery'
+    let checks = 0
+    adapter.budgetProvider = async request => {
+      if (request.operation === 'check' && ++checks >= (partial ? 3 : 2)) throw new Error('fixture transport budget read failed')
+      return provider(request)
+    }
+    await h.receive('first question before a transport budget outage', { message_id: 620 })
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const reply = partial ? '开头先说明这一点。'.repeat(4) + '\n接下来是另一段。'.repeat(5) : 'fixture text to send'
+    if (partial) await assert.rejects(h.decide('reply', { text: reply }), { reason: 'budget_unavailable', sent_parts: 1 })
+    else assert.equal((await h.decide('reply', { text: reply })).reason, 'budget_unavailable')
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, partial ? 1 : 0)
+    if (mode === 'follow-up before end') await h.receive('a new detail after the refusal', { message_id: 621 })
+    await h.end()
+    adapter.budgetProvider = provider
+    if (mode === 'periodic review') {
+      h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+      await adapter.reviewUnansweredInputs()
+    } else if (mode !== 'follow-up before end') {
+      await h.receive('a new detail after the refusal', { message_id: 621 })
+    }
+    assert.equal(h.pending.length, 1)
+    const prompt = h.pending[0].content[0].text
+    if (partial) assert.doesNotMatch(prompt, /first question before a transport budget outage/)
+    else assert.match(prompt, /first question before a transport budget outage/)
+    assert.doesNotMatch(prompt, /fixture text to send/)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: '这次可以正常回复。' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, partial ? 2 : 1)
+  })
+})
+
 test('a live reply blocked before any send by budget errors gets one recovery after the ledger returns', async t => {
   for (const operation of ['reserve', 'check']) await t.test(operation, async t => {
     const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
