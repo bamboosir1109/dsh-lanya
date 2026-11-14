@@ -578,6 +578,31 @@ test('a filtered newer arrival does not prevent an older valid media input from 
   assert.equal((await h.decide()).accepted, true)
 })
 
+test('a late text-only private question is preserved with the newer reply input', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const entered = defer(), release = defer(), buildBody = h.bridge.inbound.ctx.buildBody
+  h.bridge.inbound.ctx.buildBody = async (body, ...args) => {
+    if (body === 'Where should I start?') { entered.resolve(); await release.promise }
+    return buildBody(body, ...args)
+  }
+  const older = h.receive('Where should I start?')
+  await entered.promise
+  try { await h.receive('Can I use a small example?') }
+  finally { release.resolve(); await older }
+
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const record = adapter.state(h.chat).active
+  assert.match(record.claimedInput.originalText, /Can I use a small example\?/)
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+  assert.match(prompt, /<earlier_private_text>\n\["Where should I start\?"\]/)
+  await h.end()
+  await Promise.all([...adapter.replyReviewWrites])
+  const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+  assert.equal(snapshot.revision, 1)
+  assert.match(snapshot.current.replyReview.text, /Where should I start\?[\s\S]*Can I use a small example\?/)
+})
+
 test('admission commits serialize per scope and a rejected storage call releases its tail', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy, policy = adapter.policy
   const gate = defer(), entered = defer(), original = policy.recordInbound
@@ -3368,17 +3393,18 @@ test('a slow group image stays in arrival order after newer text is admitted', a
 })
 
 test('a late group mention or verified quote can still be answered with the newer group passage', async t => {
-  for (const [contact, successor] of [['mention', 'preparing'], ['verified quote', 'queued']]) await t.test(contact, async t => {
+  const cases = [['mention with image', 'preparing'], ['verified quote', 'queued'], ['text-only mention', 'queued']]
+  for (const [contact, successor] of cases) await t.test(contact, async t => {
     const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
     await h.mention(); h.start(); await h.preStep()
     await h.decide('reply', { text: 'opening answer' }); await h.end()
     const reading = defer(), releaseMedia = defer(), preparing = defer(), releaseMemory = defer()
-    if (contact === 'mention') {
+    if (contact === 'mention with image') {
       h.deps.media.resolve = async () => {
         reading.resolve(); await releaseMedia.promise
         return undefined
       }
-    } else {
+    } else if (contact === 'verified quote') {
       const call = h.deps.connection.call
       h.deps.connection.call = async (action, params) => {
         if (action !== 'get_msg') return call(action, params)
@@ -3386,15 +3412,21 @@ test('a late group mention or verified quote can still be answered with the newe
         return { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 999 },
           message: [{ type: 'text', data: { text: 'old quoted bot text' } }] }
       }
+    } else {
+      const buildBody = h.bridge.inbound.ctx.buildBody
+      h.bridge.inbound.ctx.buildBody = async (body, ...args) => {
+        if (body.includes('Which part should I change?')) { reading.resolve(); await releaseMedia.promise }
+        return buildBody(body, ...args)
+      }
     }
     adapter.memoryContext = async (_scope, text) => {
       if (successor === 'preparing' && text.includes('A separate remark from another speaker')) {
         preparing.resolve(); await releaseMemory.promise
       }
     }
-    const segments = contact === 'mention' ? [
-      { type: 'at', data: { qq: '999' } }, { type: 'image', data: { file: 'synthetic-slow-photo' } },
-    ] : [{ type: 'reply', data: { id: '77' } }]
+    const segments = contact === 'verified quote' ? [{ type: 'reply', data: { id: '77' } }]
+      : [{ type: 'at', data: { qq: '999' } }]
+    if (contact === 'mention with image') segments.push({ type: 'image', data: { file: 'synthetic-slow-photo' } })
     const older = h.receive('slow contact', { user_id: 101, message: [...segments,
       { type: 'text', data: { text: 'Which part should I change? </earlier_group_text>' } },
     ] })

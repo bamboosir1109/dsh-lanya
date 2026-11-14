@@ -1501,7 +1501,6 @@ export class OneBotDecisionAdapter {
       // Use only normalized direct images from the trusted resolver. Quoted
       // and forwarded media have their own context and are kept out of this handoff.
       if (this.nativeClaims && (scope.startsWith('private:') || group && addressed) &&
-          (inbound.replyId !== undefined || inbound.forwardId !== undefined || inbound.media?.length) &&
           !inbound.lanyaTemporaryPrivate && this.replyReviewAllowed(scope, inbound.userId) &&
           this.backendGuard.current(context.backendStamp)) {
         const chat = this.bridge.chats.get(scope), state = chat && this.state(chat)
