@@ -410,6 +410,18 @@ function withoutInternalReceipts(text, style) {
     .replace(/^[ \t]*(?:[（(][\s\r\n]*[）)][。.!！]?|[。.!！？，,；;]+)[ \t]*$/gmu, '')
 }
 
+function withoutImageSendConfirmation(text) {
+  // Only used after a real image receipt in this turn. Preserve meaningful
+  // captions, answers to a question, quotations, and explicit tech output.
+  const confirmation = /(?:^|(?<=[。！？!?;\n；]))[ \t]*(?:我[ \t]*)?(?:(?:已经|刚刚|刚|已)[ \t]*发(?:了|过来|过去)?[ \t]*(?:一)?张[ \t]*(?:(?:“[^”\r\n]{1,32}”|「[^」\r\n]{1,32}」)[ \t]*的?[ \t]*)?(?:表情包?|图(?:片)?)|(?:这张[ \t]*)?(?:表情包?|图(?:片)?)[ \t]*(?:已经|刚刚|刚|已)?[ \t]*(?:发出去了|发过去了|发给你了))[ \t]*(?:[。！!～~]+(?![。！!～~？?])|(?=\r?\n|$))/gu
+  return spans(text).map(part => {
+    if (part.protected) return part.text
+    const quoteStarts = literalQuotations(part.text).map(match => [match.index, match.index + match[0].length])
+    return part.text.replace(confirmation, (whole, offset) =>
+      quoteStarts.some(([start, end]) => start <= offset && offset < end) ? whole : '')
+  }).join('')
+}
+
 function cleanProse(text, style) {
   let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
@@ -434,7 +446,9 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
   const withoutImages = withoutActivityReferences(withoutInlineImages(withoutInternalReceipts(value, style)), style)
-  const cleaned = spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+  const prose = style.sentImage === true && !style.technical && !style.roleplay
+    ? withoutImageSendConfirmation(withoutImages) : withoutImages
+  const cleaned = spans(prose, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
   if (!style.technical && !style.roleplay) {
     const suffix = /([。！？!?\n，,])[ \t]*(?:(?:回头|稍后|等会儿?|待会儿?|等下)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下)?)再(?:去)?(?:看看?|查查?|确认|核对)(?:一下|一眼)?(?:吧|哈|啊)?[。.!！~～]*\s*$/u
     const match = suffix.exec(cleaned)

@@ -51,8 +51,9 @@ import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply, ha
     outbound.ctx.lanyaEgressRemember = rememberParameters
     outbound.ctx.lanyaEgressPrepare = (scope, text, options) => {
       const envelope = adapter.context.getStore()?.envelope
+      const style = envelope?.record?.binding?.egressStyle || NORMAL_STYLE
       const pending = prepareAndSendReply(outbound, scope, text, options,
-        envelope?.record?.binding?.egressStyle || NORMAL_STYLE)
+        envelope?.record?.sentImage ? { ...style, sentImage: true } : style)
       return pending.catch((error) => {
         if (error.partial && !isKnownMemeLimit(error)) envelope?.record?.outcomes.push('partial')
         throw error
@@ -65,9 +66,10 @@ import { NORMAL_STYLE, styleFromInbound, dispatchEgress, prepareAndSendReply, ha
         dispatch = """  async dispatchEgress(action, params, suppliedScope, transmit) {
     if (!communicates(action)) return this.guardConnectionCall(action, params, suppliedScope, () => transmit(action, params))
     const envelope = this.context.getStore()?.envelope
+    const style = envelope?.record?.binding?.egressStyle || NORMAL_STYLE
     try {
       return await dispatchEgress(action, params,
-        envelope?.record?.binding?.egressStyle || NORMAL_STYLE,
+        envelope?.record?.sentImage ? { ...style, sentImage: true } : style,
         (nextAction, nextParams, egressPart) => this.guardConnectionCall(nextAction, nextParams, suppliedScope,
           (wireAction = nextAction, wireParams = nextParams) => transmit(wireAction, wireParams), egressPart),
         { isMemeSegment: segment => isStagedMemeImage(segment, this.deps.config.mediaDir) })

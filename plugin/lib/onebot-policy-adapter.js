@@ -2755,6 +2755,9 @@ export class OneBotDecisionAdapter {
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
+    if (envelope.record && Array.isArray(params.message) && params.message.some(segment => segment.type === 'image')) {
+      envelope.record.sentImage = true
+    }
     if (envelope.record?.inlineTextAttempted && envelope.operationId === envelope.record.inlineTextOperationId) envelope.record.inlineTextReceiptCount++
     if (!this.bridge.stopping && /^send_(?:msg|group_msg|group_forward_msg)$/.test(action)) {
       const group = this.groupConversation(scope, envelope.record?.binding?.owner, !this.groupConversations.has(scope))

@@ -103,6 +103,18 @@ test('ordinary image followups keep the result without report formatting or deli
   assert.equal(cleanText('周末有空我再去看那部片。'), '周末有空我再去看那部片。')
 })
 
+test('an acknowledged image makes standalone send confirmations redundant', () => {
+  const confirmed = { ...NORMAL_STYLE, sentImage: true }
+  const report = '已经发了张“开工”的表情。'
+  assert.equal(cleanText(report), report)
+  assert.equal(cleanText(report, confirmed), '')
+  assert.equal(cleanText('图片发出去了。\n热气这次像在往上飘。', confirmed), '热气这次像在往上飘。')
+  assert.equal(cleanText('太好笑了。' + report + '图片发出去了。', confirmed), '太好笑了。')
+  for (const body of ['刚发了一张图，颜色比上版好看。', '他说「等一等。已经发了一张图。」',
+    'QQ 没发出去吗？', '刚发了哪张表情？']) assert.equal(cleanText(body, confirmed), body)
+  assert.equal(cleanText(report, { ...confirmed, technical: true }), report)
+})
+
 test('only a content-free final promise after a real sentence is removed', () => {
   assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
   assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
