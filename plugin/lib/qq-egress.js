@@ -542,26 +542,32 @@ function splitSegments(segments, style, verbatim, isMemeSegment) {
   if (!Array.isArray(segments)) throw new TypeError('OneBot message segments required')
   const packets = []
   let packet = [], length = 0
-  const flush = () => { if (packet.length) packets.push(packet); packet = []; length = 0 }
+  const hasContent = () => packet.some(item => item.type !== 'reply' && item.type !== 'at')
+  const flush = (allowMentionOnly = false) => {
+    if (hasContent() || allowMentionOnly && packet.some(item => item.type === 'at')) packets.push(packet)
+    packet = []
+    length = 0
+  }
+  const explicitMentionOnly = !segments.some(segment => segment?.type !== 'reply' && segment?.type !== 'at')
   for (const segment of segments) {
     if (!plain(segment) || typeof segment.type !== 'string' || !plain(segment.data)) throw new TypeError('Invalid OneBot segment')
     if (segment.type === 'image' && isMemeSegment?.(segment) === true) {
       // Reply/@ controls stay with their adjacent content, never become a
       // detached notification. Necessary caption/prose uses its own packet.
-      if (packet.some(item => !['reply', 'at'].includes(item.type))) flush()
+      if (hasContent()) flush()
       packet.push(structuredClone(segment)); memePackets.add(packet); flush()
       continue
     }
     if (segment.type !== 'text') { packet.push(structuredClone(segment)); continue }
     for (const part of textParts(segment.data.text, style, verbatim)) {
       const size = characters(part.text).length
-      if (packet.length && (part.verbatim || length + size > 40)) flush()
+      if (hasContent() && (part.verbatim || length + size > 40)) flush()
       packet.push({ ...structuredClone(segment), data: { ...structuredClone(segment.data), text: part.text } })
       length += size
       if (part.verbatim || length >= 40) flush()
     }
   }
-  flush()
+  flush(explicitMentionOnly)
   return packets
 }
 

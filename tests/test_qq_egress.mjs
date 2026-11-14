@@ -198,6 +198,20 @@ test('prepared code provenance cannot be forged by JSON options or model params'
   assert.equal(planEgress('send_msg', params).length, 0)
 })
 
+test('reply controls stay with leading literal text and never escape cleaned-away content', () => {
+  const reply = { type: 'reply', data: { id: '12' } }
+  const at = { type: 'at', data: { qq: '101' } }
+  const plan = message => planEgress('send_group_msg', { group_id: 202, message }).map(part => part.params.message)
+  for (const literal of ['`node app.js`', 'https://example.invalid/' + 'a'.repeat(60)]) {
+    assert.deepEqual(plan([reply, at, text(literal), text('在这里')]), [
+      [reply, at, text(literal)], [text('在这里')],
+    ])
+  }
+  assert.deepEqual(plan([reply, at, text('[表情: 高兴]')]), [])
+  assert.deepEqual(plan([reply]), [])
+  assert.deepEqual(plan([at]), [[at]])
+})
+
 test('empty pseudo image has no zero-content transport; successful aggregate lists all real IDs', async () => {
   let calls = 0
   await assert.rejects(() => dispatchEgress('send_msg', { user_id: 101, message: '![图](x.png)' }, NORMAL_STYLE,
