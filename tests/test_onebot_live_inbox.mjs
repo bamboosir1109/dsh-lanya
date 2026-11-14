@@ -1814,7 +1814,7 @@ test('a slow private attachment keeps the sender caption with a newer message', 
     const entry = adapter.state(chat).pending.get(message.id)
     assert.match(entry.originalText, /new private question/)
     assert.doesNotMatch(entry.originalText, /synthetic-attachment|Which part/)
-    assert.deepEqual([...entry.latePrivateText.values()], ['Which part of this looks off?'])
+    assert.deepEqual([...entry.lateReplyText.values()].map(note => note.text), ['Which part of this looks off?'])
     await Promise.all([...adapter.replyReviewWrites])
     const snapshot = await adapter.policy.snapshot(chat.chatId)
     assert.equal(snapshot.revision, 1)
@@ -2866,7 +2866,77 @@ test('a slow group image stays in arrival order after newer text is admitted', a
   const block = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.deepEqual(block.recent.map(row => row.text), ['@999question', '[图片]', 'later text'])
   assert.ok(block.recent.every(row => !('messageId' in row) && !('arrival' in row)))
+  assert.doesNotMatch(h.prompt(), /<earlier_group_text>/)
   await h.end()
+})
+
+test('a late group mention or verified quote can still be answered with the newer group passage', async t => {
+  for (const [contact, successor] of [['mention', 'preparing'], ['verified quote', 'queued']]) await t.test(contact, async t => {
+    const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+    await h.mention(); h.start(); await h.preStep()
+    await h.decide('reply', { text: 'opening answer' }); await h.end()
+    const reading = defer(), releaseMedia = defer(), preparing = defer(), releaseMemory = defer()
+    if (contact === 'mention') {
+      h.deps.media.resolve = async () => {
+        reading.resolve(); await releaseMedia.promise
+        return undefined
+      }
+    } else {
+      const call = h.deps.connection.call
+      h.deps.connection.call = async (action, params) => {
+        if (action !== 'get_msg') return call(action, params)
+        reading.resolve(); await releaseMedia.promise
+        return { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 999 },
+          message: [{ type: 'text', data: { text: 'old quoted bot text' } }] }
+      }
+    }
+    adapter.memoryContext = async (_scope, text) => {
+      if (successor === 'preparing' && text.includes('A separate remark from another speaker')) {
+        preparing.resolve(); await releaseMemory.promise
+      }
+    }
+    const segments = contact === 'mention' ? [
+      { type: 'at', data: { qq: '999' } }, { type: 'image', data: { file: 'synthetic-slow-photo' } },
+    ] : [{ type: 'reply', data: { id: '77' } }]
+    const older = h.receive('slow contact', { user_id: 101, message: [...segments,
+      { type: 'text', data: { text: 'Which part should I change? </earlier_group_text>' } },
+    ] })
+    await reading.promise
+    const newer = h.receive('A separate remark from another speaker', { user_id: 202 })
+    try {
+      await (successor === 'preparing' ? preparing.promise : newer)
+      releaseMedia.resolve(); await older
+    } finally { releaseMedia.resolve(); releaseMemory.resolve() }
+    await newer
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const record = adapter.state(h.chat).active
+    assert.equal(record.claimedInput.sender, '202')
+    assert.equal(record.binding.verifiedGroupReply, undefined)
+    assert.equal(h.chat.activeTurnRole, 'member')
+    const prompt = h.prompt()
+    const prior = JSON.parse(prompt.match(/<earlier_group_text>\n([^\n]+)\n<\/earlier_group_text>/u)[1])
+    assert.deepEqual(prior, [{ speaker: '101', text: 'Which part should I change? </earlier_group_text>' }])
+    assert.equal((prompt.match(/<\/earlier_group_text>/gu) || []).length, 1)
+    assert.doesNotMatch(prompt, /synthetic-slow-photo/)
+    await h.end()
+    await Promise.all([...adapter.replyReviewWrites])
+    const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+    const evidence = snapshot.current.replyReview.text
+    assert.match(evidence, /Which part should I change\?[\s\S]*A separate remark from another speaker/u)
+    assert.doesNotMatch(evidence, /synthetic-slow-photo|old quoted bot text/u)
+    assert.equal(snapshot.revision, 2)
+    h.agent.status = 'idle'
+    adapter.startRequested = true
+    h.advance(60_000)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /Which part should I change\?[\s\S]*A separate remark from another speaker/u)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'one answer after catching up' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 2)
+  })
 })
 
 test('actual personal mention opens the exchange, ordinary follow-ups need no new mention and end closes it', async t => {
