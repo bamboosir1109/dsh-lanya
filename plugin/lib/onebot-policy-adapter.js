@@ -1743,6 +1743,7 @@ export class OneBotDecisionAdapter {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
     if (!record?.binding || record.ended || record.claimConflict || record.binding.scope !== chat.chatId) return ''
     const late = record.claimedInput?.lateReplyText
+    record.promptLateReplyIds = late?.size ? [...late.keys()] : []
     const lateImages = late?.size ? [...late.values()].flatMap(note => {
       if (!note.image || note.imageSocket !== this.deps.connection?.socket) return []
       const { file, info } = note.image
@@ -2194,7 +2195,19 @@ export class OneBotDecisionAdapter {
   observeCompaction(chat, event) {
     const record = this.state(chat).active
     if (event.type === 'step/start') {
-      if (record && record.turn === event.data?.turn) record.firstModelStepStarted = true
+      if (record && record.turn === event.data?.turn) {
+        record.firstModelStepStarted = true
+        if (!record.claimConflict && record.binding?.origin === 'live' && record.promptLateReplyIds?.length) {
+          record.loggedLateReplyIds ??= new Set()
+          for (const id of record.promptLateReplyIds) {
+            if (id === record.binding.messageId || record.loggedLateReplyIds.has(id)) continue
+            record.loggedLateReplyIds.add(id)
+            this.diagnose(record.binding.scope, record.binding.messageId, 'reply_handoff', {
+              prior_input: identity(record.binding.scope, id).slice(0, 24),
+            })
+          }
+        }
+      }
       return
     }
     const data = event.data

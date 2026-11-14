@@ -585,9 +585,9 @@ test('a late text-only private question is preserved with the newer reply input'
     if (body === 'Where should I start?') { entered.resolve(); await release.promise }
     return buildBody(body, ...args)
   }
-  const older = h.receive('Where should I start?')
+  const older = h.receive('Where should I start?', { message_id: 701 })
   await entered.promise
-  try { await h.receive('Can I use a small example?') }
+  try { await h.receive('Can I use a small example?', { message_id: 702 }) }
   finally { release.resolve(); await older }
 
   assert.equal(h.pending.length, 1)
@@ -596,6 +596,16 @@ test('a late text-only private question is preserved with the newer reply input'
   assert.match(record.claimedInput.originalText, /Can I use a small example\?/)
   const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
   assert.match(prompt, /<earlier_private_text>\n\["Where should I start\?"\]/)
+  const diagnostic = () => fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line)).filter(row => row.phase === 'reply_handoff')
+  assert.deepEqual(diagnostic(), [])
+  h.bridge.onSessionEvent(h.agent.session, { type: 'step/start', data: { turn: record.turn } })
+  h.bridge.onSessionEvent(h.agent.session, { type: 'step/start', data: { turn: record.turn } })
+  const [handoff] = diagnostic()
+  assert.equal(diagnostic().length, 1)
+  const key = id => createHash('sha256').update(h.chat.chatId + '\0' + id).digest('hex').slice(0, 24)
+  assert.deepEqual([handoff.prior_input, handoff.input], [key(701), key(702)])
+  assert.doesNotMatch(JSON.stringify(handoff), /Where should I start|Can I use a small example/)
   await h.end()
   await Promise.all([...adapter.replyReviewWrites])
   const snapshot = await adapter.policy.snapshot(h.chat.chatId)
@@ -617,11 +627,14 @@ test('a question finishing after the next private model step began is available 
       await h.receive('And can I include an example?')
       h.start(); assert.equal((await h.preStep()).kind, 'enter')
       const record = adapter.state(h.chat).active
+      const prompt = adapter.nativeCapabilityContext(h.agent)
+      assert.doesNotMatch(prompt, /Would the short format work/)
       h.bridge.onSessionEvent(h.agent.session, { type: 'step/start', data: { turn: record.turn } })
       assert.equal(record.firstModelStepStarted, true)
       if (outcome === 'sent') assert.equal((await h.decide('reply', { text: 'Include one example.' })).sent, true)
       if (outcome === 'idle') assert.equal((await h.decide('idle')).accepted, true)
     } finally { release.resolve(); await earlier }
+    assert.doesNotMatch(fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8'), /"phase":"reply_handoff"/)
     await h.end()
     await Promise.all([...adapter.replyReviewWrites])
     h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
