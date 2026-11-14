@@ -3119,6 +3119,54 @@ test('native burst stops stale model steps and waits for old accounting before w
   assert.equal(h.agent.inbox.hasPending,false)
 })
 
+test('a superseded native turn wakes queued QQ input with compaction instructions still pending', async t => {
+  for (const kind of ['agent-instructions', 'host:web']) await t.test(kind, async t => {
+    let h, assemblies = 0
+    const firstStep = defer(), release = defer()
+    const context = { id: 'restored-context', source: { kind }, content: [] }
+    h = await nativeDriverFixture(t, { assemble: async () => {
+      if (++assemblies === 2) h.agent.inbox.append('next-step', context)
+    } })
+    const scope = 'group:303'
+    h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+    h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+    const adapter = h.bridge.lanyaPolicy, step = h.agent.step
+    h.agent.step = async () => {
+      const result = await step()
+      if (h.steps.length !== 1) return result
+      firstStep.resolve()
+      await release.promise
+      return null
+    }
+    const observed = await adapter.policy.recordObservation({ scope, eventId: 'active-autonomy',
+      kind: 'activity.opportunity', producer: 'mind', createdAt: adapter.now() })
+    await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation',
+      observationKind: 'activity.opportunity', observationProducer: 'mind', observationCreatedAt: adapter.now() }) }, async () => {
+      const text = await adapter.enrichContext(scope, 'autonomy fixture')
+      adapter.dispatchNative(h.chat, { id: 'native-observation', source: { kind: 'plugin:dsh-lanya-observation' },
+        content: [{ type: 'text', text }] }, 'member', 'autonomy fixture')
+    })
+    await firstStep.promise
+    await h.receive('group member mentions bot', { message_type: 'group', group_id: 303, user_id: 202 })
+    const [queued] = h.agent.inbox.nextTurn
+    assert.ok(queued)
+    release.resolve()
+    if (kind === 'host:web') {
+      await h.agent.whenIdle()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      assert.deepEqual(h.agent.inbox.nextStep, [context])
+      assert.deepEqual(h.agent.inbox.nextTurn, [queued])
+      assert.equal(h.steps.length, 1)
+      return
+    }
+    await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
+    assert.equal(h.steps[1].claimedId, queued.id)
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.agent.inbox.hasPending, false)
+    assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  })
+})
+
 test('a new private input yields autonomous activity before or after the tool decision and is claimed once', async t => {
   for (const decided of [false, true]) await t.test(decided ? 'decided' : 'undecided', async t => {
     const h = await nativeDriverFixture(t)

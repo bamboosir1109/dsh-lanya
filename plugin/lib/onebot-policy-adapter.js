@@ -1929,8 +1929,14 @@ export class OneBotDecisionAdapter {
     await agent.whenIdle()
     const front = () => {
       if (!unchanged() || agent.status !== 'idle' || agent.phase?.kind !== 'idle' ||
-          !Array.isArray(agent.inbox?.nextStep) || agent.inbox.nextStep.length !== 0 ||
+          !Array.isArray(agent.inbox?.nextStep) ||
           !Array.isArray(agent.inbox.nextTurn)) return null
+      // Prompt assembly can queue native instructions after preStep has
+      // claimed the current batch. The next turn can claim that context with
+      // its QQ input through the normal native inbox path.
+      const nextStep = agent.inbox.nextStep
+      if (nextStep.some(message => typeof message?.id !== 'string' || !message.id ||
+          state.pending.has(message.id) || !NATIVE_CONTEXT_KINDS.has(message.source?.kind))) return null
       const message = agent.inbox.nextTurn[0], entry = message && state.pending.get(message.id)
       if (!entry || entry.agent !== agent || !['admin', 'member'].includes(entry.role) ||
           !['live', 'observation'].includes(entry.binding.origin) || entry.binding.scope !== scope ||
@@ -1938,13 +1944,14 @@ export class OneBotDecisionAdapter {
           message.source?.kind !== (entry.binding.origin === 'live' ? 'plugin:dsh-onebot' : 'plugin:dsh-lanya-observation')) return null
       if (superseded && (entry.binding.origin !== 'live' || entry.binding.revision <= marker.binding.revision ||
           !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === marker.binding.owner[key]))) return null
-      return { message, entry }
+      return { message, entry, contextFingerprint: identity(JSON.stringify(nextStep)) }
     }
     const selected = front()
     if (!selected) { refuse('unowned_or_changed_front'); return }
     const owner = await this.trustedOwner(scope)
     const current = front()
     if (!current || current.message.id !== selected.message.id || current.entry !== selected.entry ||
+        current.contextFingerprint !== selected.contextFingerprint ||
         !['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === current.entry.binding.owner[key]) ||
         this.bridge.effectiveCwd(scope) !== owner.cwd ||
         agent.wakeDriver !== wake) { refuse('owner_or_front_changed'); return }
