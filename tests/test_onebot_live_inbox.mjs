@@ -2541,13 +2541,22 @@ test('only confirmed actual autonomous message delivery opens participation', as
   })
 })
 
-test('live idle ends by default, continue can retain an existing exchange but cannot open one', async t => {
-  for(const engaged of [false,true])for(const keep of [false,true])await t.test(`${engaged}/${keep}`,async t=>{
+test('live idle and defer skip a remark without ending or extending the exchange', async t => {
+  for(const verdict of ['idle','defer'])await t.test(verdict,async t=>{
     const h=await listeningGroup(t)
-    if(engaged)await h.mention(); else await h.opportunity()
-    h.start(); await h.preStep(); await h.decide('idle',keep?{group_conversation:'continue'}:{})
-    await h.end(); assert.equal((await h.state()).engaged,engaged&&keep)
-    await h.receive('ordinary'); assert.equal(h.pending.length,engaged&&keep?1:0)
+    await h.mention()
+    h.start(); await h.preStep(); await h.decide('reply',{text:'starting a conversation'})
+    await h.end()
+    h.advance(9*60_000)
+    await h.receive('a brief aside')
+    h.start(); await h.preStep(); await h.decide(verdict)
+    await h.end(); assert.equal((await h.state()).engaged,true)
+    await h.receive('follow-up on the same topic'); assert.equal(h.pending.length,1)
+    h.start(); await h.preStep(); await h.decide(verdict)
+    await h.end()
+    h.advance(60_001)
+    await h.receive('a new conversation'); assert.equal(h.pending.length,0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length,1)
   })
 })
 

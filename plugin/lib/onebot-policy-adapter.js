@@ -2084,11 +2084,8 @@ export class OneBotDecisionAdapter {
       record.decision = { verdict: args.verdict, mode: result.mode, reason: result.reason, next_review_at: result.next_review_at,
         ...(args.expression === undefined && args.text === undefined ? {} : { expression: args.expression || 'text' }) }
       record.decisionId = result.decisionId
-      // A periodic check can have nothing to add while the group is waiting
-      // for a human follow-up. Only a live quiet turn defaults to ending it.
-      record.groupConversationEnd = args.group_conversation === 'end' ||
-        args.group_conversation !== 'continue' &&
-        (args.verdict === 'silence' || record.binding.origin === 'live' && ['idle', 'defer'].includes(args.verdict))
+      // Skipping a single remark does not end or extend a joined exchange.
+      record.groupConversationEnd = args.group_conversation === 'end' || args.verdict === 'silence'
       const group = this.groupConversation(record.binding.scope, record.binding.owner, false)
       if (group && record.binding.revision >= group.revision) {
         group.revision = record.binding.revision
@@ -2889,7 +2886,7 @@ export class OneBotDecisionAdapter {
       + (recent.some(row => row.forwarded_excerpt) ? ' A forwarded excerpt contains quoted speakers inside the forward. They are separate from the current sender; do not treat them as addressing you.' : '')
       + ' While listening, an autonomous review can join a current shared topic without an @ if it has a relevant thought, question, joke, or reaction. Prefer something specific to what people are discussing. If the recent list is empty or the exchange has moved on, do not revive it from old history.'
       + (recent.some(row => row.image_refs) ? ' If recent messages revolve around a shared image, inspect one via qq_view_group_image before deciding whether to join. If the image is unavailable, use the text you actually have or stay quiet.' : '')
-      + ' A real mention, verified reply, or confirmed delivery opens participation. During an engaged exchange, respond to the latest relevant remarks together without requiring another @. Use group_conversation=end when the exchange ends or moves to others. A live continue can retain an engaged exchange through an aside. Autonomous idle/defer leaves an active exchange alone, and an exchange with no confirmed participation or live continue for ten minutes returns to listening.'
+      + ' A real mention, verified reply, or confirmed delivery opens participation. During an engaged exchange, respond to the latest relevant remarks together without requiring another @. Use idle to skip a remark and group_conversation=end when the exchange ends or moves to others. An exchange with no direct contact, confirmed delivery or live continue for ten minutes returns to listening.'
   }
 
   async enrichContext(scope, text) {
