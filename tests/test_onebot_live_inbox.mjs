@@ -2260,7 +2260,10 @@ test('a verified group opportunity refreshes stale listening context without mak
     const expected = freshest ? /recent group history topic/
       : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
     assert.match(prompt, expected)
-    assert.doesNotMatch(prompt, /expired group topic|other group topic|own group output/)
+    assert.doesNotMatch(prompt, /expired group topic|other group topic/)
+    const observed = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+    assert.equal(observed.own_recent_messages?.[0]?.text, freshest ? 'own group output' : undefined)
+    assert.ok(observed.recent.every(row => row.text !== 'own group output'))
     if (!freshest) assert.doesNotMatch(prompt, /recent group history topic/)
     if (scenario === 'live context arrives during lookup') {
       const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
@@ -2323,14 +2326,17 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
   assert.deepEqual(group.recent[0].media_not_loaded, ['图片'])
   assert.equal(group.recent[0].image_refs, undefined)
   assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest two', 'group interest three', 'verified member exchange'])
-  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|own announcement|outside the .* bound|unloaded-fixture|foreign-fixture/)
+  assert.equal(group.earlier_topics[2].quoted_text, 'group interest two')
+  assert.deepEqual(group.own_recent_messages.map(row => row.text), ['own announcement'])
+  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|outside the .* bound|unloaded-fixture|foreign-fixture/)
   assert.match(prompt, /Do not guess what an attachment contains/)
-  assert.match(prompt, /ask a concrete related question/)
+  assert.match(prompt, /concrete question can start a new exchange/)
   await h.receive('live group topic')
   assert.doesNotMatch(h.prompt(), /earlier_topics|group interest|verified member exchange/)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /own announcement/)
   await h.end()
   h.advance(7 * 60 * 60_000)
-  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest/)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest|own announcement/)
 })
 
 test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
