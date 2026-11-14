@@ -2420,11 +2420,13 @@ test('reconnect recovers quote follow-ups only with a real mention or the bot in
     row(907, 4, 'private aside to another member', { target: '204', quote: '901' }),
     row(908, 5, 'wrong group original', { author: 999, group: 404 }),
     row(909, 6, 'foreign quote only', { quote: '908' }),
+    row(910, 7, 'group broadcast with a verified bot quote', { target: 'all', quote: '901' }),
+    row(911, 8, 'answer from either member', { target: '999', quote: '902' }),
   ] } : call(action, params)
   a.startRequested = true
   await a.recoverReconnectHistory()
   const state = await a.policy.snapshot(scope)
-  assert.deepEqual(Array.from(state.seen, item => item.messageId), ['903', '905'])
+  assert.deepEqual(Array.from(state.seen, item => item.messageId), ['903', '905', '910', '911'])
   assert.equal(state.current.controlAllowed, false)
   assert.match(state.current.replyReview.text, /quoted bot follow-up.*mention with quote outside the window/u)
   assert.doesNotMatch(state.current.replyReview.text, /untrusted preview|own group result|another member follow-up/u)
@@ -2433,7 +2435,12 @@ test('reconnect recovers quote follow-ups only with a real mention or the bot in
   assert.equal(byId.get('903').quoted_speaker, '999')
   assert.equal(byId.get('904').quoted_speaker, '204')
   assert.equal(byId.get('905').addressed_to_bot, true)
+  assert.equal(byId.get('907').quoted_speaker, '999')
+  assert.equal(byId.get('907').addressed_to_bot, false)
   assert.equal(byId.get('909').quoted_speaker, null)
+  assert.equal(byId.get('910').addressed_to_bot, true)
+  assert.equal(byId.get('911').addressed_to_bot, true)
+  h.advance(10_000)
   await a.reviewUnansweredInputs()
   assert.equal(h.pending.length, 1)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
@@ -2672,6 +2679,23 @@ test('verified same-group reply to bot opens participation without a fabricated 
   await h.receive('quoted bot',{message:[{type:'reply',data:{id:'77'}},{type:'text',data:{text:'follow up'}}]})
   assert.equal(h.pending.length,1);assert.equal((await h.state()).engaged,true)
   assert.match(JSON.stringify(h.pending),/verified_reply/)
+})
+
+test('a personal mention takes priority over a quote of the bot in live group chat', async t => {
+  const h = await listeningGroup(t)
+  h.deps.connection.call = async () => ({ message_id: 77, message_type: 'group', group_id: 303,
+    sender: { user_id: 999 }, message: [{ type: 'text', data: { text: 'previous bot message' } }] })
+  const quote = { type: 'reply', data: { id: '77' } }
+  const mention = { type: 'at', data: { qq: '204' } }
+  const text = { type: 'text', data: { text: 'Question meant for the other member' } }
+  await h.receive('', { message: [quote, mention, text] })
+  await h.receive('', { message: '[CQ:reply,id=77][CQ:at,qq=204] Follow-up to that member' })
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, false)
+  assert.ok((await h.state()).recent.every(row => row.quoted_speaker === '999' && !row.addressed_to_bot))
+  await h.receive('', { message: [quote, mention, { type: 'at', data: { qq: '999' } }, text] })
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
 })
 
 test('a real group contact stays eligible for recovery when merged with an ordinary follow-up', async t => {
