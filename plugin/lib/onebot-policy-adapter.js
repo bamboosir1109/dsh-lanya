@@ -2548,17 +2548,18 @@ export class OneBotDecisionAdapter {
       const activeGroup = group && [...recent.filter(sharedGroupRemark), ...this.unreviewedBufferedTopics(group, recent, now)]
         .some(row => row.at > now - cadence.intervalMs && !reviewedNow.has(row.messageId) && !group.reviewedMessages?.has(row.messageId))
       const maxWait = 60 * 60_000
-      const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, maxWait) : cadence.intervalMs
       const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
+      let interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, maxWait) : cadence.intervalMs
+      if (quietGroup) interval = Math.max(interval, GROUP_CONTEXT_MS)
       // An idle personal turn also has no new work to revisit early. A defer
       // can still name an earlier useful follow-up, subject to budget pacing.
       const keepQuietInterval = quietGroup || personal && args.verdict === 'idle'
       nextReview = requestedReview === null || keepQuietInterval ? now + interval : Math.min(requestedReview, now + interval)
       // A deliberate pause should survive a short recurring interval. Keep
-      // the normal cadence for an active group. For a quiet group, keep the
-      // explicit pause inside the recent-topic window when cadence permits.
+      // the normal cadence for an active group. A quiet group can defer for
+      // its normal quiet interval, which covers at least one topic window.
       if (args.verdict === 'defer' && requestedReview !== null && (personal || quietGroup)) {
-        const pauseLimit = quietGroup ? Math.max(interval, GROUP_CONTEXT_MS) : maxWait
+        const pauseLimit = quietGroup ? interval : maxWait
         nextReview = Math.max(nextReview, Math.min(requestedReview, now + pauseLimit))
       }
       // Leave room in the shared budget for later opportunities. Fresh group

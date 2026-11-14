@@ -2851,7 +2851,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   const quiet = await h.decide('idle')
   assert.equal(quiet.accepted, true)
-  assert.equal(quiet.next_review_at, a.now() + 240_000)
+  assert.equal(quiet.next_review_at, a.now() + 600_000)
   await h.end(); await completion
   // A due retry or explicit short review can still see the same recent row.
   // Once it has already been reviewed, it should not keep the short cadence.
@@ -2862,7 +2862,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic/)
   assert.doesNotMatch(h.prompt(), /"new_shared_remark":true/)
-  assert.equal((await h.decide('idle', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 240_000)
+  assert.equal((await h.decide('idle', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 600_000)
   await h.end(); await repeated
   await h.receive('a new contribution on the same topic')
   const newTopic = a.dispatchObservationOnce({ ...event, event_id: 'fixture-new-group-remark', created_at: a.now() })
@@ -2882,7 +2882,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(h.pending.length, 1)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
-  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 600_000)
   await h.end(); await quietOpportunity
   await h.receive('Question for another member', { message: [
     { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'Question for another member' } },
@@ -2900,7 +2900,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   const unresolved = laterContext.recent.find(row => row.text.includes('Live reply to a missing message'))
   assert.equal(unresolved.unresolved_reply, true)
   assert.equal(unresolved.new_shared_remark, undefined)
-  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 600_000)
   await h.end(); await directedElsewhere
   a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
   await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
@@ -4530,9 +4530,9 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
     ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
     ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
     ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
-    ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
+    ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 10],
     ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 36, 20],
-    ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 9, 9],
+    ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 10, 9],
     ['group-defer-bound', 0.1, 10, 34], ['group-defer-fresh', 0.1, 3, 34],
   ]
   for (const [scenario, spent, reviewMinutes, requestedMinutes = 1] of cases) await t.test(scenario, async t => {
