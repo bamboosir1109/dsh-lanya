@@ -684,3 +684,31 @@ test('worker read batches handle a full terminal window and isolate corrupt evid
     assert.ok(warnings.some(message => message === 'observation_invalid:' + invalidName + ':SyntaxError'))
   } finally { await p.stop() }
 })
+
+test('a directory replaced during a read batch invalidates the scan before dispatch', async t => {
+  const root = fixture(t)
+  write(root, event('directory-replaced-mid-batch'))
+  let calls = 0
+  const p = await pump(t, root, async () => {
+    calls++
+    return { completed: true, status: 'decided', decision_id: 'after-directory-recheck' }
+  })
+  const pending = path.join(root, 'pending'), done = path.join(root, 'done')
+  const originalRead = fs.readFileSync
+  let changed = false
+  fs.readFileSync = function (file, ...args) {
+    const value = originalRead.call(this, file, ...args)
+    if (!changed && typeof file === 'string' && path.dirname(file) === pending) {
+      changed = true
+      fs.renameSync(done, path.join(root, 'previous-done'))
+      fs.mkdirSync(done)
+    }
+    return value
+  }
+  try { await assert.rejects(p.drain(), /Inbox directory changed during scan/) }
+  finally { fs.readFileSync = originalRead }
+  assert.equal(changed, true)
+  assert.equal(calls, 0)
+  assert.equal((await p.drain()).processed, 1)
+  assert.equal(calls, 1)
+})

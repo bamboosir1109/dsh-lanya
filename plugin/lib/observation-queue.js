@@ -127,10 +127,15 @@ function readRegular(file, maxBytes = MAX_COMPLETION_BYTES) {
  * Present corrupt evidence always wins over the backup: never hide tampering.
  */
 export function readObservationEvidence(directory, key) {
-  if (!/^[0-9a-f]{64}$/.test(key)) throw new ObservationQueueError('Invalid evidence filename')
   const base = ordinaryDirectories(directory)
-  const target = path.join(ordinaryDirectories(path.join(base, 'pending')), key + '.json')
-  const markerPath = path.join(ordinaryDirectories(path.join(base, 'done')), key + '.json')
+  return readEvidenceFiles(ordinaryDirectories(path.join(base, 'pending')),
+    ordinaryDirectories(path.join(base, 'done')), key)
+}
+
+function readEvidenceFiles(pending, done, key) {
+  if (!/^[0-9a-f]{64}$/.test(key)) throw new ObservationQueueError('Invalid evidence filename')
+  const target = path.join(pending, key + '.json')
+  const markerPath = path.join(done, key + '.json')
   let read, marker, completionSha256 = null, hasMarker = false
   try { read = readRegular(target, MAX_OBSERVATION_BYTES) } catch (error) {
     if (error.code !== 'ENOENT') throw error
@@ -297,11 +302,14 @@ function fileScanner(directory, incremental = true) {
     const name = String(filename)
     if (evidenceName(name)) versions.set(name, ++generation)
   }
-  const directoryIdentity = () => [base, pending, done].map(directory => {
-    ordinaryDirectories(directory)
-    const info = fs.lstatSync(directory, { bigint: true })
-    return [String(info.dev), String(info.ino)]
-  })
+  const directoryIdentity = () => {
+    const root = ordinaryDirectories(base)
+    return [root, pending, done].map(directory => {
+      const info = fs.lstatSync(directory, { bigint: true })
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new ObservationQueueError('Inbox parents must be ordinary directories')
+      return [String(info.dev), String(info.ino)]
+    })
+  }
   return {
     start() {
       ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
@@ -344,11 +352,11 @@ function fileScanner(directory, incremental = true) {
         reconcileAfter = Math.min(MAX_RECONCILE_MS, Math.max(RECONCILE_MS, (at - fullStartedAt) * 4))
       }
     },
-    read({ key }) {
+    read({ key }, readEvidence = key => readObservationEvidence(base, key)) {
       const name = key + '.json', version = versions.get(name) || 0
       metrics.reads++
       let read
-      try { read = readObservationEvidence(base, key) }
+      try { read = readEvidence(key) }
       catch (error) {
         // A legacy completion without its original cannot be acknowledged
         // or used to derive work. Keep reporting it and revisit on change or
@@ -367,10 +375,17 @@ function fileScanner(directory, incremental = true) {
     },
     readBatch({ keys }) {
       if (!Array.isArray(keys) || keys.length > SCANNER_READ_BATCH_SIZE) throw new ObservationQueueError('Invalid scanner batch')
-      return keys.map(key => {
-        try { return { read: this.read({ key }) } }
+      const before = stable(directoryIdentity())
+      if (before !== directories) throw new ObservationQueueError('Inbox directory changed during scan')
+      const page = keys.map(key => {
+        try { return { read: this.read({ key }, key => readEvidenceFiles(pending, done, key)) } }
         catch (error) { return { error: error.name } }
       })
+      if (stable(directoryIdentity()) !== before) {
+        for (const key of keys) reads.delete(key)
+        throw new ObservationQueueError('Inbox directory changed during scan')
+      }
+      return page
     },
     rememberTerminals({ records, at }) {
       const remembered = []
@@ -817,18 +832,18 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 lastYieldAt = performance.now()
                 if (stopped) break
               }
+              if (scanningInFlight.has(name)) continue
+              // Bound unread terminal snapshots across a worker round trip.
+              // Directory drift or a failed worker RPC invalidates the scan.
+              if (pageAt === page.length) {
+                if (terminals.length > TERMINAL_ACK_BATCH_SIZE - SCANNER_READ_BATCH_SIZE) await flushTerminals()
+                const keys = names.slice(index, index + SCANNER_READ_BATCH_SIZE)
+                  .filter(value => !scanningInFlight.has(value)).map(value => value.slice(0, -5))
+                page = await scanner.call('readBatch', { keys })
+                pageAt = 0
+              }
+              if (stopped) break
               try {
-                if (scanningInFlight.has(name)) continue
-                // Bound unread terminal snapshots across a worker round trip.
-                // The results retain list order and each row is still validated.
-                if (pageAt === page.length) {
-                  if (terminals.length > TERMINAL_ACK_BATCH_SIZE - SCANNER_READ_BATCH_SIZE) await flushTerminals()
-                  const keys = names.slice(index, index + SCANNER_READ_BATCH_SIZE)
-                    .filter(value => !scanningInFlight.has(value)).map(value => value.slice(0, -5))
-                  page = await scanner.call('readBatch', { keys })
-                  pageAt = 0
-                }
-                if (stopped) break
                 const result = page[pageAt++]
                 if (result.error) throw Object.assign(new ObservationQueueError('Observation evidence could not be read'), { name: result.error })
                 const read = result.read
