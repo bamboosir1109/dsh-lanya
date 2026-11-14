@@ -2476,6 +2476,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic[\s\S]*没人艾特也能接梗/)
+  assert.match(h.prompt(), /"text":"an actual shared topic"[^\n]*"new_shared_remark":true/)
   assert.match(h.prompt(), /群里安静时[\s\S]*自己真好奇的点[\s\S]*开个简短话头/)
   assert.match(h.prompt(), /Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details/)
   assert.match(h.prompt(), /trusted_autonomy_rhythm/)
@@ -2499,6 +2500,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(h.pending.length, 1)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic/)
+  assert.doesNotMatch(h.prompt(), /"new_shared_remark":true/)
   assert.equal((await h.decide('idle', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 240_000)
   await h.end(); await repeated
   await h.receive('a new contribution on the same topic')
@@ -2521,6 +2523,18 @@ test('a queued group review uses the current social prompt instead of an inherit
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
   await h.end(); await quietOpportunity
+  await h.receive('Question for another member', { message: [
+    { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'Question for another member' } },
+  ] })
+  await h.receive('Attachment alone', { message: [{ type: 'image', data: { file: 'unavailable-image' } }] })
+  const directedElsewhere = a.dispatchObservationOnce({ ...event, event_id: 'fixture-directed-elsewhere', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const laterContext = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(laterContext.recent.find(row => row.text.includes('Question for another member')).new_shared_remark, undefined)
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  await h.end(); await directedElsewhere
   a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
   await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
