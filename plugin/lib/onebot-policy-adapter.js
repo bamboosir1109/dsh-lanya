@@ -1910,7 +1910,7 @@ export class OneBotDecisionAdapter {
     const internal = binding?.origin === 'observation' && localOpportunity(binding) &&
       (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
     const unstartedActivity = internal && binding.observationKind === 'activity.opportunity'
-    const budgetRefusedObservation = binding?.origin === 'observation' && record.nativeAdmissionRefused?.reason === 'budget_exhausted'
+    const budgetRefusedObservation = binding?.origin === 'observation' && record.nativeAdmissionRefused?.binding === binding
     const failedObservation = afterTurnError && binding?.origin === 'observation'
     if (!(binding?.origin === 'live' || internal || budgetRefusedObservation || failedObservation) ||
         (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation && !afterTurnError) ||
@@ -2093,11 +2093,9 @@ export class OneBotDecisionAdapter {
               record.outcomes.length === 0 && record.inFlight.size === 0) {
             record.nativeAdmissionRefused = Object.freeze({ binding, turn: request.turn, signal: request.signal,
               reason })
-            if (reason === 'budget_exhausted') {
-              const successor = this.supersedingLiveInput(chat, record)
-              if (successor) record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
-                turn: request.turn, epoch: this.startEpoch, binding, revision: successor.binding.revision })
-            }
+            const successor = this.supersedingLiveInput(chat, record)
+            if (successor) record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+              turn: request.turn, epoch: this.startEpoch, binding, revision: successor.binding.revision })
           }
           return { kind: 'reject', reason: reason || 'budget_admission_refused' }
         }
