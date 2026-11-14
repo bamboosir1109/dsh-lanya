@@ -1542,7 +1542,7 @@ export class OneBotDecisionAdapter {
       + '中文聊天直接接对方的话。没有真实的后续动作，就省掉「我再去看一下」「我再确认一下」这类收尾。知道哪一点就说哪一点，有具体疑问再问。分享作品时挑一个有意思的细节；图片已经说清就收住。遇到真要讲步骤或解释的事，完整讲清，句数随内容。\n'
       + (record.binding.observationKind === 'activity.opportunity' && localOpportunity(record.binding)
         ? (chat.chatId.startsWith('group:')
-          ? '群聊自主机会：先看大家这会儿在聊什么。即使没人艾特，有具体想法、能接上一个梗、想问一句或有合适的表情，也可以自然参与。群里安静时，有本群共同兴趣或新鲜想法，也可以自己开个简短话头。先看说话对象和自己刚说过什么，没合适的话就安静。上次结果不明的发言别重发。\n'
+          ? '群聊自主机会：先看大家在聊什么。没人艾特也能接梗、说一点自己的看法或发张合适的表情。群里安静时，可以从本群共同兴趣挑一个自己真好奇的点，开个简短话头。想开口时直接说那一句，省去打招呼、活动汇报和「我再去看」式收尾。看看自己刚说过什么，已经问过就给别人留时间。没合适的话就安静，上次结果不明的发言别重发。\n'
           : '自主机会：有可继续的想法就做一个实际步骤，接着看一段视频、玩一小局、继续作品，或就近期共同话题自然聊一句。一个卡点没有新证据时换一件能做的事。用 qq_intent 或日记保存自己的进展；需要人工审批的长期记忆改动留给人工处理。选择 tool_action 时，把结果留在活动记录。以后真有想分享的事，再在合适的机会自然聊一句。\n') : '')
       + (record.binding.origin === 'live'
         ? 'Respond promptly to the current human. For a casual reaction, choose text or one fitting real meme; optional image hunting must not delay a useful answer. The live picker offers at most one candidate and one search per turn. Review that image only when required; do not inspect a gallery or repeat the picker. If unsuitable, use concise text before deciding the final medium. Necessary inspection of images supplied by the user remains available.\n'
@@ -3003,8 +3003,11 @@ export class OneBotDecisionAdapter {
     if (groupReview) {
       // QQ activity reviews need shared group conversations, not the agent-wide memory store.
       recentEvents = recentEvents.filter(row => row.role === 'user')
-      const groupText = this.recentGroupContext(scope, owner).map(row => row.text.trim()).filter(Boolean)
-      const topics = groupText.length ? groupText : recentEvents.map(row => row.text.trim())
+      const now = this.now()
+      const groupText = this.recentGroupContext(scope, owner, now).map(row => row.text.trim()).filter(Boolean)
+      const earlier = this.earlierGroupTopics(scope, owner, now).map(topic =>
+        [topic.quoted_text, topic.text].filter(Boolean).join('\n'))
+      const topics = groupText.length ? groupText : earlier.length ? earlier : recentEvents.map(row => row.text.trim())
       query = topics.slice(-2).map(topic => topic.slice(0, 768).toWellFormed()).join('\n')
     }
     const script = this.config.memoryContextScript || path.join(this.deps.config.workspacePath || path.dirname(path.dirname(this.stateFile)), 'napcat', 'memory_context.py')
@@ -3039,6 +3042,11 @@ export class OneBotDecisionAdapter {
       .filter(row => row.at <= now && row.at >= now - GROUP_CONTEXT_MS)
   }
 
+  earlierGroupTopics(scope, owner, now) {
+    return (this.groupConversation(scope, owner, false)?.olderTopics || [])
+      .filter(row => row.at < now - GROUP_CONTEXT_MS && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+  }
+
   groupPromptContext(scope, owner, groupActivityReview = false) {
     if (!this.contextualGroupEnabled(scope) || !owner) return ''
     const group = this.groupConversation(scope, owner, false)
@@ -3048,8 +3056,8 @@ export class OneBotDecisionAdapter {
         ...(groupActivityReview && images.length ? { image_refs: images.map(image => image.id) } : {}) }))
     const toTopic = ({ at, ...row }) => ({ ...row, age_seconds: Math.floor((now - at) / 1000) })
     const withinLookback = row => row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS
-    const earlier = groupActivityReview && !recent.some(row => row.text.trim() || row.forwarded_excerpt || row.image_refs) ? (group?.olderTopics || [])
-      .filter(row => row.at < now - GROUP_CONTEXT_MS && withinLookback(row)).map(toTopic) : []
+    const earlier = groupActivityReview && !recent.some(row => row.text.trim() || row.forwarded_excerpt || row.image_refs)
+      ? this.earlierGroupTopics(scope, owner, now).map(toTopic) : []
     const own = groupActivityReview ? (group?.ownTopics || []).filter(withinLookback).map(toTopic) : []
     return '\n<observed_group_context>\n' + JSON.stringify({
       state: group && group.engagedAt !== null ? 'engaged' : 'listening', recent,
