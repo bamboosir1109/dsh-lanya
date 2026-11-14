@@ -26,6 +26,8 @@ const replyOwnerValid = owner => plain(owner) && ['cwd', 'preset', 'workspace_ke
   .every(key => typeof owner[key] === 'string' && owner[key].length > 0 && owner[key].length <= 4096)
 const replyOwnerSame = (a, b) => replyOwnerValid(a) && replyOwnerValid(b) &&
   ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => a[key] === b[key])
+const replyPendingValid = pending => plain(pending) && identifier(pending.session) && identifier(pending.id) &&
+  typeof pending.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(pending.fingerprint)
 const replyReviewable = (scope, at) => {
   const event = scope?.current, input = event?.replyReview
   return Boolean(scope?.mode === 'open' && event?.origin === 'live' && input && !input.attempted &&
@@ -148,7 +150,8 @@ function validateState(state) {
           !replyOwnerValid(current.replyReview.owner) || typeof current.replyReview.text !== 'string' ||
           !current.replyReview.text.trim() || current.replyReview.text.length > 32_000 ||
           !Number.isSafeInteger(current.replyReview.at) || current.replyReview.at < 0 ||
-          typeof current.replyReview.attempted !== 'boolean')) throw new PolicyStateError('Corrupt reply review evidence')
+          typeof current.replyReview.attempted !== 'boolean' || (current.replyReview.nativePending !== undefined &&
+            !replyPendingValid(current.replyReview.nativePending)))) throw new PolicyStateError('Corrupt reply review evidence')
       if (current.ticket !== null && (!plain(current.ticket) || !identifier(current.ticket.id) ||
           !['reply', 'resume', 'tool_action'].includes(current.ticket.verdict) || current.decided !== true ||
           !Number.isFinite(current.ticket.expiresAt))) {
@@ -527,12 +530,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * caller-supplied history. Storage is on the existing private policy file;
      * staging never issues a ticket or changes the live revision. The claim
      * handler can enrich its exact pending text with an interrupted question. */
-    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text, previousText } = {}) {
+    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text, previousText, nativePending } = {}) {
       canonicalScope(scope)
-      if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000) {
+      if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000 ||
+          (nativePending !== undefined && !replyPendingValid(nativePending))) {
         throw new PolicyStateError('Bounded owned reply input required')
       }
-      const evidence = clone({ owner, text, at: now(), attempted: false })
+      const evidence = clone({ owner, text, at: now(), attempted: false,
+        ...(nativePending && { nativePending }) })
       return transaction(state => {
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
@@ -543,6 +548,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         if (previous) {
           if (previous.attempted || previous.text !== previousText || !replyOwnerSame(owner, previous.owner)) return false
           evidence.at = previous.at
+          if (!nativePending && previous.nativePending) evidence.nativePending = previous.nativePending
         }
         current.current.replyReview = evidence
         return true
@@ -617,7 +623,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
             !replyReviewable(current, now()) || now() - current.current.replyReview.at < REPLY_REVIEW_AGE ||
-            !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim() !== true) return { accepted: false }
+            !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim(clone(current.current.replyReview)) !== true) return { accepted: false }
         if (!Number.isSafeInteger(current.revision + 1)) throw new PolicyStateError('Revision exhausted')
         const previous = current.current, evidence = { ...previous.replyReview, attempted: true }
         current.revision += 1

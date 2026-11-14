@@ -170,6 +170,8 @@ const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exha
 // These kinds are native source metadata, never parsed from quoted/chat text.
 const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
   'repeat-tool-reminder', 'compact-checkpoint'])
+const nativeContextOnly = (messages, pending) => messages.every(message => typeof message?.id === 'string' &&
+  message.id && !pending.has(message.id) && NATIVE_CONTEXT_KINDS.has(message.source?.kind))
 const GROUP_CONTEXT_MS = 10 * 60_000
 const GROUP_TOPIC_LOOKBACK_MS = 6 * 60 * 60_000
 const GROUP_RECENT_CONTEXT_MS = 2 * 60_000
@@ -935,7 +937,7 @@ export class OneBotDecisionAdapter {
       policy.groupAllowFrom?.includes(scope.slice(6)) === true)
   }
 
-  rememberReplyInput(binding, text, resolveOwner = false, includesGroupContact = false) {
+  rememberReplyInput(binding, text, resolveOwner = false, includesGroupContact = false, nativePending) {
     const inbound = this.context.getStore()?.inbound
     if (!this.nativeClaims || binding.origin !== 'live' || binding.recoveryRevision || binding.temporaryPrivate || !inbound ||
         !this.replyReviewAllowed(binding.scope, inbound.userId)) return
@@ -943,10 +945,10 @@ export class OneBotDecisionAdapter {
     const directMention = inbound.segments?.some(segment => segment?.type === 'at' &&
       bot.includes(String(segment.data?.qq))) === true
     if (binding.scope.startsWith('group:') && !directMention && !binding.verifiedGroupReply && !includesGroupContact) return
-    this.persistReplyInput(binding, text, inbound.userId, resolveOwner)
+    this.persistReplyInput(binding, text, inbound.userId, resolveOwner, undefined, nativePending)
   }
 
-  persistReplyInput(binding, text, sender, resolveOwner = false, previousText) {
+  persistReplyInput(binding, text, sender, resolveOwner = false, previousText, nativePending) {
     if (typeof text !== 'string' || !text.trim() || text.length > 32_000) return
     // Run alongside the original native input, never add a helper/model call
     // to the foreground path. A storage failure cannot authorize recovery.
@@ -957,7 +959,7 @@ export class OneBotDecisionAdapter {
       const owner = binding.owner || await this.trustedOwner(binding.scope)
       if (!this.replyReviewAllowed(binding.scope, sender)) return
       return this.policy.rememberReplyInput({ scope: binding.scope, expectedRevision: binding.revision,
-        messageId: binding.messageId, owner, text, previousText })
+        messageId: binding.messageId, owner, text, previousText, nativePending })
     })()
       .catch(error => this.log('warn', 'reply_review_evidence_unavailable:' + error.name))
     this.replyReviewWrites.add(write)
@@ -979,7 +981,38 @@ export class OneBotDecisionAdapter {
     const chat = this.bridge.chats.get(scope), inbox = chat?.agent?.inbox
     return Boolean(chat && this.nativeScopes.has(chat.agent.ctx) && chat.agent.status === 'idle' &&
       Array.isArray(inbox?.nextTurn) && inbox.nextTurn.length === 0 &&
-      Array.isArray(inbox?.nextStep) && inbox.nextStep.length === 0)
+      Array.isArray(inbox?.nextStep) && nativeContextOnly(inbox.nextStep, this.state(chat).pending))
+  }
+
+  restoredReplyFront(scope, epoch, evidence) {
+    const chat = this.bridge.chats.get(scope), agent = chat?.agent, inbox = agent?.inbox
+    if (!this.startRequested || epoch !== this.startEpoch || this.bridge.stopping || this.foregroundBusy(scope) ||
+        !agent || this.nativeChat(agent) !== chat || !this.nativeScopes.has(agent.ctx) || agent.status !== 'idle' ||
+        agent.phase?.kind !== 'idle' || !Array.isArray(inbox?.nextTurn) || inbox.nextTurn.length !== 1 ||
+        !Array.isArray(inbox.nextStep) || !nativeContextOnly(inbox.nextStep, this.state(chat).pending) ||
+        typeof inbox.remove !== 'function') return null
+    const [message] = inbox.nextTurn
+    if (typeof message?.id !== 'string' || !message.id || message.role !== 'user' ||
+        message.source?.kind !== 'plugin:dsh-onebot') return null
+    const fingerprint = identity(JSON.stringify(message))
+    if (evidence.nativePending) {
+      const pinned = evidence.nativePending
+      if (pinned.session !== String(agent.session.id) || pinned.id !== message.id || pinned.fingerprint !== fingerprint) return null
+    } else {
+      if (!Array.isArray(message.content) || message.content.length !== 1 ||
+          message.content[0]?.type !== 'text' || message.content[0].text !== evidence.text) return null
+      // Older receipts have no pending ID. Require a unique matching native
+      // insertion next to the original receipt time as well as exact text.
+      const inserted = agent.session.snapshotEvents?.().slice(-128).filter(event =>
+        event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn' &&
+        event.data.inserted?.some(item => item.id === message.id))
+      if (inserted?.length !== 1 || !Number.isSafeInteger(inserted[0].time) ||
+          Math.abs(inserted[0].time - evidence.at) > 5000 ||
+          !inserted[0].data.inserted.some(item => identity(JSON.stringify(item)) === fingerprint)) return null
+    }
+    // A splice is append-only. The original remains in the native journal;
+    // this entry grants no sender role, command or media authority after restart.
+    return { agent, id: message.id, fingerprint, context: identity(JSON.stringify(inbox.nextStep)) }
   }
 
   async reviewUnansweredInputs() {
@@ -1001,7 +1034,10 @@ export class OneBotDecisionAdapter {
         if (!this.backendGuard.edge(this.deps.connection, backendStamp)) break
         if (!this.startRequested || epoch !== this.startEpoch || this.bridge.stopping ||
             !this.replyReviewAllowed(candidate.scope, candidate.sender)) continue
-        if (this.bridge.chats.has(candidate.scope) && !this.replyReviewIdle(candidate.scope, epoch)) continue
+        const restored = this.bridge.chats.has(candidate.scope) && !this.replyReviewIdle(candidate.scope, epoch)
+        const evidence = restored ? (await this.policy.snapshot(candidate.scope))?.current?.replyReview : null
+        const original = evidence && this.restoredReplyFront(candidate.scope, epoch, evidence)
+        if (restored && !original) continue
         let owner
         try { owner = await this.trustedOwner(candidate.scope) }
         catch (error) { this.log('warn', 'reply_review_owner_unavailable:' + error.name); continue }
@@ -1011,15 +1047,26 @@ export class OneBotDecisionAdapter {
           try { await this.bridge.ensureChat(candidate.scope, '') }
           catch (error) { this.log('warn', 'reply_review_session_unavailable:' + error.name); continue }
         }
-        const canReview = () => this.replyReviewAllowed(candidate.scope, candidate.sender) &&
-          this.replyReviewIdle(candidate.scope, epoch) && this.backendGuard.edge(this.deps.connection, backendStamp)
+        const stillOriginal = () => {
+          const current = this.restoredReplyFront(candidate.scope, epoch, evidence)
+          return current?.agent === original.agent && current.id === original.id &&
+            current.fingerprint === original.fingerprint && current.context === original.context
+        }
+        const allowed = () => this.replyReviewAllowed(candidate.scope, candidate.sender) &&
+          this.backendGuard.edge(this.deps.connection, backendStamp)
+        const canReview = () => allowed() && (original ? stillOriginal() : this.replyReviewIdle(candidate.scope, epoch))
         const claimed = await this.policy.claimReplyReview({ ...candidate, expectedRevision: candidate.revision, owner,
-          canClaim: canReview })
+          canClaim: current => canReview() && (!original || (current.at === evidence.at && current.text === evidence.text &&
+            JSON.stringify(current.nativePending) === JSON.stringify(evidence.nativePending))) })
         if (!claimed.accepted) continue
         checked += 1
         const release = () => this.policy.releaseUnqueuedReplyReview({ scope: claimed.scope,
           expectedRevision: claimed.revision, messageId: claimed.messageId, owner })
         if (!canReview()) { await release(); continue }
+        if (original) {
+          try { if (original.agent.inbox.remove(original.id) !== true) continue }
+          catch (error) { this.log('warn', 'reply_review_retire_failed:' + error.name); continue }
+        }
         const binding = Object.freeze({ ...claimed, text: undefined, owner: Object.freeze({ ...owner }),
           recoveryEpoch: epoch, backendStamp })
         // This is a review of an actual receipt, not a new human command or
@@ -1434,7 +1481,8 @@ export class OneBotDecisionAdapter {
     if (binding.origin === 'live') state.liveRevision = binding.revision
     // Keep recovery evidence even if insertion throws. The one-shot reviewer
     // still waits for an idle inbox and verifies there was no egress attempt.
-    this.rememberReplyInput(binding, replyEvidenceText, false, directGroupContact)
+    this.rememberReplyInput(binding, replyEvidenceText, false, directGroupContact,
+      { session: String(chat.agent.session.id), id: message.id, fingerprint: entry.fingerprint })
     try {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
@@ -1935,8 +1983,7 @@ export class OneBotDecisionAdapter {
       // claimed the current batch. The next turn can claim that context with
       // its QQ input through the normal native inbox path.
       const nextStep = agent.inbox.nextStep
-      if (nextStep.some(message => typeof message?.id !== 'string' || !message.id ||
-          state.pending.has(message.id) || !NATIVE_CONTEXT_KINDS.has(message.source?.kind))) return null
+      if (!nativeContextOnly(nextStep, state.pending)) return null
       const message = agent.inbox.nextTurn[0], entry = message && state.pending.get(message.id)
       if (!entry || entry.agent !== agent || !['admin', 'member'].includes(entry.role) ||
           !['live', 'observation'].includes(entry.binding.origin) || entry.binding.scope !== scope ||

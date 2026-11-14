@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import nativeIdleWake from './fixtures/native_idle_wake/native-methods.mjs'
+import { createDecisionPolicy } from '../plugin/lib/decision-policy.js'
 
 if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
@@ -269,6 +270,53 @@ test('reply review honors an accepted quiet decision and actual sends rather tha
     const before = h.followups.length
     await adapter.reviewUnansweredInputs()
     assert.equal(h.followups.length, before)
+  })
+})
+
+test('startup recovery reviews only the same unclaimed QQ message alongside native context', async t => {
+  for (const mode of ['pinned', 'legacy', 'changed', 'foreign-context']) await t.test(mode, async t => {
+    const h = await nativeDriverFixture(t)
+    const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    const policyFile = path.join(path.dirname(h.plugin), 'restored-policy.json')
+    adapter.policy = createDecisionPolicy({ stateFile: policyFile, now: adapter.now })
+    adapter.startRequested = true; adapter.startEpoch += 1
+    const sender = scope.slice('private:'.length), messageId = 'fixture-inbound'
+    const live = await adapter.policy.recordInbound({ scope, sender, messageId, origin: 'live', controlAllowed: true })
+    const text = 'missed private question', message = { id: 'saved-qq-message', role: 'user',
+      source: { kind: 'plugin:dsh-onebot' }, content: [{ type: 'text', text }] }
+    h.agent.inbox.append('next-turn', message)
+    h.agent.inbox.append('next-step', { id: 'saved-context', role: 'user',
+      source: { kind: mode === 'foreign-context' ? 'host:web' : 'agent-instructions' }, content: [] })
+    if (mode === 'legacy') h.nativeEvents[0].time = adapter.now() + 47
+    const pin = mode === 'legacy' ? undefined : { session: h.agent.session.id, id: message.id,
+      fingerprint: createHash('sha256').update(JSON.stringify(message)).digest('hex') }
+    await adapter.policy.rememberReplyInput({ scope, messageId, owner: await adapter.trustedOwner(scope),
+      expectedRevision: live.revision, text, nativePending: pin })
+    if (mode === 'changed') h.agent.inbox.replace(message.id, { ...message, content: [{ type: 'text', text: 'changed text' }] })
+    h.advance(61_000)
+    const original = structuredClone(h.nativeEvents)
+    const step = h.agent.step
+    h.agent.step = async () => {
+      const stepResult = await step()
+      const record = adapter.state(h.chat).active
+      assert.equal(record.binding.recoveryRevision, live.revision + 1)
+      assert.equal(h.chat.activeTurnRole, 'member')
+      assert.equal((await h.decide('tool_action')).accepted, false)
+      assert.equal((await h.decide('reply', { text: 'scoped answer' })).sent, true)
+      return stepResult
+    }
+    await adapter.reviewUnansweredInputs()
+    if (mode === 'changed' || mode === 'foreign-context') {
+      assert.deepEqual(h.nativeEvents, original)
+      assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+      return
+    }
+    await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.slice(0, original.length), original)
+    assert.equal(h.nativeEvents.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled').length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   })
 })
 
