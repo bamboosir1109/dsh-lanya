@@ -1577,6 +1577,54 @@ test('a verification failure on an already connected socket can recover a missed
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('a second transient backend failure extends an in-progress history recovery', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  h.advance(60_000)
+  a.noteConnectionStatus(true)
+  a.startRequested = true
+  const call = h.deps.connection.call
+  const clock = () => Math.floor(a.now() / 1000)
+  const receipt = (time, message_id, text) => ({ message_type: 'private', sub_type: 'friend', time, message_id,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }] })
+  const first = receipt(clock() - 10, 571, 'Question during first outage')
+  const rows = [first]
+  let reads = 0
+  h.deps.connection.call = (action, params) => {
+    if (action === 'get_friend_list') return [{ user_id: 101 }]
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    if (++reads === 1) throw new Error('Temporary history failure')
+    return { messages: [...rows] }
+  }
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 1)
+  const original = a.reconnectReview
+  assert.equal(original.verifiedAt, a.now())
+  h.advance(2_000)
+  const second = receipt(clock(), 572, 'Question from a second verification gap')
+  rows.push(second)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_runtime_unverified' })
+  await h.receive(second.message[0].data.text, { message_id: second.message_id })
+  assert.equal(h.pending.length, 0)
+  assert.notEqual(a.reconnectReview, original)
+  assert.equal(a.reconnectReview.since, original.since)
+  a.backendGuard.verify = verify
+  h.advance(62_000)
+  await a.checkReconnectHistory()
+  assert.equal(reads, 2)
+  assert.equal(h.pending.length, 1)
+  const evidence = h.pending[0].content[0].text
+  assert.match(evidence, /Question during first outage[\s\S]*Question from a second verification gap/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer covering both questions' })).sent, true)
+  await h.end()
+  await a.checkReconnectHistory()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const backend = backendFixture(h)

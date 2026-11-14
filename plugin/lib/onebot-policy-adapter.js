@@ -175,6 +175,9 @@ const nativeContextOnly = (messages, pending) => messages.every(message => typeo
 const GROUP_CONTEXT_MS = 10 * 60_000
 const GROUP_TOPIC_LOOKBACK_MS = 6 * 60 * 60_000
 const GROUP_RECENT_CONTEXT_MS = 2 * 60_000
+const TRANSIENT_INBOUND_BACKEND_FAILURES = new Set([
+  'backend_verification_unavailable', 'backend_runtime_unverified', 'backend_connection_changed',
+])
 const orderGroupRows = (a, b) => a.at - b.at || (a.historyOrder ?? a.arrival) - (b.historyOrder ?? b.arrival)
 const groupHistorySender = row => {
   const sender = String(row.sender?.user_id)
@@ -1225,16 +1228,20 @@ export class OneBotDecisionAdapter {
       current.backendStamp = this.backendGuard.selection().stamp
       const backend = await this.backendGuard.verify(this.deps.connection, current.backendStamp)
       if (!backend.allowed) {
-        // A live event can hit a temporary verification failure without a
-        // socket status change. Retain that gap for the normal verified scan.
+        // A live event can hit a temporary verification failure after the
+        // socket has connected and the previous history cutoff was set.
         if (this.nativeClaims && this.startRequested && !this.bridge.stopping &&
-            backend.reason === 'backend_verification_unavailable' && this.deps.connection?.connected === true &&
+            TRANSIENT_INBOUND_BACKEND_FAILURES.has(backend.reason) && this.deps.connection?.connected === true &&
             !inbound.lanyaInjected && !inbound.lanyaTemporaryPrivate &&
             this.replyReviewAllowed(scope, inbound.userId) &&
             (scope.startsWith('private:') || this.contextualGroupEnabled(scope)) &&
-            (!this.reconnectReview || current.arrivedAt - this.reconnectReview.connectedAt > FRIEND_RECONNECT_WINDOW_MS)) {
-          this.reconnectReview = { since: current.arrivedAt, connectedAt: current.arrivedAt,
-            verifiedAt: null, scopes: null, friends: null }
+            this.backendGuard.current(current.backendStamp)) {
+          const window = this.reconnectReview
+          const expired = window?.connectedAt !== undefined && current.arrivedAt - window.connectedAt > FRIEND_RECONNECT_WINDOW_MS
+          if (!window || expired || Number.isSafeInteger(window.verifiedAt) && current.arrivedAt > window.verifiedAt) {
+            this.reconnectReview = { since: !window || expired ? current.arrivedAt : window.since, connectedAt: current.arrivedAt,
+              verifiedAt: null, scopes: null, friends: null }
+          }
         }
         this.diagnose(scope, inbound.messageId, 'blocked', { reason: backend.reason })
         return { accepted: false, reason: backend.reason }
