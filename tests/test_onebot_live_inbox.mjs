@@ -3062,7 +3062,7 @@ test('a group activity review searches recent group text and falls back to the s
   await h.opportunity()
   assert.equal(request.query, 'verified hobby detail\nsame-group hobby question')
   assert.equal(request.limit, 0)
-  h.advance(6 * 60 * 60_000)
+  h.advance(24 * 60 * 60_000)
   await h.opportunity()
   assert.equal(request.query, 'earlier group conversation')
   Object.assign(session, { seq: 0, snapshotEvents: () => [] })
@@ -3187,7 +3187,7 @@ test('expired live group discussion remains a shared-interest clue if platform h
   assert.equal((await h.decide('reply', { text: 'A teacup would fit a tiny canvas well' })).sent, true)
   await h.end()
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
-  h.advance(6 * 60 * 60_000)
+  h.advance(24 * 60 * 60_000)
   assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
 })
 
@@ -3466,7 +3466,7 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
     quoted.message.push({ type: 'reply', data: { id: '20' } }, { type: 'at', data: { qq: '204' } })
     return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
       row(20, 24_000, 'outdated nested quote'), quoted, row(4, 700, 'group interest three'),
-      row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
+      row(5, 23_000, 'outside the preferred six-hour window'), row(6, 766, 'foreign group', { group_id: 404 }),
       row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget,
       row(13, 180, '', { message: [{ type: 'image', data: { file: 'unloaded-fixture' } }] }),
       row(14, 179, '', { group_id: 404, message: [{ type: 'record', data: { file: 'foreign-fixture' } }] })] }
@@ -3493,8 +3493,42 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
   assert.doesNotMatch(h.prompt(), /earlier_topics|group interest|verified member exchange/)
   assert.doesNotMatch(a.groupPromptContext(scope, owner), /own announcement/)
   await h.end()
-  h.advance(7 * 60 * 60_000)
+  h.advance(25 * 60 * 60_000)
   assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest|own announcement/)
+})
+
+test('the morning group review can use yesterday’s shared interest without reviving the exchange', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  const time = Math.floor(a.now() / 1000)
+  const row = (message_id, age, body, fields = {}) => ({
+    message_id, message_type: 'group', group_id: 303, sender: { user_id: 202 }, time: time - age,
+    message: [{ type: 'text', data: { text: body } }], ...fields,
+  })
+  const aside = row(93, 12 * 3600, 'a message for another member')
+  aside.message.push({ type: 'at', data: { qq: '204' } })
+  const reply = row(99, 11 * 3600, 'an old reply')
+  reply.message.unshift({ type: 'reply', data: { id: '91' } })
+  a.restoreRecentGroupText(scope, owner, [
+    row(90, 25 * 3600, 'outdated topic'), row(91, 13 * 3600, 'yesterday’s shared drawing topic'),
+    row(92, 13 * 3600, 'a different group topic', { group_id: 404 }), aside, reply,
+    row(94, 10 * 3600, 'I tried the two-color version', { sender: { user_id: 999 } }),
+  ], a.now(), '999', true)
+  const read = prompt => JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(read(a.groupPromptContext(scope, owner)).recent, [])
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.prompt(), context = read(prompt)
+  assert.deepEqual(context.earlier_topics.map(item => item.text), ['yesterday’s shared drawing topic'])
+  assert.deepEqual(context.own_recent_messages.map(item => item.text), ['I tried the two-color version'])
+  assert.match(prompt, /Treat the exchange itself as finished/)
+  assert.deepEqual(context.recent, [])
+  assert.doesNotMatch(prompt, /outdated topic|different group topic|a message for another member|an old reply/)
+  await h.receive('a new shared drawing question', { message_id: 95 })
+  assert.equal(read(h.prompt()).earlier_topics, undefined)
+  assert.equal(read(h.prompt()).recent[0].new_shared_remark, true)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  assert.equal(h.calls.some(call => /^send_/.test(call.action)), false)
 })
 
 test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
