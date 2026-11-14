@@ -71,10 +71,18 @@ def _replaced_input(row, key):
     return None
 
 
+def _handoff_input(row, key):
+    value = row.get('prior_input')
+    if not isinstance(value, str) or value == key[1] or not re.fullmatch('[a-f0-9]{24}', value):
+        raise ValueError('invalid_reply_handoff')
+    return key[0], value
+
+
 def summarize(raw, now_ms, since_ms=None):
     if len(raw) > LIMIT:
         raise ValueError('diagnostic_log_too_large')
     inputs = {}; invalid = 0; pending = {}; claimed = set(); coalesced = set(); missing_parents = 0
+    handoffs = {}
     for line in raw.splitlines():
         try:
             row = json.loads(line)
@@ -84,6 +92,9 @@ def summarize(raw, now_ms, since_ms=None):
                     or type(row.get('at')) is not int or row['at'] <= 0):
                 raise ValueError('invalid_record')
             key = (row['scope'], row['input'])
+            if row['phase'] == 'reply_handoff':
+                prior = _handoff_input(row, key)
+                handoffs[prior] = max(row['at'], handoffs.get(prior, 0))
             inputs.setdefault(key, []).append(row)
             if row['phase'] == 'claimed':
                 claimed.add(key); pending.pop(key, None)
@@ -106,7 +117,7 @@ def summarize(raw, now_ms, since_ms=None):
     groups = {}
     for key, events in inputs.items():
         scope, _ = key
-        phases = {e['phase'] for e in events}; last = max(e['at'] for e in events)
+        phases = {e['phase'] for e in events}; last = max(handoffs.get(key, 0), max(e['at'] for e in events))
         if since_ms is not None and last < since_ms:
             continue
         delivery = [e for e in events if e['phase'] == 'delivery']
@@ -126,6 +137,7 @@ def summarize(raw, now_ms, since_ms=None):
                   'account_publication_suppressed' if publication else
                   'decided_quiet' if quiet else
                   'coalesced' if key in coalesced else
+                   'handed_off' if key in handoffs else
                   'superseded_turn' if superseded else
                   'blocked' if 'blocked' in phases else
                   'delivery_refused' if 'delivery_refused' in phases else
@@ -239,10 +251,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
                     acknowledged.add(key)
                 elif row['phase'] == 'reply_handoff':
                     child = (row['scope'], row['input'])
-                    prior = row.get('prior_input')
-                    if not isinstance(prior, str) or prior == child[1] or not re.fullmatch('[a-f0-9]{24}', prior):
-                        raise ValueError('invalid_reply_handoff')
-                    replacements.append(((child[0], prior), child))
+                    replacements.append((_handoff_input(row, child), child))
                 elif 'replaced_input' in row:
                     child = (row['scope'], row['input'])
                     parent = _replaced_input(row, child)

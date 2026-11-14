@@ -86,6 +86,21 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertNotIn(key(-1), json.dumps(report))
         self.assertNotIn('synthetic body', json.dumps(report))
 
+    def test_stage_summary_recognizes_prior_input_carried_into_a_later_turn(self):
+        def row(i, phase, at, **extra):
+            return dict(schema='qq-interaction/v1', scope='c' * 16, input=f'{i:024x}', phase=phase, at=at, **extra)
+        rows = [row(1, 'received', 1000), row(1, 'not_admitted', 1001), row(2, 'claimed', 3000),
+                row(2, 'reply_handoff', 3001, prior_input=f'{1:024x}'), row(2, 'turn_end', 4000),
+                row(3, 'received', 1000), row(4, 'claimed', 3000),
+                row(4, 'reply_handoff', 3001, prior_input=f'{4:024x}')]
+        report = module.summarize('\n'.join(map(json.dumps, rows)).encode(), 40_000)
+        self.assertEqual(report['invalid_records'], 1)
+        self.assertEqual(report['scopes'][0]['counts'], {'handed_off': 1,
+            'ended_without_confirmed_transport': 1, 'preparing': 1, 'active': 1})
+        self.assertEqual(report['scopes'][0]['accepted_samples'], 0)
+        report = module.summarize('\n'.join(map(json.dumps, rows)).encode(), 40_000, since_ms=2000)
+        self.assertEqual(report['scopes'][0]['counts']['handed_off'], 1)
+
     def test_friend_audit_can_link_an_interrupted_question_to_a_confirmed_batch(self):
         scope = 'private:101'
         def key(message_id):

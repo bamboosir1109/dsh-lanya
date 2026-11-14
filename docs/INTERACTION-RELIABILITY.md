@@ -81,6 +81,8 @@ python -B scripts/interaction_health.py --log ABSOLUTE_PRIVATE_INTERACTION_LOG
 
 新记录附带被替换输入的哈希。好友历史核对用该关联跨两段日志查找合并轮的实际输出编号。`friend_inputs_in_batch_with_reply_in_history` 只证明合并轮有回复，消息是否逐条得到回答需要结合实际对话核对。
 
+阶段汇总用 `handed_off` 标记已进入后续回复轮次的来信，`--since-ms` 也会计入窗口内发生的交接。交接时间与发送耗时分别记录，发送回执归于实际执行发送的轮次。
+
 准备前就被权限／过滤拒绝的事件，可能只有 `not_admitted`；精确过滤原因仍需对照原生接收管线。`turn_end` 可能早于异步发送结束，不能立刻把它判为漏回复。没有样本时耗时保持 `null`，不用零冒充正常。
 
 ## 明确边界
