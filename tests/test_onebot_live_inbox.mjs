@@ -197,6 +197,28 @@ test('an unanswered direct message defers an autonomous turn without failure bac
   assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
 })
 
+test('private replies keep relevant memory and autonomous turns keep their plan', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const prompt = () => h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+  adapter.intentPlanner.context = () => ({ intents: [{ goal: 'unfinished personal activity' }] })
+  adapter.memoryContext = async (_scope, query) => query.includes('what were we discussing')
+    ? { memories: ['matching private topic'] } : null
+  await h.receive('what were we discussing')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(prompt(), /<scoped_memory_context>[\s\S]*matching private topic/)
+  assert.doesNotMatch(prompt(), /scoped_agent_intentions|unfinished personal activity/)
+  assert.equal((await h.decide('reply', { text: 'the private topic' })).sent, true)
+  await h.end()
+  const event = await primaryEvent(h, 'fixture-private-plan')
+  const completion = adapter.dispatchObservation(event)
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(prompt(), /<scoped_agent_intentions>[\s\S]*unfinished personal activity/)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end(); await completion
+})
+
 test('autonomous preparation yields to a private reply that arrived after its observation was pinned', async t => {
   for (const stage of ['queued', 'answered']) await t.test(stage, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
@@ -2270,10 +2292,12 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   assert.equal((await h.decide('idle')).accepted, true)
   await h.end(); await completion
+  a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
   await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
-  assert.match(h.prompt(), /fixture stale wait for a mention/)
-  assert.equal(intentReads, 1)
+  assert.doesNotMatch(h.prompt(), /fixture stale wait for a mention|scoped_agent_intentions/)
+  assert.match(h.prompt(), /<scoped_memory_context>[\s\S]*relevant recalled fact/)
+  assert.equal(intentReads, 0)
   await h.end()
 })
 
