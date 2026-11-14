@@ -2294,8 +2294,17 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(intentReads, 0)
   assert.doesNotMatch(h.prompt(), /fixture (game inventory|phone protocol|private friend lookup)|wait_for_live_reply/)
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
-  assert.equal((await h.decide('idle')).accepted, true)
+  const quiet = await h.decide('idle')
+  assert.equal(quiet.accepted, true)
+  assert.equal(quiet.next_review_at, a.now() + 120_000)
   await h.end(); await completion
+  h.advance(120_001)
+  const quietOpportunity = a.dispatchObservationOnce({ ...event, event_id: 'fixture-quiet-group-cadence', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  await h.end(); await quietOpportunity
   a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
   await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
   h.start(); assert.equal((await h.preStep()).kind, 'enter')

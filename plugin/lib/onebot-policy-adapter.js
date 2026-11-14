@@ -2280,7 +2280,14 @@ export class OneBotDecisionAdapter {
             requestedReview < now + 60_000 || requestedReview > now + 7 * 86400_000))) {
         throw new Error('Invalid autonomous next_review_at')
       }
-      nextReview = requestedReview === null ? now + cadence.intervalMs : Math.min(requestedReview, now + cadence.intervalMs)
+      const quiet = ['idle', 'defer'].includes(args.verdict)
+      const activeGroup = quiet && record.binding.scope.startsWith('group:') &&
+        this.recentGroupContext(record.binding.scope, record.binding.owner, now)
+          .some(row => row.at > now - cadence.intervalMs && (row.text.trim() || row.forwarded_excerpt || row.images.length))
+      // A quiet review with no fresh discussion can use a longer default.
+      // Explicit earlier reviews still fit; active work uses the normal cadence.
+      const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, 60 * 60_000) : cadence.intervalMs
+      nextReview = requestedReview === null ? now + interval : Math.min(requestedReview, now + interval)
     }
     const result = await this.policy.decide({ scope: record.binding.scope, messageId: record.binding.messageId,
       expectedRevision: record.binding.revision, verdict: args.verdict,

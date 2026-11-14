@@ -412,12 +412,13 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 cadence = context["tools"]["entertainment"]["cadence"]
                 self.assertTrue(cadence["valid"])
                 self.assertEqual(cadence["configured_opportunity_min"], minutes)
-                self.assertIn("new trusted primary", cadence["explicit_review"])
-                self.assertIn("Already persisted decisions are not changed", cadence["explicit_review"])
+                self.assertIn("trusted primary", cadence["explicit_review"])
+                self.assertIn("twice that interval, up to 60 minutes", cadence["explicit_review"])
+                self.assertIn("Existing persisted reviews", cadence["explicit_review"])
                 self.assertIn("not a requirement for a new action", cadence["preference"])
                 self.assertIn("do not lock all future leisure", cadence["preference"])
                 self.assertIn("not evidence", cadence["longer_interval"])
-                self.assertIn("does not extend the next autonomous review", cadence["longer_interval"])
+                self.assertIn("does not change the autonomous review schedule", cadence["longer_interval"])
                 self.assertIn("may remain idle, continue resting or keep watching", cadence["longer_interval"])
                 self.assertIn("no sending authority", cadence["communication"])
                 group = self.module.build_context(str(self.root), "fixture", "group:202",
@@ -446,8 +447,9 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                     self.assertTrue(guide["group_identity_valid"])
                     self.assertIs(guide["group_social"], expected)
                     self.assertEqual(guide["cadence"]["configured_opportunity_min"], 2)
-                    self.assertIn("configured group social", guide["cadence"]["explicit_review"])
-                    self.assertIn("ordinary live turns retain", guide["cadence"]["explicit_review"])
+                    self.assertIn("configured group activity.opportunity", guide["cadence"]["explicit_review"])
+                    self.assertIn("recent discussion still uses its normal interval", guide["cadence"]["explicit_review"])
+                    self.assertIn("genuine incoming replies keep their own timing", guide["cadence"]["explicit_review"])
                     if expected:
                         self.assertIn("need not wait for an @ mention", guide["proactive_sharing"]["primary_choice"])
                         self.assertIn("start a short fresh topic from a shared group interest", guide["proactive_sharing"]["primary_choice"])
