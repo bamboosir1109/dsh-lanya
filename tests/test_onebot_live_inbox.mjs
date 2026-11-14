@@ -2021,7 +2021,13 @@ test('listening group retains bounded observations without live claims, model ad
 test('a queued group review uses the current social prompt instead of an inherited activity instruction', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)
-  a.runtimeCapabilities = async () => null
+  a.runtimeCapabilities = async () => ({ schema: 'dsh-runtime-capabilities/v1', conversation_key: scope,
+    owner, read_only: true, generated_at: a.now(), tools: {
+      entertainment: { group_identity_valid: true, group_social: true, rest_window: { timezone: 'Asia/Shanghai' },
+        cadence: { valid: true, configured_opportunity_min: 2 }, local_games: 'fixture game inventory' },
+      qq_expression: { tone: 'fixture group tone', fast_meme: 'fixture real meme', group_pacing: 'fixture group pacing' },
+      android: 'fixture phone protocol', qq_autonomy: 'fixture private friend lookup',
+    } })
   await h.receive('an actual shared topic')
   const event = { version: 1, event_id: 'fixture-group-social-context', scope, kind: 'activity.opportunity',
     producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
@@ -2040,6 +2046,9 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.match(h.prompt(), /Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details/)
   assert.match(h.prompt(), /trusted_autonomy_rhythm/)
   assert.match(h.prompt(), /trusted_recent_social_facts/)
+  assert.match(h.prompt(), /fixture group tone[\s\S]*fixture real meme/)
+  assert.match(h.prompt(), /configured_opportunity_min":2/)
+  assert.doesNotMatch(h.prompt(), /fixture (game inventory|phone protocol|private friend lookup)|wait_for_live_reply/)
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   assert.equal((await h.decide('idle')).accepted, true)
   await h.end(); await completion
