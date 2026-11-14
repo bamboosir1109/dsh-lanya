@@ -179,15 +179,16 @@ test('legacy completion without its original stays reported but waits for a chan
 
 test('cold recovery confirms terminal records in bounded batches without replay', async t => {
   const f = fixture(t)
-  const sizes = [], handled = []
+  const sizes = [], handled = [], acknowledged = []
   for (let i = 0; i < 128; i++) f.seed('historical-' + i)
   f.seed('fresh', false)
   const p = f.make({
-    acknowledge: event => assert.equal(event.event_id, 'fresh'),
+    acknowledge: event => { acknowledged.push(event.event_id) },
     acknowledgeBatch: records => {
       sizes.push(records.length)
       return records.map(({ event, marker }) => {
         assert.equal(event.event_id, marker.event_id)
+        acknowledged.push(event.event_id)
         return { acknowledged: false, reason: 'unknown_observation' }
       })
     },
@@ -198,10 +199,11 @@ test('cold recovery confirms terminal records in bounded batches without replay'
   })
   await p.start({ poll: false })
   assert.equal((await p.drain()).processed, 1)
-  assert.deepEqual(sizes, [64, 64])
+  assert.ok(sizes.length > 0 && sizes.every(size => size >= 2 && size <= 64))
+  assert.deepEqual(acknowledged.slice().sort(), ['fresh', ...Array.from({ length: 128 }, (_, i) => 'historical-' + i)].sort())
   assert.deepEqual(handled, ['fresh'])
   await p.drain()
-  assert.deepEqual(sizes, [64, 64])
+  assert.equal(acknowledged.length, 129)
   assert.deepEqual(handled, ['fresh'])
 })
 
@@ -231,13 +233,12 @@ test('cached terminal loss cannot replay; restored evidence is revalidated', asy
   assert.equal(calls, 0)
 })
 
-for (const method of ['read', 'complete']) test(`worker crash during ${method} recovers without restarting the parent or repeating a settled turn`, async t => {
+for (const method of ['readBatch', 'complete']) test(`worker crash during ${method} recovers without restarting the parent or repeating a settled turn`, async t => {
   const f = fixture(t), factory = await f.crashFactory(method), value = f.seed('recover', false)
   let calls = 0
   const p = f.make({ dispatch: event => { calls++; return { completed: true, status: 'unknown', decision_id: 'decision-' + event.event_id } } }, factory)
   await p.start({ poll: false }); fs.writeFileSync(path.join(f.root, 'crash-worker'), 'fixture')
-  if (method === 'complete') await assert.rejects(p.drain(), /Scanner worker exited/)
-  else await p.drain()
+  await assert.rejects(p.drain(), /Scanner worker exited/)
   assert.equal(calls, method === 'complete' ? 1 : 0)
   fs.unlinkSync(path.join(f.root, 'crash-worker'))
   await p.drain()

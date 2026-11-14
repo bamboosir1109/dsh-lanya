@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
@@ -250,6 +251,26 @@ function publish(file, value) {
 
 function ownerAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+}
+
+const validProcessBirth = value => typeof value === 'string' && /^\d{17,19}$/.test(value)
+let ownWindowsBirth
+
+async function windowsProcessBirth(pid) {
+  if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 0 ||
+      !path.isAbsolute(process.env.SystemRoot || '')) return null
+  if (pid === process.pid && ownWindowsBirth) return ownWindowsBirth
+  const executable = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const query = new Promise(resolve => {
+    execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`],
+    { encoding: 'utf8', windowsHide: true, timeout: 2500, maxBuffer: 4096 }, (error, stdout) => {
+      const birth = error ? null : stdout.trim()
+      resolve(validProcessBirth(birth) ? birth : null)
+    })
+  }).catch(() => null)
+  if (pid === process.pid) ownWindowsBirth = query
+  return query
 }
 
 function buildReviewCandidate(base, event, completed, at, readEvidence, checkDirectories, eventHash) {
@@ -582,7 +603,7 @@ function backgroundScanner(base) {
 export function createInlineObservationPump(options) { return createObservationPump({ ...options, scanMode: 'inline' }) }
 
 export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, acknowledgeBatch, log = () => {}, now = Date.now,
-  intervalMs = 2000, isOwnerAlive = ownerAlive, scanMode = 'worker' } = {}) {
+  intervalMs = 2000, isOwnerAlive = ownerAlive, processBirth = windowsProcessBirth, scanMode = 'worker' } = {}) {
   if (typeof directory !== 'string' || !directory.trim() || typeof dispatch !== 'function') throw new ObservationQueueError('directory and dispatch are required')
   if (!['worker', 'inline'].includes(scanMode)) throw new ObservationQueueError('Invalid observation scanner mode')
   if (acknowledgeBatch !== undefined && typeof acknowledgeBatch !== 'function') throw new ObservationQueueError('Invalid acknowledgement batch callback')
@@ -654,7 +675,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     return outcomes
   }
 
-  function takeClaim() {
+  async function takeClaim() {
     ordinaryDirectories(pending, true)
     ordinaryDirectories(done, true)
     if (fs.existsSync(leaseFile)) {
@@ -668,18 +689,36 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       const version = db.prepare('PRAGMA user_version').get().user_version
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
       if (version !== 1 && !(version === 0 && tables.length === 0)) throw new ObservationQueueError('Unknown consumer lease schema')
+      // Query process creation time outside the SQLite write transaction.
+      // The nonce and birth must still match after taking the writer slot.
+      const previous = tables.some(table => table.name === 'consumer')
+        ? db.prepare('SELECT * FROM consumer WHERE id=1').get() : null
+      const probedBirth = previous && previous.pid !== process.pid && validProcessBirth(previous.process_birth) &&
+        Number.isSafeInteger(previous.pid) && previous.pid > 0 && identity(previous.nonce) && isOwnerAlive(previous.pid)
+        ? await processBirth(previous.pid) : null
+      const ownBirth = await processBirth(process.pid)
+      if (stopped) { db.close(); return false }
       db.exec('BEGIN IMMEDIATE')
       db.exec('CREATE TABLE IF NOT EXISTS consumer (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, nonce TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retry (event_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_after INTEGER NOT NULL); PRAGMA user_version=1')
       db.exec('CREATE TABLE IF NOT EXISTS scanner_health (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, updated_at INTEGER NOT NULL, status_json TEXT NOT NULL)')
-      const owner = db.prepare('SELECT pid,nonce FROM consumer WHERE id=1').get()
-      if (owner && (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !identity(owner.nonce) || isOwnerAlive(owner.pid))) {
+      if (!db.prepare('PRAGMA table_info(consumer)').all().some(column => column.name === 'process_birth')) {
+        db.exec('ALTER TABLE consumer ADD COLUMN process_birth TEXT')
+      }
+      const owner = db.prepare('SELECT pid,nonce,process_birth FROM consumer WHERE id=1').get()
+      const validOwner = owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && identity(owner.nonce)
+      const reusedPid = validOwner && validProcessBirth(probedBirth) && owner.pid === previous?.pid &&
+        owner.nonce === previous.nonce && owner.process_birth === previous.process_birth &&
+        BigInt(probedBirth) > BigInt(owner.process_birth)
+      const occupied = owner && (!validOwner || !reusedPid && isOwnerAlive(owner.pid))
+      if (occupied) {
         db.exec('ROLLBACK'); db.close()
         log('warn', 'observation_consumer_already_owned')
         return false
       }
       // Atomic SQLite replacement avoids stale-file unlink/ABA races. A long
       // running living owner is never reclaimed merely because time elapsed.
-      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce) VALUES (1,?,?)').run(process.pid, nonce)
+      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce,process_birth) VALUES (1,?,?,?)')
+        .run(process.pid, nonce, validProcessBirth(ownBirth) ? ownBirth : null)
       db.exec('COMMIT')
       leaseDb = db
       release = () => {
@@ -993,7 +1032,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       try {
         await scanner.start()
         if (stopped) { await scanner.close(); return false }
-        if (!takeClaim()) { stopped = true; await scanner.close(); return false }
+        if (!await takeClaim()) { stopped = true; await scanner.close(); return false }
       } catch (error) {
         const canceled = stopped
         stopped = true; await scanner.close()

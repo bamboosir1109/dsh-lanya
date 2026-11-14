@@ -147,6 +147,38 @@ test('a confirmed dead owner is replaced atomically without deleting inbox evide
   assert.equal(fs.existsSync(path.join(root, 'pending', name)), true)
 })
 
+test('only a verified newer Windows process birth releases a reused PID', async t => {
+  const originalBirth = String(10n ** 17n)
+  const newerBirth = String(BigInt(originalBirth) + 1n)
+  const claimingBirth = String(BigInt(originalBirth) + 2n)
+  for (const [label, observedBirth, reclaimed] of [
+    ['reused PID', newerBirth, true],
+    ['same process', originalBirth, false],
+    ['unavailable birth', null, false],
+  ]) await t.test(label, async t => {
+    const root = fixture(t), file = path.join(root, 'consumer.sqlite')
+    const ownerPid = process.pid === 42 ? 43 : 42
+    const db = new DatabaseSync(file)
+    db.exec('CREATE TABLE consumer(id INTEGER PRIMARY KEY,pid INTEGER NOT NULL,nonce TEXT NOT NULL,process_birth TEXT); PRAGMA user_version=1')
+    db.prepare('INSERT INTO consumer VALUES (1,?,?,?)').run(ownerPid, 'fixture-owner', originalBirth)
+    db.close()
+    const name = write(root, event('pid-reuse-fixture'))
+    const second = createObservationPump({ directory: root, scanMode: 'inline',
+      dispatch: async () => ({ completed: true, status: 'decided', decision_id: 'fixture-decision' }),
+      isOwnerAlive: () => true, processBirth: pid => pid === ownerPid ? observedBirth : claimingBirth })
+    resources.get(root).push(second)
+    assert.equal(await second.start({ poll: false }), reclaimed)
+    if (reclaimed) assert.equal((await second.drain()).processed, 1)
+    const read = new DatabaseSync(file, { readOnly: true })
+    try {
+      const owner = read.prepare('SELECT pid,process_birth FROM consumer WHERE id=1').get()
+      assert.equal(owner.pid, reclaimed ? process.pid : ownerPid)
+      assert.equal(owner.process_birth, reclaimed ? claimingBirth : originalBirth)
+    } finally { read.close() }
+    assert.ok(fs.existsSync(path.join(root, 'pending', name)))
+  })
+})
+
 test('stop retains the consumer lease until its current decision has settled', async (t) => {
   const root = fixture(t)
   write(root, event('inflight'))
