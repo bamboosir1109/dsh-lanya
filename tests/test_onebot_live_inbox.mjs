@@ -2724,9 +2724,12 @@ test('the next private message or group mention retains an unanswered question a
   })
 })
 
-test('an autonomous draft gets one same-turn decision reminder', async t => {
-  for (const mode of ['group-reply', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
-    const group = mode === 'group-reply'
+test('an autonomous draft or a group media lookup gets one same-turn decision reminder', async t => {
+  for (const mode of ['group-reply', 'group-image', 'group-picker-idle', 'group-image-rest', 'group-other-tool', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
+    const group = mode.startsWith('group-'), toolOnly = group && mode !== 'group-reply'
+    const resting = mode.endsWith('rest'), sends = ['group-reply', 'group-image'].includes(mode)
+    const quiet = ['private-idle', 'group-picker-idle'].includes(mode)
+    const noReminder = resting || mode === 'group-other-tool'
     const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
     const a = h.bridge.lanyaPolicy
     if (group) {
@@ -2741,23 +2744,26 @@ test('an autonomous draft gets one same-turn decision reminder', async t => {
       const record = a.state(h.chat).active
       if (++steps === 1) firstClaim = record.claimedId
       assert.equal(record.claimedId, firstClaim)
-      if (steps === 2 && group) assert.equal((await h.decide('reply', { text: 'fresh group contribution' })).sent, true)
-      else if (steps === 2 && mode === 'private-idle') assert.equal((await h.decide('idle')).accepted, true)
+      if (steps === 2 && sends) assert.equal((await h.decide('reply', { text: 'fresh group contribution' })).sent, true)
+      else if (steps === 2 && quiet) assert.equal((await h.decide('idle')).accepted, true)
+      else if (toolOnly) h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
+        message: { id: 'lookup-only', content: [{ type: 'tool-call', id: 'lookup-call',
+          name: { 'group-picker-idle': 'send_meme', 'group-other-tool': 'read' }[mode] || 'qq_view_group_image', arguments: {} }] } })
       else h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
         message: { id: 'draft-' + steps, content: [{ type: 'text', text: 'unsent autonomous draft' }] } })
-      if (mode === 'rest') h.advance(15 * 60 * 60_000)
+      if (resting) h.advance(15 * 60 * 60_000)
       return { kind: 'completed' }
     }
     const outcome = await a.dispatchObservation(event)
     await driverSettled(h)
-    assert.equal(steps, mode === 'rest' ? 1 : 2)
-    assert.equal(outcome.status, group ? 'sent' : mode === 'private-idle' ? 'decided' : 'no_decision')
+    assert.equal(steps, noReminder ? 1 : 2)
+    assert.equal(outcome.status, sends ? 'sent' : quiet ? 'decided' : 'no_decision')
     const reminders = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
       .flatMap(e => e.data.inserted).filter(message => message.source?.kind === 'plugin:dsh-lanya-decision-reminder')
-    assert.equal(reminders.length, mode === 'rest' ? 0 : 1)
+    assert.equal(reminders.length, noReminder ? 0 : 1)
     assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
     const sent = h.calls.filter(call => /^send_/.test(call.action))
-    assert.equal(sent.length, group ? 1 : 0)
+    assert.equal(sent.length, sends ? 1 : 0)
     assert.doesNotMatch(JSON.stringify(sent), /unsent autonomous draft/)
   })
 })
