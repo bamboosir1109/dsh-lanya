@@ -209,7 +209,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
     # Check never-mapped friends first. Missing inbound delivery may be the
     # reason there is no mapping in the first place.
     peers = sorted(mapped) if verified is None else sorted(verified - mapped) + sorted(verified & mapped)
-    received, staged = set(), set()
+    received, staged, acknowledged = set(), set(), set()
     acknowledged_outputs = collections.defaultdict(set)
     replacements = []
     partial_log = False
@@ -228,11 +228,14 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
                     received.add((row['scope'], row['input']))
                 elif row.get('phase') == 'friend_history_staged':
                     staged.add((row['scope'], row['input']))
-                elif row.get('phase') == 'delivery' and row.get('status') == 'sent' and 'output' in row:
-                    output = row['output']
-                    if not isinstance(output, str) or not re.fullmatch(r'[a-f0-9]{24}', output):
-                        raise ValueError('invalid_output_reference')
-                    acknowledged_outputs[row['scope'], row['input']].add(output)
+                elif row.get('phase') == 'delivery' and row.get('status') == 'sent':
+                    key = row['scope'], row['input']
+                    if 'output' in row:
+                        output = row['output']
+                        if not isinstance(output, str) or not re.fullmatch(r'[a-f0-9]{24}', output):
+                            raise ValueError('invalid_output_reference')
+                        acknowledged_outputs[key].add(output)
+                    acknowledged.add(key)
                 elif 'replaced_input' in row:
                     child = (row['scope'], row['input'])
                     parent = _replaced_input(row, child)
@@ -311,12 +314,14 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
             summary[outcome] += 1
         for key in incoming:
             outputs = acknowledged_outputs.get(key)
-            if outputs:
+            if key in acknowledged:
                 summary['friend_inputs_with_acknowledged_output'] += 1
-                if outputs & own_outputs:
-                    summary['friend_inputs_with_reply_in_history'] += 1
+            if outputs and outputs & own_outputs:
+                summary['friend_inputs_with_reply_in_history'] += 1
             elif key in batch_outputs and batch_outputs[key] & own_outputs:
                 summary['friend_inputs_in_batch_with_reply_in_history'] += 1
+            elif key in acknowledged and not outputs:
+                summary['friend_inputs_acknowledged_without_output_reference'] += 1
         if len(rows) == 50 and oldest >= since_ms:
             summary['history_window_limited'] += 1
         return summary

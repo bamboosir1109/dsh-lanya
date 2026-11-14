@@ -71,12 +71,17 @@ class InteractionHealthTests(unittest.TestCase):
         def history_row(message_id, sender, target):
             return dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
                         target_id=target, message_id=message_id, message='synthetic body')
-        rows = [history_row(i, 101, 999) for i in (1, 2, 3)] + [history_row(-1, 999, 101),
+        rows = [history_row(i, 101, 999) for i in (1, 2, 3, 4, 5)] + [history_row(-1, 999, 101),
             history_row(-2, 999, 303), history_row(-3, 999, 101)]
         evidence = [diagnostic(1, -1), diagnostic(2, -2), diagnostic(3, -3, 'account_publication')]
+        unreferenced = diagnostic(4, -3)
+        del unreferenced['output']
+        evidence.extend([unreferenced, dict(diagnostic(5, -3), output='invalid-reference')])
         report = module.compare_friend_ingress([scope], ['\n'.join(map(json.dumps, evidence)).encode()],
             account='999', since_ms=5000, now_ms=9000, history=lambda peer:rows)
-        self.assertEqual(report['counts']['friend_inputs_with_acknowledged_output'], 2)
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['counts']['friend_inputs_with_acknowledged_output'], 3)
+        self.assertEqual(report['counts']['friend_inputs_acknowledged_without_output_reference'], 1)
         self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
         self.assertNotIn(key(-1), json.dumps(report))
         self.assertNotIn('synthetic body', json.dumps(report))
