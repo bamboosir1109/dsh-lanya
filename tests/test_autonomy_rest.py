@@ -78,15 +78,21 @@ class AutonomyRestTests(unittest.TestCase):
                     events._validated_completion({**marker, "reason": "native_admission_refused"}, event, raw)
 
     def test_wake_creates_one_fresh_generation_not_a_batch_of_old_greetings(self):
-        for reason, completed_at in [("autonomy_rest", MIDNIGHT), ("observation_expired", WAKE)]:
-            with self.subTest(reason=reason):
-                self.check_wake_generation(reason, completed_at)
+        for reason, created_at, completed_at in [
+            ("autonomy_rest", MIDNIGHT - 1, MIDNIGHT),
+            ("observation_expired", MIDNIGHT - 1, WAKE),
+            ("observation_expired", WAKE + 60_000, WAKE + 60_000),
+        ]:
+            with self.subTest(reason=reason, created_at=created_at):
+                self.check_wake_generation(reason, created_at, completed_at)
 
-    def check_wake_generation(self, reason, completed_at):
+    def check_wake_generation(self, reason, created_at, completed_at):
         mind = self.load_mind()
-        old_event = dict(event_id="old-night-event", scope="private:101", created_at=MIDNIGHT - 1)
-        value = {"decision_observers_version": 2, "decision_scopes": {"private:101": {
-            "generation": 8, "pending": {"scope": "private:101", "event_id": old_event["event_id"],
+        # A native follow-up's due timestamp can be in the morning even
+        # though its verified root is still from the prior day.
+        old_event = dict(event_id="old-night-event", scope="group:202", created_at=created_at)
+        value = {"decision_observers_version": 2, "decision_scopes": {"group:202": {
+            "generation": 8, "pending": {"scope": "group:202", "event_id": old_event["event_id"],
                 "signature": "a" * 64, "interrupts": []}}}}
         published = []
         def chain(_scope, event_id):
@@ -94,20 +100,22 @@ class AutonomyRestTests(unittest.TestCase):
                 return {"event": old_event, "completion": {"status": "no_decision", "reason": reason,
                     "native_turn_completed": False, "completed_at": completed_at}, "waiting_review": False}
             return {"event": {"event_id": event_id}, "completion": None, "waiting_review": False}
-        with mock.patch.object(events, "project_scopes", return_value=["private:101"]), \
+        with mock.patch.object(events, "project_scopes", return_value=["private:101", "group:202"]), \
              mock.patch.object(events, "observation_review_chain", side_effect=chain), \
              mock.patch.object(events, "submit_project_observation", side_effect=lambda **row: published.append(row)), \
-             mock.patch.object(mind, "get", return_value=2), mock.patch.object(mind.time, "time", return_value=WAKE / 1000), \
+             mock.patch.object(mind, "get", return_value=2), mock.patch.object(mind.time, "time", return_value=max(WAKE, completed_at) / 1000), \
              mock.patch.object(mind, "_read_observer_hits", return_value=[]), \
              mock.patch.object(mind, "_acknowledge_scope_hits"), mock.patch.object(mind, "_diary_hint", return_value=None), \
              mock.patch.object(mind, "save"), mock.patch.object(mind, "log"):
             self.assertEqual(mind._observe_cycle(value), 0)
             self.assertEqual(mind._observe_cycle(value), 0)
-        self.assertEqual(len(published), 1)
-        self.assertNotEqual(published[0]["event_id"], old_event["event_id"])
-        self.assertEqual(value["decision_scopes"]["private:101"]["generation"], 9)
-        self.assertEqual(published[0]["payload"]["prior_rest_lifecycle"]["previous_activity_status"], "unknown")
-        self.assertTrue(published[0]["payload"]["prior_rest_lifecycle"]["old_actions_not_replayed"])
+        group_publications = [event for event in published if event["scope"] == "group:202"]
+        self.assertEqual(len(group_publications), 1)
+        event, = group_publications
+        self.assertNotEqual(event["event_id"], old_event["event_id"])
+        self.assertEqual(value["decision_scopes"]["group:202"]["generation"], 9)
+        self.assertEqual(event["payload"]["prior_rest_lifecycle"]["previous_activity_status"], "unknown")
+        self.assertTrue(event["payload"]["prior_rest_lifecycle"]["old_actions_not_replayed"])
 
 
 if __name__ == "__main__":

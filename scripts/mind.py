@@ -909,9 +909,10 @@ def _observe_cycle(mind, dry=False, force=False):
             state["completed_signature"] = _observation_signature(mind, [], primary)
             if completed["status"] == "unknown":
                 state["next_opportunity_at"] = None
-            elif rest_closure and chain["event"]["created_at"] < rest["current_day_wake_at"]:
-                # The rest window already provided the wait. An expired
-                # overnight opportunity was never a new morning model turn.
+            elif rest_closure and (completed.get("reason") == "observation_expired" or
+                                   chain["event"]["created_at"] < rest["current_day_wake_at"]):
+                # The native expiry uses the verified root age. A queued
+                # descendant can carry today's due time and still be expired.
                 state["next_opportunity_at"] = now
             else:
                 state["next_opportunity_at"] = review if review is not None else state["last_completed_at"] + interval
