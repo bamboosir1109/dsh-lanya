@@ -2345,6 +2345,9 @@ test('a group activity review searches recent group text and falls back to the s
   assert.deepEqual(Array.from(request.recent_events, row => row.text), ['earlier group conversation'])
   h.advance(601_000)
   const group = a.groupConversation(scope, owner)
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  group.liveTopics = []
   group.olderTopics = [{ at: a.now() - 700_000, text: 'same-group hobby question', quoted_text: 'verified hobby detail' }]
   await h.opportunity()
   assert.equal(request.query, 'verified hobby detail\nsame-group hobby question')
@@ -2436,6 +2439,24 @@ test('a verified group opportunity refreshes stale listening context without mak
     await h.end(); await completion
     assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 0)
   })
+})
+
+test('expired live group discussion remains a shared-interest clue if platform history is empty', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  await h.receive('people discussing pixel art')
+  await h.receive('a question directed to another member', { message: [
+    { type: 'at', data: { qq: '208' } }, { type: 'text', data: { text: 'a question directed to another member' } }] })
+  h.advance(11 * 60_000)
+  const owner = await adapter.trustedOwner(scope)
+  adapter.restoreRecentGroupText(scope, owner, [], adapter.now(), '999', true)
+  await h.opportunity(); h.start(); await h.preStep()
+  const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(observed.recent, [])
+  assert.deepEqual(observed.earlier_topics, [{ text: 'people discussing pixel art', age_seconds: 660 }])
+  assert.doesNotMatch(h.prompt(), /a question directed to another member/)
+  await h.end()
+  h.advance(6 * 60 * 60_000)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
 })
 
 test('a quiet group gets bounded same-group topic clues only during its autonomous review', async t => {

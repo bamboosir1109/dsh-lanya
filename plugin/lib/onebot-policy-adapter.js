@@ -1277,7 +1277,7 @@ export class OneBotDecisionAdapter {
             !quoted.message.some(segment => historyMention(segment) && String(segment.data.qq) === bot) &&
             groupHistoryQuotedSpeaker(quoted, rows) !== bot
             ? quoted.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim() : ''
-          topics.set(messageId, { at, text: text.slice(0, 320).toWellFormed(),
+          topics.set(messageId, { messageId, at, text: text.slice(0, 320).toWellFormed(),
             ...(original && !original.startsWith('/') && { quoted_text: original.slice(0, 160).toWellFormed() }) })
         }
         continue
@@ -1292,7 +1292,8 @@ export class OneBotDecisionAdapter {
     const restored = [...recent.values()].map((row, i) => ({ ...row, arrival: firstOrder + i }))
     group.recent = [...local, ...restored].sort(orderGroupRows).slice(-12)
     if (includeOlderTopics) {
-      group.olderTopics = [...topics.values()].sort((a, b) => a.at - b.at).slice(-3)
+      group.olderTopics = [...new Map([...(group.olderTopics || []).filter(row => row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+        .map(row => [row.messageId, row]), ...topics]).values()].sort((a, b) => a.at - b.at).slice(-3)
       group.ownTopics = [...own.values()].sort((a, b) => a.at - b.at).slice(-3)
     }
   }
@@ -1363,6 +1364,14 @@ export class OneBotDecisionAdapter {
           at_targets: address?.explicit_at_ids?.slice(0, 8) ?? [],
           quoted_speaker: address?.reply_status === 'available' ? address.quoted_author_id : null,
           addressed_to_bot: addressed }
+        if (!addressed && Array.isArray(inbound.segments) && inbound.segments.length && inbound.segments.every(historyTextSegment)) {
+          const text = row.text.trim()
+          if (text && !text.startsWith('/')) {
+            const previous = (group.liveTopics || []).filter(topic => topic.messageId !== row.messageId)
+            group.liveTopics = [...previous, { messageId: row.messageId, at: row.at, text: text.slice(0, 320).toWellFormed() }]
+              .sort((a, b) => a.at - b.at).slice(-12)
+          }
+        }
         if (seen === -1) group.recent.push(row)
         else {
           // Keep platform chronology when the actual event arrives late.
@@ -3143,8 +3152,11 @@ export class OneBotDecisionAdapter {
   }
 
   earlierGroupTopics(scope, owner, now) {
-    return (this.groupConversation(scope, owner, false)?.olderTopics || [])
-      .filter(row => row.at < now - GROUP_CONTEXT_MS && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+    const group = this.groupConversation(scope, owner, false)
+    const earlier = new Map((group?.liveTopics || []).map(row => [row.messageId, row]))
+    for (const row of group?.olderTopics || []) earlier.set(row.messageId, row)
+    return [...earlier.values()].filter(row => row.at < now - GROUP_CONTEXT_MS && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+      .sort((a, b) => a.at - b.at).slice(-3)
   }
 
   groupPromptContext(scope, owner, groupActivityReview = false) {
@@ -3154,7 +3166,7 @@ export class OneBotDecisionAdapter {
     const recent = this.recentGroupContext(scope, owner, now)
       .map(({ images, messageId, arrival, historyOrder, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
         ...(groupActivityReview && images.length ? { image_refs: images.map(image => image.id) } : {}) }))
-    const toTopic = ({ at, ...row }) => ({ ...row, age_seconds: Math.floor((now - at) / 1000) })
+    const toTopic = ({ at, text, quoted_text }) => ({ text, ...(quoted_text && { quoted_text }), age_seconds: Math.floor((now - at) / 1000) })
     const withinLookback = row => row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS
     const earlier = groupActivityReview && !recent.some(row => row.text.trim() || row.forwarded_excerpt || row.image_refs)
       ? this.earlierGroupTopics(scope, owner, now).map(toTopic) : []
