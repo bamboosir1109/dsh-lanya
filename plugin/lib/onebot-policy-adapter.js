@@ -263,7 +263,7 @@ function replyEvidenceWithLateText(text, late) {
     return '[本群较早直接对你说的话，只保留各发言人的原文，未包含引用或附件]\n' +
       JSON.stringify(notes) + '\n\n' + text
   }
-  return '[同一私聊中较早的附带文字，引用或附件内容未包含]\n' + notes.map(note => note.text).join('\n') + '\n\n' + text
+  return '[同一私聊中较早的原话，引用或附件内容未包含]\n' + notes.map(note => note.text).join('\n') + '\n\n' + text
 }
 const lateReplyNotes = late => [...late.values()].sort((a, b) => a.arrival - b.arrival)
   .map(({ text, speaker }) => ({ text: text || '[较早收到一张图片]', ...(speaker && { speaker }) }))
@@ -1506,9 +1506,10 @@ export class OneBotDecisionAdapter {
         const chat = this.bridge.chats.get(scope), state = chat && this.state(chat)
         const newest = this.latestInbound.get(scope)
         const active = state?.active
-        const unstarted = active && !active.firstModelStepStarted && !active.ended && !active.claimConflict
+        const unanswered = active && !active.ended && !active.claimConflict && !active.decision && !active.ticket &&
+          !active.inFlight.size && !active.outcomes.length
           ? active.claimedInput : null
-        const entry = state && [...state.pending.values(), unstarted]
+        const entry = state && [...state.pending.values(), unanswered]
           .find(item => item?.arrival === newest && item.binding.origin === 'live' &&
             !item.binding.recoveryRevision && !item.binding.temporaryPrivate &&
             (group ? this.groupConversation(scope, item.binding.owner, false) === group : item.sender === inbound.userId) &&
@@ -1519,7 +1520,10 @@ export class OneBotDecisionAdapter {
           (group ? preparing.replyContextGroup === group : preparing.inbound.userId === inbound.userId) &&
           preparing.backendStamp === context.backendStamp
         const notes = entry?.lateReplyText ?? (preparingMatches ? preparing.lateReplyText : null)
-        const image = context.backendSocket === this.deps.connection?.socket
+        // A started model step already has its input. Retain the text for an
+        // unanswered turn's handoff or review, without adding a late attachment.
+        const image = !(entry && entry === unanswered && active.firstModelStepStarted) &&
+          context.backendSocket === this.deps.connection?.socket
           ? inbound.media?.map(ref => this.directInboundImages.get(ref)).find(Boolean) : undefined
         if (notes && notes.size < 4 && (text || image) && !text?.startsWith('/')) {
           notes.set(inbound.messageId, { arrival: context.arrival, text: (text || '').slice(0, 800).toWellFormed(), image,

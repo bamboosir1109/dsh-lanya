@@ -603,6 +603,41 @@ test('a late text-only private question is preserved with the newer reply input'
   assert.match(snapshot.current.replyReview.text, /Where should I start\?[\s\S]*Can I use a small example\?/)
 })
 
+test('a question finishing after the next private model step began is available for unsent-reply review', async t => {
+  for (const outcome of ['undecided', 'sent', 'idle']) await t.test(outcome, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const entered = defer(), release = defer(), buildBody = h.bridge.inbound.ctx.buildBody
+    h.bridge.inbound.ctx.buildBody = async (body, ...args) => {
+      if (body === 'Would the short format work?') { entered.resolve(); await release.promise }
+      return buildBody(body, ...args)
+    }
+    const earlier = h.receive('Would the short format work?')
+    await entered.promise
+    try {
+      await h.receive('And can I include an example?')
+      h.start(); assert.equal((await h.preStep()).kind, 'enter')
+      const record = adapter.state(h.chat).active
+      h.bridge.onSessionEvent(h.agent.session, { type: 'step/start', data: { turn: record.turn } })
+      assert.equal(record.firstModelStepStarted, true)
+      if (outcome === 'sent') assert.equal((await h.decide('reply', { text: 'Include one example.' })).sent, true)
+      if (outcome === 'idle') assert.equal((await h.decide('idle')).accepted, true)
+    } finally { release.resolve(); await earlier }
+    await h.end()
+    await Promise.all([...adapter.replyReviewWrites])
+    h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, outcome === 'undecided' ? 1 : 0)
+    if (outcome === 'undecided') {
+      assert.match(h.pending[0].content[0].text, /Would the short format work\?[\s\S]*And can I include an example\?/)
+      h.start(); assert.equal((await h.preStep()).kind, 'enter')
+      assert.equal((await h.decide('reply', { text: 'Use the short format with one example.' })).sent, true)
+      await h.end(); await adapter.reviewUnansweredInputs()
+    }
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, outcome === 'idle' ? 0 : 1)
+  })
+})
+
 test('admission commits serialize per scope and a rejected storage call releases its tail', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy, policy = adapter.policy
   const gate = defer(), entered = defer(), original = policy.recordInbound
