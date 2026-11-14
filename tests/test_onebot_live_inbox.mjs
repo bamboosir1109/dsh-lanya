@@ -4239,6 +4239,36 @@ test('separate unanswered group mentions stay in a burst after the ordinary cont
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('group batching preserves the actual current question when its quote takes up the history window', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_msg'
+    ? { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 204 },
+      message: [{ type: 'text', data: { text: 'Long quoted preamble. '.repeat(600) } }] }
+    : call(action, params)
+  await h.receive('Can I use a smaller canvas?', { message: [
+    { type: 'at', data: { qq: '999' } }, { type: 'reply', data: { id: '77' } },
+    { type: 'text', data: { text: 'Can I use a smaller canvas?' } },
+  ] })
+  for (let index = 0; index < 20; index++) {
+    await h.receive('ordinary remark ' + index + ' ' + 'x'.repeat(1100), { user_id: 205 })
+  }
+  assert.equal(h.pending.length, 1)
+  const [message] = h.pending
+  const question = /202[^\n]*Can I use a smaller canvas\?[\s\S]*ordinary remark 19/
+  assert.match(message.content[0].text, question)
+  await Promise.all([...a.replyReviewWrites])
+  const snapshot = await a.policy.snapshot(h.chat.chatId)
+  assert.match(snapshot.current.replyReview.text, question)
+  assert.equal(snapshot.current.controlAllowed, false)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; a.startRequested = true; h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, question)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('a verified group contact survives when its own enrichment is slower than an ordinary follow-up', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, entered = defer(), resume = defer()
   a.memoryContext = async (_scope, text) => {
