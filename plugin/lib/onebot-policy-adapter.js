@@ -1189,8 +1189,15 @@ export class OneBotDecisionAdapter {
         if (!canReview()) { await release(); continue }
         if (original) {
           // The inbox splice preserves the original journal event.
-          try { if (original.agent.inbox.remove(original.message.id) !== true) continue }
-          catch (error) { this.log('warn', 'reply_review_retire_failed:' + error.name); continue }
+          let removed = false
+          try { removed = original.agent.inbox.remove(original.message.id) === true }
+          catch (error) { this.log('warn', 'reply_review_retire_failed:' + error.name) }
+          if (!removed) {
+            // A failed splice can throw after committing. Retry only if the
+            // same original and native context are still provably intact.
+            if (stillOriginal()) await release()
+            continue
+          }
         }
         const binding = Object.freeze({ ...claimed, text: undefined, owner: Object.freeze({ ...owner }),
           recoveryEpoch: epoch, backendStamp })

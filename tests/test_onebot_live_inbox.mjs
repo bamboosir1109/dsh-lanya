@@ -322,7 +322,8 @@ test('reply review honors an accepted quiet decision and actual sends rather tha
 })
 
 test('startup recovery reviews only the same unclaimed QQ message alongside native context', async t => {
-  for (const mode of ['startup', 'pinned', 'legacy', 'legacy-outside-tail', 'changed', 'foreign-context']) await t.test(mode, async t => {
+  for (const mode of ['startup', 'pinned', 'legacy', 'legacy-outside-tail', 'changed', 'foreign-context',
+    'remove-no-change', 'remove-error-before-write', 'remove-error-after-write']) await t.test(mode, async t => {
     const h = await nativeDriverFixture(t)
     const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
     const policyFile = path.join(path.dirname(h.plugin), 'restored-policy.json')
@@ -360,7 +361,8 @@ test('startup recovery reviews only the same unclaimed QQ message alongside nati
     h.agent.step = async () => {
       const stepResult = await step()
       const record = adapter.state(h.chat).active
-      assert.equal(record.binding.recoveryRevision, live.revision + 1)
+      const retried = ['remove-no-change', 'remove-error-before-write'].includes(mode)
+      assert.equal(record.binding.recoveryRevision, live.revision + (retried ? 2 : 1))
       assert.equal(h.chat.activeTurnRole, 'member')
       assert.equal((await h.decide('tool_action')).accepted, false)
       assert.equal((await h.decide('reply', { text: 'scoped answer' })).sent, true)
@@ -371,6 +373,26 @@ test('startup recovery reviews only the same unclaimed QQ message alongside nati
       adapter.recoverReconnectHistory = () => blockedHistory.promise
       t.after(() => blockedHistory.resolve(false))
       await adapter.start()
+    } else if (mode.startsWith('remove-')) {
+      const remove = h.agent.inbox.remove.bind(h.agent.inbox)
+      h.agent.inbox.remove = id => {
+        if (mode === 'remove-no-change') return false
+        if (mode === 'remove-error-after-write') remove(id)
+        throw new Error('fixture inbox removal failure')
+      }
+      await adapter.reviewUnansweredInputs()
+      assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+      h.agent.inbox.remove = remove
+      if (mode === 'remove-error-after-write') {
+        assert.equal(h.agent.inbox.nextTurn.length, 0)
+        assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+        await adapter.reviewUnansweredInputs()
+        assert.equal(h.steps.length, 0)
+        return
+      }
+      assert.deepEqual(h.nativeEvents, original)
+      assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+      await adapter.reviewUnansweredInputs()
     } else await adapter.reviewUnansweredInputs()
     if (mode === 'changed' || mode === 'foreign-context' || mode === 'legacy-outside-tail') {
       assert.deepEqual(h.nativeEvents, original)
