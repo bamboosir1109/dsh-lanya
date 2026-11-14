@@ -179,6 +179,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
     peers = sorted({scope for scope in scopes if re.fullmatch(r'private:[1-9][0-9]{0,15}', scope)
                     and scope[8:] != account and int(scope[8:]) <= 2**53 - 1})
     received, staged = set(), set()
+    acknowledged_outputs = collections.defaultdict(set)
     partial_log = False
     for segment in raw:
         if len(segment) >= LIMIT:
@@ -195,6 +196,11 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
                     received.add((row['scope'], row['input']))
                 elif row.get('phase') == 'friend_history_staged':
                     staged.add((row['scope'], row['input']))
+                elif row.get('phase') == 'delivery' and row.get('status') == 'sent' and 'output' in row:
+                    output = row['output']
+                    if not isinstance(output, str) or not re.fullmatch(r'[a-f0-9]{24}', output):
+                        raise ValueError('invalid_output_reference')
+                    acknowledged_outputs[row['scope'], row['input']].add(output)
             except (ValueError, TypeError, KeyError):
                 partial_log = True
 
@@ -208,6 +214,8 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
             return {'history_unavailable': 1}
         summary = collections.Counter(history_checked=1)
         seen = set()
+        incoming = set()
+        own_outputs = set()
         scope_key = hashlib.sha256(scope.encode()).hexdigest()[:16]
         oldest = now_ms
         for row in rows:
@@ -219,7 +227,10 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
             if at < since_ms or at > now_ms:
                 continue
             sender = row.get('sender')
-            if not isinstance(sender, dict) or str(sender.get('user_id')) != peer:
+            if not isinstance(sender, dict):
+                continue
+            author = str(sender.get('user_id'))
+            if author not in (peer, account):
                 continue
             if not row.get('sub_type'):
                 summary['unclassified_history_rows'] += 1
@@ -230,15 +241,27 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
             if not re.fullmatch(r'-?[0-9]{1,16}', message_id) or abs(int(message_id)) > 2**53 - 1:
                 summary['invalid_history_rows'] += 1
                 continue
+            input_key = hashlib.sha256((scope + '\0' + message_id).encode()).hexdigest()[:24]
+            if author == account:
+                if (row.get('message_type') == 'private'
+                        and str(row.get('target_id', peer)) == peer and str(row.get('peer_id', peer)) == peer):
+                    own_outputs.add(input_key)
+                continue
             if message_id in seen:
                 continue
             seen.add(message_id)
-            input_key = hashlib.sha256((scope + '\0' + message_id).encode()).hexdigest()[:24]
             summary['friend_inputs'] += 1
             key = (scope_key, input_key)
+            incoming.add(key)
             outcome = ('matched_ingress' if key in received else 'staged_after_reconnect' if key in staged
                        else 'without_ingress_evidence')
             summary[outcome] += 1
+        for key in incoming:
+            outputs = acknowledged_outputs.get(key)
+            if outputs:
+                summary['friend_inputs_with_acknowledged_output'] += 1
+                if outputs & own_outputs:
+                    summary['friend_inputs_with_reply_in_history'] += 1
         if len(rows) == 50 and oldest >= since_ms:
             summary['history_window_limited'] += 1
         return summary
@@ -251,7 +274,8 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history):
                ('history_unavailable', 'invalid_history_rows', 'unclassified_history_rows', 'history_window_limited')))
     return {'schema': 'qq-friend-ingress-audit/v1', 'status': 'partial' if partial else 'ok',
             'since_ms': since_ms, 'scopes_eligible': len(peers), 'scopes_sampled': min(len(peers), 32),
-            'partial_log': partial_log, 'counts': dict(totals), 'read_only': True}
+            'partial_log': partial_log, 'counts': dict(totals), 'read_only': True,
+            'reply_evidence': 'exact_outbound_id_in_friend_history'}
 
 
 def audit_friend_ingress(path, mapping_path, since_ms, now_ms):

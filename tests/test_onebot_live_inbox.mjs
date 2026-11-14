@@ -1604,6 +1604,10 @@ test('only a confirmed current-scope send ACK seeds metadata for a bot-authored 
   await h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'synthetic response' } }] })
   assert.equal(h.bridge.inbound.messageScopes.get('41'), 'private:101')
   assert.equal(h.bridge.inbound.messageScopes.has('unknown'), false)
+  const diagnostic = () => fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line)).filter(row => row.phase === 'delivery')
+  const output = createHash('sha256').update(['private:101', '41'].join('\0')).digest('hex').slice(0, 24)
+  assert.deepEqual(diagnostic().map(row => row.output), [output])
   h.deps.connection.call = async action => {
     assert.equal(action, 'get_msg')
     return { message_id: 41, message_type: 'private', sender: { user_id: 999 },
@@ -1613,6 +1617,7 @@ test('only a confirmed current-scope send ACK seeds metadata for a bot-authored 
   h.deps.connection.call = async () => { throw new Error('synthetic network failure') }
   await assert.rejects(h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'uncertain' } }] }))
   assert.equal(h.bridge.inbound.messageScopes.size, 1)
+  assert.deepEqual(diagnostic().filter(row => row.output).map(row => row.output), [output])
 })
 
 test('active reservation is never borrowed, old reply remains stale, and silence persists', async t => {

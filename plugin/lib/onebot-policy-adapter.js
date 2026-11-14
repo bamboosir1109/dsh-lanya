@@ -163,6 +163,7 @@ function verifyVoicePacket(artifact, params) {
   if (bytes.length !== artifact.bytes || bytes.toString('base64') !== encoded || voiceDigest(bytes) !== artifact.sha256) throw new Error('Voice synthesis packet changed')
 }
 const communicates = (action) => typeof action === 'string' && (/^(send_|upload_)/.test(action) || accountPublicationAction(action))
+const chatMessageAction = /^send_(?:msg|group_msg|private_msg|group_forward_msg|private_forward_msg)$/
 const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exhausted',
   'cost_meter_unavailable', 'budget_unavailable'])
 // SDK/plugin context is not another transport input and cannot mint a binding.
@@ -633,6 +634,9 @@ export class OneBotDecisionAdapter {
         ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status', 'budget_wait_ms',
           'backend_wait_ms', 'inbound_prepare_ms'].includes(key) &&
         (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
+      if (phase === 'delivery' && fields.status === 'sent' && typeof detail.output === 'string' && /^[a-f0-9]{24}$/.test(detail.output)) {
+        fields.output = detail.output
+      }
       fs.appendFileSync(file, JSON.stringify({ schema: 'qq-interaction/v1', at: this.now(),
         scope: identity(scope).slice(0, 16), input: identity(scope, messageId).slice(0, 24), phase, ...fields }) + '\n', { mode: 0o600 })
     } catch { /* A diagnostic write never changes delivery or business state. */ }
@@ -2829,8 +2833,12 @@ export class OneBotDecisionAdapter {
     if (result.status === 'suppressed' && result.reason === 'stale_revision' && envelope.record?.inlineTextAttempted &&
         envelope.operationId === envelope.record.inlineTextOperationId) envelope.record.inlineTextStale = true
     envelope.record?.outcomes.push(result.status)
+    const messageId = result.value?.message_id
+    const output = result.status === 'sent' && chatMessageAction.test(action) &&
+      ['string', 'number'].includes(typeof messageId) && /^-?[0-9]{1,16}$/.test(String(messageId)) && Number.isSafeInteger(Number(messageId))
+      ? identity(scope, messageId).slice(0, 24) : undefined
     if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId,
-      accountAction ? 'account_publication' : 'delivery', { status: result.status, reason: result.reason })
+      accountAction ? 'account_publication' : 'delivery', { status: result.status, reason: result.reason, output })
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
@@ -2845,8 +2853,8 @@ export class OneBotDecisionAdapter {
         group.engagedAt = envelope.record.groupConversationEnd === true ? null : this.now()
       }
     }
-    if (/^send_(?:msg|group_msg|private_msg|group_forward_msg|private_forward_msg)$/.test(action)) {
-      this.bridge.inbound?.rememberMessageScope?.(result.value?.message_id, scope)
+    if (chatMessageAction.test(action)) {
+      this.bridge.inbound?.rememberMessageScope?.(messageId, scope)
     }
     return result.value
   }

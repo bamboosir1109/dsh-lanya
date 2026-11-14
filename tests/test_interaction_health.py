@@ -49,6 +49,27 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(value['scopes'][0]['counts'],{'group_listening':1,'pending':1,'active':1})
         self.assertEqual(value['scopes'][0]['long_open_inputs'],2)
 
+    def test_friend_reply_audit_matches_exact_outbound_ids_in_the_same_conversation(self):
+        scope = 'private:101'
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        def key(message_id):
+            return digest(scope + '\0' + str(message_id))[:24]
+        def diagnostic(input_id, output_id, phase='delivery'):
+            return dict(schema='qq-interaction/v1', phase=phase, at=6200, status='sent',
+                        scope=digest(scope)[:16], input=key(input_id), output=key(output_id))
+        def history_row(message_id, sender, target):
+            return dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                        target_id=target, message_id=message_id, message='synthetic body')
+        rows = [history_row(i, 101, 999) for i in (1, 2, 3)] + [history_row(-1, 999, 101),
+            history_row(-2, 999, 303), history_row(-3, 999, 101)]
+        evidence = [diagnostic(1, -1), diagnostic(2, -2), diagnostic(3, -3, 'account_publication')]
+        report = module.compare_friend_ingress([scope], ['\n'.join(map(json.dumps, evidence)).encode()],
+            account='999', since_ms=5000, now_ms=9000, history=lambda peer:rows)
+        self.assertEqual(report['counts']['friend_inputs_with_acknowledged_output'], 2)
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertNotIn(key(-1), json.dumps(report))
+        self.assertNotIn('synthetic body', json.dumps(report))
+
     def test_transport_acceptance_quiet_pending_and_unknown_remain_distinct(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
