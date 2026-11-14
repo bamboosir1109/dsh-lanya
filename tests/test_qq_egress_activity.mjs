@@ -134,15 +134,22 @@ test('content-free promises are removed while specific plans and quoted speech s
   assert.equal(cleanText('好。我再去看。晚点我再核对。'), '好。')
   assert.equal(cleanText('明白了。我再去看看。'), '明白了。')
   assert.equal(cleanText('好嘞！我再去看一看。'), '好嘞！')
+  assert.equal(cleanText('好嘞，那我再去看看。'), '好嘞。')
+  assert.equal(cleanText('懂了，我晚点再确认一下哈。'), '懂了。')
+  assert.equal(cleanText('原来是封面。我先这样标，那我再去看一眼。'), '原来是封面。我先这样标。')
+  assert.deepEqual(textParts('嗯嗯，那我再去看。').map(part => part.text), ['嗯嗯。'])
   for (const text of ['今晚没空，我再去看。', '明早我再去看看。', '你把截图发我，我再去确认。',
     '字幕少了一段。我再去看第二集。', '链接打不开。八点我再去看看。', '字幕少了一段。我再去看看？', '原话是「我再去看。」',
     '> 他说链接还没开。我再去看看。', '图片没发过来，我再去核实一下。',
     '这个链接打不开。等你发来新链接，我再去看。', '先休息吧。你把截图发我，我再去确认。',
-    '今天有点晚了。明早八点，我再去看看。']) {
+    '今天有点晚了。明早八点，我再去看看。', '你晚点把图发来，那我再去看看。',
+    '好嘞，等你发新版，我晚点再确认一下哈。', '好嘞，我再去看第二集。',
+    '她原话是「好嘞，那我再去看看。」', '就这么约好？那我再去看看？']) {
     assert.equal(cleanText(text), text)
   }
   const technical = styleFromInbound(live('给我详细的排查步骤'))
   const reply = '启动日志停在初始化。我再去确认一下。'
   assert.equal(cleanText(reply, technical), reply)
   assert.equal(cleanText(reply, styleFromInbound(live('我们来角色扮演，开始吧'))), reply)
+  assert.equal(cleanText('那我再去看看。'), '那我再去看看。')
 })

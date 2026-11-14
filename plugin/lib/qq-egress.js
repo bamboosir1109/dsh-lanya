@@ -450,18 +450,21 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
     ? withoutImageSendConfirmation(withoutImages) : withoutImages
   const cleaned = spans(prose, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
   if (!style.technical && !style.roleplay) {
-    const suffix = /(?:(?:^|[。！？!?\n，,])[ \t\r\n]*(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看一看|看看?|查一查|查查?|确认|核对|核实)(?:一下|一眼)?(?:吧|哈|啊|哦|啦)?[ \t]*){1,8}[。.!！~～]*[ \t]*$/u
+    const suffix = /(?:(?:^|[。！？!?\n，,])[ \t\r\n]*(?:那(?:就)?[ \t]*)?(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看一看|看看?|查一查|查查?|确认|核对|核实)(?:一下|一眼)?(?:吧|哈|啊|哦|啦)?[ \t]*){1,8}[。.!！~～]*[ \t]*$/u
     const match = suffix.exec(cleaned)
     const quotedTail = match && literalQuotations(cleaned).some(quote => quote.index + quote[0].length > match.index)
     if (match && !quotedTail && !spans(cleaned).at(-1)?.protected) {
-      if (match.index === 0) return ''
+      if (match.index === 0) return /^那/u.test(cleaned) ? cleaned : ''
       const comma = /[，,]/u.test(cleaned[match.index])
       const prefix = cleaned.slice(0, match.index + (comma ? 0 : 1)).trimEnd()
       // A comma can connect a concrete condition or time to the next action.
       // Inspect that clause, not a punctuation mark from an earlier sentence.
-      const clause = prefix.split(/[。！？!?\n]/u).at(-1).trim()
-      const condition = /^(?:等|如果|要是|只要|一旦|你(?:先|再|把|给|发|贴|传)|请|麻烦|明早|明天|后天|今晚|今早|周[一二三四五六日天]|[零〇一二两三四五六七八九十\d]{1,3}(?:点|时))/u
-      if ((!comma || /[。！？!?]/u.test(prefix) && !condition.test(clause)) && /[\p{L}\p{N}]/u.test(prefix)) {
+      const sentence = prefix.split(/[。！？!?\n]/u).at(-1).trim()
+      const condition = /^(?:等|如果|要是|只要|一旦|你(?:先|再|把|给|发|贴|传|晚点|等会儿?)|请|麻烦|明早|明天|后天|今晚|今早|周[一二三四五六日天]|[零〇一二两三四五六七八九十\d]{1,3}(?:点|时))/u
+      const acknowledgement = /^(?:好(?:的|嘞|哦|呀|啊|哇)?|行|可以|嗯+|哦+|懂了|明白了|知道了|收到)$/u
+      const disposable = !comma || acknowledgement.test(sentence) ||
+        /[。！？!?]/u.test(prefix) && !sentence.split(/[，,]/u).some(clause => condition.test(clause.trim()))
+      if (disposable && /[\p{L}\p{N}]/u.test(prefix)) {
         return comma ? prefix + '。' : prefix
       }
     }
