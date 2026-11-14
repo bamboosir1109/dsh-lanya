@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from patch_onebot_policy import PatchError, read_regular, ordinary_path, replace_once, DECIDE_TOOL
+from patch_onebot_group_context import OBSERVED_ADDRESS
 
 
 def transform(name, raw):
@@ -23,6 +24,10 @@ def transform(name, raw):
             before = 'await this.ctx.observeInbound(inbound);'
             after = 'await this.ctx.observeInbound(inbound, address);'
             forwarded = 'await this.ctx.observeInbound(inbound, address, forwardText);'
+            if OBSERVED_ADDRESS in text:
+                if text.count(OBSERVED_ADDRESS) != 1 or any(anchor in text for anchor in (before, after, forwarded)):
+                    raise PatchError('Duplicated or mixed admission/schema anchors')
+                return raw
         if forwarded in text:
             if text.count(forwarded) != 1 or before in text or after in text:
                 raise PatchError('Duplicated or mixed admission/schema anchors')

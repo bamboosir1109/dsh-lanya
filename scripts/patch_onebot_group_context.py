@@ -14,6 +14,7 @@ MARKER = '// LANYA_CONTEXTUAL_GROUP_V1\n'
 OBSERVER = '            observeInbound: (inbound, address, forwardText) => this.lanyaPolicy.observeInbound(inbound, address, forwardText),\n'
 FORWARD_TEXT = '        let forward = \'\';\n'
 FORWARD_EXPANDED = '            forward = expansion.text;\n'
+OBSERVED_ADDRESS = 'await this.ctx.observeInbound(inbound, { ...address, groupExcerpt: quoteEvidence?.groupExcerpt }, forwardText);'
 
 
 def transform(name, raw):
@@ -33,7 +34,7 @@ def transform(name, raw):
             "        if (kind === 'group' && this.ctx.config.requireMention && !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true) {")
         text = replace_once(text, FORWARD_TEXT, FORWARD_TEXT + "        let forwardText = '';\n")
         text = replace_once(text, FORWARD_EXPANDED, FORWARD_EXPANDED + "            if (kind === 'group') forwardText = forward;\n")
-        text = replace_once(text, 'await this.ctx.observeInbound(inbound);', 'await this.ctx.observeInbound(inbound, address, forwardText);')
+        text = replace_once(text, 'await this.ctx.observeInbound(inbound);', OBSERVED_ADDRESS)
     else:
         raise PatchError('Only bridge.js and inbound.js are supported')
     return (MARKER + text).replace('\n', newline).encode('utf-8')

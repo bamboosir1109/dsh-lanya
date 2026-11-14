@@ -3290,6 +3290,48 @@ test('autonomous group reviews retain the verified text that a current group rem
   await h.end()
 })
 
+test('a quiet group keeps verified quote text after the original has left its recent buffer', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope), time = Math.floor(a.now() / 1000)
+  const source = (message_id, text, fields) => ({
+    message_id, group_id: 303, message_type: 'group', time: time - 30, sender: { user_id: 204 },
+    message: [{ type: 'text', data: { text } }], ...fields,
+  })
+  const sources = new Map([
+    [81, source(81, 'Has anyone tried a small pixel-art challenge?')],
+    [82, source(82, 'A different group', { group_id: 404 })],
+    [83, source(83, 'Very old thread', { time: time - 7 * 60 * 60 })],
+    [84, source(84, 'Direct command', { message: [{ type: 'text', data: { text: '/configure' } }] })],
+    [85, source(85, '', { message: [{ type: 'image', data: { file: 'fixture' } }] })],
+    [86, source(86, 'A later comment', { time: time + 60 })],
+    [87, source(87, '', { message: [{ type: 'at', data: { qq: '202' } },
+      { type: 'text', data: { text: 'A personal aside' } }] })],
+  ])
+  let reads = 0
+  h.deps.connection.call = async (action, { message_id }) => {
+    assert.equal(action, 'get_msg'); reads++
+    return sources.get(message_id)
+  }
+  for (const id of sources.keys()) {
+    await h.receive('What about a simpler version?', { message_id: id + 100, message: [
+      { type: 'reply', data: { id: String(id), text: 'untrusted preview' } },
+      { type: 'text', data: { text: 'What about a simpler version?' } },
+    ] })
+  }
+  assert.equal(h.pending.length, 0)
+  assert.equal(reads, sources.size)
+  const read = review => JSON.parse(a.groupPromptContext(scope, owner, review)
+    .match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  const rows = read(true).recent
+  assert.equal(rows[0].quoted_text, 'Has anyone tried a small pixel-art challenge?')
+  assert.equal(rows[0].quoted_speaker, '204')
+  assert.equal(rows[0].new_shared_remark, true)
+  assert.ok(rows.slice(1).every(row => row.quoted_text === undefined))
+  assert.doesNotMatch(JSON.stringify(rows), /untrusted preview|A different group|Very old thread|configure|fixture|A later comment|A personal aside/)
+  assert.equal(read(false).recent[0].quoted_text, undefined)
+  assert.equal(h.calls.some(call => /^send_/.test(call.action)), false)
+})
+
 test('a quiet group gets bounded same-group topic clues only during its autonomous review', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)

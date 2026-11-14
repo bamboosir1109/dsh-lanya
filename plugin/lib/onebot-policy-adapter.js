@@ -1460,7 +1460,14 @@ export class OneBotDecisionAdapter {
         const quoted = quotedSpeaker && inbound.replyId !== undefined && group.recent.find(item =>
           item.messageId === String(inbound.replyId) && item.speaker === quotedSpeaker &&
           item.arrival < context.arrival && item.at <= context.arrivedAt && item.at >= context.arrivedAt - GROUP_CONTEXT_MS)
-        const quotedText = quoted ? quoted.text.trim() : ''
+        const excerpt = address?.groupExcerpt
+        const verifiedExcerpt = excerpt && quotedSpeaker && inbound.replyId !== undefined &&
+          address.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
+          context.backendSocket === this.deps.connection?.socket && this.backendGuard.current(context.backendStamp) &&
+          Number.isSafeInteger(excerpt?.at) && excerpt.at <= context.arrivedAt &&
+          excerpt.at >= context.arrivedAt - GROUP_TOPIC_LOOKBACK_MS && typeof excerpt.text === 'string'
+          ? excerpt.text.trim() : ''
+        const quotedText = quoted ? quoted.text.trim() : verifiedExcerpt
         const segments = inbound.segments
         const images = (inbound.media || []).map(ref => this.directInboundImages.get(ref)).filter(Boolean).slice(0, 2)
         const row = { messageId: inbound.messageId, arrival: context.arrival,
@@ -1473,8 +1480,9 @@ export class OneBotDecisionAdapter {
           at_targets: inbound.segments?.filter(historyMention).slice(0, 8).map(segment => String(segment.data.qq)) ?? [],
           quoted_speaker: quotedSpeaker,
           addressed_to_bot: addressed }
-        const memberExchange = quoted && !quoted.addressed_to_bot && quotedSpeaker !== this.deps.connection?.selfId &&
-          quotedSpeaker !== this.deps.config.botQQ && quotedText && !quotedText.startsWith('/')
+        const memberExchange = (quoted ? !quoted.addressed_to_bot : verifiedExcerpt) &&
+          quotedSpeaker !== this.deps.connection?.selfId && quotedSpeaker !== this.deps.config.botQQ &&
+          row.quoted_text && sharedGroupRemark(row)
         if (!addressed && Array.isArray(segments) && segments.length &&
             (segments.every(groupTopicSegment) ||
               memberExchange && segments.every(historyDiscussionSegment))) {

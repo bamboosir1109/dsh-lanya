@@ -24,7 +24,7 @@ class GroupContextPatchTests(unittest.TestCase):
             result = patch.transform('inbound.js', raw)
             expected = patch.MARKER.encode().replace(b'\n', newline) + raw.replace(
                 b'&& !mentioned)', b'&& !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true)').replace(
-                b'observeInbound(inbound);', b'observeInbound(inbound, address, forwardText);').replace(
+                b'await this.ctx.observeInbound(inbound);', patch.OBSERVED_ADDRESS.encode()).replace(
                 b"let forward = '';" + newline, b"let forward = '';" + newline + b"        let forwardText = '';" + newline).replace(
                 b'forward = expansion.text;' + newline,
                 b"forward = expansion.text;" + newline + b"            if (kind === 'group') forwardText = forward;" + newline)
