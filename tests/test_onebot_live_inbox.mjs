@@ -3406,6 +3406,31 @@ test('a real group contact stays eligible for recovery when merged with an ordin
   })
 })
 
+test('an unanswered group mention stays in a burst after the ordinary context limit', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+  await h.mention()
+  for (let index = 0; index < 23; index++) {
+    await h.receive('ordinary remark ' + index + ' ' + 'x'.repeat(900))
+  }
+  assert.equal(h.pending.length, 1)
+  const [message] = h.pending
+  assert.ok(/question[\s\S]*ordinary remark 22/.test(message.content[0].text))
+  assert.equal(adapter.state(h.chat).pending.get(message.id).directGroupContact, true)
+  await Promise.all([...adapter.replyReviewWrites])
+  const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+  assert.ok(/question[\s\S]*ordinary remark 22/.test(snapshot.current.replyReview.text))
+  assert.equal(snapshot.current.controlAllowed, false)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.ok(/question[\s\S]*ordinary remark 22/.test(h.pending[0].content[0].text))
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer to the question' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('a verified group contact survives when its own enrichment is slower than an ordinary follow-up', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, entered = defer(), resume = defer()
   a.memoryContext = async (_scope, text) => {
