@@ -184,6 +184,12 @@ const historySupplement = new Set(['reply', 'image', 'record', 'face', 'video', 
 const reconnectMediaLabel = new Map([['image', '图片'], ['record', '语音'], ['video', '视频'], ['file', '文件'], ['forward', '合并转发']])
 const groupHistoryAddressed = (targets, bot, quoted) => targets.includes(bot) ||
   quoted === bot && !targets.some(target => target !== 'all')
+function groupHistoryPrecedes(first, second) {
+  if (!Number.isSafeInteger(first.time) || first.time <= 0) return false
+  if (first.time !== second.time) return first.time < second.time
+  return Number.isSafeInteger(first.message_seq) && Number.isSafeInteger(second.message_seq) &&
+    first.message_seq > 0 && first.message_seq < second.message_seq
+}
 function groupHistoryQuotedSpeaker(row, rows) {
   const replies = row.message.filter(segment => segment?.type === 'reply')
   if (replies.length !== 1) return null
@@ -191,7 +197,7 @@ function groupHistoryQuotedSpeaker(row, rows) {
   if (!/^-?[0-9]{1,16}$/.test(id) || !Number.isSafeInteger(Number(id)) || id === String(row.message_id)) return null
   const matches = rows.filter(item => plain(item) && item.message_type === 'group' &&
     String(item.group_id) === String(row.group_id) && String(item.message_id) === id)
-  return matches.length === 1 && Number.isSafeInteger(matches[0].time) && matches[0].time > 0 && matches[0].time < row.time
+  return matches.length === 1 && groupHistoryPrecedes(matches[0], row)
     ? groupHistorySender(matches[0]) : null
 }
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
@@ -813,15 +819,15 @@ export class OneBotDecisionAdapter {
           const rows = recent.filter(row => row.time * 1000 >= since)
           // A later live/platform message can already have received a reply.
           // Only consider the newest unanswered tail during this reconnect.
-          const lastOwnAt = Math.max(-1, ...rows.filter(row => String(row.sender?.user_id) === selected.expectedAccount)
-            .map(row => row.time * 1000))
+          const ownRows = rows.filter(row => String(row.sender?.user_id) === selected.expectedAccount)
           const known = new Set(state?.seen.map(row => row.messageId))
           const lastKnownAt = Math.max(-1, ...rows.filter(row => known.has(String(row.message_id))).map(row => row.time * 1000))
           const receipts = new Map()
           for (const row of rows) {
             const at = row.time * 1000, messageId = String(row.message_id)
             const sender = String(row.sender?.user_id)
-            if (at > window.verifiedAt || at <= Math.max(lastOwnAt, lastKnownAt) || sender === selected.expectedAccount || !allowed(sender) ||
+            if (at > window.verifiedAt || at <= lastKnownAt || sender === selected.expectedAccount || !allowed(sender) ||
+                ownRows.some(own => group ? !groupHistoryPrecedes(own, row) : own.time >= row.time) ||
                 (group && !groupHistorySender(row)) ||
                 (!group && (row.message_type !== 'private' || row.sub_type !== 'friend' ||
                   row.user_id != null && String(row.user_id) !== sender ||

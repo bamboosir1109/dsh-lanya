@@ -2364,7 +2364,8 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
 })
 
 test('reconnect recovers only a real configured-group mention as historical member input', async t => {
-  for (const scenario of ['missed mention', 'media-only mention', 'multiple speakers', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
+  for (const scenario of ['missed mention', 'media-only mention', 'multiple speakers', 'read retries', 'later bot reply',
+    'same-second bot before quote', 'same-second bot after quote', 'ambiguous same-second bot', 'group disabled']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
@@ -2376,6 +2377,8 @@ test('reconnect recovers only a real configured-group mention as historical memb
     h.advance(90_000)
     a.noteConnectionStatus(true)
     const call = h.deps.connection.call
+    const sequenceCases = ['same-second bot before quote', 'same-second bot after quote', 'ambiguous same-second bot']
+    const sameSecond = sequenceCases.includes(scenario)
     const row = (offset, id, text, target, fields = {}) => ({
       message_type: 'group', group_id: 303, message_id: id, time: at + offset,
       sender: { user_id: 202 }, message: [
@@ -2400,6 +2403,16 @@ test('reconnect recovers only a real configured-group mention as historical memb
         rows[3].message[1] = { type: 'image', data: { file: 'other-recipient-attachment' } }
       }
       if (scenario === 'later bot reply') rows.push(row(6, 97, 'already replied', null, { sender: { user_id: 999 } }))
+      if (sameSecond) {
+        const quote = { type: 'reply', data: { id: '90' } }
+        rows[0].message = [quote, { type: 'text', data: { text: 'missed actual question' } }]
+        rows[0].message_seq = 21
+        rows.unshift(row(0, 90, 'prior bot answer', null, { sender: { user_id: 999 }, message_seq: 20 }))
+        if (scenario === 'same-second bot after quote') {
+          rows.push(row(0, 89, 'later bot answer', null, { sender: { user_id: 999 }, message_seq: 22 }))
+        }
+        if (scenario === 'ambiguous same-second bot') delete rows[0].message_seq
+      }
       return { messages: rows }
     }
     if (scenario === 'group disabled') h.deps.policy.groupPolicy = 'disabled'
@@ -2413,7 +2426,7 @@ test('reconnect recovers only a real configured-group mention as historical memb
     }
     const state = await a.policy.snapshot(scope)
     assert.equal(reads, scenario === 'group disabled' ? 0 : scenario === 'read retries' ? 2 : 1)
-    if (['later bot reply', 'group disabled'].includes(scenario)) {
+    if (['later bot reply', 'same-second bot after quote', 'ambiguous same-second bot', 'group disabled'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '91'))
       return
     }
@@ -2427,7 +2440,7 @@ test('reconnect recovers only a real configured-group mention as historical memb
         { group_member: 1, text: 'one more detail from the first speaker' },
       ])
     } else assert.equal(state.current.replyReview.text, scenario === 'media-only mention'
-      ? '[收到图片，内容未加载]' : 'missed actual question')
+      ? '[收到图片，内容未加载]' : 'missed actual question' + (sameSecond ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''))
     for (const id of multiple ? [91, 97, 100] : [91]) {
       await h.receive('missed actual question', { message_id: id, user_id: id === 97 ? 204 : 202, message: [
         { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
