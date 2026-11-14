@@ -2662,6 +2662,26 @@ test('real decision after a terminal reminder sends fresh inline text without a 
   assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
 })
 
+test('a private turn ending after a tool-only message gets one chance to finish the reply', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  let steps = 0
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    if (++steps === 1) {
+      h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
+        message: { id: 'lookup-only', content: [{ type: 'tool-call', name: 'read', id: 'lookup-call', arguments: {} }] } })
+    } else {
+      assert.equal((await h.decide('reply', { text: 'I found one matching example.' })).sent, true)
+    }
+    return { kind: 'completed' }
+  }
+  await h.receive('Is there an example?')
+  await driverSettled(h)
+  assert.equal(steps, 2)
+  assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+  assert.equal(h.calls.filter(row => /^send_/.test(row.action)).length, 1)
+})
+
 test('the next private message or group mention retains an unanswered question after a turn without a decision', async t => {
   for (const mode of ['private draft', 'group mention', 'no draft', 'group no draft', 'token limit no draft', 'group token limit no draft', 'explicit idle', 'expired handoff']) await t.test(mode, async t => {
     const group = mode.startsWith('group '), retain = !['explicit idle', 'expired handoff'].includes(mode)

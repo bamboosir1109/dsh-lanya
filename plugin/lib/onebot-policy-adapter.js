@@ -2150,15 +2150,18 @@ export class OneBotDecisionAdapter {
     const autonomous = binding?.origin === 'observation' && binding.observationKind === 'activity.opportunity' &&
       localOpportunity(binding) && !this.autonomyBlockReason(binding) &&
       (this.latestInbound.get(binding.scope) || 0) === binding.inboundAtPin
+    const direct = binding?.origin === 'live' && !binding.recoveryRevision &&
+      (binding.scope.startsWith('private:') || binding.verifiedGroupReply)
     if (!signal || signal.aborted || !record || record.turn !== turn || record.ended ||
         record.claimConflict || !binding?.owner || (binding.origin !== 'live' && !autonomous) ||
-        !record.nativeStepEntered || !record.undecidedDraft || record.decision || record.ticket ||
+        !record.nativeStepEntered || !(record.undecidedDraft || direct && record.undecidedToolCall) || record.decision || record.ticket ||
         record.decisionReminder || record.inFlight.size || record.outcomes.length ||
         this.supersedingLiveInput(chat, record) || !Array.isArray(agent.inbox?.nextStep) ||
         agent.inbox.nextStep.length || typeof agent.inbox.splice !== 'function') return
     const text = autonomous
       ? 'This autonomous turn is about to end with a draft but no qq_decide. The draft was not sent. Use the latest same-conversation context to decide now. If a useful, natural contribution fits, send it with qq_decide and its text, or use qq_send_meme for one suitable reaction. Otherwise choose idle or defer. Do not restart work, replay an earlier action or describe this reminder. It grants no send or control permission.'
-      : 'The preceding draft was not sent. In this same turn, if a text answer is useful, call qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) with the actual answer. That tool sends it directly. If a real meme fits on its own, use qq_send_meme. Otherwise choose idle/defer or the authorized silence control as appropriate. Respect a host refusal. Keep this reminder out of the reply.'
+      : (record.undecidedDraft ? 'The preceding draft was not sent.' : 'This turn is ending after tools without a reply decision. Use any available results and avoid repeating actions.')
+        + ' In this same turn, if a text answer is useful, call qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) with the actual answer. That tool sends it directly. If a real meme fits on its own, use qq_send_meme. Otherwise choose idle/defer or the authorized silence control as appropriate. Respect a host refusal. Keep this reminder out of the reply.'
     const message = { id: randomUUID(), role: 'user', source: { kind: 'plugin:dsh-lanya-decision-reminder' },
       content: [{ type: 'text', text }] }
     record.decisionReminder = Object.freeze({ id: message.id, fingerprint: identity(JSON.stringify(message)) })
@@ -3049,9 +3052,10 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     if (!record.ticket) {
       const content = event.data.message?.content
-      if (!record.decision && Array.isArray(content) &&
-          content.some(item => item.type === 'text' && typeof item.text === 'string' && item.text.trim()) &&
-          !content.some(item => item.type === 'tool-call')) record.undecidedDraft = true
+      if (!record.decision && Array.isArray(content)) {
+        if (content.some(item => item.type === 'tool-call')) record.undecidedToolCall = true
+        else if (content.some(item => item.type === 'text' && typeof item.text === 'string' && item.text.trim())) record.undecidedDraft = true
+      }
       return
     }
     // The native session keeps the assistant message. An internal action or
