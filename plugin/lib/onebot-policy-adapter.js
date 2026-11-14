@@ -2496,20 +2496,21 @@ export class OneBotDecisionAdapter {
       }
       const quiet = ['idle', 'defer'].includes(args.verdict)
       const { scope, owner } = record.binding
+      const personal = scope.startsWith('private:')
       const group = quiet && this.groupConversation(scope, owner, false)
       const reviewedNow = group && new Set(record.groupReviewMessageIds)
       const activeGroup = group && this.recentGroupContext(scope, owner, now)
         .some(row => row.at > now - cadence.intervalMs && !reviewedNow.has(row.messageId) &&
           !group.reviewedMessages?.has(row.messageId) && sharedGroupRemark(row))
       const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, 60 * 60_000) : cadence.intervalMs
-      // Rechecking the same discussion sooner spends the shared autonomy
-      // budget without giving the group a new conversation to join.
       const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
-      nextReview = requestedReview === null || quietGroup ? now + interval : Math.min(requestedReview, now + interval)
+      // An idle personal turn also has no new work to revisit early. A defer
+      // can still name an earlier useful follow-up, subject to budget pacing.
+      const keepQuietInterval = quietGroup || personal && args.verdict === 'idle'
+      nextReview = requestedReview === null || keepQuietInterval ? now + interval : Math.min(requestedReview, now + interval)
       // Leave room in the shared budget for later opportunities. Fresh group
       // discussion retains its cadence even when personal spending runs ahead.
       const budget = record.binding.budget
-      const personal = scope.startsWith('private:')
       if ((personal || quietGroup) && budget?.category === 'autonomy' && budget.limited) {
         const { spent_cny: spent, reserved_cny: reserved, remaining_cny: remaining } = budget.state ?? {}
         if ([spent, reserved, remaining].every(value => Number.isFinite(value) && value >= 0)) {

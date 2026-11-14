@@ -4181,6 +4181,7 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
   const cases = [
     ['primary-ahead', 1.5, 12], ['primary-slightly-ahead', 0.6, 6],
     ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
+    ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
     ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
     ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
   ]
@@ -4216,7 +4217,8 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
       if (group) adapter.nativeCapabilityContext(h.agent)
       if (scenario === 'group-fresh') await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
       const args = { next_review_at: adapter.now() + 60_000 }
-      decision = await h.decide(group ? 'idle' : 'tool_action', args)
+      const verdict = group || scenario === 'primary-idle' ? 'idle' : scenario === 'primary-defer' ? 'defer' : 'tool_action'
+      decision = await h.decide(verdict, args)
       return { kind: 'completed' }
     }
     const outcome = await adapter.dispatchObservation(event)
