@@ -4026,6 +4026,9 @@ test('a mention or verified quote to another member stays in context without rep
     : call(action, params)
   const quote = { type: 'reply', data: { id: '77' } }
   await h.receive('side reply', { message: [quote, { type: 'text', data: { text: 'side reply' } }] })
+  await h.receive('reply whose target is unavailable', { message: [
+    { type: 'reply', data: { id: '78' } }, { type: 'text', data: { text: 'reply whose target is unavailable' } },
+  ] })
   const after = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
   assert.equal(after.revision, before.revision)
   assert.equal(h.pending.length, 1)
@@ -4033,11 +4036,12 @@ test('a mention or verified quote to another member stays in context without rep
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /side question/)
   assert.match(h.prompt(), /side reply/)
+  assert.match(h.prompt(), /reply whose target is unavailable/)
   assert.equal((await h.decide('reply', { text: 'answer to my question' })).sent, true)
   await h.end()
   await h.receive('ordinary follow-up')
   assert.equal(h.pending.length, 1)
-  await h.receive('question for bot about the quoted message', { message: [quote,
+  await h.receive('question for bot about the quoted message', { message: [{ type: 'reply', data: { id: '78' } },
     { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'question for bot about the quoted message' } },
   ] })
   assert.ok(h.pending.some(message => JSON.stringify(message).includes('question for bot about the quoted message')))

@@ -1490,9 +1490,10 @@ export class OneBotDecisionAdapter {
         /^[1-9][0-9]*$/.test(String(segment.data?.qq))) === true ||
         (address?.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
           (address.explicit_at_ids?.length > 0 || address.reply_status === 'available' && address.reply_to === 'other'))
-      if (!superseded && !addressed && (group.engagedAt === null || addressedToOthers)) {
+      const unresolvedReply = inbound.replyId !== undefined && address?.reply_status !== 'available'
+      if (!superseded && !addressed && (group.engagedAt === null || addressedToOthers || unresolvedReply)) {
         context.groupListening = true
-        const reason = addressedToOthers ? 'addressed_to_other_member' : 'await_autonomous_join'
+        const reason = addressedToOthers ? 'addressed_to_other_member' : unresolvedReply ? 'unresolved_reply_target' : 'await_autonomous_join'
         this.diagnose(scope, inbound.messageId, 'group_listening', { reason })
         return { accepted: false, reason }
       }
