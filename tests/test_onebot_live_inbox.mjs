@@ -274,12 +274,12 @@ test('reply review honors an accepted quiet decision and actual sends rather tha
 })
 
 test('startup recovery reviews only the same unclaimed QQ message alongside native context', async t => {
-  for (const mode of ['pinned', 'legacy', 'changed', 'foreign-context']) await t.test(mode, async t => {
+  for (const mode of ['startup', 'pinned', 'legacy', 'legacy-outside-tail', 'changed', 'foreign-context']) await t.test(mode, async t => {
     const h = await nativeDriverFixture(t)
     const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
     const policyFile = path.join(path.dirname(h.plugin), 'restored-policy.json')
     adapter.policy = createDecisionPolicy({ stateFile: policyFile, now: adapter.now })
-    adapter.startRequested = true; adapter.startEpoch += 1
+    if (mode !== 'startup') { adapter.startRequested = true; adapter.startEpoch += 1 }
     const sender = scope.slice('private:'.length), messageId = 'fixture-inbound'
     const live = await adapter.policy.recordInbound({ scope, sender, messageId, origin: 'live', controlAllowed: true })
     const text = 'missed private question', message = { id: 'saved-qq-message', role: 'user',
@@ -287,14 +287,27 @@ test('startup recovery reviews only the same unclaimed QQ message alongside nati
     h.agent.inbox.append('next-turn', message)
     h.agent.inbox.append('next-step', { id: 'saved-context', role: 'user',
       source: { kind: mode === 'foreign-context' ? 'host:web' : 'agent-instructions' }, content: [] })
-    if (mode === 'legacy') h.nativeEvents[0].time = adapter.now() + 47
-    const pin = mode === 'legacy' ? undefined : { session: h.agent.session.id, id: message.id,
+    const legacy = mode.startsWith('legacy')
+    if (legacy) h.nativeEvents[0].time = adapter.now() + 47
+    if (mode === 'legacy-outside-tail') for (let i = 0; i < 128; i++) h.agent.session.append('fixture/event', {})
+    const pin = legacy ? undefined : { session: h.agent.session.id, id: message.id,
       fingerprint: createHash('sha256').update(JSON.stringify(message)).digest('hex') }
     await adapter.policy.rememberReplyInput({ scope, messageId, owner: await adapter.trustedOwner(scope),
       expectedRevision: live.revision, text, nativePending: pin })
     if (mode === 'changed') h.agent.inbox.replace(message.id, { ...message, content: [{ type: 'text', text: 'changed text' }] })
     h.advance(61_000)
     const original = structuredClone(h.nativeEvents)
+    let historyReads = 0
+    if (legacy) {
+      Object.defineProperties(h.agent.session, { seq: { get: () => h.nativeEvents.length + 1 },
+        inheritedEventCount: { value: 1 } })
+      h.agent.session.snapshotEvents = (from, to) => {
+        if (from === undefined && to === undefined) return h.nativeEvents
+        historyReads++
+        assert.equal(to - from, Math.min(128, h.nativeEvents.length))
+        return h.nativeEvents.slice(from - 1, to - 1)
+      }
+    }
     const step = h.agent.step
     h.agent.step = async () => {
       const stepResult = await step()
@@ -305,10 +318,16 @@ test('startup recovery reviews only the same unclaimed QQ message alongside nati
       assert.equal((await h.decide('reply', { text: 'scoped answer' })).sent, true)
       return stepResult
     }
-    await adapter.reviewUnansweredInputs()
-    if (mode === 'changed' || mode === 'foreign-context') {
+    if (mode === 'startup') {
+      const blockedHistory = defer()
+      adapter.recoverReconnectHistory = () => blockedHistory.promise
+      t.after(() => blockedHistory.resolve(false))
+      await adapter.start()
+    } else await adapter.reviewUnansweredInputs()
+    if (mode === 'changed' || mode === 'foreign-context' || mode === 'legacy-outside-tail') {
       assert.deepEqual(h.nativeEvents, original)
       assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+      if (legacy) assert.equal(historyReads, 1)
       return
     }
     await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
@@ -317,6 +336,7 @@ test('startup recovery reviews only the same unclaimed QQ message alongside nati
     assert.equal(h.agent.inbox.hasPending, false)
     await adapter.reviewUnansweredInputs()
     assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    if (legacy) assert.equal(historyReads, 1)
   })
 })
 

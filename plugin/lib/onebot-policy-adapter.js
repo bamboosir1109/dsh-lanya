@@ -719,6 +719,10 @@ export class OneBotDecisionAdapter {
       this.startEpoch += 1
       if (!this.reconnectReview && this.deps.connection?.connected === true) this.noteConnectionStatus(true)
       else this.checkReconnectHistory()
+      // The registry has restored native inboxes before the bridge starts.
+      // Check existing local receipts without waiting for the first tick or
+      // for a slow QQ history query. The same single-flight guard covers both.
+      void this.reviewUnansweredInputs().catch(error => this.log('warn', 'reply_review_failed:' + error.name))
     }
     // Install recovery before the first asynchronous helper call. A temporary
     // budget failure or a still-living previous consumer must not permanently
@@ -989,7 +993,7 @@ export class OneBotDecisionAdapter {
       Array.isArray(inbox?.nextStep) && nativeContextOnly(inbox.nextStep, this.state(chat).pending))
   }
 
-  restoredReplyFront(scope, epoch, evidence) {
+  restoredReplyFront(scope, epoch) {
     const chat = this.bridge.chats.get(scope), agent = chat?.agent, inbox = agent?.inbox
     if (!this.startRequested || epoch !== this.startEpoch || this.bridge.stopping || this.foregroundBusy(scope) ||
         !agent || this.nativeChat(agent) !== chat || !this.nativeScopes.has(agent.ctx) || agent.status !== 'idle' ||
@@ -999,25 +1003,27 @@ export class OneBotDecisionAdapter {
     const [message] = inbox.nextTurn
     if (typeof message?.id !== 'string' || !message.id || message.role !== 'user' ||
         message.source?.kind !== 'plugin:dsh-onebot') return null
-    const fingerprint = identity(JSON.stringify(message))
+    return { agent, message, fingerprint: identity(JSON.stringify(message)), context: identity(JSON.stringify(inbox.nextStep)) }
+  }
+
+  matchesRestoredReply({ agent, message, fingerprint }, evidence) {
     if (evidence.nativePending) {
       const pinned = evidence.nativePending
-      if (pinned.session !== String(agent.session.id) || pinned.id !== message.id || pinned.fingerprint !== fingerprint) return null
-    } else {
-      if (!Array.isArray(message.content) || message.content.length !== 1 ||
-          message.content[0]?.type !== 'text' || message.content[0].text !== evidence.text) return null
-      // Older receipts have no pending ID. Require a unique matching native
-      // insertion next to the original receipt time as well as exact text.
-      const inserted = agent.session.snapshotEvents?.().slice(-128).filter(event =>
-        event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn' &&
-        event.data.inserted?.some(item => item.id === message.id))
-      if (inserted?.length !== 1 || !Number.isSafeInteger(inserted[0].time) ||
-          Math.abs(inserted[0].time - evidence.at) > 5000 ||
-          !inserted[0].data.inserted.some(item => identity(JSON.stringify(item)) === fingerprint)) return null
+      return pinned.session === String(agent.session.id) && pinned.id === message.id && pinned.fingerprint === fingerprint
     }
-    // A splice is append-only. The original remains in the native journal;
-    // this entry grants no sender role, command or media authority after restart.
-    return { agent, id: message.id, fingerprint, context: identity(JSON.stringify(inbox.nextStep)) }
+    if (!Array.isArray(message.content) || message.content.length !== 1 ||
+        message.content[0]?.type !== 'text' || message.content[0].text !== evidence.text) return false
+    // Older receipts have no pending ID. Read only the local journal tail.
+    const session = agent.session, total = session.seq, inherited = session.inheritedEventCount
+    if (!socialInteger(total) || !socialInteger(inherited) || inherited > total ||
+        typeof session.snapshotEvents !== 'function') return false
+    const from = Math.max(inherited, total - 128), events = session.snapshotEvents(from, total)
+    if (!Array.isArray(events) || events.length !== total - from ||
+        events.some((event, index) => event?.seq !== from + index)) return false
+    const inserted = events.filter(event => event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn' &&
+      event.data.inserted?.some(item => item.id === message.id))
+    return inserted.length === 1 && Number.isSafeInteger(inserted[0].time) && Math.abs(inserted[0].time - evidence.at) <= 5000 &&
+      inserted[0].data.inserted.some(item => identity(JSON.stringify(item)) === fingerprint)
   }
 
   async reviewUnansweredInputs() {
@@ -1040,8 +1046,7 @@ export class OneBotDecisionAdapter {
         if (!this.startRequested || epoch !== this.startEpoch || this.bridge.stopping ||
             !this.replyReviewAllowed(candidate.scope, candidate.sender)) continue
         const restored = this.bridge.chats.has(candidate.scope) && !this.replyReviewIdle(candidate.scope, epoch)
-        const evidence = restored ? (await this.policy.snapshot(candidate.scope))?.current?.replyReview : null
-        const original = evidence && this.restoredReplyFront(candidate.scope, epoch, evidence)
+        const original = restored ? this.restoredReplyFront(candidate.scope, epoch) : null
         if (restored && !original) continue
         let owner
         try { owner = await this.trustedOwner(candidate.scope) }
@@ -1053,23 +1058,23 @@ export class OneBotDecisionAdapter {
           catch (error) { this.log('warn', 'reply_review_session_unavailable:' + error.name); continue }
         }
         const stillOriginal = () => {
-          const current = this.restoredReplyFront(candidate.scope, epoch, evidence)
-          return current?.agent === original.agent && current.id === original.id &&
+          const current = this.restoredReplyFront(candidate.scope, epoch)
+          return current?.agent === original.agent && current.message.id === original.message.id &&
             current.fingerprint === original.fingerprint && current.context === original.context
         }
         const allowed = () => this.replyReviewAllowed(candidate.scope, candidate.sender) &&
           this.backendGuard.edge(this.deps.connection, backendStamp)
         const canReview = () => allowed() && (original ? stillOriginal() : this.replyReviewIdle(candidate.scope, epoch))
         const claimed = await this.policy.claimReplyReview({ ...candidate, expectedRevision: candidate.revision, owner,
-          canClaim: current => canReview() && (!original || (current.at === evidence.at && current.text === evidence.text &&
-            JSON.stringify(current.nativePending) === JSON.stringify(evidence.nativePending))) })
+          canClaim: evidence => canReview() && (!original || this.matchesRestoredReply(original, evidence)) })
         if (!claimed.accepted) continue
         checked += 1
         const release = () => this.policy.releaseUnqueuedReplyReview({ scope: claimed.scope,
           expectedRevision: claimed.revision, messageId: claimed.messageId, owner })
         if (!canReview()) { await release(); continue }
         if (original) {
-          try { if (original.agent.inbox.remove(original.id) !== true) continue }
+          // The inbox splice preserves the original journal event.
+          try { if (original.agent.inbox.remove(original.message.id) !== true) continue }
           catch (error) { this.log('warn', 'reply_review_retire_failed:' + error.name); continue }
         }
         const binding = Object.freeze({ ...claimed, text: undefined, owner: Object.freeze({ ...owner }),
