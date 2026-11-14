@@ -4794,6 +4794,36 @@ test('an autonomous budget refusal wakes the live QQ message that arrived during
   })
 })
 
+test('midnight rest during budget admission lets a queued private reply continue', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const reserving = defer(), release = defer(), budgetProvider = adapter.budgetProvider
+  const midnight = Date.parse('2026-11-03T16:00:00Z')
+  h.advance(midnight - adapter.now() - 1)
+  adapter.budgetProvider = async request => {
+    if (request.operation === 'reserve' && request.origin === 'observation') {
+      reserving.resolve()
+      await release.promise
+    }
+    return budgetProvider(request)
+  }
+  h.agent.step = async () => {
+    assert.equal(adapter.state(h.chat).active.binding.origin, 'live')
+    assert.equal((await h.decide('reply', { text: 'an answer after midnight' })).sent, true)
+    return { kind: 'completed' }
+  }
+  const event = await primaryEvent(h, 'fixture-midnight-during-budget-admission')
+  const observation = adapter.dispatchObservation(event)
+  await reserving.promise
+  try {
+    h.advance(1)
+    await h.receive('question near midnight')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  assert.equal((await observation).reason, 'autonomy_rest')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && !h.agent.inbox.hasPending)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('owned observation input uses the same reviewed wake and native admission', async t => {
   const entered = defer(), gate = defer(); let assemblies = 0
   const h = await nativeDriverFixture(t, { assemble: async () => { if (++assemblies === 1) { entered.resolve(); await gate.promise } } })

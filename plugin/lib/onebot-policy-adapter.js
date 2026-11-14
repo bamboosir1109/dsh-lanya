@@ -1911,9 +1911,10 @@ export class OneBotDecisionAdapter {
       (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
     const unstartedActivity = internal && binding.observationKind === 'activity.opportunity'
     const budgetRefusedObservation = binding?.origin === 'observation' && record.nativeAdmissionRefused?.binding === binding
+    const restingObservation = binding?.origin === 'observation' && record.nativeRestInterrupted?.binding === binding
     const failedObservation = afterTurnError && binding?.origin === 'observation'
-    if (!(binding?.origin === 'live' || internal || budgetRefusedObservation || failedObservation) ||
-        (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation && !afterTurnError) ||
+    if (!(binding?.origin === 'live' || internal || budgetRefusedObservation || restingObservation || failedObservation) ||
+        (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation && !restingObservation && !afterTurnError) ||
         record.claimConflict || record.ended || (!afterTurnError && record.inFlight.size)) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
     if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
@@ -2120,6 +2121,9 @@ export class OneBotDecisionAdapter {
       if (afterAdmissionRest) {
         record.nativeRestInterrupted = Object.freeze({ binding: record.binding, turn: request.turn,
           signal: request.signal, reason: afterAdmissionRest, at: admissionAt })
+        const successor = this.supersedingLiveInput(chat, record)
+        if (successor) record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+          turn: request.turn, epoch: this.startEpoch, binding: record.binding, revision: successor.binding.revision })
         return { kind: 'reject', reason: afterAdmissionRest }
       }
       record.nativeStepEntered = true
@@ -3109,7 +3113,7 @@ export class OneBotDecisionAdapter {
       if (!completion) return
       if (!record.decision) {
         const superseded = record.supersededIdleWake
-        if (!record.nativeAdmissionRefused && event.data.reason?.kind === 'blocked' && superseded?.turn === record.turn &&
+        if (!record.nativeAdmissionRefused && !record.nativeRestInterrupted && event.data.reason?.kind === 'blocked' && superseded?.turn === record.turn &&
             superseded.binding === record.binding && !superseded.signal?.aborted &&
             record.binding.origin === 'observation' && record.binding.observationKind === 'activity.opportunity' &&
             localOpportunity(record.binding) && !record.ticket && record.outcomes.length === 0) {
