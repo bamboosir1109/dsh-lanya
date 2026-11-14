@@ -1541,6 +1541,42 @@ test('reconnect covers the account verification gap and keeps that boundary fixe
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('a verification failure on an already connected socket can recover a missed friend message', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.startRequested = true
+  await h.receive('previous question')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  h.advance(2_000)
+  assert.equal(a.reconnectReview, null)
+  const at = Math.floor(a.now() / 1000)
+  const call = h.deps.connection.call
+  h.deps.connection.call = (action, params) => action === 'get_friend_msg_history' ? Promise.resolve({ messages: [{
+    message_type: 'private', sub_type: 'friend', time: at, message_id: 580,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'unseen during verification' } }],
+  }] }) : call(action, params)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_provider_mismatch' })
+  await h.receive('wrong provider', { message_id: 579 })
+  assert.equal(a.reconnectReview, null)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_verification_unavailable' })
+  await h.receive('unseen during verification', { message_id: 580 })
+  assert.equal(h.pending.length, 0)
+  a.backendGuard.verify = verify
+  h.advance(65_000)
+  await a.checkReconnectHistory()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /unseen during verification/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one recovered answer' })).sent, true)
+  await h.end()
+  await a.checkReconnectHistory()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const backend = backendFixture(h)

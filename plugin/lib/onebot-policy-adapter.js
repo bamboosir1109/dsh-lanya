@@ -1203,6 +1203,17 @@ export class OneBotDecisionAdapter {
       current.backendStamp = this.backendGuard.selection().stamp
       const backend = await this.backendGuard.verify(this.deps.connection, current.backendStamp)
       if (!backend.allowed) {
+        // A live event can hit a temporary verification failure without a
+        // socket status change. Retain that gap for the normal verified scan.
+        if (this.nativeClaims && this.startRequested && !this.bridge.stopping &&
+            backend.reason === 'backend_verification_unavailable' && this.deps.connection?.connected === true &&
+            !inbound.lanyaInjected && !inbound.lanyaTemporaryPrivate &&
+            this.replyReviewAllowed(scope, inbound.userId) &&
+            (scope.startsWith('private:') || this.contextualGroupEnabled(scope)) &&
+            (!this.reconnectReview || current.arrivedAt - this.reconnectReview.connectedAt > FRIEND_RECONNECT_WINDOW_MS)) {
+          this.reconnectReview = { since: current.arrivedAt, connectedAt: current.arrivedAt,
+            verifiedAt: null, scopes: null, friends: null }
+        }
         this.diagnose(scope, inbound.messageId, 'blocked', { reason: backend.reason })
         return { accepted: false, reason: backend.reason }
       }
