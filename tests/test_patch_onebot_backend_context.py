@@ -47,14 +47,16 @@ class BackendContextTests(unittest.TestCase):
 
     def test_current_group_and_burst_parents_keep_address_and_every_other_byte(self):
         grouped = group.transform('bridge.js', self.raw('bridge.js'))
-        for raw in (grouped, burst.transform('bridge.js', grouped)):
+        legacy = grouped.replace(patch.FORWARD_OBSERVER.encode(), patch.ADDRESSED_OBSERVER.encode())
+        for raw in (legacy, grouped, burst.transform('bridge.js', grouped)):
             for newline in ('\n', '\r\n'):
                 body = raw.decode().replace('\r\n', '\n').replace('\n', newline).encode()
-                expected = body.decode().replace(patch.ADDRESSED_OBSERVER,
-                    patch.ADDRESSED_OBSERVER + newline + '            historyAnchor: id => this.lanyaPolicy.backendGuard.historyAnchor(id),')
+                anchor = patch.FORWARD_OBSERVER if patch.FORWARD_OBSERVER.encode() in raw else patch.ADDRESSED_OBSERVER
+                expected = body.decode().replace(anchor,
+                    anchor + newline + '            historyAnchor: id => this.lanyaPolicy.backendGuard.historyAnchor(id),')
                 result = patch.transform('bridge.js', body)
                 self.assertEqual(result, (patch.MARKER.replace('\n', newline) + expected).encode())
-                self.assertEqual(result.count(patch.ADDRESSED_OBSERVER.encode()), 1)
+                self.assertEqual(result.count(anchor.encode()), 1)
                 for marker in (b'contextualGroupEnabled:', b'nativeBurstEnabled:', b'guardedConnectionCall(', b'dispatchFollowup('):
                     self.assertEqual(result.count(marker), body.count(marker))
                 with tempfile.TemporaryDirectory() as directory:
@@ -66,11 +68,11 @@ class BackendContextTests(unittest.TestCase):
         raw = group.transform('bridge.js', self.raw('bridge.js')).decode()
         bad = (
             raw.replace(patch.GROUP_MARKER, ''),
-            raw.replace(patch.ADDRESSED_OBSERVER, patch.SIMPLE_OBSERVER),
+            raw.replace(patch.FORWARD_OBSERVER, patch.SIMPLE_OBSERVER),
             raw.replace(patch.GROUP_HOOK, ''),
-            raw.replace(patch.ADDRESSED_OBSERVER, patch.ADDRESSED_OBSERVER + '\n' + patch.SIMPLE_OBSERVER),
+            raw.replace(patch.FORWARD_OBSERVER, patch.FORWARD_OBSERVER + '\n' + patch.SIMPLE_OBSERVER),
             raw + '\n// historyAnchor: unknown customized implementation\n',
-            raw.replace('(inbound, address)', '(inbound,address)'),
+            raw.replace('(inbound, address, forwardText)', '(inbound,address,forwardText)'),
         )
         for body in bad:
             with self.assertRaises(source.policy.PatchError): patch.transform('bridge.js', body.encode())
