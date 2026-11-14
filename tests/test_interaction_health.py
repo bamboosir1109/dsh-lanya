@@ -152,6 +152,14 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
         self.assertEqual(report['counts']['friend_inputs_in_batch_with_reply_in_history'], 2)
         self.assertNotIn(key(1), json.dumps(report))
+        reversed_report = module.compare_friend_ingress([scope], [encode(second[::-1]), encode(first[::-1])],
+            account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertEqual(reversed_report, report)
+        cyclic = module.compare_friend_ingress([scope], [encode(first + second + [log(1, 'reply_handoff', prior_input=key(3))])],
+            account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertEqual(cyclic['status'], 'partial')
+        self.assertEqual(cyclic['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', cyclic['counts'])
         second.insert(1, log(4, 'queued', coalesced=True, replaced_input=key(2)))
         ambiguous = module.compare_friend_ingress([scope], [encode(first), encode(second)], account='999',
                                                  since_ms=5000, now_ms=9000, history=lambda _:rows)

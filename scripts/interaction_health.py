@@ -252,17 +252,29 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
             except (ValueError, TypeError, KeyError):
                 partial_log = True
 
-    # Walk the durable replacements from newest to oldest. A replaced inbound
-    # only gets batch evidence, since a send receipt proves no specific question was answered.
+    # The journal may record a claim before the preceding queue write is
+    # logged. Resolve the explicit links from their leaves, independent of
+    # line order. A batch receipt proves no specific question was answered.
     replacements = list(dict.fromkeys(replacements))
     ambiguous = {key for key, count in collections.Counter(parent for parent, _ in replacements).items() if count > 1}
-    batch_outputs = {}
-    for parent, child in reversed(replacements):
+    parents = collections.defaultdict(list)
+    successors = {}
+    for parent, child in replacements:
         if parent not in ambiguous:
-            outputs = acknowledged_outputs.get(child) or batch_outputs.get(child)
+            successors[parent] = child
+            parents[child].append(parent)
+    batch_outputs = {}
+    leaves = collections.deque(child for child in parents if child not in successors and child not in ambiguous)
+    while leaves:
+        child = leaves.popleft()
+        outputs = acknowledged_outputs.get(child) or batch_outputs.get(child)
+        for parent in parents.get(child, ()):
+            successors.pop(parent)
             if outputs:
                 batch_outputs[parent] = outputs
-    partial_log |= bool(ambiguous)
+            leaves.append(parent)
+    # Unresolved links either lead to an ambiguous parent or form a cycle.
+    partial_log |= bool(ambiguous or successors)
 
     def inspect(peer):
         scope = 'private:' + peer
