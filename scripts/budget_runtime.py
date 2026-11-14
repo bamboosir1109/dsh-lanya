@@ -349,7 +349,16 @@ def operate(request, now=None):
     if request.get('operation') == 'autonomy_readiness':
         if set(request) != {'operation', 'budget_contract'}:
             raise BudgetError('invalid_budget_readiness', 400)
-        bucket = get_snapshot(now)['usage']['buckets']['autonomy']
+        config, revision = _config()
+        _, day = _clock(now)
+        owner = _configured_owner_hash()
+        if os.path.lexists(_paths()[1]):
+            with _transaction() as connection:
+                bucket = _bucket_summary(connection, config, day, owner, 'autonomy')
+        else:
+            bucket = _bucket_summary(None, config, day, owner, 'autonomy')
+        if _config()[1] != revision:
+            raise BudgetError('budget_configuration_changed', 409)
         return {'read_only': True, 'can_start_new_turn': bucket['can_start_new_turn']}
     if isinstance(request, dict) and request.get('operation') == 'heartbeat':
         fields = {'operation','instance_id','pid','adapter_source_sha256','budget_contract'}
