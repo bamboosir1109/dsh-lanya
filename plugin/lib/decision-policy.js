@@ -635,7 +635,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
-    /** The adapter calls this only when it proves the queue was never touched. */
+    /** Release a review the bridge proves never reached the model or transport. */
     async releaseUnqueuedReplyReview({ scope, expectedRevision, messageId, owner } = {}) {
       canonicalScope(scope)
       if (!replyOwnerValid(owner) || !identifier(messageId) || !Number.isSafeInteger(expectedRevision)) {

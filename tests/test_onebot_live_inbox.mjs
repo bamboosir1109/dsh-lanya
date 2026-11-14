@@ -2208,6 +2208,40 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   assert.fail('native fixture did not settle')
 }
 
+test('a reply review waits through a failed budget reservation without spending its model attempt', async t => {
+  const h = await nativeDriverFixture(t), a = h.bridge.lanyaPolicy
+  a.startRequested = true
+  const provider = a.budgetProvider
+  let healthy = false, failedReviewReserves = 0
+  a.budgetProvider = async request => {
+    if (!healthy) {
+      if (request.operation === 'reserve') failedReviewReserves++
+      throw new Error('synthetic ledger outage')
+    }
+    return provider(request)
+  }
+  await h.receive('a question that needs a reply')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  await Promise.all([...a.replyReviewWrites])
+  failedReviewReserves = 0
+  h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  await driverSettled(h, () => failedReviewReserves === 2 && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  assert.equal(h.steps.length, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.equal(current.replyReview.attempted, false)
+  healthy = true
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'one answer after ledger recovery' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await a.reviewUnansweredInputs()
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('native QQ timing records only compaction before the first model step', async t => {
   const h = await nativeDriverFixture(t)
   const compact = (id, turn, elapsed, error) => {

@@ -2038,6 +2038,13 @@ export class OneBotDecisionAdapter {
         }
         record.binding = local.binding
         budgetWaitMs = Math.max(0, Date.now() - budgetStartedAt)
+        if (binding.recoveryRevision && local.binding.budget?.reserveUnavailable && request.step === 1) {
+          // A review has no live control authority. Keep its one chance to
+          // answer until a real model step can run with a verified reservation.
+          record.unstartedBudgetReview = Object.freeze({ binding: record.binding, signal: request.signal })
+          this.diagnose(binding.scope, binding.messageId, 'blocked', { reason: 'budget_unavailable', turn: request.turn })
+          return { kind: 'reject', reason: 'budget_unavailable' }
+        }
       }
       const admissionAt = this.now(), afterAdmissionRest = this.autonomyBlockReason(record.binding, admissionAt)
       if (afterAdmissionRest) {
@@ -2980,8 +2987,20 @@ export class OneBotDecisionAdapter {
         const evidence = replyEvidenceWithLateText(record.baseReplyEvidence, entry.lateReplyText)
         if (evidence !== record.replyEvidenceText) this.persistReplyInput(entry.binding, evidence, entry.sender, false, record.replyEvidenceText)
       }
-      try { await this.settleBudget(chat, record, event) }
-      catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
+      const unstarted = record.unstartedBudgetReview
+      if (unstarted && event.data.reason?.kind === 'blocked' && unstarted.binding === record.binding &&
+          !unstarted.signal?.aborted && !record.claimConflict && !record.nativeStepEntered &&
+          !record.decision && !record.ticket && !record.outcomes.length) {
+        const { messageId, revision, owner } = unstarted.binding
+        try {
+          if (await this.policy.releaseUnqueuedReplyReview({ scope, messageId, expectedRevision: revision, owner })) {
+            this.diagnose(scope, messageId, 'reply_review_deferred', { reason: 'budget_unavailable', turn: record.turn })
+          }
+        } catch (error) { this.log('warn', 'reply_review_release_failed:' + error.name) }
+      } else {
+        try { await this.settleBudget(chat, record, event) }
+        catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
+      }
       state.turns.delete(event.data.turn)
       const completion = record.binding?.completion || record.completion
       if (record.claimConflict) {
