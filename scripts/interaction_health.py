@@ -19,6 +19,7 @@ PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admissi
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
           'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged',
           'group_history_staged', 'account_publication'}
+TRANSPORT_FAILURES = ('backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified')
 
 
 def latest_group_activity(log, scope, *, after, now):
@@ -122,8 +123,13 @@ def summarize(raw, now_ms, since_ms=None):
                   'friend_history_staged' if 'friend_history_staged' in phases else
                   'group_history_staged' if 'group_history_staged' in phases else 'preparing')
         group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [],
-                                          'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0})
+                                          'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0,
+                                          'transport_failures': collections.Counter()})
         group['counts'][status] += 1
+        for attempt in delivery:
+            failure = attempt.get('transport_failure')
+            if attempt.get('status') == 'unknown' and failure in TRANSPORT_FAILURES:
+                group['transport_failures'][failure] += 1
         if status in ('active', 'pending', 'preparing') and now_ms - last > 30000:
             group['long_open_inputs'] += 1
         received = [e['at'] for e in events if e['phase'] == 'received']

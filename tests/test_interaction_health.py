@@ -75,11 +75,12 @@ class InteractionHealthTests(unittest.TestCase):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
         rows=[row(1,'received',1000),row(1,'delivery',1300,status='sent'),
               row(2,'received',1100),row(2,'decision',1400,verdict='idle'),row(2,'turn_end',1500),
-              row(3,'received',1200),row(3,'delivery',1600,status='unknown'),row(4,'queued',2000)]
+              row(3,'received',1200),row(3,'delivery',1600,status='unknown',transport_failure='ack_timeout'),row(4,'queued',2000)]
         value=module.summarize('\n'.join(json.dumps(x) for x in rows).encode(),40000)
         group=value['scopes'][0]
         self.assertEqual(group['counts'],{'transport_accepted':1,'decided_quiet':1,'delivery_uncertain':1,'pending':1})
         self.assertEqual(group['accepted_p50_ms'],300)
+        self.assertEqual(group['transport_failures'], {'ack_timeout': 1})
         self.assertEqual(group['long_open_inputs'],1)
         self.assertEqual(value['receipt_boundary'],'transport_acceptance_only')
         self.assertFalse(value['history_replayed'])

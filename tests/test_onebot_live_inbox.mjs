@@ -1620,6 +1620,29 @@ test('only a confirmed current-scope send ACK seeds metadata for a bot-authored 
   assert.deepEqual(diagnostic().filter(row => row.output).map(row => row.output), [output])
 })
 
+test('unknown QQ sends retain safe outcome while reporting a bounded transport failure category', async t => {
+  for (const [name, message, category] of [
+    ['OneBotActionError', 'OneBot action send_msg timed out after 3000ms', 'ack_timeout'],
+    ['OneBotActionError', 'OneBot action failed (retcode 100): synthetic provider details', 'backend_rejected'],
+    ['OneBotNotConnectedError', 'synthetic private connection details', 'connection_unavailable'],
+    ['Error', 'synthetic transport details', 'unclassified'],
+  ]) await t.test(category, async t => {
+    const h = await fixture(t)
+    h.deps.connection.call = async () => { throw Object.assign(new Error(message), { name }) }
+    await h.receive('fresh transport question'); h.start(); await h.preStep()
+    const result = await h.decide('reply', { text: 'synthetic answer' })
+    assert.equal(result.status, 'unknown')
+    assert.equal(result.reason, 'transport_uncertain')
+    const raw = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    const delivery = raw.trim().split('\n').map(JSON.parse).filter(row => row.phase === 'delivery')
+    assert.equal(delivery.length, 1)
+    assert.equal(delivery[0].transport_failure, category)
+    assert.equal(delivery[0].output, undefined)
+    assert.equal(raw.includes(message), false)
+    await h.end()
+  })
+})
+
 test('active reservation is never borrowed, old reply remains stale, and silence persists', async t => {
   const h = await fixture(t)
   await h.receive('first'); h.start(); await h.preStep()

@@ -490,11 +490,23 @@ export class PolicyDeliveryError extends Error {
   }
 }
 
+class NegativeOneBotAcknowledgement extends Error {}
+
 function normalizeAck(value) {
   if (plain(value) && (value.status === 'failed' || ('retcode' in value && value.retcode !== 0))) {
-    throw new Error('Negative OneBot acknowledgement')
+    throw new NegativeOneBotAcknowledgement('Negative OneBot acknowledgement')
   }
   return value
+}
+
+function transportFailure(error) {
+  if (error instanceof NegativeOneBotAcknowledgement) return 'backend_rejected'
+  if (error?.name === 'OneBotNotConnectedError') return 'connection_unavailable'
+  if (error?.name === 'OneBotActionError' && typeof error.message === 'string') {
+    if (/^OneBot action failed \(retcode (?:-?[0-9]+|unknown)\)/u.test(error.message)) return 'backend_rejected'
+    if (/^OneBot action [a-z_]+ timed out after [0-9]+ms$/u.test(error.message)) return 'ack_timeout'
+  }
+  return 'unclassified'
 }
 
 function targetScope(params, supplied) {
@@ -636,6 +648,10 @@ export class OneBotDecisionAdapter {
         (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
       if (phase === 'delivery' && fields.status === 'sent' && typeof detail.output === 'string' && /^[a-f0-9]{24}$/.test(detail.output)) {
         fields.output = detail.output
+      }
+      if (phase === 'delivery' && fields.status === 'unknown' &&
+          ['backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified'].includes(detail.transport_failure)) {
+        fields.transport_failure = detail.transport_failure
       }
       fs.appendFileSync(file, JSON.stringify({ schema: 'qq-interaction/v1', at: this.now(),
         scope: identity(scope).slice(0, 16), input: identity(scope, messageId).slice(0, 24), phase, ...fields }) + '\n', { mode: 0o600 })
@@ -2838,7 +2854,8 @@ export class OneBotDecisionAdapter {
       ['string', 'number'].includes(typeof messageId) && /^-?[0-9]{1,16}$/.test(String(messageId)) && Number.isSafeInteger(Number(messageId))
       ? identity(scope, messageId).slice(0, 24) : undefined
     if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId,
-      accountAction ? 'account_publication' : 'delivery', { status: result.status, reason: result.reason, output })
+      accountAction ? 'account_publication' : 'delivery', { status: result.status, reason: result.reason, output,
+        ...(result.reason === 'transport_uncertain' ? { transport_failure: transportFailure(result.error) } : {}) })
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
