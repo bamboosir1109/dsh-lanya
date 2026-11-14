@@ -808,11 +808,16 @@ export class OneBotDecisionAdapter {
           window.scopes.unshift(group)
         }
       }
-      if (!window.friends) {
+      const batch = window.scopes
+      window.scopes = []
+      // Known chats and the configured group can start their history reads
+      // while the current friend list is still being fetched.
+      const discoverFriends = async () => {
+        if (window.friends) return
         try {
           const list = this.intentPlanner.rows(await this.intentPlanner.readAction('get_friend_list', {}))
           if (!ready()) return
-          const mapped = new Set(window.scopes)
+          const mapped = new Set(batch)
           const friends = new Set()
           let added = 0
           for (const row of list) {
@@ -822,13 +827,14 @@ export class OneBotDecisionAdapter {
               const needsChat = !this.bridge.chats.has(scope)
               if (needsChat && added >= 24) continue
               if (needsChat) added++
-              window.scopes.push(scope)
+              batch.push(scope)
             }
             friends.add(scope)
           }
           window.friends = friends
         } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
       }
+      const friendLookup = discoverFriends()
       let stagedInput = false
       const reviewScope = async scope => {
         if (!ready()) { window.scopes.push(scope); return }
@@ -849,9 +855,12 @@ export class OneBotDecisionAdapter {
         try {
           const state = await this.policy.snapshot(scope)
           if (state && state.mode !== 'open') return
-          if (!state && !group && !window.friends?.has(scope)) {
-            if (!window.friends) window.scopes.push(scope)
-            return
+          if (!state && !group) {
+            await friendLookup
+            if (!window.friends?.has(scope)) {
+              if (!window.friends) window.scopes.push(scope)
+              return
+            }
           }
           if (!canStage()) { window.scopes.push(scope); return }
           const owner = await this.trustedOwner(scope)
@@ -921,13 +930,17 @@ export class OneBotDecisionAdapter {
       }
       // Drain the current worklist with bounded concurrent calls. Keep busy
       // and failed scopes in a separate list for the next recovery tick.
-      const batch = window.scopes
-      window.scopes = []
       let next = 0
       const reviewNext = async () => {
-        while (next < batch.length && ready()) await reviewScope(batch[next++])
+        while (ready()) {
+          if (next >= batch.length) {
+            await friendLookup
+            if (next >= batch.length || !ready()) return
+          }
+          await reviewScope(batch[next++])
+        }
       }
-      await Promise.all(Array.from({ length: Math.min(3, batch.length) }, reviewNext))
+      await Promise.all([friendLookup, reviewNext(), reviewNext(), reviewNext()])
       if (sameWindow() && next < batch.length) window.scopes = batch.slice(next).concat(window.scopes)
       const windowReady = ready()
       if (windowReady && window.friends && !window.scopes.length) this.reconnectReview = null

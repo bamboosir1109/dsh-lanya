@@ -1304,6 +1304,52 @@ test('reconnect queues a confirmed friend reply while a different history read i
   assert.equal(h.pending.length, 1)
 })
 
+test('reconnect checks a verified private conversation while friend discovery is pending', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('already handled question')
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  h.deps.policy.dmPolicy = 'allowlist'; h.deps.policy.allowFrom = ['101', '102']
+  h.advance(1000)
+  adapter.noteConnectionStatus(false)
+  const at = Math.floor(adapter.now() / 1000) + 1
+  h.advance(90_000); adapter.noteConnectionStatus(true)
+  const list = defer(), queued = defer(), reads = []
+  const call = h.deps.connection.call, dispatch = h.bridge.dispatchFollowup.bind(h.bridge)
+  h.bridge.dispatchFollowup = async (...args) => {
+    const result = await dispatch(...args)
+    if (args[0] === h.chat.chatId) queued.resolve()
+    return result
+  }
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return list.promise
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads.push(params.user_id)
+    if (params.user_id === 102) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 413,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'verified friend question' } }] }] }
+  }
+  adapter.startRequested = true
+  const scan = adapter.checkReconnectHistory()
+  let timer
+  try {
+    await Promise.race([queued.promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Verified scope waited for friend discovery')), 4000)
+    })])
+    assert.deepEqual(reads, [101])
+    assert.match(h.pending[0].content[0].text, /verified friend question/)
+  } finally {
+    clearTimeout(timer)
+    list.resolve([{ user_id: 101 }, { user_id: 102 }])
+    await scan
+  }
+  assert.deepEqual(reads, [101, 102])
+  assert.equal(h.pending.length, 1)
+})
+
 test('verified reconnect starts friend history review without waiting for the periodic timer', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   backendFixture(h)
