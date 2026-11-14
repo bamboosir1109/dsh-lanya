@@ -939,9 +939,9 @@ test('native turn accounting uses the dispatch event sequence without scanning h
 test('late enrichment cannot replace a newer revision and no pending budget is leaked', async t => {
   const h = await fixture(t), gate = defer(), entered = defer()
   h.bridge.lanyaPolicy.memoryContext = async (_scope, text) => { if (text.includes('slow older')) { entered.resolve(); await gate.promise } return null }
-  const slow = h.receive('slow older')
+  const slow = h.receive('slow older', { message_id: 601 })
   await entered.promise
-  await h.receive('fast newer')
+  await h.receive('fast newer', { message_id: 602 })
   const latest = h.pending[0].id
   assert.match(h.pending[0].content[0].text,/slow older/,'earlier admitted text survives slow enrichment')
   const freshMetadata={lastFollowup:h.chat.lastFollowup,lastNickname:h.chat.lastNickname}
@@ -952,6 +952,11 @@ test('late enrichment cannot replace a newer revision and no pending budget is l
     'stale completion cannot overwrite retry metadata or reset the current conversation')
   assert.equal(h.requests.length, 0)
   h.start(); await h.preStep()
+  const rows = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  const key = id => createHash('sha256').update(h.chat.chatId + '\0' + id).digest('hex').slice(0, 24)
+  const handoff = rows.filter(row => row.phase === 'reply_handoff')
+  assert.deepEqual(handoff.map(row => [row.prior_input, row.input]), [[key('601'), key('602')]])
+  assert.doesNotMatch(JSON.stringify(handoff), /slow older|fast newer/)
   assert.equal((await h.decide()).accepted, true)
 })
 

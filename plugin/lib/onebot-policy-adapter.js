@@ -1688,9 +1688,12 @@ export class OneBotDecisionAdapter {
     const baseReplyEvidence = excerpt ? excerpt + '\n' + original : original
     const replyEvidenceText = replyEvidenceWithLateText(baseReplyEvidence, lateReplyText)
     const priorInput = carriedText && excerpt.includes(carriedText) ? claimed.binding.messageId : null
+    const preparedInputs = binding.origin === 'live' && !binding.recoveryRevision
+      ? preparing.filter(item => item.complete && item.text.trim() && recent.includes(item.text) && excerpt.includes(item.text))
+        .map(item => item.messageId) : []
     const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContacts,
       receivedAt, batchFirstAt, replyEvidenceText, arrival: current?.arrival, lateReplyText,
-      baseReplyEvidence, priorInput,
+      baseReplyEvidence, priorInput, preparedInputs,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
@@ -2006,9 +2009,11 @@ export class OneBotDecisionAdapter {
       record.baseReplyEvidence ??= entry.baseReplyEvidence
       chat.activeTurnRole = entry.role
       this.diagnose(record.binding.scope, record.binding.messageId, 'claimed', { turn, revision: record.binding.revision })
-      if (priorInput) this.diagnose(record.binding.scope, record.binding.messageId, 'reply_handoff', {
-        prior_input: identity(record.binding.scope, priorInput).slice(0, 24),
-      })
+      for (const originalId of new Set([priorInput, ...entry.preparedInputs].filter(Boolean))) {
+        this.diagnose(record.binding.scope, record.binding.messageId, 'reply_handoff', {
+          prior_input: identity(record.binding.scope, originalId).slice(0, 24),
+        })
+      }
     })
     // Claimed listeners are synchronous notifications, not awaited guards.
     // The native pre-step waterfall is awaited before entering the model.
@@ -3495,10 +3500,11 @@ export class OneBotDecisionAdapter {
       if (current.binding.origin === 'live' && !current.binding.recoveryRevision) {
         const chat = this.bridge.chats.get(scope), state = chat && this.state(chat)
         if (state) {
+          const incomingText = String(text)
           while (state.preparing.size >= 20) state.preparing.delete(state.preparing.keys().next().value)
           state.preparing.set(current.binding.messageId, { owner: current.binding.owner, revision: current.binding.revision,
             temporaryPrivate: current.binding.temporaryPrivate, verifiedGroupReply: current.binding.verifiedGroupReply,
-            text: String(text).slice(-16000) })
+            messageId: current.binding.messageId, text: incomingText.slice(-16000), complete: incomingText.length <= 16000 })
         }
       }
     }
