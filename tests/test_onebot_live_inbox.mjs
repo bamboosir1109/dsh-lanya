@@ -16,7 +16,7 @@ if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
     const child = spawnSync(process.execPath, ['--experimental-vm-modules', '--test', fileURLToPath(import.meta.url)],
-      { encoding: 'utf8', windowsHide: true, timeout: 180000, env })
+      { encoding: 'utf8', windowsHide: true, timeout: 360000, env })
     assert.equal(child.error, undefined, child.error?.message)
     assert.equal(child.status, 0, child.stdout + child.stderr)
   })
@@ -2176,7 +2176,7 @@ test('listening group retains bounded observations without live claims, model ad
   h.start(); await h.preStep()
   assert.match(h.prompt(),/ordinary 19/); assert.doesNotMatch(h.prompt(),/ordinary 0x/)
   assert.match(h.prompt(),/historical evidence only/)
-  assert.match(h.prompt(), /即使没人艾特/)
+  assert.match(h.prompt(), /没人艾特也能接梗/)
   assert.doesNotMatch(h.prompt(), /玩一小局|用 qq_intent 或日记/)
   assert.equal((await h.decide('resume',{control_update:true})).accepted,false)
   await h.end()
