@@ -2072,10 +2072,10 @@ export class OneBotDecisionAdapter {
             NATIVE_BUDGET_REFUSALS.has(error.reason) ? error.reason : null
           this.log('warn', 'native_budget_admission_refused:' + (reason || 'unavailable_or_invalid_receipt'))
           this.diagnose(binding.scope, binding.messageId, 'blocked', { reason: reason || 'budget_admission_refused', turn: request.turn })
-          if (['previous_turn_unresolved', 'budget_exhausted'].includes(reason) && request.step === 1 &&
+          if ((reason === 'budget_exhausted' || reason === 'previous_turn_unresolved' && localOpportunity(binding)) && request.step === 1 &&
               record === this.state(chat).active && record.turn === request.turn && !record.ended &&
               !request.signal?.aborted && !record.claimConflict && record.binding === binding &&
-              binding.origin === 'observation' && localOpportunity(binding) && !binding.budget &&
+              binding.origin === 'observation' && !binding.budget &&
               !record.reservation && !record.nativeStepEntered && !record.decision && !record.ticket &&
               record.outcomes.length === 0 && record.inFlight.size === 0) {
             record.nativeAdmissionRefused = Object.freeze({ binding, turn: request.turn, signal: request.signal,
@@ -3113,7 +3113,7 @@ export class OneBotDecisionAdapter {
         const refused = record.nativeAdmissionRefused
         if (event.data.reason?.kind === 'blocked' && refused &&
             refused.turn === record.turn && refused.binding === record.binding && !refused.signal?.aborted &&
-            record.binding.origin === 'observation' && localOpportunity(record.binding) &&
+            record.binding.origin === 'observation' &&
             !record.binding.budget && !record.reservation && !record.nativeStepEntered && !record.ticket &&
             record.outcomes.length === 0 && record.inFlight.size === 0) {
           if (refused.reason === 'budget_exhausted') {
@@ -3646,8 +3646,7 @@ export class OneBotDecisionAdapter {
     // The configured autonomous bucket is shared across these conversations.
     // Only a real zero-step reserve refusal arms this short hold. Live replies
     // use their own bucket, and the reserve gate still checks any resumed turn.
-    if (this.autonomyBudgetRetryAt && localOpportunity({ observationKind: event.kind, observationProducer: event.producer,
-      trustedSocialRequest: socialRequest?.request_id })) {
+    if (this.autonomyBudgetRetryAt) {
       const prior = (await this.policy.snapshot(event.scope))?.observations?.find(item => item.eventId === event.event_id)
       if (!prior?.decision && !prior?.localOutcome) await this.waitForAutonomyBudget()
     }

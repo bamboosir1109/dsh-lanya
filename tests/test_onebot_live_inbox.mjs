@@ -4444,23 +4444,27 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
 test('a verified exhausted autonomous bucket defers more opportunities without blocking live replies', async t => {
   const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
   const budgetProvider = adapter.budgetProvider
-  let ready = false, probes = 0
+  let ready = false, probes = 0, refusedReserves = 0
   adapter.budgetProvider = request => {
     if (request.operation === 'autonomy_readiness') {
       probes++
       return Promise.resolve({ read_only: true, can_start_new_turn: ready })
     }
     if (!ready && request.origin === 'observation' && request.operation === 'reserve') {
+      refusedReserves++
       return Promise.resolve({ allowed: false, category: 'autonomy', limited: true, reason: 'budget_exhausted' })
     }
     return budgetProvider(request)
   }
   const event = await primaryEvent(h, 'fixture-budget-deferred')
-  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  const reminder = { ...event, event_id: 'fixture-reminder-budget-deferred', kind: 'reminder.due', producer: 'reminder-scheduler' }
+  await assert.rejects(adapter.dispatchObservation(reminder), { name: 'ObservationBudgetDeferred' })
   await driverSettled(h)
   const before = (await adapter.policy.snapshot(event.scope)).revision
   await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  await assert.rejects(adapter.dispatchObservation(reminder), { name: 'ObservationBudgetDeferred' })
   assert.equal((await adapter.policy.snapshot(event.scope)).revision, before)
+  assert.equal(refusedReserves, 1)
   assert.equal(h.agent.inbox.hasPending, false)
   h.agent.step = async () => {
     assert.equal((await h.decide('reply', { text: 'a real fixture reply' })).sent, true)
