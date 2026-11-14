@@ -2457,8 +2457,10 @@ export class OneBotDecisionAdapter {
       const quiet = ['idle', 'defer'].includes(args.verdict)
       const { scope, owner } = record.binding
       const group = quiet && this.groupConversation(scope, owner, false)
+      const reviewedNow = group && new Set(record.groupReviewMessageIds)
       const activeGroup = group && this.recentGroupContext(scope, owner, now)
-        .some(row => row.at > now - cadence.intervalMs && !group.reviewedMessages?.has(row.messageId) && sharedGroupRemark(row))
+        .some(row => row.at > now - cadence.intervalMs && !reviewedNow.has(row.messageId) &&
+          !group.reviewedMessages?.has(row.messageId) && sharedGroupRemark(row))
       const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, 60 * 60_000) : cadence.intervalMs
       // Rechecking the same discussion sooner spends the shared autonomy
       // budget without giving the group a new conversation to join.

@@ -2545,7 +2545,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
   const quiet = await h.decide('idle')
   assert.equal(quiet.accepted, true)
-  assert.equal(quiet.next_review_at, a.now() + 120_000)
+  assert.equal(quiet.next_review_at, a.now() + 240_000)
   await h.end(); await completion
   // A due retry or explicit short review can still see the same recent row.
   // Once it has already been reviewed, it should not keep the short cadence.
@@ -4080,7 +4080,8 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
   const cases = [
     ['primary-ahead', 1.5, 12], ['primary-slightly-ahead', 0.6, 6],
     ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
-    ['group-fresh', 1.5, 1], ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
+    ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
+    ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
   ]
   for (const [scenario, spent, reviewMinutes] of cases) await t.test(scenario, async t => {
     const group = scenario.startsWith('group-')
@@ -4093,7 +4094,7 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
       h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
     }
     if (scenario === 'primary-later') h.advance(8 * 3600_000)
-    if (scenario === 'group-fresh') await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
+    if (scenario === 'group-already-seen') await h.receive('a shared topic already in the prompt', { message_type: 'group', group_id: 303, user_id: 202 })
     const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
     const capabilities = adapter.runtimeCapabilities
     adapter.runtimeCapabilities = async (...args) => {
@@ -4111,6 +4112,8 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
     }
     let decision
     h.agent.step = async () => {
+      if (group) adapter.nativeCapabilityContext(h.agent)
+      if (scenario === 'group-fresh') await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
       const args = { next_review_at: adapter.now() + 60_000 }
       decision = await h.decide(group ? 'idle' : 'tool_action', args)
       return { kind: 'completed' }
