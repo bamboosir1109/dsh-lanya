@@ -76,6 +76,21 @@ test('missing reply qq never falsely claims bot target; verified bot reply does'
   assert.equal(address(content).bot_addressed, 'not_proven'); assert.match(content, /引用未展开/)
 })
 
+test('an @all or a quote of the bot with an explicit other target is not a personal summons', async () => {
+  const h = fixture()
+  h.ctx.call = async () => quote({ sender: { user_id: 999, nickname: 'Bot' } })
+  const at = qq => ({ type: 'at', data: { qq } })
+  const other = await h.receive(event([reply, at('202'), text('what do you think?')]))
+  assert.equal(address(other).bot_addressed, 'not_proven')
+  assert.equal(address(other).quoted_author_id, '999')
+  const all = await h.receive(event([at('all'), text('shared notice')], { message_id: 43 }))
+  assert.equal(address(all).bot_addressed, 'at_all')
+  for (const body of [other, all]) assert.doesNotMatch(body, /\[@我\]/)
+  const direct = await h.receive(event([reply, at('999'), text('your take?')], { message_id: 44 }))
+  assert.equal(address(direct).bot_addressed, 'explicit_at')
+  assert.match(direct, /\[@我\]/)
+})
+
 test('real quoted subtype image and CQ-string image reach existing resolver; direct OCR settings unchanged', async () => {
   const h = fixture(), original = structuredClone(h.settings), seen = []
   h.ctx.call = async () => quote({ message: '[CQ:image,file=quoted.png,sub_type=1]caption' })
