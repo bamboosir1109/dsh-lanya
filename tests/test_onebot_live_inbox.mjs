@@ -2443,6 +2443,29 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(quiet.accepted, true)
   assert.equal(quiet.next_review_at, a.now() + 120_000)
   await h.end(); await completion
+  // A due retry or explicit short review can still see the same recent row.
+  // Once it has already been reviewed, it should not keep the short cadence.
+  h.advance(60_000)
+  const repeated = a.dispatchObservationOnce({ ...event, event_id: 'fixture-repeat-group-topic', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /an actual shared topic/)
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  await h.end(); await repeated
+  await h.receive('a new contribution on the same topic')
+  const newTopic = a.dispatchObservationOnce({ ...event, event_id: 'fixture-new-group-remark', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /a new contribution on the same topic/)
+  await h.receive('arrived after prompt assembly')
+  assert.equal((await h.decide('defer')).next_review_at, a.now() + 120_000)
+  await h.end(); await newTopic
+  const group = await h.state()
+  const unseen = group.recent.find(row => row.text === 'arrived after prompt assembly')
+  assert.ok(unseen)
+  assert.equal(group.reviewedMessages.has(unseen.messageId), false)
   h.advance(120_001)
   const quietOpportunity = a.dispatchObservationOnce({ ...event, event_id: 'fixture-quiet-group-cadence', created_at: a.now() })
   for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
