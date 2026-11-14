@@ -737,14 +737,20 @@ export class OneBotDecisionAdapter {
         try {
           const list = this.intentPlanner.rows(await this.intentPlanner.readAction('get_friend_list', {}))
           if (!ready()) return
+          const mapped = new Set(window.scopes)
           const friends = new Set()
+          let added = 0
           for (const row of list) {
             const scope = 'private:' + String(row?.user_id)
-            if (this.bridge.chats.has(scope) || !privateAllowed(scope)) continue
+            if (friends.has(scope) || !privateAllowed(scope)) continue
+            if (!mapped.has(scope)) {
+              const needsChat = !this.bridge.chats.has(scope)
+              if (needsChat && added >= 24) continue
+              if (needsChat) added++
+              window.scopes.push(scope)
+            }
             friends.add(scope)
-            if (friends.size === 24) break
           }
-          window.scopes.push(...friends)
           window.friends = friends
         } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
       }
@@ -766,7 +772,11 @@ export class OneBotDecisionAdapter {
         }
         try {
           const state = await this.policy.snapshot(scope)
-          if (state ? state.mode !== 'open' : !group && !newScope) return
+          if (state && state.mode !== 'open') return
+          if (!state && !group && !window.friends?.has(scope)) {
+            if (!window.friends) window.scopes.push(scope)
+            return
+          }
           if (!canStage()) { window.scopes.push(scope); return }
           const owner = await this.trustedOwner(scope)
           if (!canStage()) { window.scopes.push(scope); return }
