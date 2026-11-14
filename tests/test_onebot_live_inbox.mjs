@@ -1054,6 +1054,61 @@ test('an inline draft removed by egress can be rewritten without consuming its d
   await h.end()
 })
 
+test('a lost budget reservation response can be recovered without losing the live reply', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+  const reservations = []
+  a.budgetProvider = async request => {
+    if (request.operation === 'reserve') {
+      reservations.push(request)
+      if (reservations.length === 1) throw new Error('synthetic lost reservation response')
+    }
+    return provider(request)
+  }
+  await h.receive('question with a transient ledger failure'); h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer without delay from model retries' })).sent, true)
+  await h.end()
+  assert.equal(reservations.length, 2)
+  assert.deepEqual(reservations[0], reservations[1])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a live reply blocked before any send by budget errors gets one recovery after the ledger returns', async t => {
+  for (const operation of ['reserve', 'check']) await t.test(operation, async t => {
+    const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+    const attempts = []
+    a.budgetProvider = async request => {
+      attempts.push(request.operation)
+      if (request.operation === operation) throw new Error('synthetic temporary budget database failure')
+      return provider(request)
+    }
+    await h.receive('question retained for a later reply'); h.start()
+    assert.equal((await h.preStep()).kind, 'enter')
+    let concluded = 0
+    const result = await h.tools.get('qq_decide').execute({ verdict: 'reply', text: 'cannot send yet' },
+      { ...h.exec(), concludeTurn: () => { concluded++ } })
+    assert.equal(result.reason, 'budget_unavailable')
+    assert.equal(result.sent, false)
+    assert.equal(concluded, 1)
+    await h.end()
+    assert.equal(attempts.filter(item => item === operation).length, operation === 'reserve' ? 2 : 1)
+    if (operation === 'reserve') assert.ok(!attempts.includes('check'))
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    a.budgetProvider = provider
+    h.agent.status = 'idle'
+    a.startRequested = true
+    h.advance(60_000)
+    await a.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /question retained for a later reply/)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'one reply after recovery' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('inline closing group reply returns to listening and blocks a second operation in the same turn',async t=>{
   const h=await listeningGroup(t);await h.mention();h.start();await h.preStep()
   const result=await h.decide('reply',{text:'closing reply',group_conversation:'end'})

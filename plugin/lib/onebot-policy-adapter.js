@@ -2346,20 +2346,29 @@ export class OneBotDecisionAdapter {
         ? identity(owner.workspace_key, owner.agent_key, scope, binding.origin, binding.messageId, 'reply-review', binding.recoveryRevision)
         : identity(owner.workspace_key, owner.agent_key, scope, binding.origin, binding.messageId),
       instance_id: this.budgetInstance, budget_contract: BUDGET_CONTRACT })
-    let result
-    try { result = await this.budgetProvider({ ...request, operation: 'reserve', meter_available: Boolean(this.costMeter(chat.agent)) }) }
+    const reserve = { ...request, operation: 'reserve', meter_available: Boolean(this.costMeter(chat.agent)) }
+    let result, reserveUnavailable = false
+    try { result = await this.budgetProvider(reserve) }
     catch (error) {
       if (binding.origin !== 'live') throw new Error('Autonomous budget unavailable; dispatch refused')
-      // Permit only the human's same-agent control decision and local context.
-      // No missing ledger/configuration is interpreted as free social actions.
-      result = { allowed: true, category: scope.startsWith('private:') ? 'private' : 'group',
-        limited: true, decision_only: true, reason: 'budget_unavailable' }
+      // Same turn and process identity, so a committed but lost receipt is
+      // recovered by the ledger without a second allocation.
+      this.diagnose(scope, binding.messageId, 'budget_reserve_retry', { reason: 'budget_unavailable' })
+      try { result = await this.budgetProvider(reserve) }
+      catch {
+        // The human can still change silence or read local context. A missing
+        // reservation receipt cannot authorize a reply.
+        reserveUnavailable = true
+        result = { allowed: true, category: scope.startsWith('private:') ? 'private' : 'group',
+          limited: true, decision_only: true }
+      }
     }
     if (result?.allowed !== true) throw new PolicyDeliveryError('suppressed', typeof result?.reason === 'string' ? result.reason : 'budget_unavailable')
     const category = binding.origin === 'observation' ? 'autonomy' : scope.startsWith('private:') ? 'private' : 'group'
     if (result.category !== category || typeof result.limited !== 'boolean' || typeof result.decision_only !== 'boolean') throw new Error('Invalid budget reservation receipt')
     const budget = Object.freeze({ request, category: result.category, limited: result.limited === true,
-      decisionOnly: result.decision_only === true, state: result.state && Object.freeze(Object.fromEntries(
+      decisionOnly: result.decision_only === true, reserveUnavailable,
+      state: result.state && Object.freeze(Object.fromEntries(
         ['spent_cny', 'reserved_cny', 'remaining_cny', 'exhausted', 'unknown_count'].map(key => [key, result.state[key]]))) })
     if (context.binding !== binding) throw new Error('Budget binding changed during reservation')
     context.binding = Object.freeze({ ...binding, budget })
@@ -2368,8 +2377,16 @@ export class OneBotDecisionAdapter {
 
   async checkBudget(record) {
     if (!this.budgetEnabled) return { allowed: true, reason: 'budget_not_configured' }
-    if (!record?.binding?.budget) return { allowed: false, reason: 'budget_binding_missing' }
-    const value = await this.budgetProvider({ ...record.binding.budget.request, operation: 'check' })
+    const budget = record?.binding?.budget
+    if (!budget) return { allowed: false, reason: 'budget_binding_missing' }
+    if (budget.reserveUnavailable) return { allowed: false, reason: 'budget_unavailable' }
+    let value
+    try { value = await this.budgetProvider({ ...budget.request, operation: 'check' }) }
+    catch {
+      const { scope, messageId } = record.binding
+      this.diagnose(scope, messageId, 'blocked', { reason: 'budget_unavailable', turn: record.turn })
+      return { allowed: false, reason: 'budget_unavailable' }
+    }
     if (typeof value?.allowed !== 'boolean' || typeof value.reason !== 'string') throw new Error('Invalid budget gate receipt')
     return value
   }
@@ -2377,7 +2394,7 @@ export class OneBotDecisionAdapter {
   async settleBudget(chat, record, event) {
     const budget = record.binding?.budget || record.reservation
     if (!budget) return
-    const unknown = () => this.budgetProvider({ ...budget.request, operation: 'unknown' })
+    const unknown = () => budget.reserveUnavailable ? undefined : this.budgetProvider({ ...budget.request, operation: 'unknown' })
     const end = event.seq, start = record.budgetStartSeq
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) { await unknown(); return }
     const meter = this.costMeter(chat.agent)
@@ -2416,11 +2433,13 @@ export class OneBotDecisionAdapter {
     if (!['idle', 'defer', 'silence', 'resume'].includes(args.verdict)) {
       const budget = await this.checkBudget(record)
       if (!budget.allowed) {
-        if (args.text !== undefined) {
-          if (typeof exec.concludeTurn === 'function') exec.concludeTurn()
-          return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null, inline_text: true, sent: false }
+        const inactiveLedger = budget.reason === 'budget_unavailable' && record.binding.origin === 'live'
+        if (inactiveLedger) {
+          this.diagnose(record.binding.scope, record.binding.messageId, 'delivery_refused', { reason: budget.reason, turn: record.turn })
         }
-        return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null }
+        if ((args.text !== undefined || inactiveLedger) && typeof exec.concludeTurn === 'function') exec.concludeTurn()
+        return { accepted: false, reason: budget.reason, can_send: false, next_review_at: null,
+          ...(args.text !== undefined ? { inline_text: true, sent: false } : {}) }
       }
       if (this.captureExec(exec) !== record) throw new PolicyDeliveryError('suppressed', 'stale_budget_turn')
     }
