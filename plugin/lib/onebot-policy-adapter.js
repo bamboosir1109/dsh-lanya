@@ -993,10 +993,11 @@ export class OneBotDecisionAdapter {
             if (body.startsWith('/')) continue
             const media = historyMediaKinds(row.message)
             if (!body && !media.length) continue
+            const missingAttachment = body && row.message.some(segment => historySupplement.has(segment?.type))
+              ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
             const text = !body ? '[收到' + media.join('、') + '，内容未加载]'
-              : row.message.some(segment => historySupplement.has(segment?.type))
-                ? body + '\n[补查只保留了新写的文字，引用或附件未展开]' : body
-            if (text.length <= 2000) receipts.set(messageId, { messageId, at, text, sender })
+              : excerptReplyEvidence(body, (group ? 1900 : 2000) - missingAttachment.length) + missingAttachment
+            receipts.set(messageId, { messageId, at, text, sender })
           }
           const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
           if (batch.length) {

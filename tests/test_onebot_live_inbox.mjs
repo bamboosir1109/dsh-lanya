@@ -1327,7 +1327,7 @@ function backendFixture(h, provider='snowluma') {
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'mixed friend history', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
+  for (const scenario of ['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
     'live arrived', 'later own message', 'same-second own message', 'same-second quoted own message',
     'same-second quote with another own message', 'same-second quote to wrong peer', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
@@ -1371,6 +1371,11 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
           row(at + 7, 18, '', { message: [{ type: 'reply', data: { id: 11 } }] }),
           row(at + 8, 19, '', { target_id: 444, message: [{ type: 'image', data: { file: 'foreign-attachment' } }] }))
       }
+      if (scenario === 'long history') {
+        rows[2].message = [{ type: 'text', data: { text: 'Can we use this draft? ' + 'detail '.repeat(400) + ' What should I shorten?' } },
+          { type: 'reply', data: { id: '11', text: 'unverified preview' } },
+          { type: 'image', data: { file: 'unavailable-image' } }]
+      }
       if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
       if (scenario === 'same-second own message') {
         rows[2].message_seq = 22
@@ -1408,7 +1413,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     const expectedReads = expires ? 0 : retries ? 2 : 1
     assert.equal(historyReads, expectedReads)
     const quotedOwn = scenario === 'same-second quoted own message'
-    if (!retries && !quotedOwn && !['new', 'mixed friend history', 'disconnect second', 'busy then idle'].includes(scenario)) {
+    if (!retries && !quotedOwn && !['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return
@@ -1417,9 +1422,15 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     const mixed = scenario === 'mixed friend history'
     const supplement = mixed ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
     const media = mixed ? '\n\n[收到图片、语音，内容未加载]' : ''
-    assert.equal(state.current.replyReview.text, quotedOwn
-      ? 'second missed question\n[补查只保留了新写的文字，引用或附件未展开]'
-      : 'first missed question' + supplement + '\n\nsecond missed question' + supplement + media)
+    if (scenario === 'long history') {
+      assert.match(state.current.replyReview.text,
+        /first missed question[\s\S]*Can we use this draft\?[\s\S]*较长的消息已节选[\s\S]*What should I shorten\?[\s\S]*附件未展开/)
+      assert.doesNotMatch(state.current.replyReview.text, /unverified preview|unavailable-image/)
+    } else {
+      assert.equal(state.current.replyReview.text, quotedOwn
+        ? 'second missed question\n[补查只保留了新写的文字，引用或附件未展开]'
+        : 'first missed question' + supplement + '\n\nsecond missed question' + supplement + media)
+    }
     assert.equal(state.current.messageId, mixed ? '16' : '-12')
     assert.equal(h.pending.length, 0, 'history is staged without native live dispatch')
     await h.receive('late event', { message_id: mixed ? 16 : -12 })
