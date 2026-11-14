@@ -2584,7 +2584,14 @@ test('a verified group opportunity refreshes stale listening context without mak
 
 test('expired live group discussion remains a shared-interest clue if platform history is empty', async t => {
   const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
-  await h.receive('people discussing pixel art')
+  await h.receive('people discussing pixel art', { message_id: 641, user_id: 204 })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action !== 'get_msg' ? call(action, params) : ({ message_id: 641, group_id: 303, message_type: 'group',
+    sender: { user_id: 204 }, message: [{ type: 'text', data: { text: 'people discussing pixel art' } }] })
+  await h.receive('try a teacup next', { message_id: 642, message: [
+    { type: 'reply', data: { id: '641' } }, { type: 'at', data: { qq: '204' } },
+    { type: 'text', data: { text: 'try a teacup next' } },
+  ] })
   await h.receive('a question directed to another member', { message: [
     { type: 'at', data: { qq: '208' } }, { type: 'text', data: { text: 'a question directed to another member' } }] })
   h.advance(11 * 60_000)
@@ -2593,9 +2600,14 @@ test('expired live group discussion remains a shared-interest clue if platform h
   await h.opportunity(); h.start(); await h.preStep()
   const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.deepEqual(observed.recent, [])
-  assert.deepEqual(observed.earlier_topics, [{ text: 'people discussing pixel art', age_seconds: 660 }])
+  assert.deepEqual(observed.earlier_topics, [
+    { text: 'people discussing pixel art', age_seconds: 660 },
+    { text: 'try a teacup next', quoted_text: 'people discussing pixel art', age_seconds: 660 },
+  ])
   assert.doesNotMatch(h.prompt(), /a question directed to another member/)
+  assert.equal((await h.decide('reply', { text: 'A teacup would fit a tiny canvas well' })).sent, true)
   await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   h.advance(6 * 60 * 60_000)
   assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
 })

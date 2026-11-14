@@ -1403,11 +1403,16 @@ export class OneBotDecisionAdapter {
           at_targets: address?.explicit_at_ids?.slice(0, 8) ?? [],
           quoted_speaker: quotedSpeaker,
           addressed_to_bot: addressed }
-        if (!addressed && Array.isArray(inbound.segments) && inbound.segments.length && inbound.segments.every(historyTextSegment)) {
-          const text = row.text.trim()
+        const segments = inbound.segments
+        const memberExchange = quoted && !quoted.addressed_to_bot && quotedSpeaker !== this.deps.connection?.selfId &&
+          quotedSpeaker !== this.deps.config.botQQ && quotedText && !quotedText.startsWith('/')
+        if (!addressed && Array.isArray(segments) && segments.length &&
+            (segments.every(historyTextSegment) || memberExchange && segments.every(historyDiscussionSegment))) {
+          const text = segments.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
           if (text && !text.startsWith('/')) {
             const previous = (group.liveTopics || []).filter(topic => topic.messageId !== row.messageId)
-            group.liveTopics = [...previous, { messageId: row.messageId, at: row.at, text: text.slice(0, 320).toWellFormed() }]
+            group.liveTopics = [...previous, { messageId: row.messageId, at: row.at,
+              text: text.slice(0, 320).toWellFormed(), ...(memberExchange ? { quoted_text: row.quoted_text } : {}) }]
               .sort((a, b) => a.at - b.at).slice(-12)
           }
         }
