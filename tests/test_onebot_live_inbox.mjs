@@ -2306,8 +2306,10 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
     botReply.message.push({ type: 'reply', data: { id: '7' } })
     const mixedTarget = row(12, 675, 'a stale question with a bot mention')
     mixedTarget.message.push({ type: 'reply', data: { id: '3' } }, { type: 'at', data: { qq: '999' } })
+    const quoted = row(3, 800, 'group interest two')
+    quoted.message.push({ type: 'reply', data: { id: '20' } }, { type: 'at', data: { qq: '204' } })
     return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
-      row(3, 800, 'group interest two'), row(4, 700, 'group interest three'),
+      row(20, 24_000, 'outdated nested quote'), quoted, row(4, 700, 'group interest three'),
       row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
       row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget,
       row(13, 180, '', { message: [{ type: 'image', data: { file: 'unloaded-fixture' } }] }),
@@ -2328,7 +2330,7 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
   assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest two', 'group interest three', 'verified member exchange'])
   assert.equal(group.earlier_topics[2].quoted_text, 'group interest two')
   assert.deepEqual(group.own_recent_messages.map(row => row.text), ['own announcement'])
-  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|outside the .* bound|unloaded-fixture|foreign-fixture/)
+  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|outside the .* bound|outdated nested quote|unloaded-fixture|foreign-fixture/)
   assert.match(prompt, /Do not guess what an attachment contains/)
   assert.match(prompt, /concrete question can start a new exchange/)
   await h.receive('live group topic')

@@ -183,6 +183,7 @@ const groupHistorySender = row => {
 }
 const historyTextSegment = segment => segment?.type === 'text' && typeof segment.data?.text === 'string'
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
+const historyDiscussionSegment = segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply'
 const historySupplement = new Set(['reply', 'image', 'record', 'face', 'video', 'file', 'forward'])
 const reconnectMediaLabel = new Map([['image', '图片'], ['record', '语音'], ['video', '视频'], ['file', '文件'], ['forward', '合并转发']])
 const historyMediaKinds = segments => [...new Set(segments
@@ -1232,11 +1233,13 @@ export class OneBotDecisionAdapter {
         if (!text) continue
         const plainTopic = row.message.every(historyTextSegment)
         const memberExchange = quoted_speaker && quoted_speaker !== bot && !targets.includes(bot) &&
-          row.message.every(segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply')
+          row.message.every(historyDiscussionSegment)
         if (plainTopic || memberExchange) {
           const original = memberExchange && quoted.time * 1000 >= now - GROUP_TOPIC_LOOKBACK_MS &&
-            Array.isArray(quoted.message) && quoted.message.length <= 12 && quoted.message.every(historyTextSegment)
-            ? quoted.message.map(segment => segment.data.text).join('').trim() : ''
+            Array.isArray(quoted.message) && quoted.message.length <= 12 && quoted.message.every(historyDiscussionSegment) &&
+            !quoted.message.some(segment => historyMention(segment) && String(segment.data.qq) === bot) &&
+            groupHistoryQuotedSpeaker(quoted, rows) !== bot
+            ? quoted.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim() : ''
           topics.set(messageId, { at, text: text.slice(0, 320).toWellFormed(),
             ...(original && !original.startsWith('/') && { quoted_text: original.slice(0, 160).toWellFormed() }) })
         }
