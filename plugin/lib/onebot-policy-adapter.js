@@ -2042,6 +2042,15 @@ export class OneBotDecisionAdapter {
         this.diagnose(record.binding.scope, record.binding.messageId, 'blocked', { reason: 'superseded_live_input', turn: request.turn })
         return { kind: 'reject', reason: 'superseded_live_input' }
       }
+      if (record.binding.recoveryRevision && request.step === 1 && !record.nativeStepEntered &&
+          !this.backendGuard.edge(this.deps.connection, record.binding.backendStamp)) {
+        // The selected account/provider is still current, but its socket can
+        // become unavailable after the historical reply was queued.
+        const reason = 'backend_connection_changed'
+        record.unstartedReplyReview = Object.freeze({ binding: record.binding, signal: request.signal, reason })
+        this.diagnose(record.binding.scope, record.binding.messageId, 'blocked', { reason, turn: request.turn })
+        return { kind: 'reject', reason }
+      }
       const restAt = this.now(), restReason = this.autonomyBlockReason(record.binding, restAt)
       if (restReason) {
         record.nativeRestInterrupted = Object.freeze({ binding: record.binding, turn: request.turn,
@@ -2085,9 +2094,10 @@ export class OneBotDecisionAdapter {
         if (binding.recoveryRevision && local.binding.budget?.reserveUnavailable && request.step === 1) {
           // A review has no live control authority. Keep its one chance to
           // answer until a real model step can run with a verified reservation.
-          record.unstartedBudgetReview = Object.freeze({ binding: record.binding, signal: request.signal })
-          this.diagnose(binding.scope, binding.messageId, 'blocked', { reason: 'budget_unavailable', turn: request.turn })
-          return { kind: 'reject', reason: 'budget_unavailable' }
+          const reason = 'budget_unavailable'
+          record.unstartedReplyReview = Object.freeze({ binding: record.binding, signal: request.signal, reason })
+          this.diagnose(binding.scope, binding.messageId, 'blocked', { reason, turn: request.turn })
+          return { kind: 'reject', reason }
         }
       }
       const admissionAt = this.now(), afterAdmissionRest = this.autonomyBlockReason(record.binding, admissionAt)
@@ -3044,14 +3054,14 @@ export class OneBotDecisionAdapter {
         const evidence = replyEvidenceWithLateText(record.baseReplyEvidence, entry.lateReplyText)
         if (evidence !== record.replyEvidenceText) this.persistReplyInput(entry.binding, evidence, entry.sender, false, record.replyEvidenceText)
       }
-      const unstarted = record.unstartedBudgetReview
+      const unstarted = record.unstartedReplyReview
       if (unstarted && event.data.reason?.kind === 'blocked' && unstarted.binding === record.binding &&
           !unstarted.signal?.aborted && !record.claimConflict && !record.nativeStepEntered &&
           !record.decision && !record.ticket && !record.outcomes.length) {
         const { messageId, revision, owner } = unstarted.binding
         try {
           if (await this.policy.releaseUnqueuedReplyReview({ scope, messageId, expectedRevision: revision, owner })) {
-            this.diagnose(scope, messageId, 'reply_review_deferred', { reason: 'budget_unavailable', turn: record.turn })
+            this.diagnose(scope, messageId, 'reply_review_deferred', { reason: unstarted.reason, turn: record.turn })
           }
         } catch (error) { this.log('warn', 'reply_review_release_failed:' + error.name) }
       } else {
