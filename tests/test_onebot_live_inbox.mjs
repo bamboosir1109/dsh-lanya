@@ -4230,8 +4230,11 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
     ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
     ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
     ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
+    ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 20, 20],
+    ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 9, 9],
+    ['group-defer-bound', 0.1, 10, 34], ['group-defer-fresh', 0.1, 3, 34],
   ]
-  for (const [scenario, spent, reviewMinutes] of cases) await t.test(scenario, async t => {
+  for (const [scenario, spent, reviewMinutes, requestedMinutes = 1] of cases) await t.test(scenario, async t => {
     const group = scenario.startsWith('group-')
     const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
     const adapter = h.bridge.lanyaPolicy
@@ -4261,9 +4264,9 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
     let decision
     h.agent.step = async () => {
       if (group) adapter.nativeCapabilityContext(h.agent)
-      if (scenario === 'group-fresh') await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
-      const args = { next_review_at: adapter.now() + 60_000 }
-      const verdict = group || scenario === 'primary-idle' ? 'idle' : scenario === 'primary-defer' ? 'defer' : 'tool_action'
+      if (scenario.endsWith('-fresh')) await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
+      const args = { next_review_at: adapter.now() + requestedMinutes * 60_000 }
+      const verdict = scenario.includes('-defer') ? 'defer' : group || scenario === 'primary-idle' ? 'idle' : 'tool_action'
       decision = await h.decide(verdict, args)
       return { kind: 'completed' }
     }

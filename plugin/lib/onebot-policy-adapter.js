@@ -2502,12 +2502,20 @@ export class OneBotDecisionAdapter {
       const activeGroup = group && this.recentGroupContext(scope, owner, now)
         .some(row => row.at > now - cadence.intervalMs && !reviewedNow.has(row.messageId) &&
           !group.reviewedMessages?.has(row.messageId) && sharedGroupRemark(row))
-      const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, 60 * 60_000) : cadence.intervalMs
+      const maxWait = 60 * 60_000
+      const interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, maxWait) : cadence.intervalMs
       const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
       // An idle personal turn also has no new work to revisit early. A defer
       // can still name an earlier useful follow-up, subject to budget pacing.
       const keepQuietInterval = quietGroup || personal && args.verdict === 'idle'
       nextReview = requestedReview === null || keepQuietInterval ? now + interval : Math.min(requestedReview, now + interval)
+      // A deliberate pause should survive a short recurring interval. Keep
+      // the normal cadence for an active group. For a quiet group, keep the
+      // explicit pause inside the recent-topic window when cadence permits.
+      if (args.verdict === 'defer' && requestedReview !== null && (personal || quietGroup)) {
+        const pauseLimit = quietGroup ? Math.max(interval, GROUP_CONTEXT_MS) : maxWait
+        nextReview = Math.max(nextReview, Math.min(requestedReview, now + pauseLimit))
+      }
       // Leave room in the shared budget for later opportunities. Fresh group
       // discussion retains its cadence even when personal spending runs ahead.
       const budget = record.binding.budget
@@ -2518,9 +2526,9 @@ export class OneBotDecisionAdapter {
           const dayProgress = (now - wake) / (16 * 3600_000)
           const budgetUsed = spent / (spent + reserved + remaining)
           if (!resting && budgetUsed > dayProgress + 0.25) {
-            nextReview = now + Math.min(cadence.intervalMs * 4, 60 * 60_000)
+            nextReview = Math.max(nextReview, now + Math.min(cadence.intervalMs * 4, maxWait))
           } else if (!resting && personal && budgetUsed > dayProgress + 0.1) {
-            nextReview = now + Math.min(cadence.intervalMs * 2, 60 * 60_000)
+            nextReview = Math.max(nextReview, now + Math.min(cadence.intervalMs * 2, maxWait))
           }
         }
       }
