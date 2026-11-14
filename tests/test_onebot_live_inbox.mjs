@@ -4449,12 +4449,13 @@ test('other native admission failures reject rather than claim the unresolved-re
 
 test('autonomous budget pacing saves headroom for later activity and fresh group discussion', async t => {
   const cases = [
-    ['primary-ahead', 1.5, 12], ['primary-slightly-ahead', 0.6, 6],
+    ['primary-ahead', 1.5, 36], ['primary-ahead-short-cadence', 1.5, 24],
+    ['primary-ahead-long-cadence', 1.5, 60], ['primary-slightly-ahead', 0.6, 6],
     ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
     ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
     ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
     ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
-    ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 20, 20],
+    ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 36, 20],
     ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 9, 9],
     ['group-defer-bound', 0.1, 10, 34], ['group-defer-fresh', 0.1, 3, 34],
   ]
@@ -4475,6 +4476,8 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
     adapter.runtimeCapabilities = async (...args) => {
       const value = await capabilities(...args)
       Object.assign(value.tools.entertainment, { group_identity_valid: group, group_social: group })
+      if (scenario === 'primary-ahead-short-cadence') value.tools.entertainment.cadence.configured_opportunity_min = 2
+      if (scenario === 'primary-ahead-long-cadence') value.tools.entertainment.cadence.configured_opportunity_min = 10
       return value
     }
     const budget = adapter.budgetProvider

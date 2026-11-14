@@ -2566,7 +2566,8 @@ export class OneBotDecisionAdapter {
           const dayProgress = (now - wake) / (16 * 3600_000)
           const budgetUsed = spent / (spent + reserved + remaining)
           if (!resting && budgetUsed > dayProgress + 0.25) {
-            nextReview = Math.max(nextReview, now + Math.min(cadence.intervalMs * 4, maxWait))
+            const interval = cadence.intervalMs * (personal ? 12 : 4)
+            nextReview = Math.max(nextReview, now + Math.min(interval, maxWait))
           } else if (!resting && personal && budgetUsed > dayProgress + 0.1) {
             nextReview = Math.max(nextReview, now + Math.min(cadence.intervalMs * 2, maxWait))
           }
