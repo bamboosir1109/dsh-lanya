@@ -722,7 +722,7 @@ export class OneBotDecisionAdapter {
       if (!window.scopes) {
         window.scopes = [...this.bridge.chats.keys()].filter(privateAllowed)
         const group = this.config.contextualGroupScope
-        if (this.contextualGroupEnabled(group) && this.bridge.chats.has(group) &&
+        if (this.contextualGroupEnabled(group) &&
             Number.isSafeInteger(Number(group.slice(6))) && this.groupReplyReviewAllowed(group)) {
           window.scopes.unshift(group)
         }
@@ -751,16 +751,16 @@ export class OneBotDecisionAdapter {
           : (!group || this.contextualGroupEnabled(scope)) && this.replyReviewAllowed(scope, sender ?? peer)
         if (!allowed()) return
         const chat = this.bridge.chats.get(scope)
-        const newFriend = !chat && window.friends?.has(scope)
+        const newScope = !chat && (group || window.friends?.has(scope))
         const canStage = (sender) => ready() && this.bridge.chats.get(scope) === chat &&
-          (newFriend ? !this.foregroundBusy(scope) : this.replyReviewIdle(scope, epoch)) && allowed(sender)
+          (newScope ? !this.foregroundBusy(scope) : this.replyReviewIdle(scope, epoch)) && allowed(sender)
         if (!canStage()) {
-          if (chat || newFriend) window.scopes.push(scope)
+          if (chat || newScope) window.scopes.push(scope)
           return
         }
         try {
           const state = await this.policy.snapshot(scope)
-          if (state ? state.mode !== 'open' : !newFriend) return
+          if (state ? state.mode !== 'open' : !group && !newScope) return
           if (!canStage()) { window.scopes.push(scope); return }
           const owner = await this.trustedOwner(scope)
           if (!canStage()) { window.scopes.push(scope); return }

@@ -2121,6 +2121,70 @@ test('reconnect recovers only a real configured-group mention as historical memb
   })
 })
 
+test('verified reconnect can recover the first real mention before a group has local reply state', async t => {
+  for (const scenario of ['no chat', 'no policy', 'ordinary only', 'live wins']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    if (scenario === 'no chat' || scenario === 'ordinary only') h.bridge.chats.delete(scope)
+    h.agent.status = 'idle'
+    assert.equal(await a.policy.snapshot(scope), null)
+    const ensure = h.bridge.ensureChat.bind(h.bridge)
+    let opened = 0
+    h.bridge.ensureChat = async requested => {
+      assert.equal(requested, scope)
+      if (!h.bridge.chats.has(scope)) {
+        opened++
+        h.bridge.chats.set(scope, h.chat)
+      }
+      return ensure(requested)
+    }
+    a.noteConnectionStatus(false)
+    const at = Math.floor(a.now() / 1000) + 1
+    h.advance(90_000)
+    a.noteConnectionStatus(true)
+    const call = h.deps.connection.call
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      if (scenario === 'live wins') await h.mention()
+      const text = { type: 'text', data: { text: 'first group question' } }
+      const mention = { type: 'at', data: { qq: '999' } }
+      return { messages: [{ message_type: 'group', group_id: 303, message_id: 519, time: at,
+        sender: { user_id: 202 }, message: scenario === 'ordinary only' ? [text] : [mention, text] }] }
+    }
+    a.startRequested = true
+    await a.recoverReconnectHistory()
+    assert.equal(opened, 0, 'reading platform history never creates a native chat')
+    const state = await a.policy.snapshot(scope)
+    if (scenario === 'ordinary only') {
+      assert.equal(state, null)
+      assert.equal(h.pending.length, 0)
+      assert.equal((await h.state()).recent[0]?.text, 'first group question')
+      await a.reviewUnansweredInputs()
+      assert.equal(opened, 0)
+      return
+    }
+    if (scenario === 'live wins') {
+      assert.ok(!state.seen.some(item => item.messageId === '519'))
+      assert.equal(h.pending.length, 1)
+      return
+    }
+    assert.equal(state.current.messageId, '519')
+    assert.equal(state.current.controlAllowed, false)
+    assert.equal(state.current.replyReview.text, 'first group question')
+    assert.equal(h.pending.length, 0)
+    await a.reviewUnansweredInputs()
+    assert.equal(opened, scenario === 'no chat' ? 1 : 0)
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('reply', { text: 'answer to the first group question' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('verified reconnect restores recent group text as listening context without opening a live turn', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   backendFixture(h)

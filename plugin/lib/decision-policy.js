@@ -557,7 +557,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         : batch.map(receipt => receipt.text).join('\n\n')
       return transaction(state => {
         const existing = scopeState(state, scope), at = now()
-        if ((!existing && (group || expectedRevision !== 0)) ||
+        if ((!existing && expectedRevision !== 0) ||
             (existing && (existing.revision !== expectedRevision || existing.mode !== 'open')) ||
             replyReviewable(existing, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
             existing?.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
