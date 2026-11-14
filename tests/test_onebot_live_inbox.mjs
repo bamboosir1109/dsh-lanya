@@ -3086,8 +3086,14 @@ test('restored shared group discussion survives a history batch dominated by per
   const history = [row(680, 'discussion from a different group', [], 404),
     row(681, 'would crosshatching work for pixel art?'), row(682, 'can you send the palette privately?', [mention]),
     row(683, 'please send it just to me', [{ type: 'reply', data: { id: '700' } }]),
-    ...Array.from({ length: 11 }, (_, i) => row(684 + i, 'a personal aside', [mention]))]
-  adapter.restoreRecentGroupText(scope, owner, history, adapter.now(), '999', true)
+    ...Array.from({ length: 6 }, (_, i) => row(684 + i, 'a personal aside', [mention]))]
+  for (let i = 0; i < 5; i++) {
+    await h.receive('a newer live aside', { message_id: 691 + i, message: [
+      mention, { type: 'text', data: { text: 'a newer live aside' } },
+    ] })
+  }
+  // Reconnect restores the recent passage without loading older topics.
+  adapter.restoreRecentGroupText(scope, owner, history, adapter.now(), '999')
   await h.opportunity(); h.start(); await h.preStep()
   const context = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.equal(context.recent.length, 12)

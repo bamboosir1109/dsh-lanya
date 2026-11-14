@@ -1365,15 +1365,15 @@ export class OneBotDecisionAdapter {
     const firstOrder = Math.min(0, ...local.map(row => row.historyOrder ?? row.arrival)) - recent.size
     const restored = [...recent.values()].map((row, i) => ({ ...row, arrival: firstOrder + i }))
     group.recent = [...local, ...restored].sort(orderGroupRows).slice(-12)
-    if (includeOlderTopics) {
-      const shared = new Map((group.sharedTopics || []).map(row => [row.messageId, row]))
-      for (const row of restored) {
-        if (!shared.has(row.messageId) && sharedGroupRemark(row) && row.text && !groupAttachmentPlaceholder.test(row.text)) {
-          shared.set(row.messageId, { messageId: row.messageId, at: row.at, text: row.text.slice(0, 320).toWellFormed(),
-            ...(row.quoted_text && { quoted_text: row.quoted_text }) })
-        }
+    const shared = new Map((group.sharedTopics || []).map(row => [row.messageId, row]))
+    for (const row of restored) {
+      if (!shared.has(row.messageId) && sharedGroupRemark(row) && row.text && !groupAttachmentPlaceholder.test(row.text)) {
+        shared.set(row.messageId, { messageId: row.messageId, at: row.at, text: row.text.slice(0, 320).toWellFormed(),
+          ...(row.quoted_text && { quoted_text: row.quoted_text }) })
       }
-      group.sharedTopics = [...shared.values()].sort((a, b) => a.at - b.at).slice(-12)
+    }
+    group.sharedTopics = [...shared.values()].sort((a, b) => a.at - b.at).slice(-12)
+    if (includeOlderTopics) {
       group.olderTopics = [...new Map([...(group.olderTopics || []).filter(row => row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
         .map(row => [row.messageId, row]), ...topics]).values()].sort((a, b) => a.at - b.at).slice(-3)
       group.ownTopics = [...own.values()].sort((a, b) => a.at - b.at).slice(-3)
