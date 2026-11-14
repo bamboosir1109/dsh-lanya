@@ -3103,6 +3103,32 @@ test('a quiet group can find older shared interests while recently reviewed mess
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('a shared remark that nearly ages out during a quiet wait still reaches the autonomous group review', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const block = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  await h.receive('an earlier tip already considered', { message_id: 654 })
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal(block().recent[0].new_shared_remark, true)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  h.advance(1_000)
+  await h.receive('an unread tip for drawing steam', { message_id: 655 })
+  const owner = await adapter.trustedOwner(scope)
+  h.advance(10 * 60_000 + 15_000)
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.deepEqual(block().recent, [])
+  assert.deepEqual(block().new_shared_topics, [{ text: 'an unread tip for drawing steam', age_seconds: 615 }])
+  assert.equal(block().earlier_topics, undefined)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner), /an unread tip/)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /new_shared_topics/)
+  h.advance(1_000)
+  await h.receive('an older unread comment', { message_id: 656 })
+  h.advance(15 * 60_000 + 1)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /new_shared_topics/)
+})
+
 test('personal asides cannot displace an unreviewed shared group topic from autonomous context', async t => {
   const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await adapter.trustedOwner(scope)
