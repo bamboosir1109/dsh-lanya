@@ -708,6 +708,8 @@ export class OneBotDecisionAdapter {
       }
       if (phase === 'queued' && fields.coalesced === true && typeof detail.replaced_input === 'string' &&
           /^[a-f0-9]{24}$/.test(detail.replaced_input)) fields.replaced_input = detail.replaced_input
+      if (phase === 'reply_handoff' && typeof detail.prior_input === 'string' &&
+          /^[a-f0-9]{24}$/.test(detail.prior_input)) fields.prior_input = detail.prior_input
       if (phase === 'delivery' && fields.status === 'unknown' &&
           ['backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified'].includes(detail.transport_failure)) {
         fields.transport_failure = detail.transport_failure
@@ -1628,10 +1630,12 @@ export class OneBotDecisionAdapter {
     const claimed = unacknowledged || (interrupted ? active.claimedInput : null) || state.unansweredReply?.entry
     const carryReply = binding.origin === 'live' && !binding.recoveryRevision && sameReplyConversation(claimed, binding, role)
     // Carry an interrupted question as context. The current sender still owns the turn.
+    let carriedText
     if (carryReply) {
       const partial = (interrupted && active.claimedInput === claimed && active.inlineTextReceiptCount > 0) ||
         (stale?.entry === claimed && stale.partial)
-      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, replyHandoffText(claimed, partial)] })
+      carriedText = replyHandoffText(claimed, partial)
+      chunks.push({ revision: claimed.binding.revision, texts: [...claimed.history, carriedText] })
     }
     if (merge) chunks.push({ revision: previous.binding.revision, texts: [...previous.history, previous.originalText] })
     const history = [...new Set(chunks.sort((a, b) => a.revision - b.revision).flatMap(entry => entry.texts))]
@@ -1671,9 +1675,10 @@ export class OneBotDecisionAdapter {
     const sender = this.context.getStore()?.inbound?.userId
     const baseReplyEvidence = excerpt ? excerpt + '\n' + original : original
     const replyEvidenceText = replyEvidenceWithLateText(baseReplyEvidence, lateReplyText)
+    const priorInput = carriedText && excerpt.includes(carriedText) ? claimed.binding.messageId : null
     const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContacts,
       receivedAt, batchFirstAt, replyEvidenceText, arrival: current?.arrival, lateReplyText,
-      baseReplyEvidence,
+      baseReplyEvidence, priorInput,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
@@ -1939,6 +1944,7 @@ export class OneBotDecisionAdapter {
       record.claimedInput = entry
       record.completion = entry.binding.completion
       record.claimedId = message.id
+      let priorInput = entry.priorInput
       const handoff = state.unansweredReply
       if (handoff && entry.binding.origin === 'live' && !entry.binding.recoveryRevision &&
           entry.binding.revision > handoff.entry.binding.revision) {
@@ -1956,6 +1962,7 @@ export class OneBotDecisionAdapter {
             const groupContacts = latestGroupContacts([...earlier.groupContacts, ...entry.groupContacts])
             const lateReplyText = new Map([...earlierNotes, ...entry.lateReplyText].slice(-4))
             const excerpt = replyHistoryExcerpt(retained, groupContacts.filter(item => item.revision < entry.binding.revision))
+            if (!priorInput && excerpt.includes(text)) priorInput = earlier.binding.messageId
             record.claimedInput = Object.freeze({ ...entry, history: retained, groupContacts, lateReplyText,
               directGroupContact: groupContacts.length > 0 })
             if (!group || groupContacts.length || lateReplyText.size) {
@@ -1975,6 +1982,9 @@ export class OneBotDecisionAdapter {
       record.baseReplyEvidence ??= entry.baseReplyEvidence
       chat.activeTurnRole = entry.role
       this.diagnose(record.binding.scope, record.binding.messageId, 'claimed', { turn, revision: record.binding.revision })
+      if (priorInput) this.diagnose(record.binding.scope, record.binding.messageId, 'reply_handoff', {
+        prior_input: identity(record.binding.scope, priorInput).slice(0, 24),
+      })
     })
     // Claimed listeners are synchronous notifications, not awaited guards.
     // The native pre-step waterfall is awaited before entering the model.

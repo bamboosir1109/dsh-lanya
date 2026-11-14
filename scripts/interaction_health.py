@@ -18,7 +18,8 @@ LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
           'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged',
-          'group_history_staged', 'account_publication', 'intake_compaction'}
+          'group_history_staged', 'account_publication', 'intake_compaction', 'reply_handoff',
+          'budget_reserve_retry', 'reply_review_deferred'}
 TRANSPORT_FAILURES = ('backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified')
 
 
@@ -236,6 +237,12 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
                             raise ValueError('invalid_output_reference')
                         acknowledged_outputs[key].add(output)
                     acknowledged.add(key)
+                elif row['phase'] == 'reply_handoff':
+                    child = (row['scope'], row['input'])
+                    prior = row.get('prior_input')
+                    if not isinstance(prior, str) or prior == child[1] or not re.fullmatch('[a-f0-9]{24}', prior):
+                        raise ValueError('invalid_reply_handoff')
+                    replacements.append(((child[0], prior), child))
                 elif 'replaced_input' in row:
                     child = (row['scope'], row['input'])
                     parent = _replaced_input(row, child)
@@ -247,6 +254,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
 
     # Walk the durable replacements from newest to oldest. A replaced inbound
     # only gets batch evidence, since a send receipt proves no specific question was answered.
+    replacements = list(dict.fromkeys(replacements))
     ambiguous = {key for key, count in collections.Counter(parent for parent, _ in replacements).items() if count > 1}
     batch_outputs = {}
     for parent, child in reversed(replacements):

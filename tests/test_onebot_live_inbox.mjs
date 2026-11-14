@@ -630,12 +630,19 @@ test('member private burst carries an unanswered claimed question into the next 
   const h = await fixture(t), scope = 'private:202'
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
   h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
-  await h.receive('first question from member', { user_id: 202 })
+  await h.receive('first question from member', { user_id: 202, message_id: 501 })
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
-  await h.receive('newest detail from same member', { user_id: 202 })
+  await h.receive('newest detail from same member', { user_id: 202, message_id: 502 })
   assert.equal(h.pending.length, 1)
   assert.match(h.pending[0].content[0].text, /first question from member[\s\S]*historical context\.[\s\S]*newest detail from same member/)
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const rows = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  const handoff = rows.find(row => row.phase === 'reply_handoff')
+  const key = id => createHash('sha256').update(scope + '\0' + id).digest('hex').slice(0, 24)
+  assert.equal(handoff.prior_input, key('501'))
+  assert.equal(handoff.input, key('502'))
   await h.end()
 })
 

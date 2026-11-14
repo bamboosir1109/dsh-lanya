@@ -86,6 +86,28 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertNotIn(key(-1), json.dumps(report))
         self.assertNotIn('synthetic body', json.dumps(report))
 
+    def test_friend_audit_can_link_an_interrupted_question_to_a_confirmed_batch(self):
+        scope = 'private:101'
+        def key(message_id):
+            return hashlib.sha256((scope + '\0' + str(message_id)).encode()).hexdigest()[:24]
+        def diagnostic(phase, message_id, **extra):
+            return dict(schema='qq-interaction/v1', phase=phase, at=6200,
+                        scope=hashlib.sha256(scope.encode()).hexdigest()[:16], input=key(message_id), **extra)
+        rows = [dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                     message_id=message_id, target_id=target)
+                for message_id, sender, target in [(1, 101, 999), (2, 101, 999), (-1, 999, 101)]]
+        events = [diagnostic('received', 1), diagnostic('received', 2), diagnostic('budget_reserve_retry', 2),
+                  diagnostic('reply_review_deferred', 2), diagnostic('reply_handoff', 2, prior_input=key(1))]
+        def audit():
+            return module.compare_friend_ingress([scope], ['\n'.join(map(json.dumps, events)).encode()],
+                account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', audit()['counts'])
+        events.append(diagnostic('delivery', 2, status='sent', output=key(-1)))
+        report = audit()
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertEqual(report['counts']['friend_inputs_in_batch_with_reply_in_history'], 1)
+
     def test_friend_audit_checks_first_contacts_before_mapped_friends(self):
         mapped = {str(i) for i in range(101, 133)}
         checked = set()
