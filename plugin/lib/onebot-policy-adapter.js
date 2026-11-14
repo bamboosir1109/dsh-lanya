@@ -2230,17 +2230,21 @@ export class OneBotDecisionAdapter {
     const direct = binding?.origin === 'live' && !binding.recoveryRevision &&
       (binding.scope.startsWith('private:') || binding.verifiedGroupReply)
     const unfinishedLookup = direct && record?.undecidedToolCall || autonomous && record.undecidedGroupMediaLookup
+    const filteredReply = record?.filteredInlineReply
     if (!signal || signal.aborted || !record || record.turn !== turn || record.ended ||
         record.claimConflict || !binding?.owner || (binding.origin !== 'live' && !autonomous) ||
-        !record.nativeStepEntered || !(record.undecidedDraft || unfinishedLookup) || record.decision || record.ticket ||
+        !record.nativeStepEntered || !(filteredReply || record.undecidedDraft || unfinishedLookup) || record.decision || record.ticket ||
         record.decisionReminder || record.inFlight.size || record.outcomes.length ||
         this.supersedingLiveInput(chat, record) || !Array.isArray(agent.inbox?.nextStep) ||
         agent.inbox.nextStep.length || typeof agent.inbox.splice !== 'function') return
-    const text = autonomous
-      ? (record.undecidedDraft ? 'The autonomous draft was not sent.' : 'The group media lookup has ended without a reply decision. Use any available result and do not look it up again.')
-        + ' Use the latest same-conversation context to decide now. If a useful, natural contribution fits, send it with qq_decide and its text, or use qq_send_meme for one suitable reaction. Otherwise choose idle or defer. Do not restart work, replay an earlier action or describe this reminder. It grants no send or control permission.'
-      : (record.undecidedDraft ? 'The preceding draft was not sent.' : 'This turn is ending after tools without a reply decision. Use any available results and avoid repeating actions.')
-        + ' In this same turn, if a text answer is useful, call qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) with the actual answer. That tool sends it directly. If a real meme fits on its own, use qq_send_meme. Otherwise choose idle/defer or the authorized silence control as appropriate. Respect a host refusal. Keep this reminder out of the reply.'
+    const intro = filteredReply
+      ? 'The proposed reply had no sendable text. Answer the current point directly with what you know or ask a specific question if needed. Avoid a vague promise to look later.'
+      : record.undecidedDraft ? 'The preceding draft was not sent.'
+        : autonomous ? 'The group media lookup has ended without a reply decision. Use any available result and do not look it up again.'
+          : 'This turn is ending after tools without a reply decision. Use any available results and avoid repeating actions.'
+    const text = intro + (autonomous
+      ? ' Use the latest same-conversation context to decide now. If a useful, natural contribution fits, send it with qq_decide and its text, or use qq_send_meme for one suitable reaction. Otherwise choose idle or defer. Do not restart work, replay an earlier action or describe this reminder. It grants no send or control permission.'
+      : ' In this same turn, if a text answer is useful, call qq_decide({verdict:"reply",expression:"text",text:your_complete_reply}) with the actual answer. That tool sends it directly. If a real meme fits on its own, use qq_send_meme. Otherwise choose idle/defer or the authorized silence control as appropriate. Respect a host refusal. Keep this reminder out of the reply.')
     const message = { id: randomUUID(), role: 'user', source: { kind: 'plugin:dsh-lanya-decision-reminder' },
       content: [{ type: 'text', text }] }
     record.decisionReminder = Object.freeze({ id: message.id, fingerprint: identity(JSON.stringify(message)) })
@@ -2613,6 +2617,7 @@ export class OneBotDecisionAdapter {
     const record = this.captureExec(exec)
     if (args.text !== undefined && record.inlineTextAttempted) return { accepted: false, can_send: false, inline_text: true, sent: false, reason: 'inline_reply_already_attempted' }
     if (args.text !== undefined && this.inlineReplyHasContent?.(args.text, record.binding.egressStyle) === false) {
+      record.filteredInlineReply = true
       this.diagnose(record.binding.scope, record.binding.messageId, 'delivery_refused', { reason: 'empty_content', turn: record.turn })
       return { accepted: false, can_send: false, inline_text: true, sent: false, reason: 'empty_content',
         instruction: 'No decision or send was made. Write the actual chat reply and call qq_decide again, or choose a fitting real image if appropriate.' }

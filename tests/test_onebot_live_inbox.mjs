@@ -1190,6 +1190,40 @@ test('an inline draft removed by egress can be rewritten without consuming its d
   await h.end()
 })
 
+test('an empty inline draft gets one chance to answer without waiting for historical recovery', async t => {
+  for (const mode of ['private reply', 'group mention', 'repeated empty draft', 'explicit idle']) await t.test(mode, async t => {
+    const group = mode === 'group mention'
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    let steps = 0
+    h.agent.step = async () => {
+      ++steps
+      if (steps === 1 || mode === 'repeated empty draft') {
+        assert.equal((await h.decide('reply', { text: '我再去看。' })).reason, 'empty_content')
+        if (mode === 'explicit idle') assert.equal((await h.decide('idle')).accepted, true)
+      } else {
+        assert.equal((await h.decide('reply', { text: '第二段有字幕。' })).sent, true)
+      }
+      assert.ok(steps <= 2)
+      return { kind: 'completed' }
+    }
+    await h.receive('第二段有字幕吗', group ? {
+      message_type: 'group', group_id: 303, user_id: 202, sender: { user_id: 202, nickname: 'fixture' },
+      message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: '第二段有字幕吗' } }],
+    } : {})
+    await driverSettled(h)
+    assert.equal(steps, mode === 'explicit idle' ? 1 : 2)
+    const sends = h.calls.filter(call => /^send_/.test(call.action))
+    assert.equal(sends.length, ['repeated empty draft', 'explicit idle'].includes(mode) ? 0 : 1)
+    assert.doesNotMatch(JSON.stringify(sends), /我再去看|proposed reply/)
+    assert.equal(h.requests.filter(request => request.operation === 'reserve').length, 1)
+  })
+})
+
 test('a lost budget reservation response can be recovered without losing the live reply', async t => {
   const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
   const reservations = []
@@ -2795,9 +2829,9 @@ test('the next private message or group mention retains an unanswered question a
 })
 
 test('an autonomous draft or a group media lookup gets one same-turn decision reminder', async t => {
-  for (const mode of ['group-reply', 'group-image', 'group-picker-idle', 'group-image-rest', 'group-other-tool', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
+  for (const mode of ['group-reply', 'group-filtered', 'group-image', 'group-picker-idle', 'group-image-rest', 'group-other-tool', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
     const group = mode.startsWith('group-'), toolOnly = group && mode !== 'group-reply'
-    const resting = mode.endsWith('rest'), sends = ['group-reply', 'group-image'].includes(mode)
+    const resting = mode.endsWith('rest'), sends = ['group-reply', 'group-filtered', 'group-image'].includes(mode)
     const quiet = ['private-idle', 'group-picker-idle'].includes(mode)
     const noReminder = resting || mode === 'group-other-tool'
     const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
@@ -2816,6 +2850,7 @@ test('an autonomous draft or a group media lookup gets one same-turn decision re
       assert.equal(record.claimedId, firstClaim)
       if (steps === 2 && sends) assert.equal((await h.decide('reply', { text: 'fresh group contribution' })).sent, true)
       else if (steps === 2 && quiet) assert.equal((await h.decide('idle')).accepted, true)
+      else if (mode === 'group-filtered') assert.equal((await h.decide('reply', { text: '我再去看。' })).reason, 'empty_content')
       else if (toolOnly) h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
         message: { id: 'lookup-only', content: [{ type: 'tool-call', id: 'lookup-call',
           name: { 'group-picker-idle': 'send_meme', 'group-other-tool': 'read' }[mode] || 'qq_view_group_image', arguments: {} }] } })
