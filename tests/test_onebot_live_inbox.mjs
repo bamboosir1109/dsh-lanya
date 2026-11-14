@@ -2024,6 +2024,8 @@ test('a queued group review uses the current social prompt instead of an inherit
   assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
   assert.match(h.prompt(), /an actual shared topic[\s\S]*即使没人艾特/)
+  assert.match(h.prompt(), /群里安静时[\s\S]*自己开个简短话头/)
+  assert.match(h.prompt(), /Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details/)
   assert.match(h.prompt(), /trusted_autonomy_rhythm/)
   assert.match(h.prompt(), /trusted_recent_social_facts/)
   assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)

@@ -581,8 +581,9 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                 "instruction": (
                     "Read this group's latest shared topic and decide whether you actually have something to add. "
                     "A specific thought, short joke, question or fitting meme is enough; you do not need a mention. "
+                    "If the group is quiet, you may start a short fresh topic from a shared group interest. "
                     "If people are reacting to an available group image, inspect it once if it helps. "
-                    "Use one natural contribution, or choose idle/defer when the topic has moved on or you have nothing to add. "
+                    "Use one natural contribution, or choose idle/defer when you have nothing to add. "
                     "Keep the current group's scope and silence. If a prior result is uncertain, leave that action alone "
                     "and only consider the current topic. Use the current conversation's decision and ticket. "
                     "Leisure and private plans belong to the primary session; do not start a second copy here.")}

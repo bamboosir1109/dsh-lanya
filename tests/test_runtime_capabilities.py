@@ -450,6 +450,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                     self.assertIn("ordinary live turns retain", guide["cadence"]["explicit_review"])
                     if expected:
                         self.assertIn("need not wait for an @ mention", guide["proactive_sharing"]["primary_choice"])
+                        self.assertIn("start a short fresh topic from a shared group interest", guide["proactive_sharing"]["primary_choice"])
                         self.assertIn("who is speaking to whom", guide["proactive_sharing"]["primary_choice"])
                         self.assertIn("does not require speech", guide["proactive_sharing"]["primary_choice"])
                 self.assertEqual(self.snapshot(), before)
