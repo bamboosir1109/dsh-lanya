@@ -2801,6 +2801,14 @@ test('a group activity review searches recent group text and falls back to the s
   const group = a.groupConversation(scope, owner)
   await h.opportunity()
   assert.equal(request.query, 'new group topic\nlatest group comment')
+  await h.receive('already considered, more recent than the old topic', { message_id: 661 })
+  group.reviewedMessages = new Set(['661'])
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  await h.receive('fresh follow-up to search for', { message_id: 662 })
+  await h.opportunity()
+  assert.equal(request.query, 'fresh follow-up to search for')
+  h.advance(601_000)
   group.liveTopics = []
   group.olderTopics = [{ at: a.now() - 700_000, text: 'same-group hobby question', quoted_text: 'verified hobby detail' }]
   await h.opportunity()

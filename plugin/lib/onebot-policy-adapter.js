@@ -3363,11 +3363,14 @@ export class OneBotDecisionAdapter {
       // QQ activity reviews need shared group conversations, not the agent-wide memory store.
       recentEvents = recentEvents.filter(row => row.role === 'user')
       const now = this.now()
-      const groupText = this.recentGroupContext(scope, owner, now).filter(sharedGroupRemark)
+      const reviewed = this.groupConversation(scope, owner, false)?.reviewedMessages
+      const shared = this.recentGroupContext(scope, owner, now)
+        .filter(row => sharedGroupRemark(row) && (row.quoted_text ||
+          row.text.trim() && !groupAttachmentPlaceholder.test(row.text.trim())))
+      const fresh = shared.filter(row => !reviewed?.has(row.messageId))
+      const earlier = fresh.length ? [] : this.earlierGroupTopics(scope, owner, now)
+      const topics = (fresh.length ? fresh : earlier.length ? earlier : shared.length ? shared : recentEvents)
         .map(row => [row.quoted_text, row.text.trim()].filter(Boolean).join('\n')).filter(Boolean)
-      const earlier = this.earlierGroupTopics(scope, owner, now).map(topic =>
-        [topic.quoted_text, topic.text].filter(Boolean).join('\n'))
-      const topics = groupText.length ? groupText : earlier.length ? earlier : recentEvents.map(row => row.text.trim())
       query = topics.slice(-2).map(topic => topic.slice(0, 768).toWellFormed()).join('\n')
     }
     const script = this.config.memoryContextScript || path.join(this.deps.config.workspacePath || path.dirname(path.dirname(this.stateFile)), 'napcat', 'memory_context.py')
