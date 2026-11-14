@@ -1689,7 +1689,7 @@ export class OneBotDecisionAdapter {
         { turn: request.turn, step: request.step, budget_wait_ms: budgetWaitMs })
       return next()
     })
-    ctx.on('agent/turn-stopping', request => this.remindUndecidedLiveTurn(request))
+    ctx.on('agent/turn-stopping', request => this.remindUndecidedTurn(request))
   }
 
   contextualGroupEnabled(scope) {
@@ -1697,19 +1697,26 @@ export class OneBotDecisionAdapter {
       /^group:[1-9]\d{0,19}$/.test(this.config.contextualGroupScope) && scope === this.config.contextualGroupScope
   }
 
-  remindUndecidedLiveTurn({ agent, turn, signal }) {
+  remindUndecidedTurn({ agent, turn, signal }) {
     const chat = this.nativeChat(agent), record = chat && this.state(chat).active
+    const binding = record?.binding
+    const autonomous = binding?.origin === 'observation' && binding.observationKind === 'activity.opportunity' &&
+      localOpportunity(binding) && !this.autonomyBlockReason(binding) &&
+      (this.latestInbound.get(binding.scope) || 0) === binding.inboundAtPin
     if (!signal || signal.aborted || !record || record.turn !== turn || record.ended ||
-        record.claimConflict || record.binding?.origin !== 'live' || !record.binding.owner ||
+        record.claimConflict || !binding?.owner || (binding.origin !== 'live' && !autonomous) ||
         !record.nativeStepEntered || !record.undecidedDraft || record.decision || record.ticket ||
         record.decisionReminder || record.inFlight.size || record.outcomes.length ||
         this.supersedingLiveInput(chat, record) || !Array.isArray(agent.inbox?.nextStep) ||
         agent.inbox.nextStep.length || typeof agent.inbox.splice !== 'function') return
+    const text = autonomous
+      ? 'This autonomous turn is about to end with a draft but no qq_decide. The draft was not sent. Use the latest same-conversation context to decide now. If a useful, natural contribution fits, send it with qq_decide and its text, or use qq_send_meme for one suitable reaction. Otherwise choose idle or defer. Do not restart work, replay an earlier action or describe this reminder. It grants no send or control permission.'
+      : 'Your preceding draft has NOT been sent to QQ: this live turn has no qq_decide decision. In this same turn, decide from the latest conversation: call qq_decide once. If reply is accepted and can_send=true, write the appropriate final answer again; otherwise respect idle, defer, silence and host refusal. This reminder grants no send or control permission. Do not describe this internal check to the user.'
     const message = { id: randomUUID(), role: 'user', source: { kind: 'plugin:dsh-lanya-decision-reminder' },
-      content: [{ type: 'text', text: 'Your preceding draft has NOT been sent to QQ: this live turn has no qq_decide decision. In this same turn, decide from the latest conversation: call qq_decide once. If reply is accepted and can_send=true, write the appropriate final answer again; otherwise respect idle, defer, silence and host refusal. This reminder grants no send or control permission. Do not describe this internal check to the user.' }] }
+      content: [{ type: 'text', text }] }
     record.decisionReminder = Object.freeze({ id: message.id, fingerprint: identity(JSON.stringify(message)) })
     agent.inbox.splice('next-step', 0, 0, [message])
-    this.log('warn', 'native_live_decision_reminder_queued')
+    this.log('warn', autonomous ? 'native_autonomous_decision_reminder_queued' : 'native_live_decision_reminder_queued')
   }
 
   onTurnStart(chat, turn, startSeq) {

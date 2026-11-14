@@ -1811,6 +1811,44 @@ test('real decision after a terminal reminder retains the same native claim and 
   assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
 })
 
+test('an autonomous draft gets one same-turn decision reminder', async t => {
+  for (const mode of ['group-reply', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
+    const group = mode === 'group-reply'
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const a = h.bridge.lanyaPolicy
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId)
+      h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat)
+      h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    const event = await primaryEvent(h, 'synthetic-autonomous-draft-' + mode)
+    let steps = 0, firstClaim
+    h.agent.step = async () => {
+      const record = a.state(h.chat).active
+      if (++steps === 1) firstClaim = record.claimedId
+      assert.equal(record.claimedId, firstClaim)
+      if (steps === 2 && group) assert.equal((await h.decide('reply', { text: 'fresh group contribution' })).sent, true)
+      else if (steps === 2 && mode === 'private-idle') assert.equal((await h.decide('idle')).accepted, true)
+      else h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
+        message: { id: 'draft-' + steps, content: [{ type: 'text', text: 'unsent autonomous draft' }] } })
+      if (mode === 'rest') h.advance(15 * 60 * 60_000)
+      return { kind: 'completed' }
+    }
+    const outcome = await a.dispatchObservation(event)
+    await driverSettled(h)
+    assert.equal(steps, mode === 'rest' ? 1 : 2)
+    assert.equal(outcome.status, group ? 'sent' : mode === 'private-idle' ? 'decided' : 'no_decision')
+    const reminders = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
+      .flatMap(e => e.data.inserted).filter(message => message.source?.kind === 'plugin:dsh-lanya-decision-reminder')
+    assert.equal(reminders.length, mode === 'rest' ? 0 : 1)
+    assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+    const sent = h.calls.filter(call => /^send_/.test(call.action))
+    assert.equal(sent.length, group ? 1 : 0)
+    assert.doesNotMatch(JSON.stringify(sent), /unsent autonomous draft/)
+  })
+})
+
 test('terminal reminders cannot override an explicit idle/silence, cancellation or a conflicting claim', async t => {
   for(const mode of ['idle','silence','aborted','conflict','forged-reminder'])await t.test(mode,async t=>{
     const h=await nativeDriverFixture(t)
