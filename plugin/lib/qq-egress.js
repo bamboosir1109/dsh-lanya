@@ -502,7 +502,14 @@ export function textParts(value, style = NORMAL_STYLE, verbatim = false) {
   const text = cleanText(value, style, verbatim)
   if (!text.trim()) return []
   if (verbatim) return [{ text, verbatim: true }]
-  return spans(text, style.technical).flatMap((part) => part.protected
+  const parts = spans(text, style.technical)
+  if (!style.technical && !style.roleplay && !style.localFiles && !/[\r\n]/u.test(text) &&
+      characters(text).length <= 40 &&
+      parts.some(part => part.protected) &&
+      parts.every(part => !part.protected || /^`[^`\r\n]+`$/u.test(part.text))) {
+    return [{ text, verbatim: true }]
+  }
+  return parts.flatMap((part) => part.protected
     ? (part.text.trim() ? [{ text: part.text, verbatim: true, ...(part.forward ? { forward: true } : {}) }] : [])
     : part.text.split(/\r?\n/).flatMap((line) => style.localFiles === true &&
         /(?:[A-Za-z]:[\\/]|file:\/\/|(?:^|\s)\/(?:[\p{L}\p{N}_. -]+\/)+|(?:^|[\s(])(?:\.\.?\/)?notes\/activity)/u.test(line)
