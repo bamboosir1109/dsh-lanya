@@ -174,6 +174,8 @@ const nativeContextOnly = (messages, pending) => messages.every(message => typeo
   message.id && !pending.has(message.id) && NATIVE_CONTEXT_KINDS.has(message.source?.kind))
 const GROUP_CONTEXT_MS = 10 * 60_000
 const GROUP_UNREAD_CONTEXT_MS = 15 * 60_000
+const GROUP_QUIET_REVIEW_MAX_MS = 60 * 60_000
+const GROUP_QUIET_REVIEW_GRACE_MS = 5 * 60_000
 const GROUP_TOPIC_LOOKBACK_MS = 6 * 60 * 60_000
 const GROUP_RECENT_CONTEXT_MS = 2 * 60_000
 const TRANSIENT_INBOUND_BACKEND_FAILURES = new Set([
@@ -2600,7 +2602,7 @@ export class OneBotDecisionAdapter {
       const recent = group ? this.recentGroupContext(scope, owner, now) : []
       const activeGroup = group && [...recent.filter(sharedGroupRemark), ...this.unreviewedBufferedTopics(group, recent, now)]
         .some(row => row.at > now - cadence.intervalMs && !reviewedNow.has(row.messageId) && !group.reviewedMessages?.has(row.messageId))
-      const maxWait = 60 * 60_000
+      const maxWait = GROUP_QUIET_REVIEW_MAX_MS
       const quietGroup = quiet && !activeGroup && this.isGroupActivityReview(record.binding)
       let interval = quiet && !activeGroup ? Math.min(cadence.intervalMs * 2, maxWait) : cadence.intervalMs
       if (quietGroup) interval = Math.max(interval, GROUP_CONTEXT_MS)
@@ -2646,9 +2648,10 @@ export class OneBotDecisionAdapter {
       const group = this.groupConversation(record.binding.scope, record.binding.owner, false)
       if (group && record.binding.revision >= group.revision) {
         if (this.isGroupActivityReview(record.binding)) {
-          group.quietReviewAt = ['idle', 'defer'].includes(args.verdict) ? this.now() : undefined
+          const decidedAt = this.now()
+          group.quietReviewAt = ['idle', 'defer'].includes(args.verdict) ? record.groupReviewReadAt ?? decidedAt : undefined
           group.quietUnreadUntil = group.quietReviewAt === undefined || result.next_review_at == null ? undefined
-            : Math.min(result.next_review_at, group.quietReviewAt + 60 * 60_000) + 5 * 60_000
+            : Math.min(result.next_review_at, decidedAt + GROUP_QUIET_REVIEW_MAX_MS) + GROUP_QUIET_REVIEW_GRACE_MS
         }
         if (record.groupReviewMessageIds?.length) {
           // A message that arrives during generation remains new for the next review.
@@ -3539,9 +3542,9 @@ export class OneBotDecisionAdapter {
     // The shared topic buffer outlasts the display window when personal asides
     // push messages out. Also cover the scheduled quiet wait and brief lag.
     const waitingForReview = now <= group?.quietUnreadUntil
+    const earliest = now - (waitingForReview ? GROUP_QUIET_REVIEW_MAX_MS + GROUP_QUIET_REVIEW_GRACE_MS : GROUP_UNREAD_CONTEXT_MS)
     return (group?.sharedTopics || []).filter(row => row.at <= now &&
-      (row.at >= now - GROUP_CONTEXT_MS ||
-        row.at > group.quietReviewAt && (waitingForReview || row.at >= now - GROUP_UNREAD_CONTEXT_MS)) &&
+      (row.at >= now - GROUP_CONTEXT_MS || row.at >= group.quietReviewAt && row.at >= earliest) &&
       !group.reviewedMessages?.has(row.messageId) && !recent.some(current => current.messageId === row.messageId)).slice(-3)
   }
 
@@ -3561,7 +3564,10 @@ export class OneBotDecisionAdapter {
     const shared = groupActivityReview ? new Set(rows.filter(sharedGroupRemark).map(row => row.messageId)) : null
     const fresh = shared && [...shared].some(id => !group?.reviewedMessages?.has(id))
     const buffered = groupActivityReview ? this.unreviewedBufferedTopics(group, rows, now) : []
-    if (shared && record) record.groupReviewMessageIds = [...shared, ...buffered.map(row => row.messageId)]
+    if (shared && record) {
+      record.groupReviewMessageIds = [...shared, ...buffered.map(row => row.messageId)]
+      record.groupReviewReadAt = now
+    }
     const recent = rows.map(({ images, messageId, arrival, historyOrder, quoted_text, ...row }) => ({
       ...row, age_seconds: Math.floor((now - row.at) / 1000),
       ...(shared?.has(messageId) && !group.reviewedMessages?.has(messageId) ? { new_shared_remark: true } : {}),

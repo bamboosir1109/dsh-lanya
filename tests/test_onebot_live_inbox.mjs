@@ -3178,6 +3178,9 @@ test('a budget-paced group review retains new shared context until its scheduled
     budget: { ...record.binding.budget, category: 'autonomy', limited: true,
       state: { spent_cny: 0.9, reserved_cny: 0.05, remaining_cny: 2.05 } } })
   h.prompt()
+  h.advance(1000)
+  await h.receive('new idea while the model was deciding', { message_id: 653 })
+  h.advance(8 * 60_000)
   const idle = await h.decide('idle')
   assert.equal(idle.next_review_at, a.now() + 32 * 60_000)
   await h.end()
@@ -3186,7 +3189,10 @@ test('a budget-paced group review retains new shared context until its scheduled
   h.advance(31 * 60_000)
   const context = () => JSON.parse(a.groupPromptContext(scope, owner, true)
     .match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
-  assert.deepEqual(context().new_shared_topics, [{ text: 'fresh idea to share with the group', age_seconds: 1860 }])
+  assert.deepEqual(context().new_shared_topics, [
+    { text: 'new idea while the model was deciding', age_seconds: 2400 },
+    { text: 'fresh idea to share with the group', age_seconds: 1860 },
+  ])
   assert.equal(context().earlier_topics, undefined)
   h.advance(5 * 60_000 + 1)
   assert.equal(context().new_shared_topics, undefined)
