@@ -2376,6 +2376,37 @@ test('a QQ reply review survives a disconnect after claim and before its first m
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('a QQ reply review can retry if prompt assembly fails before the first model step', async t => {
+  let failAssembly = false
+  const h = await nativeDriverFixture(t, { assemble: () => {
+    if (failAssembly) throw new Error('synthetic reply review assembly failure')
+  } })
+  const adapter = h.bridge.lanyaPolicy
+  adapter.startRequested = true; adapter.startEpoch += 1
+  await h.receive('a question that still needs a reply')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  await Promise.all([...adapter.replyReviewWrites])
+  const reserves = h.requests.filter(request => request.operation === 'reserve').length
+  h.advance(60_000)
+  failAssembly = true
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.nativeEvents.some(event => event.type === 'turn/end' && event.data.reason.kind === 'error') &&
+    h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  assert.equal(h.steps.length, 1)
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, reserves)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  failAssembly = false
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'one answer after recovery' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+})
+
 test('native QQ timing records only compaction before the first model step', async t => {
   const h = await nativeDriverFixture(t)
   const compact = (id, turn, elapsed, error) => {

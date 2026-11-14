@@ -3081,13 +3081,18 @@ export class OneBotDecisionAdapter {
         if (evidence !== record.replyEvidenceText) this.persistReplyInput(entry.binding, evidence, entry.sender, false, record.replyEvidenceText)
       }
       const unstarted = record.unstartedReplyReview
-      if (unstarted && event.data.reason?.kind === 'blocked' && unstarted.binding === record.binding &&
-          !unstarted.signal?.aborted && !record.claimConflict && !record.nativeStepEntered &&
+      const beforeStepError = turnError && phase?.kind === 'running' && phase.turn === record.turn &&
+        phase.abort?.signal?.aborted === false && !record.reservation && !record.binding?.budget
+      const stoppedBeforeStep = unstarted && event.data.reason?.kind === 'blocked' &&
+        unstarted.binding === record.binding && !unstarted.signal?.aborted
+      if ((stoppedBeforeStep || beforeStepError) && record.binding?.recoveryRevision &&
+          !record.claimConflict && !record.nativeStepEntered && !record.firstModelStepStarted &&
           !record.decision && !record.ticket && !record.outcomes.length) {
-        const { messageId, revision, owner } = unstarted.binding
+        const { messageId, revision, owner } = record.binding
         try {
           if (await this.policy.releaseUnqueuedReplyReview({ scope, messageId, expectedRevision: revision, owner })) {
-            this.diagnose(scope, messageId, 'reply_review_deferred', { reason: unstarted.reason, turn: record.turn })
+            this.diagnose(scope, messageId, 'reply_review_deferred', {
+              reason: stoppedBeforeStep ? unstarted.reason : 'turn_error_before_model', turn: record.turn })
           }
         } catch (error) { this.log('warn', 'reply_review_release_failed:' + error.name) }
       } else {
