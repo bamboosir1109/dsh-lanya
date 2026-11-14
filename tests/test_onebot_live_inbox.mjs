@@ -3951,7 +3951,7 @@ test('group review sees confirmed recent contributions even while incoming chat 
   assert.equal((await h.decide('reply', { text: 'a distinct remark on the theme' })).sent, true)
   await h.end()
   const owner = await a.trustedOwner(scope)
-  assert.doesNotMatch(a.groupPromptContext(scope, owner), /a distinct remark/)
+  assert.match(a.groupPromptContext(scope, owner), /"own_recent_messages":\[\{"text":"a distinct remark on the theme"/)
   await h.opportunity(); h.start(); await h.preStep()
   const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.deepEqual(observed.own_recent_messages, [{ text: 'a distinct remark on the theme', age_seconds: 0 }])
@@ -3962,6 +3962,37 @@ test('group review sees confirmed recent contributions even while incoming chat 
     sender: { user_id: 999 }, time: Math.floor(a.now() / 1000),
     message: [{ type: 'text', data: { text: 'a distinct remark on the theme' } }] }], a.now(), '999', true)
   assert.equal((await h.state()).ownTopics.length, 1)
+})
+
+test('engaged live QQ follow-ups see recent confirmed group text, separate from current speakers', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => {
+    if (!/^send_/.test(action)) return call(action, params)
+    h.calls.push({ action, params })
+    return { message_id: -4100 + h.calls.length }
+  }
+  await h.receive('What about the pixel palette?')
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal((await h.decide('reply')).can_send, true)
+  const record = a.state(h.chat).active
+  await a.runEnvelope(a.envelope(record, 'fixture-addressed-reply'), () =>
+    h.bridge.sendSegments(scope, [{ type: 'reply', data: { id: '100' } }, { type: 'at', data: { qq: '202' } },
+      { type: 'text', data: { text: 'Use two colors on the tiny canvas.' } }]))
+  await h.end()
+  const owner = await a.trustedOwner(scope)
+  const read = prompt => JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  await h.receive('Which two?')
+  assert.equal(h.pending.length, 1)
+  h.start(); await h.preStep()
+  const live = read(h.prompt())
+  assert.deepEqual(live.own_recent_messages, [{ text: 'Use two colors on the tiny canvas.', age_seconds: 0 }])
+  assert.equal(live.recent.at(-1).text, 'Which two?')
+  assert.doesNotMatch(JSON.stringify(live.own_recent_messages), /100|202|-4099/)
+  await h.decide('idle'); await h.end()
+  h.advance(10 * 60_000 + 1)
+  assert.equal(read(a.groupPromptContext(scope, owner)).own_recent_messages, undefined)
+  assert.equal(read(a.groupPromptContext(scope, owner, true)).own_recent_messages.length, 1)
 })
 
 test('a recent confirmed group send identifies a reply even if quote lookup is unavailable', async t => {

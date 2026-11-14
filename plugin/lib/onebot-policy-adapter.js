@@ -189,6 +189,8 @@ const historyTextSegment = segment => segment?.type === 'text' && typeof segment
 const groupTopicSegment = segment => historyTextSegment(segment) || segment?.type === 'image'
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
 const historyDiscussionSegment = segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply'
+const groupContributionText = segments => Array.isArray(segments) && segments.every(historyDiscussionSegment)
+  ? segments.filter(historyTextSegment).map(segment => segment.data.text).join('').trim().slice(0, 160).toWellFormed() : ''
 const groupAttachmentPlaceholder = /^(?:\[(?:图片|表情包|语音|视频|文件|合并转发|引用)\]\s*)+$/u
 const sharedGroupRemark = row => !row.addressed_to_bot && !row.unresolved_reply &&
   (row.at_targets?.every(target => target === 'all') !== false || row.quoted_speaker && row.at_targets.includes(row.quoted_speaker)) &&
@@ -1329,9 +1331,8 @@ export class OneBotDecisionAdapter {
       const text = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
       if (text.startsWith('/')) continue
       if (speaker === bot) {
-        if (includeOlderTopics && text && row.message.every(historyTextSegment)) {
-          if (!own.has(messageId)) own.set(messageId, { messageId, at, text: text.slice(0, 160).toWellFormed() })
-        }
+        const contribution = includeOlderTopics && groupContributionText(row.message)
+        if (contribution && !own.has(messageId)) own.set(messageId, { messageId, at, text: contribution })
         continue
       }
       const targets = row.message.filter(historyMention).map(segment => String(segment.data.qq))
@@ -3407,13 +3408,11 @@ export class OneBotDecisionAdapter {
         const recent = (group.ownSendReceipts || []).filter(row => row.id !== id && row.at >= at - GROUP_CONTEXT_MS)
         group.ownSendReceipts = [...recent, { id, at, stamp: transportStamp, socket: transportSocket }].slice(-24)
       }
-      if (group && output && Array.isArray(params.message) && params.message.every(historyTextSegment)) {
-        const text = params.message.map(segment => segment.data.text).join('').trim().slice(0, 160).toWellFormed()
-        if (text) {
-          const id = String(messageId), now = this.now()
-          const past = (group.ownTopics || []).filter(row => row.messageId !== id && row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
-          group.ownTopics = [...past, { messageId: id, at: now, text }].slice(-3)
-        }
+      const text = group && output && groupContributionText(params.message)
+      if (text) {
+        const id = String(messageId), now = this.now()
+        const past = (group.ownTopics || []).filter(row => row.messageId !== id && row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+        group.ownTopics = [...past, { messageId: id, at: now, text }].slice(-3)
       }
     }
     if (chatMessageAction.test(action)) {
@@ -3550,10 +3549,12 @@ export class OneBotDecisionAdapter {
     const withinLookback = row => row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS
     const earlier = groupActivityReview && !fresh && !buffered.length
       ? this.earlierGroupTopics(scope, owner, now).map(toTopic) : []
-    const own = groupActivityReview ? (group?.ownTopics || []).filter(withinLookback)
+    const engaged = Boolean(group && group.engagedAt !== null)
+    const ownWindow = groupActivityReview ? GROUP_TOPIC_LOOKBACK_MS : GROUP_CONTEXT_MS
+    const own = groupActivityReview || engaged ? (group?.ownTopics || []).filter(row => row.at <= now && row.at >= now - ownWindow)
       .map(({ at, text }) => toTopic({ at, text })) : []
     return '\n<observed_group_context>\n' + JSON.stringify({
-      state: group && group.engagedAt !== null ? 'engaged' : 'listening', recent,
+      state: engaged ? 'engaged' : 'listening', recent,
       ...(buffered.length ? { new_shared_topics: buffered.map(toTopic) } : {}),
       ...(earlier.length ? { earlier_topics: earlier } : {}),
       ...(own.length ? { own_recent_messages: own } : {}),
@@ -3564,7 +3565,7 @@ export class OneBotDecisionAdapter {
       + (recent.some(row => row.quoted_text) ? ' A row\'s quoted_text is a short excerpt from the preceding message by quoted_speaker. The row\'s text is what the current speaker said. Use both to follow the topic.' : '')
       + (groupActivityReview && recent.some(row => row.unresolved_reply) ? ' A row marked unresolved_reply answers an unavailable message. Treat it as background and do not assume who it addresses.' : '')
       + (earlier.length ? ' Earlier topics are shared interests, even if recent discussion has already been reviewed. When a row includes quoted_text, that is what the member was replying to. A fresh observation or concrete question can start a new exchange. Bring something of your own to the topic and leave it alone if you have nothing new to add.' : '')
-      + (own.length ? ' The own_recent_messages field contains your recent QQ text in this same group. Use it to avoid repeating a topic, question or greeting you already sent.' : '')
+      + (own.length ? ' The own_recent_messages field contains only your confirmed QQ text in this group. Use it to understand follow-ups and avoid repeating a topic, question or greeting you already sent.' : '')
       + (recent.some(row => row.forwarded_excerpt) ? ' A forwarded excerpt contains quoted speakers inside the forward. They are separate from the current sender; do not treat them as addressing you.' : '')
       + ' While listening, an autonomous review can join a current shared topic without an @. If the group is quiet, a fresh thought or question grounded in this group\'s shared interests can start a conversation. Check your own recent contributions and leave room for others. Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details.'
       + (recent.some(row => row.image_refs) ? ' If recent messages revolve around a shared image, inspect one via qq_view_group_image before deciding whether to join. If the image is unavailable, use the text you actually have or stay quiet.' : '')
