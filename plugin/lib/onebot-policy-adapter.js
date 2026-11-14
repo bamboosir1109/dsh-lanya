@@ -1244,7 +1244,9 @@ export class OneBotDecisionAdapter {
     if (!group) return
     const local = this.recentGroupContext(scope, owner, now)
     const localIds = new Set(local.map(row => row.messageId))
-    const recent = new Map(), topics = new Map(), own = new Map()
+    const recent = new Map(), topics = new Map(), own = new Map((group.ownTopics || [])
+      .filter(row => row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+      .map(row => [row.messageId, row]))
     for (const row of rows) {
       if (!plain(row) || row.message_type !== 'group' || String(row.group_id) !== scope.slice(6) ||
           !Number.isSafeInteger(row.time) || row.time <= 0 || row.time * 1000 > now) continue
@@ -1257,7 +1259,7 @@ export class OneBotDecisionAdapter {
       if (text.startsWith('/')) continue
       if (speaker === bot) {
         if (includeOlderTopics && text && row.message.every(historyTextSegment)) {
-          own.set(messageId, { at, text: text.slice(0, 160).toWellFormed() })
+          if (!own.has(messageId)) own.set(messageId, { messageId, at, text: text.slice(0, 160).toWellFormed() })
         }
         continue
       }
@@ -3016,6 +3018,14 @@ export class OneBotDecisionAdapter {
         group.revision = envelope.record.binding.revision
         group.engagedAt = envelope.record.groupConversationEnd === true ? null : this.now()
       }
+      if (group && output && Array.isArray(params.message) && params.message.every(historyTextSegment)) {
+        const text = params.message.map(segment => segment.data.text).join('').trim().slice(0, 160).toWellFormed()
+        if (text) {
+          const id = String(messageId), now = this.now()
+          const past = (group.ownTopics || []).filter(row => row.messageId !== id && row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
+          group.ownTopics = [...past, { messageId: id, at: now, text }].slice(-3)
+        }
+      }
     }
     if (chatMessageAction.test(action)) {
       this.bridge.inbound?.rememberMessageScope?.(messageId, scope)
@@ -3125,7 +3135,8 @@ export class OneBotDecisionAdapter {
     const withinLookback = row => row.at <= now && row.at >= now - GROUP_TOPIC_LOOKBACK_MS
     const earlier = groupActivityReview && !recent.some(row => row.text.trim() || row.forwarded_excerpt || row.image_refs)
       ? this.earlierGroupTopics(scope, owner, now).map(toTopic) : []
-    const own = groupActivityReview ? (group?.ownTopics || []).filter(withinLookback).map(toTopic) : []
+    const own = groupActivityReview ? (group?.ownTopics || []).filter(withinLookback)
+      .map(({ at, text }) => toTopic({ at, text })) : []
     return '\n<observed_group_context>\n' + JSON.stringify({
       state: group && group.engagedAt !== null ? 'engaged' : 'listening', recent,
       ...(earlier.length ? { earlier_topics: earlier } : {}),

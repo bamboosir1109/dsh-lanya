@@ -2965,6 +2965,30 @@ test('only confirmed actual autonomous message delivery opens participation', as
   })
 })
 
+test('group review sees confirmed recent contributions even while incoming chat skips history refresh', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  h.deps.connection.call = async (action, params) => {
+    h.calls.push({ action, params })
+    return { message_id: -4100 + h.calls.length }
+  }
+  await h.receive('a shared theme')
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'a distinct remark on the theme' })).sent, true)
+  await h.end()
+  const owner = await a.trustedOwner(scope)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /a distinct remark/)
+  await h.opportunity(); h.start(); await h.preStep()
+  const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(observed.own_recent_messages, [{ text: 'a distinct remark on the theme', age_seconds: 0 }])
+  assert.doesNotMatch(h.prompt(), /-4099/)
+  assert.equal(h.calls.some(call => call.action === 'get_group_msg_history'), false)
+  await h.end()
+  a.restoreRecentGroupText(scope, owner, [{ message_id: -4099, message_type: 'group', group_id: 303,
+    sender: { user_id: 999 }, time: Math.floor(a.now() / 1000),
+    message: [{ type: 'text', data: { text: 'a distinct remark on the theme' } }] }], a.now(), '999', true)
+  assert.equal((await h.state()).ownTopics.length, 1)
+})
+
 test('live idle and defer skip a remark without ending or extending the exchange', async t => {
   for(const verdict of ['idle','defer'])await t.test(verdict,async t=>{
     const h=await listeningGroup(t)
