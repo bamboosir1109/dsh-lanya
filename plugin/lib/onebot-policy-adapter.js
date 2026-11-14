@@ -1132,7 +1132,8 @@ export class OneBotDecisionAdapter {
   groupAddressed(inbound, address) {
     const bots = [this.deps.connection?.selfId, this.deps.config.botQQ].filter(value => typeof value === 'string' && /^[1-9][0-9]*$/.test(value))
     if (inbound.segments?.some(segment => segment?.type === 'at' && bots.includes(String(segment.data?.qq)))) return true
-    return address?.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
+    if (address?.schema !== 'qq-addressing/v1' || address.speaker_id !== inbound.userId) return false
+    return address.bot_addressed === 'explicit_at' && address.explicit_at_ids?.some(id => bots.includes(id)) === true ||
       address.bot_addressed === 'verified_reply' && address.reply_status === 'available' && bots.includes(address.quoted_author_id)
   }
 
@@ -1186,7 +1187,7 @@ export class OneBotDecisionAdapter {
       const addressedToOthers = inbound.segments?.some(segment => segment?.type === 'at' &&
         /^[1-9][0-9]*$/.test(String(segment.data?.qq))) === true ||
         (address?.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
-          address.reply_status === 'available' && address.reply_to === 'other')
+          (address.explicit_at_ids?.length > 0 || address.reply_status === 'available' && address.reply_to === 'other'))
       if (!superseded && !addressed && (group.engagedAt === null || addressedToOthers)) {
         context.groupListening = true
         const reason = addressedToOthers ? 'addressed_to_other_member' : 'await_autonomous_join'

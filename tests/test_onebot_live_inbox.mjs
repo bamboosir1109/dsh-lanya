@@ -2523,6 +2523,27 @@ test('other targets, at-all, fake quote text and quote of another person never o
   assert.equal(h.pending.length,0);assert.equal((await h.state()).engaged,false)
 })
 
+test('raw OneBot mentions respect the real addressee and retain direct reply evidence', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+  const receiveCq = text => h.receive(text, { message: text, raw_message: text })
+  await receiveCq('[CQ:at,qq=all] shared announcement')
+  await h.receive('literal [CQ:at,qq=999]')
+  assert.equal(h.pending.length, 0)
+  await receiveCq('[CQ:at,qq=999] a real question')
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+  await Promise.all([...a.replyReviewWrites])
+  assert.match((await a.policy.snapshot(h.chat.chatId)).current.replyReview.text, /a real question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer to the real question' })).sent, true)
+  await h.end()
+  await receiveCq('[CQ:at,qq=204] addressed to someone else')
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, true)
+  await receiveCq('plain follow-up without a mention')
+  assert.equal(h.pending.length, 1)
+})
+
 test('a mention or verified quote to another member stays in context without replacing an engaged group reply', async t => {
   const h = await listeningGroup(t)
   await h.mention()
