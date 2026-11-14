@@ -4555,6 +4555,33 @@ test('budget refusal cannot mint an internal idle wake for another pending input
   assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, 1)
 })
 
+test('a model error leaves the newer QQ input runnable and retains the earlier unfinished question', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const entered = defer(), release = defer()
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    if (record.turn === 1) {
+      entered.resolve()
+      await release.promise
+      throw new Error('synthetic model interruption')
+    }
+    assert.match(record.claimedInput.history.join('\n'), /first unfinished question/)
+    assert.match(record.claimedInput.originalText, /second live question/)
+    assert.equal((await h.decide('reply', { text: 'one reply to both questions' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('first unfinished question')
+  await entered.promise
+  try {
+    await h.receive('second live question')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
 test('an autonomous budget refusal wakes the live QQ message that arrived during admission', async t => {
   for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
     const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy

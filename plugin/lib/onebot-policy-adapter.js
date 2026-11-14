@@ -2263,7 +2263,7 @@ export class OneBotDecisionAdapter {
 
   async wakeOwnedPendingAfterUnbound(chat, record, event) {
     const marker = record.supersededIdleWake || record.unboundIdleWake
-    if (!marker || record.unboundIdleWakeConsumed || event.data.reason?.kind !== 'blocked') return
+    if (!marker || record.unboundIdleWakeConsumed || event.data.reason?.kind !== (marker.modelError ? 'error' : 'blocked')) return
     const superseded = Boolean(record.supersededIdleWake)
     if (superseded && record.binding !== marker.binding) return
     record.unboundIdleWakeConsumed = true
@@ -2309,7 +2309,7 @@ export class OneBotDecisionAdapter {
     // No async gap after the final guards. This only starts the existing SDK
     // driver; normal native claim, budget admission and output guards still run.
     wake.call(agent)
-    this.log('info', 'native_internal_idle_wake_started:' + (superseded ? 'superseded_live_input' : 'unbound_native_input'))
+    this.log('info', 'native_internal_idle_wake_started:' + (marker.modelError ? 'model_error' : superseded ? 'superseded_live_input' : 'unbound_native_input'))
   }
 
   autonomyBlockReason(binding, at = this.now()) {
@@ -3031,12 +3031,20 @@ export class OneBotDecisionAdapter {
     const state = this.state(chat)
     const record = state.turns.get(event.data.turn)
     if (!record || record.ended) return
+    const modelError = event.data.reason?.kind === 'error' && record.firstModelStepStarted
+    const phase = chat.agent?.phase
+    if (modelError && this.nativeClaims && record.binding?.origin === 'live' && state.active === record && phase?.kind === 'running' &&
+        phase.turn === record.turn && phase.abort?.signal && !phase.abort.signal.aborted) {
+      const successor = this.supersedingLiveInput(chat, record)
+      if (successor) record.supersededIdleWake = Object.freeze({ agent: chat.agent, signal: phase.abort.signal,
+        turn: record.turn, epoch: this.startEpoch, binding: record.binding, revision: successor.binding.revision, modelError: true })
+    }
     record.ended = true
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     const supersededReply = (record.replySuperseded || record.supersededIdleWake &&
       (!record.decision || record.decision.verdict === 'reply')) && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
-    const completedWithoutDecision = event.data.reason?.kind === 'completed'
-    const undecidedReply = (record.replyDeferredByBudget || completedWithoutDecision) && !record.decision && !record.ticket &&
+    const endedWithoutDecision = event.data.reason?.kind === 'completed' || modelError
+    const undecidedReply = (record.replyDeferredByBudget || endedWithoutDecision) && !record.decision && !record.ticket &&
       !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
     if (!record.claimConflict && record.binding?.origin === 'live' && !record.binding.recoveryRevision &&
         (scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
