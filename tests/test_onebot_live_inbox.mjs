@@ -2601,13 +2601,17 @@ test('a queued group review uses the current social prompt instead of an inherit
     intentReads++
     return { intents: [{ goal: 'fixture stale wait for a mention' }] }
   }
-  a.runtimeCapabilities = async () => ({ schema: 'dsh-runtime-capabilities/v1', conversation_key: scope,
-    owner, read_only: true, generated_at: a.now(), tools: {
-      entertainment: { group_identity_valid: true, group_social: true, rest_window: { timezone: 'Asia/Shanghai' },
-        cadence: { valid: true, configured_opportunity_min: 2 }, local_games: 'fixture game inventory' },
-      qq_expression: { tone: 'fixture group tone', fast_meme: 'fixture real meme', group_pacing: 'fixture group pacing' },
-      android: 'fixture phone protocol', qq_autonomy: 'fixture private friend lookup',
-    } })
+  const requestedModes = []
+  a.runtimeCapabilities = async (_scope, _owner, mode) => {
+    requestedModes.push(mode)
+    return { schema: 'dsh-runtime-capabilities/v1', conversation_key: scope, owner, read_only: true,
+      generated_at: a.now(), tools: {
+        entertainment: { group_identity_valid: true, group_social: true, rest_window: { timezone: 'Asia/Shanghai' },
+          cadence: { valid: true, configured_opportunity_min: 2 }, local_games: 'fixture game inventory' },
+        qq_expression: { tone: 'fixture group tone', fast_meme: 'fixture real meme', group_pacing: 'fixture group pacing' },
+        android: 'fixture phone protocol', qq_autonomy: 'fixture private friend lookup',
+      } }
+  }
   await h.receive('an actual shared topic')
   const event = { version: 1, event_id: 'fixture-group-social-context', scope, kind: 'activity.opportunity',
     producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
@@ -2616,6 +2620,7 @@ test('a queued group review uses the current social prompt instead of an inherit
   const completion = a.dispatchObservationOnce(event)
   for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(h.pending.length, 1)
+  assert.deepEqual(requestedModes, ['group_review'])
   assert.doesNotMatch(h.pending[0].content[0].text, /old diary and maintenance/)
   assert.match(h.pending[0].content[0].text, /conversation_social/)
   assert.doesNotMatch(h.pending[0].content[0].text, /trusted_autonomy_rhythm|trusted_recent_social_facts|scoped_agent_intentions/)

@@ -650,6 +650,33 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             with self.assertRaises(self.module.CapabilityError):
                 self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode=mode)
 
+    def test_group_review_uses_current_scope_and_skips_worker_and_local_game_inventory(self):
+        self.install('browserd.py', 'androidd.py', 'voice_executor.py')
+        self.identity.write_text(json.dumps({'adminQQ': '101', 'fanGroupQQ': '202'}), encoding='utf-8')
+        self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'mind': {'opportunityMin': 4},
+                                           'panelStaticPort': 'unrelated invalid setting'}), encoding='utf-8')
+
+        def forbidden(*_):
+            self.fail('Group-only review must not probe personal activity or enumerate local games')
+
+        def group_context(scope):
+            return self.module.build_context(str(self.root), 'fixture', scope, context_mode='group_review',
+                                             process_probe=forbidden, lock_probe=forbidden)
+
+        with mock.patch.object(Path, 'iterdir', forbidden):
+            value = group_context('group:202')
+            self.assertEqual(set(value['tools']), {'qq_expression', 'entertainment'})
+            self.assertEqual(value['context_mode'], 'group_review')
+            guide = value['tools']['entertainment']
+            self.assertTrue(guide['group_identity_valid'])
+            self.assertTrue(guide['group_social'])
+            self.assertEqual(guide['cadence'], {'valid': True, 'configured_opportunity_min': 4})
+            self.assertEqual(guide['rest_window']['timezone'], 'Asia/Shanghai')
+            self.assertIn('fast_meme', value['tools']['qq_expression'])
+            self.assertFalse(group_context('group:303')['tools']['entertainment']['group_social'])
+            with self.assertRaises(self.module.CapabilityError):
+                group_context('private:101')
+
     def test_enabled_native_phone_is_discoverable_in_primary_live_and_autonomous_contexts(self):
         self.install('androidd.py', 'android_executor.py')
         self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'android': {

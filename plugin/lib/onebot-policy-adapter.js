@@ -628,7 +628,7 @@ export class OneBotDecisionAdapter {
       }
     }
     this.memoryContext = memoryContext || ((scope, text, owner) => this.readMemoryContext(scope, text, owner))
-    this.runtimeCapabilities = runtimeCapabilities || ((scope, owner) => this.readRuntimeCapabilities(scope, owner))
+    this.runtimeCapabilities = runtimeCapabilities || ((scope, owner, mode) => this.readRuntimeCapabilities(scope, owner, mode))
     this.budgetEnabled = config.budgetRuntimeScript !== undefined || budgetProvider !== undefined
     if (config.budgetRuntimeScript !== undefined && (typeof config.budgetRuntimeScript !== 'string' || !path.isAbsolute(config.budgetRuntimeScript))) {
       throw new Error('An absolute trusted budgetRuntimeScript is required')
@@ -3361,15 +3361,16 @@ export class OneBotDecisionAdapter {
     return { ...value, conversation_history: recent.window }
   }
 
-  async readRuntimeCapabilities(scope, trustedOwner) {
+  async readRuntimeCapabilities(scope, trustedOwner, contextMode) {
     const owner = trustedOwner || await this.trustedOwner(scope)
     if (!owner.cwd || !path.isAbsolute(owner.cwd)) throw new Error('Capabilities require an explicit trusted workspace')
     const script = this.config.runtimeCapabilitiesScript || path.join(owner.cwd, 'napcat', 'runtime_capabilities.py')
     if (typeof script !== 'string' || !path.isAbsolute(script)) throw new Error('An absolute trusted capability helper is required')
     const binding = this.context.getStore()?.binding
     const live = binding?.origin === 'live' && binding.scope === canonicalScope(scope)
+    const mode = contextMode ?? (live ? 'live_chat' : 'full')
     const value = await this.readTrustedHelper(script, { cwd: owner.cwd, agent_preset: owner.preset,
-      conversation_key: canonicalScope(scope), ...(live ? { context_mode: 'live_chat' } : {}) },
+      conversation_key: canonicalScope(scope), ...(mode === 'full' ? {} : { context_mode: mode }) },
     { timeout: 7000, cwd: owner.cwd })
     this.validateOwnerContext(value, 'dsh-runtime-capabilities/v1', scope, owner)
     if (value.read_only !== true || !plain(value.tools)) throw new Error('Invalid read-only runtime capabilities')
@@ -3682,8 +3683,9 @@ export class OneBotDecisionAdapter {
       // The setting is trusted local owner context, never event/payload text.
       // Capture it before this turn is queued; later asynchronous turns cannot
       // lend their cadence to an already running decision.
+      const contextMode = this.nativeClaims && groupOpportunity ? 'group_review' : undefined
       let guide
-      try { guide = await this.runtimeCapabilities(event.scope, owner) }
+      try { guide = await this.runtimeCapabilities(event.scope, owner, contextMode) }
       catch (error) {
         if (!groupOpportunity) throw error
         this.log('warn', 'group_cadence_unavailable:' + error.name)
