@@ -1435,10 +1435,21 @@ export class OneBotDecisionAdapter {
         return { accepted: false, reason: 'superseded_before_admission' }
       }
     const superseded = context.arrival <= (this.latestInbound.get(scope) || 0)
-    let group, addressed = false
+    let group, addressed = false, ownReply = false
     if (this.contextualGroupEnabled(scope)) {
       group = this.groupConversation(scope, await this.trustedOwner(scope))
       addressed = this.groupAddressed(inbound, address)
+      if (!addressed && address?.schema === 'qq-addressing/v1' && address.speaker_id === inbound.userId &&
+          address.explicit_at_ids?.length === 0 && !address.at_all && address.reply_status === 'unavailable' &&
+          ['scope_unverified', 'lookup_failed_or_timeout'].includes(address.reply_reason)) {
+        const target = String(inbound.replyId)
+        ownReply = this.bridge.inbound?.messageScopes?.get(target) === scope &&
+          (group.ownSendReceipts || []).some(row => row.id === target && row.at <= context.arrivedAt &&
+            row.at >= context.arrivedAt - GROUP_CONTEXT_MS && row.stamp === context.backendStamp &&
+            row.socket === context.backendSocket && row.socket === this.deps.connection?.socket) &&
+          this.backendGuard.current(context.backendStamp)
+        addressed ||= ownReply
+      }
       const seen = group.recent.findIndex(row => row.messageId === inbound.messageId)
       if (seen === -1 || group.recent[seen].arrival < 0) {
         const forwardPrefix = '[合并转发]\n'
@@ -1549,9 +1560,10 @@ export class OneBotDecisionAdapter {
     if (observed.accepted) {
       const checkout = androidCheckoutIntent(directText)
       context.binding = Object.freeze({ ...observed, origin: 'live' })
-      if (scope.startsWith('group:') && this.groupAddressed(inbound, address)) {
+      if (scope.startsWith('group:') && (addressed || !group && this.groupAddressed(inbound, address))) {
         context.binding = Object.freeze({ ...context.binding, verifiedGroupReply: true })
       }
+      if (ownReply) context.binding = Object.freeze({ ...context.binding, ownReply: true })
       if (checkout) context.binding = Object.freeze({ ...context.binding, checkout })
       context.binding = Object.freeze({ ...context.binding, backendStamp: context.backendStamp })
       if (inbound.lanyaTemporaryPrivate) context.binding = Object.freeze({ ...context.binding, temporaryPrivate: inbound.lanyaTemporaryPrivate })
@@ -1760,6 +1772,7 @@ export class OneBotDecisionAdapter {
     const groupReview = this.isGroupActivityReview(record.binding)
     const groupContext = this.groupPromptContext(chat.chatId, record.binding.owner, groupReview, record)
     return (record.binding.capabilityContext || '') + (record.replyHandoff || '')
+      + (record.binding.ownReply ? '\nThe current sender replied to a confirmed earlier message from you in this group. The quoted contents could not be loaded. Respond to what the current sender actually said.\n' : '')
       + (late?.size ? (lateGroup
         ? '\nThese earlier same-group messages directly addressed you but finished preparing late. Keep the speakers and unanswered points distinct.'
         : '\nEarlier messages from this same private sender finished preparing late. Use them with the latest message.')
@@ -3327,7 +3340,7 @@ export class OneBotDecisionAdapter {
     }
     const kind = accountAction ? 'publication' : /forward/.test(action) ? 'forward' : action === 'send_msg'
       ? (Array.isArray(params.message) && params.message.some((segment) => !['text', 'reply', 'at'].includes(segment.type)) ? 'media' : 'text') : 'api'
-    let result
+    let result, transportSocket, transportStamp
     try {
       result = await this.policy.runGuarded(envelope.ticket, { scope, kind, operationId: envelope.operationId,
         sliceId: String(envelope.sequence.next++), meme: egressPart?.meme === true,
@@ -3338,6 +3351,8 @@ export class OneBotDecisionAdapter {
         // another output settled. Recheck synchronously at the transport edge.
         requireCertainTurn()
         if (!this.backendGuard.edge(this.deps.connection, envelope.record?.binding?.backendStamp)) throw new PolicyDeliveryError('suppressed', 'backend_connection_changed')
+        transportSocket = this.deps.connection?.socket
+        transportStamp = envelope.record?.binding?.backendStamp ?? this.backendGuard.selection().stamp
         this.requireAutonomousTime(envelope.record?.binding)
         if (voiceArtifact) {
           if (envelope.voiceSignal?.aborted) throw new PolicyDeliveryError('suppressed', 'unbound_or_aborted_turn')
@@ -3378,6 +3393,11 @@ export class OneBotDecisionAdapter {
       if (group && envelope.record.binding.revision >= group.revision) {
         group.revision = envelope.record.binding.revision
         group.engagedAt = envelope.record.groupConversationEnd === true ? null : this.now()
+      }
+      if (group && output && this.deps.connection?.socket === transportSocket && this.backendGuard.current(transportStamp)) {
+        const id = String(Number(messageId)), at = this.now()
+        const recent = (group.ownSendReceipts || []).filter(row => row.id !== id && row.at >= at - GROUP_CONTEXT_MS)
+        group.ownSendReceipts = [...recent, { id, at, stamp: transportStamp, socket: transportSocket }].slice(-24)
       }
       if (group && output && Array.isArray(params.message) && params.message.every(historyTextSegment)) {
         const text = params.message.map(segment => segment.data.text).join('').trim().slice(0, 160).toWellFormed()

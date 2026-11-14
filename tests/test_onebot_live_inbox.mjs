@@ -3922,6 +3922,39 @@ test('group review sees confirmed recent contributions even while incoming chat 
   assert.equal((await h.state()).ownTopics.length, 1)
 })
 
+test('a recent confirmed group send identifies a reply even if quote lookup is unavailable', async t => {
+  for (const mode of ['unavailable', 'contradicted', 'wrong group', 'explicit other', 'new socket', 'stale']) await t.test(mode, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+    const originalCall = h.deps.connection.call
+    h.deps.connection.call = async (action, params) => {
+      if (action === 'get_msg') return ['contradicted', 'wrong group'].includes(mode)
+        ? { message_id: -4110, message_type: 'group', group_id: mode === 'wrong group' ? 404 : 303, sender: { user_id: 777 },
+          message: [{ type: 'text', data: { text: 'a verified different author' } }] } : null
+      if (action === 'get_group_msg_history') return { messages: [] }
+      if (!/^send_/.test(action)) return originalCall(action, params)
+      h.calls.push({ action, params })
+      return { message_id: -4110 }
+    }
+    await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'Try a darker outline.' })).sent, true)
+    await h.end()
+    if (mode === 'stale') h.advance(10 * 60_000 + 1)
+    if (mode === 'new socket') h.deps.connection.socket = {}
+    await h.receive('Can I use two colors?', { message: [
+      { type: 'reply', data: { id: '-4110' } },
+      ...(mode === 'explicit other' ? [{ type: 'at', data: { qq: '777' } }] : []),
+      { type: 'text', data: { text: 'Can I use two colors?' } },
+    ] })
+    assert.equal(h.pending.length, mode === 'unavailable' ? 1 : 0)
+    if (mode !== 'unavailable') return
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(a.state(h.chat).active.binding.verifiedGroupReply, true)
+    assert.match(h.prompt(), /confirmed earlier message from you/)
+    assert.equal((await h.decide('reply', { text: 'Yes, two colors work.' })).sent, true)
+    await h.end()
+  })
+})
+
 test('live idle and defer skip a remark without ending or extending the exchange', async t => {
   for(const verdict of ['idle','defer'])await t.test(verdict,async t=>{
     const h=await listeningGroup(t)

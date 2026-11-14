@@ -49,6 +49,7 @@ function addressing(inbound, quote, selfId, botQQ) {
     return { schema: 'qq-addressing/v1', speaker_id: inbound.userId,
         explicit_at_ids: targets, at_all: all,
         reply_status: quote?.status || 'none', quoted_author_id: quoteAuthor || null,
+        ...(quote?.status === 'unavailable' ? { reply_reason: quote.reason } : {}),
         reply_to: quoteAuthor && bot ? quoteAuthor === bot ? 'bot' : 'other' : 'unknown',
         bot_addressed: bot && targets.includes(bot) ? 'explicit_at'
             : targets.length === 0 && quoteAuthor && quoteAuthor === bot ? 'verified_reply' : all ? 'at_all' : 'not_proven',
