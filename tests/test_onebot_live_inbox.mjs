@@ -2127,14 +2127,20 @@ test('native terminal draft without a decision gets one same-turn reminder, neve
   assert.equal(h.calls.filter(x => /^(send_|upload_)/.test(x.action)).length, 0)
 })
 
-test('real decision after a terminal reminder retains the same native claim and may send its fresh final text', async t => {
+test('real decision after a terminal reminder sends fresh inline text without a third model step', async t => {
   const h = await nativeDriverFixture(t)
   let steps = 0
   h.agent.step = async () => {
     const record = h.bridge.lanyaPolicy.state(h.chat).active
-    if (++steps === 2) assert.equal((await h.decide('reply', {expression:'text'})).can_send, true)
+    if (++steps === 2) {
+      const reminder = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
+        .flatMap(e => e.data.inserted).find(m => m.source?.kind === 'plugin:dsh-lanya-decision-reminder')
+      assert.match(reminder.content[0].text, /expression:"text",text:your_complete_reply/)
+      assert.equal((await h.decide('reply', { text: 'fresh final answer' })).sent, true)
+      return { kind: 'completed' }
+    }
     h.agent.session.append('assistant/message', {turn:record.turn,step:steps,
-      message:{id:'answer-'+steps,content:[{type:'text',text:steps===1?'undelivered draft':'fresh final answer'}]}})
+      message:{id:'answer-'+steps,content:[{type:'text',text:'undelivered draft'}]}})
     return {kind:'completed'}
   }
   await h.receive('synthetic question')
