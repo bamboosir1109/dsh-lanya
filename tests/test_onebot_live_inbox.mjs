@@ -1962,6 +1962,35 @@ test('a slow private attachment keeps the sender caption with a newer message', 
   })
 })
 
+test('a slow direct image remains available in the next private reply without putting the file in recovery evidence', async t => {
+  for (const scenario of ['unchanged', 'file changed', 'socket changed']) await t.test(scenario, async t => {
+    const h = await fixture(t, { mislabeledImage: true }), a = h.bridge.lanyaPolicy
+    const reading = defer(), release = defer(), resolve = h.deps.media.resolve
+    h.deps.media.resolve = async (...args) => { reading.resolve(); await release.promise; return resolve(...args) }
+    const older = h.receive('', { message: [{ type: 'image', data: { file: 'synthetic-image' } }] })
+    await reading.promise
+    try { await h.receive('What do you think of the picture?') }
+    finally { release.resolve() }
+    await older
+    assert.equal(h.pending.length, 1)
+    const entry = a.state(h.chat).pending.get(h.pending[0].id)
+    const image = [...entry.lateReplyText.values()][0].image
+    assert.match(image.file, /media_format_[a-f0-9]{64}\.gif$/)
+    if (scenario === 'file changed') fs.appendFileSync(image.file, 'changed')
+    if (scenario === 'socket changed') h.deps.connection.socket = {}
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+    const block = prompt.match(/<earlier_direct_images>\n([^\n]+)\n<\/earlier_direct_images>/u)
+    if (scenario === 'unchanged') assert.deepEqual(JSON.parse(block[1]), [{ file: image.file }])
+    else assert.equal(block, null)
+    await h.end()
+    await Promise.all([...a.replyReviewWrites])
+    const text = (await a.policy.snapshot(h.chat.chatId)).current.replyReview.text
+    assert.match(text, /较早收到一张图片/)
+    assert.doesNotMatch(text, /media_format_/)
+  })
+})
+
 test('a missed private reply review retains an earlier slow attachment caption', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   const reading = defer(), releaseMedia = defer()
