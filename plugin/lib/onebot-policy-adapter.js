@@ -960,9 +960,9 @@ export class OneBotDecisionAdapter {
           if (!['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => owner[key] === latestOwner[key])) return
           if (!canStage()) { window.scopes.push(scope); return }
           const now = this.now()
-          // OneBot history rounds to seconds. Include the bucket containing
-          // the disconnect, while keeping the absolute lookback and dedup.
-          const since = Math.max(Math.floor(window.since / 1000) * 1000, now - FRIEND_RECONNECT_WINDOW_MS)
+          // Pin the lookback to reconnect so a busy chat can retry without
+          // aging out previously eligible rows. OneBot rounds to seconds.
+          const since = Math.max(Math.floor(window.since / 1000) * 1000, window.connectedAt - FRIEND_RECONNECT_WINDOW_MS)
           const recent = history.messages.filter(row => plain(row) && Number.isSafeInteger(row.time) && row.time > 0 &&
             row.time * 1000 <= now && (!group || row.message_type === 'group' && String(row.group_id) === peer))
           if (group) this.restoreRecentGroupText(scope, owner, recent, now, selected.expectedAccount)
@@ -1003,7 +1003,8 @@ export class OneBotDecisionAdapter {
           if (batch.length) {
             const sender = batch.at(-1).sender
             const staged = await this.policy.stageReconnectedInput({ scope, sender, expectedRevision: state?.revision ?? 0,
-              receipts: batch, owner, canStage: () => batch.every(receipt => canStage(receipt.sender)) })
+              receipts: batch, owner, reconnectedAt: window.connectedAt,
+              canStage: () => batch.every(receipt => canStage(receipt.sender)) })
             if (staged) {
               stagedInput = true
               for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')

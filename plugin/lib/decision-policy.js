@@ -558,12 +558,12 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       })
     },
 
-    async stageReconnectedInput({ scope, sender, expectedRevision, receipts, owner, canStage } = {}) {
+    async stageReconnectedInput({ scope, sender, expectedRevision, receipts, owner, reconnectedAt, canStage } = {}) {
       canonicalScope(scope)
       const group = scope.startsWith('group:')
       if (typeof sender !== 'string' || !/^[1-9][0-9]*$/.test(sender) ||
           (!group && scope.slice(8) !== sender) ||
-          !replyOwnerValid(owner) || typeof canStage !== 'function' ||
+          !replyOwnerValid(owner) || typeof canStage !== 'function' || !Number.isSafeInteger(reconnectedAt) || reconnectedAt < 0 ||
           !Number.isSafeInteger(expectedRevision) || !Array.isArray(receipts) || receipts.length < 1 || receipts.length > 8 ||
           receipts.some(receipt => !plain(receipt) || typeof receipt.messageId !== 'string' ||
             !/^-?[0-9]{1,16}$/.test(receipt.messageId) || !Number.isSafeInteger(Number(receipt.messageId)) ||
@@ -588,7 +588,8 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         const existing = scopeState(state, scope), at = now()
         if ((!existing && expectedRevision !== 0) ||
             (existing && (existing.revision !== expectedRevision || existing.mode !== 'open')) ||
-            replyReviewable(existing, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
+            replyReviewable(existing, at) || latest.at > at || reconnectedAt > at ||
+            at - reconnectedAt > FRIEND_RECONNECT_WINDOW_MS || batch[0].at < reconnectedAt - FRIEND_RECONNECT_WINDOW_MS ||
             existing?.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
               batch.some(receipt => item.messageId === receipt.messageId)) ||
             existing?.deliveries.some(item => item.at >= batch[0].at || item.status === 'reserved') || canStage() !== true) return false

@@ -1327,7 +1327,7 @@ function backendFixture(h, provider='snowluma') {
 }
 
 test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
-  for (const scenario of ['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
+  for (const scenario of ['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle', 'busy near lookback edge', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
     'live arrived', 'later own message', 'same-second own message', 'same-second quoted own message',
     'same-second quote with another own message', 'same-second quote to wrong peer', 'socket changed']) await t.test(scenario, async t => {
     const h = await fixture(t), adapter = h.bridge.lanyaPolicy
@@ -1342,7 +1342,8 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     h.advance(scenario === 'disconnect second' ? 1500 : 1000)
     adapter.noteConnectionStatus(false)
     const at = Math.floor(adapter.now() / 1000) + (scenario === 'disconnect second' ? 0 : 1)
-    h.advance(90_000)
+    const nearEdge = scenario === 'busy near lookback edge'
+    h.advance(nearEdge ? 175_000 : 90_000)
     adapter.noteConnectionStatus(true)
     const row = (time, id, text, extra = {}) => ({ message_type: 'private', sub_type: 'friend', time, message_id: id,
       sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }], ...extra })
@@ -1392,7 +1393,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       return { messages: rows }
     }
     const expires = scenario === 'busy through expiry'
-    if (scenario === 'busy then idle' || expires) {
+    if (scenario === 'busy then idle' || nearEdge || expires) {
       h.agent.status = 'running'
       await adapter.recoverReconnectHistory()
       assert.equal(historyReads, 0, 'a busy conversation is left alone')
@@ -1413,7 +1414,7 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
     const expectedReads = expires ? 0 : retries ? 2 : 1
     assert.equal(historyReads, expectedReads)
     const quotedOwn = scenario === 'same-second quoted own message'
-    if (!retries && !quotedOwn && !['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle'].includes(scenario)) {
+    if (!retries && !quotedOwn && !['new', 'mixed friend history', 'long history', 'disconnect second', 'busy then idle', 'busy near lookback edge'].includes(scenario)) {
       assert.ok(!state.seen.some(item => item.messageId === '-12'))
       assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
       return
