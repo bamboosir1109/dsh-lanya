@@ -2191,7 +2191,9 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
     return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
       row(3, 800, 'group interest two'), row(4, 700, 'group interest three'),
       row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
-      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget] }
+      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget,
+      row(13, 180, '', { message: [{ type: 'image', data: { file: 'unloaded-fixture' } }] }),
+      row(14, 179, '', { group_id: 404, message: [{ type: 'record', data: { file: 'foreign-fixture' } }] })] }
   }
   await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
   assert.equal((await h.state()).engaged, false)
@@ -2201,9 +2203,13 @@ test('a quiet group gets bounded same-group topic clues only during its autonomo
   const prompt = h.prompt()
   const group = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
   assert.equal(group.state, 'listening')
-  assert.equal(group.recent.length, 0)
+  assert.equal(group.recent.length, 1)
+  assert.equal(group.recent[0].text, '')
+  assert.deepEqual(group.recent[0].media_not_loaded, ['图片'])
+  assert.equal(group.recent[0].image_refs, undefined)
   assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest two', 'group interest three', 'verified member exchange'])
-  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|own announcement|outside the .* bound/)
+  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|own announcement|outside the .* bound|unloaded-fixture|foreign-fixture/)
+  assert.match(prompt, /Do not guess what an attachment contains/)
   assert.match(prompt, /ask a concrete related question/)
   await h.receive('live group topic')
   assert.doesNotMatch(h.prompt(), /earlier_topics|group interest|verified member exchange/)

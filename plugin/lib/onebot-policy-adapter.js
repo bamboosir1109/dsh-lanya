@@ -182,6 +182,9 @@ const historyTextSegment = segment => segment?.type === 'text' && typeof segment
 const historyMention = segment => segment?.type === 'at' && /^(?:[1-9][0-9]*|all)$/.test(String(segment.data?.qq))
 const historySupplement = new Set(['reply', 'image', 'record', 'face', 'video', 'file', 'forward'])
 const reconnectMediaLabel = new Map([['image', '图片'], ['record', '语音'], ['video', '视频'], ['file', '文件'], ['forward', '合并转发']])
+const historyMediaKinds = segments => [...new Set(segments
+  .filter(segment => plain(segment?.data) && Object.keys(segment.data).length)
+  .map(segment => reconnectMediaLabel.get(segment.type)).filter(Boolean))]
 const groupHistoryAddressed = (targets, bot, quoted) => targets.includes(bot) ||
   quoted === bot && !targets.some(target => target !== 'all')
 function groupHistoryPrecedes(first, second) {
@@ -841,8 +844,7 @@ export class OneBotDecisionAdapter {
               selected.expectedAccount, groupHistoryQuotedSpeaker(row, recent))) continue
             const body = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
             if (body.startsWith('/')) continue
-            const media = [...new Set(row.message.filter(segment => plain(segment?.data) && Object.keys(segment.data).length)
-              .map(segment => reconnectMediaLabel.get(segment.type)).filter(Boolean))]
+            const media = historyMediaKinds(row.message)
             if (!body && !media.length) continue
             const text = !body ? '[收到' + media.join('、') + '，内容未加载]'
               : row.message.some(segment => historySupplement.has(segment?.type))
@@ -1133,10 +1135,11 @@ export class OneBotDecisionAdapter {
           !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
           !Array.isArray(row.message) || row.message.length > 12) continue
       const text = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
-      if (!text || text.startsWith('/')) continue
+      if (text.startsWith('/')) continue
       const targets = row.message.filter(historyMention).map(segment => String(segment.data.qq))
       const quoted_speaker = groupHistoryQuotedSpeaker(row, rows)
       if (at < now - GROUP_CONTEXT_MS) {
+        if (!text) continue
         const plainTopic = row.message.every(historyTextSegment)
         const memberExchange = quoted_speaker && quoted_speaker !== bot && !targets.includes(bot) &&
           row.message.every(segment => historyTextSegment(segment) || historyMention(segment) || segment?.type === 'reply')
@@ -1145,7 +1148,10 @@ export class OneBotDecisionAdapter {
         }
         continue
       }
+      const unloadedMedia = historyMediaKinds(row.message)
+      if (!text && !unloadedMedia.length) continue
       recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600).toWellFormed(), at, images: [], at_targets: targets.slice(0, 8),
+        ...(unloadedMedia.length ? { media_not_loaded: unloadedMedia } : {}),
         quoted_speaker, addressed_to_bot: groupHistoryAddressed(targets, bot, quoted_speaker) })
     }
     const firstOrder = Math.min(0, ...local.map(row => row.historyOrder ?? row.arrival)) - recent.size
@@ -2922,7 +2928,7 @@ export class OneBotDecisionAdapter {
     const recent = this.recentGroupContext(scope, owner, now)
       .map(({ images, messageId, arrival, historyOrder, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
         ...(groupActivityReview && images.length ? { image_refs: images.map(image => image.id) } : {}) }))
-    const earlier = groupActivityReview && recent.length === 0 ? (group?.olderTopics || [])
+    const earlier = groupActivityReview && !recent.some(row => row.text.trim() || row.forwarded_excerpt || row.image_refs) ? (group?.olderTopics || [])
       .filter(row => row.at < now - GROUP_CONTEXT_MS && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
       .map(row => ({ text: row.text, age_seconds: Math.floor((now - row.at) / 1000) })) : []
     return '\n<observed_group_context>\n' + JSON.stringify({
@@ -2934,6 +2940,7 @@ export class OneBotDecisionAdapter {
       + (recent.some(row => row.forwarded_excerpt) ? ' A forwarded excerpt contains quoted speakers inside the forward. They are separate from the current sender; do not treat them as addressing you.' : '')
       + ' While listening, an autonomous review can join a current shared topic without an @. If the group is quiet, a fresh thought or question grounded in this group\'s shared interests can start a conversation. Check your own recent contributions and leave room for others. Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details.'
       + (recent.some(row => row.image_refs) ? ' If recent messages revolve around a shared image, inspect one via qq_view_group_image before deciding whether to join. If the image is unavailable, use the text you actually have or stay quiet.' : '')
+      + (recent.some(row => row.media_not_loaded) ? ' The media_not_loaded field identifies historical attachments without contents. Use actual text or an earlier shared topic. Do not guess what an attachment contains.' : '')
       + ' A real mention, verified reply, or confirmed delivery opens participation. During an engaged exchange, respond to the latest relevant remarks together without requiring another @. Use idle to skip a remark and group_conversation=end when the exchange ends or moves to others. An exchange with no direct contact, confirmed delivery or live continue for ten minutes returns to listening.'
   }
 
