@@ -2481,6 +2481,47 @@ test('real decision after a terminal reminder sends fresh inline text without a 
   assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
 })
 
+test('the next private message or group mention retains an unanswered question after an unsent draft', async t => {
+  for (const mode of ['private draft', 'group mention', 'explicit idle', 'expired handoff']) await t.test(mode, async t => {
+    const group = mode === 'group mention', retain = group || mode === 'private draft'
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy
+    if (group) {
+      h.deps.config.requireMention = true
+      h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    const receive = (text, messageId) => h.receive(text, group ? {
+      message_id: messageId, message_type: 'group', group_id: 303, user_id: 202,
+      message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text } }],
+    } : { message_id: messageId })
+    h.agent.step = async () => {
+      const record = adapter.state(h.chat).active
+      if (record.turn === 1) {
+        if (mode === 'explicit idle') assert.equal((await h.decide('idle')).accepted, true)
+        h.agent.session.append('assistant/message', { turn: record.turn, step: h.agent.phase.step,
+          message: { id: 'fixture-draft', content: [{ type: 'text', text: 'unsent assistant text' }] } })
+      } else {
+        const retained = record.claimedInput.history.join('\n')
+        if (retain) assert.match(retained, /earlier direct question/)
+        else assert.doesNotMatch(retained, /earlier direct question/)
+        assert.doesNotMatch(retained, /unsent assistant text/)
+        assert.equal((await h.decide('reply', { text: 'one current reply' })).sent, true)
+      }
+      return { kind: 'completed' }
+    }
+    await receive('earlier direct question', 611)
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    if (mode === 'expired handoff') h.advance(60_001)
+    await receive('new follow-up', 612)
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    const log = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    assert.equal(log.split('\n').filter(line => line.includes('"phase":"reply_handoff"')).length, retain ? 1 : 0)
+  })
+})
+
 test('an autonomous draft gets one same-turn decision reminder', async t => {
   for (const mode of ['group-reply', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
     const group = mode === 'group-reply'

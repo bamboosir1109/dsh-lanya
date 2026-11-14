@@ -2998,10 +2998,11 @@ export class OneBotDecisionAdapter {
     if (record.binding) this.diagnose(record.binding.scope, record.binding.messageId, 'turn_end', { turn: record.turn, reason: event.data.reason?.kind })
     const supersededReply = (record.replySuperseded || record.supersededIdleWake &&
       (!record.decision || record.decision.verdict === 'reply')) && !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
-    const budgetDeferredReply = record.replyDeferredByBudget && !record.decision && !record.ticket &&
+    const unsentDraft = event.data.reason?.kind === 'completed' && record.undecidedDraft
+    const undecidedReply = (record.replyDeferredByBudget || unsentDraft) && !record.decision && !record.ticket &&
       !record.inlineTextAttempted && !record.inFlight.size && !record.outcomes.length
     if ((scope.startsWith('private:') || record.claimedInput?.directGroupContact || record.claimedInput?.lateReplyText?.size) &&
-        (supersededReply || budgetDeferredReply || interruptedInlineReply(record)) &&
+        (supersededReply || undecidedReply || interruptedInlineReply(record)) &&
         record.claimedInput?.binding.origin === 'live' && !record.binding.recoveryRevision &&
         !record.claimConflict && state.active === record) {
       // Admission can invalidate the reply before or after its successor is
