@@ -694,10 +694,11 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       // The nonce and birth must still match after taking the writer slot.
       const previous = tables.some(table => table.name === 'consumer')
         ? db.prepare('SELECT * FROM consumer WHERE id=1').get() : null
-      const probedBirth = previous && previous.pid !== process.pid && validProcessBirth(previous.process_birth) &&
-        Number.isSafeInteger(previous.pid) && previous.pid > 0 && identity(previous.nonce) && isOwnerAlive(previous.pid)
-        ? await processBirth(previous.pid) : null
       const ownBirth = await processBirth(process.pid)
+      const probedBirth = previous && validProcessBirth(previous.process_birth) &&
+        Number.isSafeInteger(previous.pid) && previous.pid > 0 && identity(previous.nonce) && isOwnerAlive(previous.pid)
+        ? previous.pid === process.pid ? ownBirth : await processBirth(previous.pid)
+        : null
       if (stopped) { db.close(); return false }
       db.exec('BEGIN IMMEDIATE')
       db.exec('CREATE TABLE IF NOT EXISTS consumer (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, nonce TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retry (event_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_after INTEGER NOT NULL); PRAGMA user_version=1')

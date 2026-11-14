@@ -163,13 +163,15 @@ test('only a verified newer Windows process birth releases a reused PID', async 
   const originalBirth = String(10n ** 17n)
   const newerBirth = String(BigInt(originalBirth) + 1n)
   const claimingBirth = String(BigInt(originalBirth) + 2n)
-  for (const [label, observedBirth, reclaimed] of [
-    ['reused PID', newerBirth, true],
-    ['same process', originalBirth, false],
-    ['unavailable birth', null, false],
+  for (const [label, samePid, observedBirth, reclaimed] of [
+    ['reused PID belongs to another process', false, newerBirth, true],
+    ['new consumer has the previous PID', true, claimingBirth, true],
+    ['same process', true, originalBirth, false],
+    ['other living process', false, originalBirth, false],
+    ['unavailable birth', true, null, false],
   ]) await t.test(label, async t => {
     const root = fixture(t), file = path.join(root, 'consumer.sqlite')
-    const ownerPid = process.pid === 42 ? 43 : 42
+    const ownerPid = samePid ? process.pid : process.pid === 42 ? 43 : 42
     const db = new DatabaseSync(file)
     db.exec('CREATE TABLE consumer(id INTEGER PRIMARY KEY,pid INTEGER NOT NULL,nonce TEXT NOT NULL,process_birth TEXT); PRAGMA user_version=1')
     db.prepare('INSERT INTO consumer VALUES (1,?,?,?)').run(ownerPid, 'fixture-owner', originalBirth)
