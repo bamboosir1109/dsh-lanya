@@ -136,6 +136,10 @@ class BudgetRuntimeTests(unittest.TestCase):
         self.assertFalse(state['can_start_new_turn'])
         self.assertEqual(state['blocked_reason'], 'insufficient_reserve')
         self.assertFalse(self.run_op(turn_key='e' * 64)['allowed'])
+        probe = {'operation': 'autonomy_readiness', 'budget_contract': budget.CONTRACT}
+        self.assertEqual(budget.operate(probe, self.now), {'read_only': True, 'can_start_new_turn': False})
+        self.assertEqual(budget.operate(probe, self.now + 86400000), {'read_only': True, 'can_start_new_turn': True})
+        self.assertEqual(budget.get_snapshot(self.now)['usage']['buckets']['autonomy'], state)
 
     def test_unknown_keeps_reservation_and_restart_does_not_replay(self):
         self.run_op()

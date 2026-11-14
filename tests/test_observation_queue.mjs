@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { createInlineObservationPump as createObservationPump, createObservationPump as createWorkerPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
+import { createInlineObservationPump as createObservationPump, createObservationPump as createWorkerPump,
+  ObservationBudgetDeferred, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const resources = new Map()
@@ -77,6 +78,28 @@ test('failed model dispatch is retained with durable backoff and can recover', a
   assert.equal(calls, 1)
   now += 2001
   assert.equal((await second.drain()).processed, 1)
+  assert.equal(calls, 2)
+})
+
+test('budget deferral persists a retry time without counting a dispatch failure', async t => {
+  const root = fixture(t)
+  const name = write(root, event('budget-hold'))
+  let now = 100, calls = 0
+  const p = await pump(t, root, async () => {
+    if (++calls === 1) throw new ObservationBudgetDeferred(now + 60_000)
+    return { completed: true, status: 'decided', decision_id: 'ready-later' }
+  }, { now: () => now })
+  assert.equal((await p.drain()).processed, 0)
+  const db = new DatabaseSync(path.join(root, 'consumer.sqlite'), { readOnly: true })
+  try {
+    const row = db.prepare('SELECT attempts, next_after FROM retry WHERE event_key=?').get(name)
+    assert.deepEqual({ ...row }, { attempts: 0, next_after: 60_100 })
+  } finally { db.close() }
+  now += 59_999
+  await p.drain()
+  assert.equal(calls, 1)
+  now++
+  assert.equal((await p.drain()).processed, 1)
   assert.equal(calls, 2)
 })
 

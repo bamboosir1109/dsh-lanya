@@ -344,6 +344,11 @@ def operate(request, now=None):
     # the one-time change of this project's nominal amount convention.
     if not isinstance(request, dict) or not _is_contract(request.get('budget_contract')):
         raise BudgetError('budget_currency_contract_required', 409)
+    if request.get('operation') == 'autonomy_readiness':
+        if set(request) != {'operation', 'budget_contract'}:
+            raise BudgetError('invalid_budget_readiness', 400)
+        bucket = get_snapshot(now)['usage']['buckets']['autonomy']
+        return {'read_only': True, 'can_start_new_turn': bucket['can_start_new_turn']}
     if isinstance(request, dict) and request.get('operation') == 'heartbeat':
         fields = {'operation','instance_id','pid','adapter_source_sha256','budget_contract'}
         backend_fields = {'backend_transport_bound', 'backend_quote_bound'}

@@ -3538,13 +3538,58 @@ test('other native admission failures reject rather than claim the unresolved-re
     const original = adapter.policy.completeObservationWithoutDecision
     adapter.policy.completeObservationWithoutDecision = (...args) => { lifecycleCalls++; return original(...args) }
     if (mode === 'live-input') await h.receive('synthetic live refusal')
-    else await assert.rejects(adapter.dispatchObservation(event), /before a real decision/)
+    else await assert.rejects(adapter.dispatchObservation(event), mode === 'budget_exhausted'
+      ? { name: 'ObservationBudgetDeferred' } : /before a real decision/)
     await driverSettled(h)
     assert.equal(lifecycleCalls, 0)
     assert.equal(h.steps.length, 0)
     assert.deepEqual(h.requests.map(item => item.operation), ['reserve'])
     assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
   })
+})
+
+test('a verified exhausted autonomous bucket defers more opportunities without blocking live replies', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const budgetProvider = adapter.budgetProvider
+  let ready = false, probes = 0
+  adapter.budgetProvider = request => {
+    if (request.operation === 'autonomy_readiness') {
+      probes++
+      return Promise.resolve({ read_only: true, can_start_new_turn: ready })
+    }
+    if (!ready && request.origin === 'observation' && request.operation === 'reserve') {
+      return Promise.resolve({ allowed: false, category: 'autonomy', limited: true, reason: 'budget_exhausted' })
+    }
+    return budgetProvider(request)
+  }
+  const event = await primaryEvent(h, 'fixture-budget-deferred')
+  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  await driverSettled(h)
+  const before = (await adapter.policy.snapshot(event.scope)).revision
+  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  assert.equal((await adapter.policy.snapshot(event.scope)).revision, before)
+  assert.equal(h.agent.inbox.hasPending, false)
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'a real fixture reply' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('real incoming question')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.ok(h.requests.some(request => request.origin === 'live' && request.operation === 'reserve'))
+  const liveRevision = (await adapter.policy.snapshot(event.scope)).revision
+  h.advance(60_001)
+  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  assert.equal(probes, 1)
+  assert.equal((await adapter.policy.snapshot(event.scope)).revision, liveRevision)
+  ready = true; h.advance(60_001)
+  h.agent.step = async () => {
+    assert.equal((await h.decide('idle')).accepted, true)
+    return { kind: 'completed' }
+  }
+  assert.equal((await adapter.dispatchObservation(event)).completed, true)
+  await driverSettled(h)
+  assert.equal(probes, 2)
+  assert.ok((await adapter.policy.snapshot(event.scope)).revision > liveRevision)
 })
 
 test('reviewed native driver wakes an owned pending live input after its unbound restored turn blocks', async t => {

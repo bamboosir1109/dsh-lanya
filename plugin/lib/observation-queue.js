@@ -19,6 +19,13 @@ export class ObservationForegroundBusy extends ObservationQueueError {
     this.name = 'ObservationForegroundBusy'
   }
 }
+export class ObservationBudgetDeferred extends ObservationQueueError {
+  constructor(retryAt) {
+    super('Autonomous budget cannot reserve a turn yet')
+    this.name = 'ObservationBudgetDeferred'
+    this.retryAt = retryAt
+  }
+}
 class MissingLegacyObservation extends ObservationQueueError {}
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const hash = (x) => createHash('sha256').update(x).digest('hex')
@@ -692,11 +699,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, attempts, now() + delay)
   }
 
-  function deferForeground(key) {
-    // No native turn was queued. Keep any previous failure count and resume
-    // checking at the regular cadence once this scope is available.
+  function deferEntry(key, nextAfter) {
+    // A temporary gate does not increase the prior failure count.
     leaseDb.prepare('INSERT INTO retry(event_key,attempts,next_after) VALUES (?,0,?) '
-      + 'ON CONFLICT(event_key) DO UPDATE SET next_after=excluded.next_after').run(key, now() + intervalMs)
+      + 'ON CONFLICT(event_key) DO UPDATE SET next_after=excluded.next_after').run(key, nextAfter)
   }
 
   function parkInvalidTerminal(key) {
@@ -722,7 +728,12 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       outcome = await dispatch(event)
     } catch (error) {
       if (error instanceof ObservationForegroundBusy) {
-        deferForeground(name)
+        deferEntry(name, now() + intervalMs)
+        return 0
+      }
+      if (error instanceof ObservationBudgetDeferred && Number.isSafeInteger(error.retryAt)) {
+        const time = now()
+        deferEntry(name, Math.max(time + intervalMs, Math.min(error.retryAt, time + 60_000)))
         return 0
       }
       failed(name)

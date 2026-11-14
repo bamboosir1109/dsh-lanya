@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createDecisionPolicy, canonicalScope, autonomousRestState, FRIEND_RECONNECT_WINDOW_MS } from './decision-policy.js'
-import { createObservationPump, validateObservation, observationFreshness, ObservationForegroundBusy } from './observation-queue.js'
+import { createObservationPump, validateObservation, observationFreshness, ObservationForegroundBusy, ObservationBudgetDeferred } from './observation-queue.js'
 import { AutonomyPlanner } from './autonomy-intents.js'
 import { NarrativeDiary } from './narrative-diary.js'
 import { createBackendGuard } from './qq-backend.js'
@@ -590,6 +590,8 @@ export class OneBotDecisionAdapter {
     this.budgetSourceHash = LOADED_ADAPTER_SHA256
     this.budgetProvider = budgetProvider || ((request) => this.readTrustedHelper(config.budgetRuntimeScript, request, { timeout: 7000 }))
     this.budgetToolChecks = new WeakMap()
+    this.autonomyBudgetRetryAt = 0
+    this.autonomyBudgetRead = null
     this.intentPlanner = new AutonomyPlanner(this)
     this.narrativeDiary = new NarrativeDiary(this)
     this.accountActivity = new AccountActivity(this)
@@ -1862,14 +1864,14 @@ export class OneBotDecisionAdapter {
             NATIVE_BUDGET_REFUSALS.has(error.reason) ? error.reason : null
           this.log('warn', 'native_budget_admission_refused:' + (reason || 'unavailable_or_invalid_receipt'))
           this.diagnose(binding.scope, binding.messageId, 'blocked', { reason: reason || 'budget_admission_refused', turn: request.turn })
-          if (reason === 'previous_turn_unresolved' && request.step === 1 &&
+          if (['previous_turn_unresolved', 'budget_exhausted'].includes(reason) && request.step === 1 &&
               record === this.state(chat).active && record.turn === request.turn && !record.ended &&
               !request.signal?.aborted && !record.claimConflict && record.binding === binding &&
               binding.origin === 'observation' && localOpportunity(binding) && !binding.budget &&
               !record.reservation && !record.nativeStepEntered && !record.decision && !record.ticket &&
               record.outcomes.length === 0 && record.inFlight.size === 0) {
             record.nativeAdmissionRefused = Object.freeze({ binding, turn: request.turn, signal: request.signal,
-              reason: 'previous_turn_unresolved' })
+              reason })
           }
           return { kind: 'reject', reason: reason || 'budget_admission_refused' }
         }
@@ -2808,11 +2810,16 @@ export class OneBotDecisionAdapter {
           return
         }
         const refused = record.nativeAdmissionRefused
-        if (event.data.reason?.kind === 'blocked' && refused?.reason === 'previous_turn_unresolved' &&
+        if (event.data.reason?.kind === 'blocked' && refused &&
             refused.turn === record.turn && refused.binding === record.binding && !refused.signal?.aborted &&
             record.binding.origin === 'observation' && localOpportunity(record.binding) &&
             !record.binding.budget && !record.reservation && !record.nativeStepEntered && !record.ticket &&
             record.outcomes.length === 0 && record.inFlight.size === 0) {
+          if (refused.reason === 'budget_exhausted') {
+            this.autonomyBudgetRetryAt = this.now() + 60_000
+            completion.reject(new ObservationBudgetDeferred(this.autonomyBudgetRetryAt))
+            return
+          }
           try {
             const outcome = await this.policy.completeObservationWithoutDecision({ scope,
               eventId: record.binding.messageId, expectedRevision: record.binding.revision,
@@ -3287,6 +3294,14 @@ export class OneBotDecisionAdapter {
       canFinish: () => !this.observationInFlight(event.scope, event.event_id) })
     if (local.finished === true) return { completed: true, ...local.local_outcome }
     if (!['within_autonomous_hours', 'already_decided'].includes(local.reason)) throw new Error('Observation cannot safely close for rest: ' + local.reason)
+    // The configured autonomous bucket is shared across these conversations.
+    // Only a real zero-step reserve refusal arms this short hold. Live replies
+    // use their own bucket, and the reserve gate still checks any resumed turn.
+    if (this.autonomyBudgetRetryAt && localOpportunity({ observationKind: event.kind, observationProducer: event.producer,
+      trustedSocialRequest: socialRequest?.request_id })) {
+      const prior = (await this.policy.snapshot(event.scope))?.observations?.find(item => item.eventId === event.event_id)
+      if (!prior?.decision && !prior?.localOutcome) await this.waitForAutonomyBudget()
+    }
     if (socialRequest) await this.intentPlanner.verifyRelation(socialRequest)
     if (this.observations.has(key)) return this.observations.get(key).promise
     let resolve, reject
@@ -3296,6 +3311,25 @@ export class OneBotDecisionAdapter {
     void this.dispatchObservationOnce(event).then(resolve, reject)
     promise.then(() => this.observations.delete(key), () => this.observations.delete(key))
     return promise
+  }
+
+  async waitForAutonomyBudget() {
+    if (!this.autonomyBudgetRetryAt) return
+    if (this.now() >= this.autonomyBudgetRetryAt) {
+      this.autonomyBudgetRead ??= Promise.resolve()
+        .then(() => this.budgetProvider({ operation: 'autonomy_readiness', budget_contract: BUDGET_CONTRACT }))
+        .then(value => {
+          if (value?.read_only !== true || typeof value.can_start_new_turn !== 'boolean') throw new Error('Invalid budget readiness receipt')
+          this.autonomyBudgetRetryAt = value.can_start_new_turn ? 0 : this.now() + 60_000
+        })
+        .catch(error => {
+          this.autonomyBudgetRetryAt = this.now() + 60_000
+          this.log('warn', 'autonomy_budget_read_unavailable:' + error.name)
+        })
+        .finally(() => { this.autonomyBudgetRead = null })
+      await this.autonomyBudgetRead
+    }
+    if (this.autonomyBudgetRetryAt) throw new ObservationBudgetDeferred(this.autonomyBudgetRetryAt)
   }
 
   async dispatchObservationOnce(event) {
