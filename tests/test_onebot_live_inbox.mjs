@@ -2391,6 +2391,54 @@ test('verified reconnect can recover the first real mention before a group has l
   })
 })
 
+test('reconnect recovers quote follow-ups only with a real mention or the bot in verified group history', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 10
+  h.advance(75_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  const row = (message_id, offset, text, { target, quote, author = 202, group = 303 } = {}) => ({
+    message_id, message_type: 'group', group_id: group, time: at + offset, sender: { user_id: author }, message: [
+      ...(target ? [{ type: 'at', data: { qq: target } }] : []),
+      ...(quote ? [{ type: 'reply', data: { id: quote, text: 'untrusted preview' } }] : []),
+      { type: 'text', data: { text } },
+    ],
+  })
+  h.deps.connection.call = async (action, params) => action === 'get_group_msg_history' ? { messages: [
+    row(901, -30, 'own group result', { author: 999 }),
+    row(902, -29, 'another member original', { author: 204 }),
+    row(903, 0, 'quoted bot follow-up', { quote: '901' }),
+    row(904, 1, 'another member follow-up', { quote: '902' }),
+    row(905, 2, 'mention with quote outside the window', { target: '999', quote: '890' }),
+    row(906, 3, 'unverified quote only', { quote: '890' }),
+    row(907, 4, 'private aside to another member', { target: '204', quote: '901' }),
+    row(908, 5, 'wrong group original', { author: 999, group: 404 }),
+    row(909, 6, 'foreign quote only', { quote: '908' }),
+  ] } : call(action, params)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  const state = await a.policy.snapshot(scope)
+  assert.deepEqual(Array.from(state.seen, item => item.messageId), ['903', '905'])
+  assert.equal(state.current.controlAllowed, false)
+  assert.match(state.current.replyReview.text, /quoted bot follow-up.*mention with quote outside the window/u)
+  assert.doesNotMatch(state.current.replyReview.text, /untrusted preview|own group result|another member follow-up/u)
+  const owner = await a.trustedOwner(scope)
+  const byId = new Map(a.recentGroupContext(scope, owner).map(item => [item.messageId, item]))
+  assert.equal(byId.get('903').quoted_speaker, '999')
+  assert.equal(byId.get('904').quoted_speaker, '204')
+  assert.equal(byId.get('905').addressed_to_bot, true)
+  assert.equal(byId.get('909').quoted_speaker, null)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'One answer to the recovered follow-ups' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('verified reconnect restores recent group text as listening context without opening a live turn', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   backendFixture(h)

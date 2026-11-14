@@ -177,6 +177,17 @@ const groupHistorySender = row => {
   return /^[1-9][0-9]*$/.test(sender) && row.anonymous == null && row.sub_type !== 'anonymous' &&
     (row.user_id == null || String(row.user_id) === sender) ? sender : null
 }
+const historyTextSegment = segment => segment?.type === 'text' && typeof segment.data?.text === 'string'
+function groupHistoryQuotedSpeaker(row, rows) {
+  const replies = row.message.filter(segment => segment?.type === 'reply')
+  if (replies.length !== 1) return null
+  const id = String(replies[0].data?.id ?? '')
+  if (!/^-?[0-9]{1,16}$/.test(id) || !Number.isSafeInteger(Number(id)) || id === String(row.message_id)) return null
+  const matches = rows.filter(item => plain(item) && item.message_type === 'group' &&
+    String(item.group_id) === String(row.group_id) && String(item.message_id) === id)
+  return matches.length === 1 && Number.isSafeInteger(matches[0].time) && matches[0].time > 0 && matches[0].time < row.time
+    ? groupHistorySender(matches[0]) : null
+}
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
 function androidCheckoutIntent(text) {
@@ -810,9 +821,9 @@ export class OneBotDecisionAdapter {
                 !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
                 !Array.isArray(row.message) || !row.message.length || row.message.length > 12) continue
             const target = segment => group && segment?.type === 'at' && String(segment.data?.qq) === selected.expectedAccount
-            const ordinary = segment => segment?.type === 'text' && typeof segment.data?.text === 'string'
-            if (row.message.some(segment => !ordinary(segment) && !target(segment)) || group && !row.message.some(target)) continue
-            const text = row.message.filter(ordinary).map(segment => segment.data.text).join('').trim()
+            if (row.message.some(segment => !historyTextSegment(segment) && !target(segment) && !(group && segment?.type === 'reply'))) continue
+            if (group && !row.message.some(target) && groupHistoryQuotedSpeaker(row, recent) !== selected.expectedAccount) continue
+            const text = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
             if (text && text.length <= 2000 && !text.startsWith('/')) receipts.set(messageId, { messageId, at, text, sender })
           }
           const batch = [...receipts.values()].sort((a, b) => a.at - b.at).slice(-8)
@@ -1097,13 +1108,13 @@ export class OneBotDecisionAdapter {
       if (at < now - GROUP_CONTEXT_MS || !speaker || speaker === bot || localIds.has(messageId) ||
           !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
           !Array.isArray(row.message) || row.message.length > 12) continue
-      const text = row.message.filter(segment => segment?.type === 'text' && typeof segment.data?.text === 'string')
-        .map(segment => segment.data.text).join('').trim()
+      const text = row.message.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
       if (!text || text.startsWith('/')) continue
       const at_targets = row.message.filter(segment => segment?.type === 'at').map(segment => String(segment.data?.qq))
         .filter(target => /^(?:[1-9][0-9]*|all)$/.test(target)).slice(0, 8)
-      recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600), at, images: [], at_targets,
-        quoted_speaker: null, addressed_to_bot: at_targets.includes(bot) })
+      const quoted_speaker = groupHistoryQuotedSpeaker(row, rows)
+      recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600).toWellFormed(), at, images: [], at_targets,
+        quoted_speaker, addressed_to_bot: at_targets.includes(bot) || quoted_speaker === bot })
     }
     const firstOrder = Math.min(0, ...local.map(row => row.historyOrder ?? row.arrival)) - recent.size
     const restored = [...recent.values()].map((row, i) => ({ ...row, arrival: firstOrder + i }))
