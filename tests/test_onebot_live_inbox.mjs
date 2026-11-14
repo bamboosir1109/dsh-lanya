@@ -1779,9 +1779,11 @@ test('a slow private attachment keeps the sender caption with a newer message', 
     assert.match(entry.originalText, /new private question/)
     assert.doesNotMatch(entry.originalText, /synthetic-attachment|Which part/)
     assert.deepEqual([...entry.latePrivateText.values()], ['Which part of this looks off?'])
+    await Promise.all([...adapter.replyReviewWrites])
     const snapshot = await adapter.policy.snapshot(chat.chatId)
     assert.equal(snapshot.revision, 1)
     assert.equal(snapshot.current.messageId, entry.binding.messageId)
+    if (successor === 'preparing') assert.match(snapshot.current.replyReview.text, /Which part of this looks off\?/)
     assert.equal(chat.agent.inbox.nextTurn.length, 1)
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
@@ -1791,6 +1793,39 @@ test('a slow private attachment keeps the sender caption with a newer message', 
     await h.end()
     assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   })
+})
+
+test('a missed private reply review retains an earlier slow attachment caption', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const reading = defer(), releaseMedia = defer()
+  h.deps.media.resolve = async () => {
+    reading.resolve()
+    await releaseMedia.promise
+    return undefined
+  }
+  const older = h.receive('caption with a slow attachment', { message: [
+    { type: 'text', data: { text: 'Which of the two colors works?' } },
+    { type: 'image', data: { file: 'synthetic-attachment', sub_type: '1' } },
+  ] })
+  await reading.promise
+  try { await h.receive('I meant the smaller one') }
+  finally { releaseMedia.resolve() }
+  await older
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  await Promise.all([...adapter.replyReviewWrites])
+  const current = (await adapter.policy.snapshot(h.chat.chatId)).current
+  assert.match(current.replyReview.text, /Which of the two colors works\?[\s\S]*I meant the smaller one/)
+  assert.doesNotMatch(current.replyReview.text, /synthetic-attachment/)
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  const [message] = h.pending
+  assert.match(message.content[0].text, /Which of the two colors works\?[\s\S]*I meant the smaller one/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer after the review' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
 test('quote-only admin input cannot authorize control; fresh current text with quote still can', async t => {

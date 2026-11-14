@@ -245,6 +245,9 @@ const replyHandoffText = (entry, partial) => partial
   ? 'QQ delivery note: only an opening portion of the reply to the message below was sent. '
     + 'Use the new turn to cover any still relevant missing points without repeating the opening.\n' + entry.originalText
   : entry.originalText
+const replyEvidenceWithLateText = (text, late) => late?.size
+  ? '[同一私聊中较早的附带文字，引用或附件内容未包含]\n' + [...late.values()].join('\n') + '\n\n' + text
+  : text
 const sameReplyConversation = (entry, binding, role) => entry?.binding.origin === 'live' && !entry.binding.recoveryRevision &&
   entry.binding.scope === binding.scope && entry.binding.revision < binding.revision &&
   ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => entry.binding.owner[key] === binding.owner[key]) &&
@@ -1592,12 +1595,14 @@ export class OneBotDecisionAdapter {
     const receivedAt = Number.isSafeInteger(arrivedAt) && arrivedAt >= 0 && arrivedAt <= now ? arrivedAt : now
     const batchFirstAt = merge && Number.isSafeInteger(previous.batchFirstAt) ? Math.min(previous.batchFirstAt, receivedAt) : receivedAt
     const sender = this.context.getStore()?.inbound?.userId
-    const replyEvidenceText = excerpt ? excerpt + '\n' + original : original
+    const baseReplyEvidence = excerpt ? excerpt + '\n' + original : original
     const current = this.context.getStore()
     const previousNotes = merge ? previous.latePrivateText : []
     const latePrivateText = new Map([...previousNotes, ...(current?.latePrivateText ?? [])].slice(-4))
+    const replyEvidenceText = replyEvidenceWithLateText(baseReplyEvidence, latePrivateText)
     const entry = Object.freeze({ binding, role, sender, originalText: original, history: recent, directGroupContact, groupContactText,
       receivedAt, batchFirstAt, replyEvidenceText, arrival: current?.arrival, latePrivateText,
+      baseReplyEvidence,
       fingerprint: identity(JSON.stringify(finalMessage)), agent: chat.agent })
     state.pending.set(message.id, entry)
     if (binding.origin === 'live') state.liveRevision = binding.revision
@@ -1873,7 +1878,10 @@ export class OneBotDecisionAdapter {
             record.claimedInput = Object.freeze({ ...entry, history: retained, groupContactText,
               directGroupContact: groupContactText !== null })
             if (!group || groupContactText) {
-              this.persistReplyInput(entry.binding, excerpt + '\n' + entry.originalText, entry.sender, false, entry.replyEvidenceText)
+              record.baseReplyEvidence = excerpt + '\n' + entry.originalText
+              const evidence = replyEvidenceWithLateText(record.baseReplyEvidence, entry.latePrivateText)
+              this.persistReplyInput(entry.binding, evidence, entry.sender, false, entry.replyEvidenceText)
+              record.replyEvidenceText = evidence
             }
             const tag = group ? 'interrupted_group_context' : 'interrupted_private_context'
             record.replyHandoff = '\nA prior ' + (group ? 'group' : 'private') + ' reply in this same conversation was interrupted. '
@@ -1882,6 +1890,8 @@ export class OneBotDecisionAdapter {
           }
         }
       }
+      record.replyEvidenceText ??= entry.replyEvidenceText
+      record.baseReplyEvidence ??= entry.baseReplyEvidence
       chat.activeTurnRole = entry.role
       this.diagnose(record.binding.scope, record.binding.messageId, 'claimed', { turn, revision: record.binding.revision })
     })
@@ -2855,6 +2865,13 @@ export class OneBotDecisionAdapter {
     else if (record.ticket) this.runEnvelope(envelope, () => this.bridge.interim.onTurnEnd(scope, record.shadow))
     const settled = (async () => {
       while (record.inFlight.size) await Promise.allSettled([...record.inFlight])
+      const entry = record.claimedInput
+      if (entry?.latePrivateText?.size &&
+          !record.claimConflict && !record.decision && !record.outcomes.length &&
+          entry.binding.origin === 'live' && !entry.binding.recoveryRevision && !entry.binding.temporaryPrivate) {
+        const evidence = replyEvidenceWithLateText(record.baseReplyEvidence, entry.latePrivateText)
+        if (evidence !== record.replyEvidenceText) this.persistReplyInput(entry.binding, evidence, entry.sender, false, record.replyEvidenceText)
+      }
       try { await this.settleBudget(chat, record, event) }
       catch (error) { this.log('warn', 'budget_settlement_unavailable:' + error.name) }
       state.turns.delete(event.data.turn)
