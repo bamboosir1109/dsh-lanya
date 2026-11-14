@@ -1729,6 +1729,55 @@ test('late partially resolved quoted images cannot supersede a newer native inpu
   assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
 })
 
+test('a slow private attachment keeps the sender caption with a newer message', async t => {
+  for (const successor of ['preparing', 'queued']) await t.test(successor, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const reading = defer(), releaseMedia = defer(), preparing = defer(), releaseMemory = defer()
+    h.deps.media.resolve = async () => {
+      reading.resolve()
+      await releaseMedia.promise
+      return { kind: 'image', path: path.join(h.directory, 'synthetic-attachment.png') }
+    }
+    adapter.memoryContext = async (_scope, text) => {
+      if (successor === 'preparing' && text.includes('new private question')) {
+        preparing.resolve()
+        await releaseMemory.promise
+      }
+    }
+    const older = h.receive('caption with a question', { message: [
+      { type: 'text', data: { text: 'Which part of this looks off?' } },
+      { type: 'image', data: { file: 'synthetic-attachment', sub_type: '1' } },
+    ] })
+    await reading.promise
+    const newer = h.receive('new private question')
+    try {
+      await (successor === 'preparing' ? preparing.promise : newer)
+      releaseMedia.resolve()
+      await older
+    } finally {
+      releaseMedia.resolve()
+      releaseMemory.resolve()
+    }
+    await newer
+    const chat = h.chat, [message] = chat.agent.inbox.nextTurn
+    const entry = adapter.state(chat).pending.get(message.id)
+    assert.match(entry.originalText, /new private question/)
+    assert.doesNotMatch(entry.originalText, /synthetic-attachment|Which part/)
+    assert.deepEqual([...entry.latePrivateText.values()], ['Which part of this looks off?'])
+    const snapshot = await adapter.policy.snapshot(chat.chatId)
+    assert.equal(snapshot.revision, 1)
+    assert.equal(snapshot.current.messageId, entry.binding.messageId)
+    assert.equal(chat.agent.inbox.nextTurn.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+    assert.match(prompt, /<earlier_private_text>\n\["Which part of this looks off\?"\]/)
+    assert.doesNotMatch(prompt, /synthetic-attachment/)
+    assert.equal((await h.decide('reply', { text: 'one answer after reading both messages' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('quote-only admin input cannot authorize control; fresh current text with quote still can', async t => {
   const h = await fixture(t)
   h.deps.connection.call = async () => ({ message_id: 41, message_type: 'private', sender: { user_id: 101 },
