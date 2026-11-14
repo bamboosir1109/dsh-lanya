@@ -2850,7 +2850,7 @@ test('a group activity review searches recent group text and falls back to the s
   await h.opportunity()
   assert.equal(request.query, 'fresh follow-up to search for')
   h.advance(601_000)
-  group.liveTopics = []
+  group.sharedTopics = []
   group.olderTopics = [{ at: a.now() - 700_000, text: 'same-group hobby question', quoted_text: 'verified hobby detail' }]
   await h.opportunity()
   assert.equal(request.query, 'verified hobby detail\nsame-group hobby question')
@@ -3037,6 +3037,28 @@ test('personal asides cannot displace an unreviewed shared group topic from auto
   assert.equal(query, '')
   await h.end()
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('restored shared group discussion survives a history batch dominated by personal asides', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await adapter.trustedOwner(scope)
+  const row = (id, text, others = [], groupId = 303) => ({ message_id: id, group_id: groupId, message_type: 'group',
+    sender: { user_id: 202 }, time: Math.floor(adapter.now() / 1000) - 45 + id - 680,
+    message: [...others, { type: 'text', data: { text } }] })
+  const mention = { type: 'at', data: { qq: '204' } }
+  const history = [row(680, 'discussion from a different group', [], 404),
+    row(681, 'would crosshatching work for pixel art?'), row(682, 'can you send the palette privately?', [mention]),
+    ...Array.from({ length: 12 }, (_, i) => row(683 + i, 'a personal aside', [mention]))]
+  adapter.restoreRecentGroupText(scope, owner, history, adapter.now(), '999', true)
+  await h.opportunity(); h.start(); await h.preStep()
+  const context = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(context.recent.length, 12)
+  assert.deepEqual(context.new_shared_topics?.map(item => item.text), ['would crosshatching work for pixel art?'])
+  assert.equal((await h.decide('reply', { text: 'Try a two-color pattern on the edges' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  const next = adapter.groupPromptContext(scope, owner, true)
+  assert.doesNotMatch(next, /new_shared_topics|discussion from a different group|can you send the palette privately/)
 })
 
 test('same-group photo captions survive as topic clues with missing media clearly indicated', async t => {

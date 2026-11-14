@@ -1365,6 +1365,14 @@ export class OneBotDecisionAdapter {
     const restored = [...recent.values()].map((row, i) => ({ ...row, arrival: firstOrder + i }))
     group.recent = [...local, ...restored].sort(orderGroupRows).slice(-12)
     if (includeOlderTopics) {
+      const shared = new Map((group.sharedTopics || []).map(row => [row.messageId, row]))
+      for (const row of restored) {
+        if (!shared.has(row.messageId) && sharedGroupRemark(row) && row.text && !groupAttachmentPlaceholder.test(row.text)) {
+          shared.set(row.messageId, { messageId: row.messageId, at: row.at, text: row.text.slice(0, 320).toWellFormed(),
+            ...(row.quoted_text && { quoted_text: row.quoted_text }) })
+        }
+      }
+      group.sharedTopics = [...shared.values()].sort((a, b) => a.at - b.at).slice(-12)
       group.olderTopics = [...new Map([...(group.olderTopics || []).filter(row => row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
         .map(row => [row.messageId, row]), ...topics]).values()].sort((a, b) => a.at - b.at).slice(-3)
       group.ownTopics = [...own.values()].sort((a, b) => a.at - b.at).slice(-3)
@@ -1458,8 +1466,8 @@ export class OneBotDecisionAdapter {
               memberExchange && segments.every(historyDiscussionSegment))) {
           const text = segments.filter(historyTextSegment).map(segment => segment.data.text).join('').trim()
           if (text && !text.startsWith('/') && !groupAttachmentPlaceholder.test(text)) {
-            const previous = (group.liveTopics || []).filter(topic => topic.messageId !== row.messageId)
-            group.liveTopics = [...previous, { messageId: row.messageId, at: row.at,
+            const previous = (group.sharedTopics || []).filter(topic => topic.messageId !== row.messageId)
+            group.sharedTopics = [...previous, { messageId: row.messageId, at: row.at,
               text: text.slice(0, 320).toWellFormed(), ...(memberExchange ? { quoted_text: row.quoted_text } : {}) }]
               .sort((a, b) => a.at - b.at).slice(-12)
           }
@@ -3444,15 +3452,15 @@ export class OneBotDecisionAdapter {
   }
 
   unreviewedBufferedTopics(group, recent, now) {
-    // The live topic buffer outlasts the display window when personal asides
+    // The shared topic buffer outlasts the display window when personal asides
     // push a still-current shared discussion out of the recent message list.
-    return (group?.liveTopics || []).filter(row => row.at <= now && row.at >= now - GROUP_CONTEXT_MS &&
+    return (group?.sharedTopics || []).filter(row => row.at <= now && row.at >= now - GROUP_CONTEXT_MS &&
       !group.reviewedMessages?.has(row.messageId) && !recent.some(current => current.messageId === row.messageId)).slice(-3)
   }
 
   earlierGroupTopics(scope, owner, now) {
     const group = this.groupConversation(scope, owner, false)
-    const earlier = new Map((group?.liveTopics || []).map(row => [row.messageId, row]))
+    const earlier = new Map((group?.sharedTopics || []).map(row => [row.messageId, row]))
     for (const row of group?.olderTopics || []) earlier.set(row.messageId, row)
     return [...earlier.values()].filter(row => row.at < now - GROUP_CONTEXT_MS && row.at >= now - GROUP_TOPIC_LOOKBACK_MS)
       .sort((a, b) => a.at - b.at).slice(-3)
