@@ -28,6 +28,7 @@ const decisionIdentity = (x) => identity(x) && x.trim().length > 0
 const MAX_CONCURRENT_SCOPES = 4
 const TERMINAL_ACK_BATCH_SIZE = 64
 const TERMINAL_ACK_BATCH_BYTES = 4 * 1024 * 1024
+const SCANNER_READ_BATCH_SIZE = 8
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
 const reviewTime = (event, completion) => !['unknown', 'no_decision'].includes(completion.status) &&
   !producerOwnedReview.has(event.kind) ? completion.next_review_at ?? Infinity : Infinity
@@ -363,6 +364,24 @@ function fileScanner(directory, incremental = true) {
         version, nextAt: reviewTime(read.value, read.completion) })
       if (reads.size > TERMINAL_ACK_BATCH_SIZE) throw new ObservationQueueError('Scanner read window exceeded')
       return read
+    },
+    readBatch({ keys }) {
+      if (!Array.isArray(keys) || keys.length > SCANNER_READ_BATCH_SIZE) throw new ObservationQueueError('Invalid scanner batch')
+      return keys.map(key => {
+        try { return { read: this.read({ key }) } }
+        catch (error) { return { error: error.name } }
+      })
+    },
+    rememberTerminals({ records, at }) {
+      const remembered = []
+      for (const { key, sha256, completionSha256 } of records) {
+        const previous = reads.get(key)
+        if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256 || previous.nextAt <= at) continue
+        reads.delete(key)
+        history.set(key + '.json', { version: previous.version, nextAt: previous.nextAt })
+        remembered.push(key)
+      }
+      return remembered
     },
     review({ key, sha256, completionSha256, at, acknowledged }) {
       const previous = reads.get(key)
@@ -759,6 +778,12 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
               const records = terminals.splice(0)
               terminalBytes = 0
               const outcomes = await acknowledgeScanned(records)
+              const acknowledgedReads = records.filter(({ name }) => outcomes.get(name) === true)
+              const remembered = new Set(acknowledgedReads.length ? await scanner.call('rememberTerminals', {
+                at: now(), records: acknowledgedReads.map(({ name, read }) => ({
+                  key: name.slice(0, -5), sha256: read.sha256, completionSha256: read.completionSha256,
+                })),
+              }) : [])
               for (const { event, name, read } of records) {
                 if (stopped) break
                 try {
@@ -766,8 +791,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                   const acknowledged = outcomes.has(name) ? outcomes.get(name)
                     : await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
                   if (acknowledged) unsettledWrites.delete(name)
-                  const review = await scheduleReview(event, completed, read, acknowledged)
-                  if (review) backlog.set(review.name, review)
+                  if (!remembered.has(name.slice(0, -5))) {
+                    const review = await scheduleReview(event, completed, read, acknowledged)
+                    if (review) backlog.set(review.name, review)
+                  }
                   invalidEvidence.delete(name)
                 } catch (error) {
                   if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
@@ -778,6 +805,9 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
             const audit = fullRescanRequested
             fullRescanRequested = false
             const names = await scanner.call('list', { full: audit, at: now() })
+            const scanningInFlight = new Set(inFlight.keys())
+            let page = []
+            let pageAt = 0
             for (const [index, name] of names.entries()) {
               if (performance.now() - lastReportAt >= 1000) reportScanner('scanning')
               // Check real monotonic work time: one complete evidence read stays
@@ -788,9 +818,20 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 if (stopped) break
               }
               try {
-                if (inFlight.has(name)) continue
-                const read = await scanner.call('read', { key: name.slice(0, -5) })
+                if (scanningInFlight.has(name)) continue
+                // Bound unread terminal snapshots across a worker round trip.
+                // The results retain list order and each row is still validated.
+                if (pageAt === page.length) {
+                  if (terminals.length > TERMINAL_ACK_BATCH_SIZE - SCANNER_READ_BATCH_SIZE) await flushTerminals()
+                  const keys = names.slice(index, index + SCANNER_READ_BATCH_SIZE)
+                    .filter(value => !scanningInFlight.has(value)).map(value => value.slice(0, -5))
+                  page = await scanner.call('readBatch', { keys })
+                  pageAt = 0
+                }
                 if (stopped) break
+                const result = page[pageAt++]
+                if (result.error) throw Object.assign(new ObservationQueueError('Observation evidence could not be read'), { name: result.error })
+                const read = result.read
                 read.raw = Buffer.from(read.raw)
                 const event = validateObservation(read.value)
                 if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
@@ -934,7 +975,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
 
 if (!isMainThread && workerData?.protocol === SCANNER_PROTOCOL) {
   const files = fileScanner(workerData.directory)
-  const methods = new Set(['list', 'read', 'review', 'verify', 'complete', 'finishScan'])
+  const methods = new Set(['list', 'readBatch', 'rememberTerminals', 'review', 'verify', 'complete', 'finishScan'])
   files.start()
   parentPort.on('message', message => {
     if (!message || !Number.isSafeInteger(message.id) || !methods.has(message.method)) return

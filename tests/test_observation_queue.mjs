@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { createInlineObservationPump as createObservationPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
+import { createInlineObservationPump as createObservationPump, createObservationPump as createWorkerPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const resources = new Map()
@@ -660,4 +660,27 @@ test('an explicit drain during a scan still requests a rescan for newly publishe
     assert.equal((await running).processed, 1)
     assert.equal(calls, 1)
   } finally { release(); p.stop(); await running }
+})
+
+test('worker read batches handle a full terminal window and isolate corrupt evidence', async t => {
+  const { root } = legacyHistory(t, 70)
+  const live = event('worker-batch-executable', { scope: 'group:202' })
+  write(root, live)
+  const invalidName = write(root, event('worker-batch-corrupt'))
+  fs.writeFileSync(path.join(root, 'pending', invalidName), '{')
+  const warnings = [], calls = []
+  let acknowledged = 0
+  const p = createWorkerPump({ directory: root, log: (_level, message) => warnings.push(message),
+    acknowledgeBatch: async records => { acknowledged += records.length; return records.map(() => ({ acknowledged: true })) },
+    dispatch: async value => { calls.push(value.event_id); return { completed: true, status: 'decided', decision_id: 'worker-batch' } },
+    now: () => 1000,
+  })
+  assert.equal(await p.start({ poll: false }), true)
+  try {
+    assert.equal((await p.drain()).processed, 1)
+    assert.deepEqual(calls, [live.event_id])
+    assert.equal(acknowledged, 70)
+    assert.equal(p.status().mode, 'worker')
+    assert.ok(warnings.some(message => message === 'observation_invalid:' + invalidName + ':SyntaxError'))
+  } finally { await p.stop() }
 })
