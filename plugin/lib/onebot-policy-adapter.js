@@ -722,7 +722,13 @@ export class OneBotDecisionAdapter {
   }
 
   checkReconnectHistory() {
-    void this.recoverReconnectHistory().catch(error => this.log('warn', 'reconnect_history_review_failed:' + error.name))
+    return this.recoverReconnectHistory().then(async staged => {
+      if (!staged) return
+      // A periodic pass may have read the candidate list before staging.
+      // Wait for it to finish, then re-read the newly durable candidates.
+      if (this.replyReviewAttempt) await this.replyReviewAttempt.catch(() => {})
+      await this.reviewUnansweredInputs()
+    }).catch(error => this.log('warn', 'reconnect_history_review_failed:' + error.name))
   }
 
   async recoverReconnectHistory() {
@@ -780,6 +786,7 @@ export class OneBotDecisionAdapter {
           window.friends = friends
         } catch (error) { this.log('warn', 'reconnect_friend_list_unavailable:' + error.name) }
       }
+      let stagedInput = false
       const reviewScope = async scope => {
         if (!ready()) { window.scopes.push(scope); return }
         const group = scope.startsWith('group:')
@@ -856,7 +863,10 @@ export class OneBotDecisionAdapter {
             const sender = batch.at(-1).sender
             const staged = await this.policy.stageReconnectedInput({ scope, sender, expectedRevision: state?.revision ?? 0,
               receipts: batch, owner, canStage: () => batch.every(receipt => canStage(receipt.sender)) })
-            if (staged) for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')
+            if (staged) {
+              stagedInput = true
+              for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')
+            }
             else if (ready() && !canStage(sender)) window.scopes.push(scope)
           }
         } catch (error) {
@@ -875,10 +885,12 @@ export class OneBotDecisionAdapter {
       }
       await Promise.all(Array.from({ length: Math.min(3, batch.length) }, reviewNext))
       if (sameWindow() && next < batch.length) window.scopes = batch.slice(next).concat(window.scopes)
-      if (ready() && window.friends && !window.scopes.length) this.reconnectReview = null
+      const windowReady = ready()
+      if (windowReady && window.friends && !window.scopes.length) this.reconnectReview = null
+      return stagedInput && windowReady
     })()
     this.reconnectReviewAttempt = attempt
-    try { await attempt }
+    try { return await attempt }
     finally {
       if (this.reconnectReviewAttempt === attempt) {
         this.reconnectReviewAttempt = null

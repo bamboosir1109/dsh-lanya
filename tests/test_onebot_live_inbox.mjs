@@ -1269,6 +1269,45 @@ test('verified reconnect starts friend history review without waiting for the pe
   assert.equal(adapter.reconnectReview, null)
 })
 
+test('verified reconnect queues eligible missed input after an overlapping review pass', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('earlier question')
+  await Promise.all([...a.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(90_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_friend_msg_history' ? { messages: [{
+    message_type: 'private', sub_type: 'friend', time: at, message_id: 741,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'missed while disconnected' } }],
+  }] } : call(action, params)
+  a.startRequested = true
+  const readCandidates = a.policy.replyReviewCandidates.bind(a.policy)
+  const entered = defer(), release = defer()
+  a.policy.replyReviewCandidates = async () => {
+    const existing = await readCandidates()
+    entered.resolve()
+    await release.promise
+    return existing
+  }
+  const periodic = a.reviewUnansweredInputs()
+  await entered.promise
+  const reconnect = a.checkReconnectHistory()
+  assert.equal(await a.reconnectReviewAttempt, true)
+  assert.equal(h.pending.length, 0)
+  release.resolve()
+  await periodic; await reconnect
+  assert.equal(a.recoveryTimer, null)
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /missed while disconnected/)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+})
+
 test('reconnect scans the tail of the friend list without waiting for another timer tick', async t => {
   const h = await fixture(t), a = h.bridge.lanyaPolicy
   backendFixture(h)
