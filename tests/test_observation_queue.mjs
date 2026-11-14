@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { createInlineObservationPump as createObservationPump, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
+import { createInlineObservationPump as createObservationPump, createObservationPump as createWorkerPump,
+  ObservationBudgetDeferred, observationFreshness, observationKey, validateObservation } from '../plugin/lib/observation-queue.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const resources = new Map()
@@ -80,6 +81,40 @@ test('failed model dispatch is retained with durable backoff and can recover', a
   assert.equal(calls, 2)
 })
 
+test('budget deferral persists a retry time without counting a dispatch failure', async t => {
+  const root = fixture(t)
+  const name = write(root, event('budget-hold'))
+  write(root, event('later-in-same-scope', { created_at: 2 }))
+  let now = 100
+  const calls = []
+  const p = await pump(t, root, async value => {
+    calls.push(value.event_id)
+    if (calls.length === 1) throw new ObservationBudgetDeferred(now + 60_000)
+    return { completed: true, status: 'decided', decision_id: 'ready-later' }
+  }, { now: () => now })
+  const readdir = fs.readdirSync
+  let scans = 0
+  fs.readdirSync = function (directory, ...args) {
+    if (directory === path.join(root, 'pending')) scans++
+    return readdir.call(this, directory, ...args)
+  }
+  try {
+    assert.equal((await p.drain()).processed, 0)
+    assert.equal(scans, 1)
+  } finally { fs.readdirSync = readdir }
+  const db = new DatabaseSync(path.join(root, 'consumer.sqlite'), { readOnly: true })
+  try {
+    const row = db.prepare('SELECT attempts, next_after FROM retry WHERE event_key=?').get(name)
+    assert.deepEqual({ ...row }, { attempts: 0, next_after: 60_100 })
+  } finally { db.close() }
+  now += 59_999
+  await p.drain()
+  assert.deepEqual(calls, ['budget-hold'])
+  now++
+  assert.equal((await p.drain()).processed, 2)
+  assert.deepEqual(calls, ['budget-hold', 'budget-hold', 'later-in-same-scope'])
+})
+
 test('unknown sends and restart completion never automatically replay a delivery', async (t) => {
   const root = fixture(t)
   write(root, event('uncertain'))
@@ -122,6 +157,38 @@ test('a confirmed dead owner is replaced atomically without deleting inbox evide
   const second = await pump(t, root, async () => ({ completed: true, status: 'decided', decision_id: 'fixture-decision' }), { isOwnerAlive: (pid) => pid === process.pid })
   assert.equal((await second.drain()).processed, 1)
   assert.equal(fs.existsSync(path.join(root, 'pending', name)), true)
+})
+
+test('only a verified newer Windows process birth releases a reused PID', async t => {
+  const originalBirth = String(10n ** 17n)
+  const newerBirth = String(BigInt(originalBirth) + 1n)
+  const claimingBirth = String(BigInt(originalBirth) + 2n)
+  for (const [label, observedBirth, reclaimed] of [
+    ['reused PID', newerBirth, true],
+    ['same process', originalBirth, false],
+    ['unavailable birth', null, false],
+  ]) await t.test(label, async t => {
+    const root = fixture(t), file = path.join(root, 'consumer.sqlite')
+    const ownerPid = process.pid === 42 ? 43 : 42
+    const db = new DatabaseSync(file)
+    db.exec('CREATE TABLE consumer(id INTEGER PRIMARY KEY,pid INTEGER NOT NULL,nonce TEXT NOT NULL,process_birth TEXT); PRAGMA user_version=1')
+    db.prepare('INSERT INTO consumer VALUES (1,?,?,?)').run(ownerPid, 'fixture-owner', originalBirth)
+    db.close()
+    const name = write(root, event('pid-reuse-fixture'))
+    const second = createObservationPump({ directory: root, scanMode: 'inline',
+      dispatch: async () => ({ completed: true, status: 'decided', decision_id: 'fixture-decision' }),
+      isOwnerAlive: () => true, processBirth: pid => pid === ownerPid ? observedBirth : claimingBirth })
+    resources.get(root).push(second)
+    assert.equal(await second.start({ poll: false }), reclaimed)
+    if (reclaimed) assert.equal((await second.drain()).processed, 1)
+    const read = new DatabaseSync(file, { readOnly: true })
+    try {
+      const owner = read.prepare('SELECT pid,process_birth FROM consumer WHERE id=1').get()
+      assert.equal(owner.pid, reclaimed ? process.pid : ownerPid)
+      assert.equal(owner.process_birth, reclaimed ? claimingBirth : originalBirth)
+    } finally { read.close() }
+    assert.ok(fs.existsSync(path.join(root, 'pending', name)))
+  })
 })
 
 test('stop retains the consumer lease until its current decision has settled', async (t) => {
@@ -344,7 +411,7 @@ test('an invalid claimed-terminal review is durably parked, not revived by its p
 
 // Pre-anchor histories remain real immutable evidence. Every existing child is
 // terminal; only the leaf has a future review, so polling has no work to create.
-function legacyHistory(t, count) {
+function legacyHistory(t, count, { anchored = false } = {}) {
   const root = fixture(t), rows = []
   fs.mkdirSync(path.join(root, 'done'), { recursive: true })
   for (let index = 0; index < count; index++) {
@@ -356,6 +423,8 @@ function legacyHistory(t, count) {
       payload: { subject: 'synthetic review history', review_context: {
         parent_observation_key: previous.key, parent_event_id: previous.value.event_id,
         previous_decision_id: previous.marker.decision_id, scheduled_at: index + 1,
+        ...(anchored ? { freshness_anchor: { key: rows[0].key, sha256: rows[0].marker.event_sha256,
+          created_at: rows[0].value.created_at } } : {}),
       } },
     } : event('history-root', { kind: 'social.notification', payload: { subject: 'synthetic review history' } })
     const name = write(root, value), key = name.slice(0, -5)
@@ -406,6 +475,27 @@ test('polling terminal legacy review history uses linear file work across shared
     assert.ok(samples[1][metric] <= samples[0][metric] * 2.8 + 16,
       'doubling terminal history must not quadruple ' + metric + ' calls: ' + JSON.stringify(samples))
   }
+})
+
+test('auditing anchored completed successors reads each child once per parent review', async t => {
+  const count = 40, { root, rows } = legacyHistory(t, count, { anchored: true })
+  const invalid = []
+  const p = await pump(t, root, () => assert.fail('completed successors must not dispatch'), {
+    now: () => 1000, log: (level, message) => { if (level === 'error') invalid.push(message) },
+  })
+  const io = await countHistoryIo(root, () => p.drain())
+  assert.ok(io.read <= 6 * count, JSON.stringify(io))
+  t.diagnostic('anchored history filesystem reads: ' + io.read)
+  assert.deepEqual(invalid, [])
+
+  const child = rows.at(-1), raw = JSON.stringify({ ...child.value,
+    payload: { ...child.value.payload, subject: 'changed fixture successor' } }) + '\n'
+  fs.writeFileSync(path.join(root, 'pending', child.name), raw)
+  fs.writeFileSync(path.join(root, 'done', child.name), JSON.stringify({ ...child.marker, event_raw: raw,
+    event_sha256: createHash('sha256').update(raw).digest('hex') }))
+  await p.drain()
+  assert.ok(invalid.some(message => message.startsWith('observation_invalid:' + rows.at(-2).name + ':')))
+  assert.equal(readEvents(root).length, count)
 })
 
 test('a new review still revalidates changed ancestry after a terminal-only poll', async (t) => {
@@ -637,4 +727,55 @@ test('an explicit drain during a scan still requests a rescan for newly publishe
     assert.equal((await running).processed, 1)
     assert.equal(calls, 1)
   } finally { release(); p.stop(); await running }
+})
+
+test('worker read batches handle a full terminal window and isolate corrupt evidence', async t => {
+  const { root } = legacyHistory(t, 70)
+  const live = event('worker-batch-executable', { scope: 'group:202' })
+  write(root, live)
+  const invalidName = write(root, event('worker-batch-corrupt'))
+  fs.writeFileSync(path.join(root, 'pending', invalidName), '{')
+  const warnings = [], calls = []
+  let acknowledged = 0
+  const p = createWorkerPump({ directory: root, log: (_level, message) => warnings.push(message),
+    acknowledgeBatch: async records => { acknowledged += records.length; return records.map(() => ({ acknowledged: true })) },
+    dispatch: async value => { calls.push(value.event_id); return { completed: true, status: 'decided', decision_id: 'worker-batch' } },
+    now: () => 1000,
+  })
+  assert.equal(await p.start({ poll: false }), true)
+  try {
+    assert.equal((await p.drain()).processed, 1)
+    assert.deepEqual(calls, [live.event_id])
+    assert.equal(acknowledged, 70)
+    assert.equal(p.status().mode, 'worker')
+    assert.ok(warnings.some(message => message === 'observation_invalid:' + invalidName + ':SyntaxError'))
+  } finally { await p.stop() }
+})
+
+test('a directory replaced during a read batch invalidates the scan before dispatch', async t => {
+  const root = fixture(t)
+  write(root, event('directory-replaced-mid-batch'))
+  let calls = 0
+  const p = await pump(t, root, async () => {
+    calls++
+    return { completed: true, status: 'decided', decision_id: 'after-directory-recheck' }
+  })
+  const pending = path.join(root, 'pending'), done = path.join(root, 'done')
+  const originalRead = fs.readFileSync
+  let changed = false
+  fs.readFileSync = function (file, ...args) {
+    const value = originalRead.call(this, file, ...args)
+    if (!changed && typeof file === 'string' && path.dirname(file) === pending) {
+      changed = true
+      fs.renameSync(done, path.join(root, 'previous-done'))
+      fs.mkdirSync(done)
+    }
+    return value
+  }
+  try { await assert.rejects(p.drain(), /Inbox directory changed during scan/) }
+  finally { fs.readFileSync = originalRead }
+  assert.equal(changed, true)
+  assert.equal(calls, 0)
+  assert.equal((await p.drain()).processed, 1)
+  assert.equal(calls, 1)
 })

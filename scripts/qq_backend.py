@@ -31,6 +31,14 @@ class BackendConfigurationMissing(BackendError):
     """The vendor has not generated its first configuration yet."""
 
 
+class BackendActionRejected(BackendError):
+    """A negative OneBot response with a fixed, public classification."""
+
+    def __init__(self, reason):
+        super().__init__('OneBot action rejected')
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class BackendSpec:
     key: str
@@ -359,7 +367,12 @@ def call(action, payload=None, *, connection=None, timeout=10, max_bytes=4 * 102
             raise BackendError('OneBot response exceeds limit')
         result = _object(json.loads(raw.decode('utf-8')))
         if result.get('status') != 'ok' or type(result.get('retcode')) is not int or result['retcode'] != 0:
-            raise BackendError('OneBot action rejected')
+            identity_failed = (connection.provider == 'snowluma' and action == 'get_friend_msg_history' and
+                               result.get('retcode') == 100 and
+                               any(isinstance(result.get(key), str) and
+                                   re.fullmatch(r'failed to resolve UID for UIN [1-9][0-9]{0,19}', result[key], re.I)
+                                   for key in ('message', 'wording')))
+            raise BackendActionRejected('peer_identity_unresolved' if identity_failed else 'backend_rejected')
         return result
     except (OSError, ValueError, UnicodeError, urllib.error.URLError):
         raise BackendError('OneBot request failed; delivery is not confirmed') from None

@@ -50,7 +50,8 @@ function addressing(inbound, quote, selfId, botQQ) {
         explicit_at_ids: targets, at_all: all,
         reply_status: quote?.status || 'none', quoted_author_id: quoteAuthor || null,
         reply_to: quoteAuthor && bot ? quoteAuthor === bot ? 'bot' : 'other' : 'unknown',
-        bot_addressed: bot && targets.includes(bot) ? 'explicit_at' : quoteAuthor && quoteAuthor === bot ? 'verified_reply' : all ? 'at_all' : 'not_proven',
+        bot_addressed: bot && targets.includes(bot) ? 'explicit_at'
+            : targets.length === 0 && quoteAuthor && quoteAuthor === bot ? 'verified_reply' : all ? 'at_all' : 'not_proven',
         subject_from_text: 'not_inferred' };
 }
 '''
@@ -197,7 +198,7 @@ def transform(name, raw):
         text = replace_once(text, '        let final = wrapUserMessage(content, userId, nickname);',
             "        let final = '<trusted_qq_addressing>' + JSON.stringify(address) + '</trusted_qq_addressing>\\n'\n            + wrapUserMessage(content, userId, nickname);")
         text = replace_once(text, 'buildGroupMessagePrefix(nickname, userId, mentioned) + final',
-            "buildGroupMessagePrefix(nickname, userId, address.bot_addressed !== 'not_proven') + final")
+            "buildGroupMessagePrefix(nickname, userId, ['explicit_at', 'verified_reply'].includes(address.bot_addressed)) + final")
         start = '    async expandQuote(messageId) {'
         end = '    /**\n     * Fetch an inbound QQ file'
         if text.count(start) != 1 or text.count(end) != 1:

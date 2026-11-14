@@ -15,15 +15,19 @@ const KINDS = new Set(['text', 'media', 'forward', 'api', 'publication', 'tool_a
 const VERDICTS = new Set(['reply', 'silence', 'resume', 'defer', 'idle', 'tool_action'])
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const acknowledgeBatch = Symbol('acknowledgeBatch')
 const identifier = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value)
 const CONTACT_INTERVAL_MS = 60 * 60_000
 const REST_REASONS = new Set(['autonomy_rest', 'observation_expired'])
 const REPLY_REVIEW_AGE = 60_000
 const REPLY_REVIEW_LIFETIME = 24 * 60 * 60_000
+export const FRIEND_RECONNECT_WINDOW_MS = 3 * 60_000
 const replyOwnerValid = owner => plain(owner) && ['cwd', 'preset', 'workspace_key', 'agent_key']
   .every(key => typeof owner[key] === 'string' && owner[key].length > 0 && owner[key].length <= 4096)
 const replyOwnerSame = (a, b) => replyOwnerValid(a) && replyOwnerValid(b) &&
   ['cwd', 'preset', 'workspace_key', 'agent_key'].every(key => a[key] === b[key])
+const replyPendingValid = pending => plain(pending) && identifier(pending.session) && identifier(pending.id) &&
+  typeof pending.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(pending.fingerprint)
 const replyReviewable = (scope, at) => {
   const event = scope?.current, input = event?.replyReview
   return Boolean(scope?.mode === 'open' && event?.origin === 'live' && input && !input.attempted &&
@@ -73,7 +77,8 @@ const noDecisionId = (scope, eventId, revision) => createHash('sha256').update([
 const localOutcomeValid = (value, scope, eventId, revision) => plain(value) &&
   Object.keys(value).sort().join(',') === 'completed_at,local_outcome_id,native_turn_completed,observation_revision,reason,status' &&
   value.status === 'no_decision' && ((value.reason === 'model_completed_without_decision' && value.native_turn_completed === true) ||
-    ((value.reason === 'native_admission_refused' || REST_REASONS.has(value.reason)) && value.native_turn_completed === false)) &&
+    ((['native_admission_refused', 'superseded_live_input'].includes(value.reason) || REST_REASONS.has(value.reason)) &&
+      value.native_turn_completed === false)) &&
   Number.isSafeInteger(revision) && revision >= 1 && value.observation_revision === revision &&
   Number.isSafeInteger(value.completed_at) && value.completed_at >= 0 && value.local_outcome_id === noDecisionId(scope, eventId, revision)
 
@@ -145,7 +150,8 @@ function validateState(state) {
           !replyOwnerValid(current.replyReview.owner) || typeof current.replyReview.text !== 'string' ||
           !current.replyReview.text.trim() || current.replyReview.text.length > 32_000 ||
           !Number.isSafeInteger(current.replyReview.at) || current.replyReview.at < 0 ||
-          typeof current.replyReview.attempted !== 'boolean')) throw new PolicyStateError('Corrupt reply review evidence')
+          typeof current.replyReview.attempted !== 'boolean' || (current.replyReview.nativePending !== undefined &&
+            !replyPendingValid(current.replyReview.nativePending)))) throw new PolicyStateError('Corrupt reply review evidence')
       if (current.ticket !== null && (!plain(current.ticket) || !identifier(current.ticket.id) ||
           !['reply', 'resume', 'tool_action'].includes(current.ticket.verdict) || current.decided !== true ||
           !Number.isFinite(current.ticket.expiresAt))) {
@@ -388,6 +394,17 @@ export function createJsonPolicyStorage({ stateFile, lockTimeoutMs = 2500, retry
   }
 
   return {
+    async [acknowledgeBatch](fn) {
+      const release = await acquire()
+      try {
+        const state = read()
+        // This callback only removes matched observations. An empty match
+        // leaves the already validated state untouched.
+        const results = fn(state)
+        if (results.some(result => result.acknowledged === true)) write(state)
+        return results
+      } finally { release() }
+    },
     async transact(fn) {
       const release = await acquire()
       try {
@@ -429,6 +446,28 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       state.scopes[scope] = { revision: 0, mode: 'open', current: null, seen: [], deliveries: [] }
     }
     return state.scopes[scope]
+  }
+
+  function validateObservationAck({ scope, decisionId, localOutcomeId, expectedRevision }) {
+    canonicalScope(scope)
+    if (localOutcomeId !== undefined && (decisionId !== undefined || typeof localOutcomeId !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(localOutcomeId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+      throw new PolicyStateError('Exact local outcome acknowledgement required')
+    }
+  }
+
+  function acknowledgeObservation(state, { scope, eventId, decisionId, localOutcomeId, expectedRevision }) {
+    const current = scopeState(state, scope)
+    const index = current?.observations?.findIndex(entry => entry.eventId === eventId) ?? -1
+    if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
+    const entry = current.observations[index]
+    const matches = localOutcomeId !== undefined
+      ? entry.localOutcome?.local_outcome_id === localOutcomeId && entry.revision === expectedRevision &&
+        !entry.decision && (entry.localOnly || !current.deliveries.some(item => item.revision === expectedRevision))
+      : Boolean(entry.decision && entry.decision.decisionId === decisionId)
+    if (!matches) return { acknowledged: false, reason: 'decision_mismatch' }
+    current.observations.splice(index, 1)
+    return { acknowledged: true }
   }
 
   function inspectTicket(state, ticket, { scope, kind = 'text' } = {}) {
@@ -489,18 +528,79 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
 
     /** Persist only the verified current live input, not the diagnostic log or
      * caller-supplied history. Storage is on the existing private policy file;
-     * staging never issues a ticket or changes the live revision. */
-    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text } = {}) {
+     * staging never issues a ticket or changes the live revision. The claim
+     * handler can enrich its exact pending text with an interrupted question. */
+    async rememberReplyInput({ scope, expectedRevision, messageId, owner, text, previousText, nativePending } = {}) {
       canonicalScope(scope)
-      if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000) {
+      if (!replyOwnerValid(owner) || typeof text !== 'string' || !text.trim() || text.length > 32_000 ||
+          (nativePending !== undefined && !replyPendingValid(nativePending))) {
         throw new PolicyStateError('Bounded owned reply input required')
       }
-      const evidence = clone({ owner, text, at: now(), attempted: false })
+      const evidence = clone({ owner, text, at: now(), attempted: false,
+        ...(nativePending && { nativePending }) })
       return transaction(state => {
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
-            current.current.origin !== 'live' || current.current.replyReview) return false
+            current.current.origin !== 'live') return false
+        const previous = current.current.replyReview
+        if (previousText !== undefined && (current.current.decided ||
+            current.deliveries.some(item => item.revision === expectedRevision))) return false
+        if (previous) {
+          if (previous.attempted || previous.text !== previousText || !replyOwnerSame(owner, previous.owner)) return false
+          evidence.at = previous.at
+          if (!nativePending && previous.nativePending) evidence.nativePending = previous.nativePending
+        }
         current.current.replyReview = evidence
+        return true
+      })
+    },
+
+    async stageReconnectedInput({ scope, sender, expectedRevision, receipts, owner, canStage } = {}) {
+      canonicalScope(scope)
+      const group = scope.startsWith('group:')
+      if (typeof sender !== 'string' || !/^[1-9][0-9]*$/.test(sender) ||
+          (!group && scope.slice(8) !== sender) ||
+          !replyOwnerValid(owner) || typeof canStage !== 'function' ||
+          !Number.isSafeInteger(expectedRevision) || !Array.isArray(receipts) || receipts.length < 1 || receipts.length > 8 ||
+          receipts.some(receipt => !plain(receipt) || typeof receipt.messageId !== 'string' ||
+            !/^-?[0-9]{1,16}$/.test(receipt.messageId) || !Number.isSafeInteger(Number(receipt.messageId)) ||
+            !Number.isSafeInteger(receipt.at) || typeof receipt.text !== 'string' || !receipt.text.trim() ||
+            receipt.text.length > 2000 || /^\s*\//u.test(receipt.text) || typeof receipt.sender !== 'string' ||
+            !/^[1-9][0-9]*$/.test(receipt.sender) || (!group && receipt.sender !== sender))) {
+        throw new PolicyStateError('Invalid verified reconnect history')
+      }
+      const batch = clone(receipts), latest = batch.at(-1)
+      if (latest.sender !== sender || new Set(batch.map(receipt => receipt.messageId)).size !== batch.length ||
+          batch.some((receipt, i) => i > 0 && receipt.at < batch[i - 1].at)) {
+        throw new PolicyStateError('Unordered or repeated reconnect history')
+      }
+      // Group speakers stay distinct within this review, without putting raw
+      // account IDs into the recovery text or granting any sender authority.
+      const speakers = [...new Set(batch.map(receipt => receipt.sender))]
+      const text = group && batch.length > 1
+        ? JSON.stringify(batch.map(receipt => ({ group_member: speakers.indexOf(receipt.sender) + 1,
+          text: receipt.text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/gu, '').slice(0, 1900).toWellFormed() })))
+        : batch.map(receipt => receipt.text).join('\n\n')
+      return transaction(state => {
+        const existing = scopeState(state, scope), at = now()
+        if ((!existing && expectedRevision !== 0) ||
+            (existing && (existing.revision !== expectedRevision || existing.mode !== 'open')) ||
+            replyReviewable(existing, at) || latest.at > at || batch[0].at < at - FRIEND_RECONNECT_WINDOW_MS ||
+            existing?.seen.some(item => Number.isSafeInteger(item.at) && item.at >= batch[0].at ||
+              batch.some(receipt => item.messageId === receipt.messageId)) ||
+            existing?.deliveries.some(item => item.at >= batch[0].at || item.status === 'reserved') || canStage() !== true) return false
+        const current = existing || scopeState(state, scope, true)
+        if (!Number.isSafeInteger(current.revision + batch.length)) throw new PolicyStateError('Revision exhausted')
+        for (const receipt of batch) {
+          current.revision += 1
+          current.seen.push({ messageId: receipt.messageId, origin: 'live', revision: current.revision, at: receipt.at })
+        }
+        current.seen = current.seen.slice(-maxInbound)
+        current.lastLiveRevision = current.revision
+        current.updatedAt = at
+        current.current = { messageId: latest.messageId, sender, origin: 'live',
+          controlAllowed: false, quoted: true, decided: false, ticket: null,
+          replyReview: { owner: clone(owner), text, at: latest.at, attempted: false } }
         return true
       })
     },
@@ -523,7 +623,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
             !replyReviewable(current, now()) || now() - current.current.replyReview.at < REPLY_REVIEW_AGE ||
-            !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim() !== true) return { accepted: false }
+            !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim(clone(current.current.replyReview)) !== true) return { accepted: false }
         if (!Number.isSafeInteger(current.revision + 1)) throw new PolicyStateError('Revision exhausted')
         const previous = current.current, evidence = { ...previous.replyReview, attempted: true }
         current.revision += 1
@@ -532,6 +632,23 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
           quoted: true, decided: false, ticket: null, replyReview: evidence }
         return { accepted: true, scope, messageId, revision: current.revision, origin: 'live',
           recoveryRevision: current.revision, text: evidence.text, sender: previous.sender, mode: current.mode }
+      })
+    },
+
+    /** Release a review the bridge proves never reached the model or transport. */
+    async releaseUnqueuedReplyReview({ scope, expectedRevision, messageId, owner } = {}) {
+      canonicalScope(scope)
+      if (!replyOwnerValid(owner) || !identifier(messageId) || !Number.isSafeInteger(expectedRevision)) {
+        throw new PolicyStateError('Exact reply review claim required')
+      }
+      return transaction(state => {
+        const current = scopeState(state, scope), event = current?.current
+        if (current?.revision !== expectedRevision || event?.messageId !== messageId ||
+            event.origin !== 'live' || event.controlAllowed || !event.quoted || event.decided || event.ticket ||
+            event.replyReview?.attempted !== true || !replyOwnerSame(owner, event.replyReview.owner) ||
+            current.deliveries.some(item => item.revision === expectedRevision)) return false
+        event.replyReview.attempted = false
+        return true
       })
     },
 
@@ -613,7 +730,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * This does not grant a verdict, ticket, or persistent silence change.
      */
     async completeObservationWithoutDecision({ scope, eventId, expectedRevision, nativeTurnCompleted,
-      nativeAdmissionReason, nativeModelSteps, nativeRestInterrupted, nativeRestInterruptedAt } = {}) {
+      nativeAdmissionReason, nativeModelSteps, nativeRestInterrupted, nativeRestInterruptedAt, nativeSupersedingRevision } = {}) {
       canonicalScope(scope)
       // These attestations come only from the native adapter, never qq_decide
       // arguments. A refused admission is not a completed model turn or a
@@ -625,9 +742,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       const restInterrupted = nativeRestInterrupted === true && nativeTurnCompleted === false &&
         nativeAdmissionReason === undefined && Number.isSafeInteger(interruptionAt) && interruptionAt <= now() &&
         interruptionAt >= 0 && autonomousRestState(interruptionAt).resting
-      if (nativeRestInterrupted !== undefined && nativeRestInterrupted !== true ||
+      const superseded = Number.isSafeInteger(nativeSupersedingRevision) && nativeSupersedingRevision > expectedRevision &&
+        nativeTurnCompleted === false && nativeAdmissionReason === undefined && nativeModelSteps === undefined &&
+        nativeRestInterrupted === undefined && nativeRestInterruptedAt === undefined
+      if (nativeSupersedingRevision !== undefined && !superseded ||
+          nativeRestInterrupted !== undefined && nativeRestInterrupted !== true ||
           nativeRestInterruptedAt !== undefined && nativeRestInterrupted !== true ||
-          !identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || (!completed && !refused && !restInterrupted)) {
+          !identifier(eventId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+          (!completed && !refused && !restInterrupted && !superseded)) {
         throw new PolicyStateError('Exact native completion or zero-step admission refusal required')
       }
       return transaction((state) => {
@@ -639,12 +761,14 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         // excludes a legal ticket/send across ALL earlier revisions of this
         // same pinned event, without attributing other events' deliveries to it.
         if (!entry || entry.revision !== expectedRevision || entry.decision ||
+            superseded && latestLiveRevision(current) < nativeSupersedingRevision ||
             current.deliveries.some(item => item.revision === expectedRevision) ||
             (current.revision === expectedRevision && (current.current?.decided || current.current?.ticket))) {
           throw new PolicyStateError('Observation is not an exact undecided no-delivery turn')
         }
         if (!entry.localOutcome) entry.localOutcome = { status: 'no_decision',
-          reason: restInterrupted ? 'autonomy_rest' : refused ? 'native_admission_refused' : 'model_completed_without_decision',
+          reason: superseded ? 'superseded_live_input'
+            : restInterrupted ? 'autonomy_rest' : refused ? 'native_admission_refused' : 'model_completed_without_decision',
           native_turn_completed: completed, observation_revision: expectedRevision, completed_at: now(),
           local_outcome_id: noDecisionId(scope, eventId, expectedRevision) }
         return clone(entry.localOutcome)
@@ -655,21 +779,19 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
      * Pending observations remain pinned independently of the QQ LRU.
      */
     async ackObservation({ scope, eventId, decisionId, localOutcomeId, expectedRevision } = {}) {
-      canonicalScope(scope)
-      const local = localOutcomeId !== undefined
-      if (local && (decisionId !== undefined || typeof localOutcomeId !== 'string' || !/^[0-9a-f]{64}$/.test(localOutcomeId) ||
-          !Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) throw new PolicyStateError('Exact local outcome acknowledgement required')
-      return transaction((state) => {
-        const current = scopeState(state, scope)
-        const index = current?.observations?.findIndex((entry) => entry.eventId === eventId) ?? -1
-        if (index < 0) return { acknowledged: false, reason: 'unknown_observation' }
-        const entry = current.observations[index]
-        if (local ? !entry.localOutcome || entry.localOutcome.local_outcome_id !== localOutcomeId || entry.revision !== expectedRevision ||
-            entry.decision || !entry.localOnly && current.deliveries.some(item => item.revision === expectedRevision)
-          : !entry.decision || entry.decision.decisionId !== decisionId) return { acknowledged: false, reason: 'decision_mismatch' }
-        current.observations.splice(index, 1)
-        return { acknowledged: true }
-      })
+      const request = { scope, eventId, decisionId, localOutcomeId, expectedRevision }
+      validateObservationAck(request)
+      return transaction(state => acknowledgeObservation(state, request))
+    },
+
+    async ackObservations(requests) {
+      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 64 || requests.some(request => !plain(request))) {
+        throw new PolicyStateError('Expected a bounded observation acknowledgement batch')
+      }
+      const batch = clone(requests)
+      for (const request of batch) validateObservationAck(request)
+      const acknowledge = state => batch.map(request => acknowledgeObservation(state, request))
+      return store[acknowledgeBatch] ? store[acknowledgeBatch](acknowledge) : transaction(acknowledge)
     },
 
     async decide({ scope, messageId, expectedRevision, verdict, controlUpdate = false, evidenceSource = 'current', nextReviewAt = null } = {}) {

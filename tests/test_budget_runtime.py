@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,27 @@ class BudgetRuntimeTests(unittest.TestCase):
         self.assertEqual(state['reserved_cny'], 0.1)
         self.assertTrue(state['exhausted'])
 
+    def test_reply_check_can_read_committed_reservation_while_another_turn_prepares_a_write(self):
+        live = {'origin': 'live'}
+        self.assertTrue(self.run_op(**live)['allowed'])
+        writer = sqlite3.connect(budget._paths()[1])
+        try:
+            writer.execute('BEGIN IMMEDIATE')
+            writer.execute('UPDATE budget_turns SET status=? WHERE turn_key=?', ('unknown', self.request['turn_key']))
+            self.assertTrue(self.run_op(operation='check', **live)['allowed'])
+            writer.commit()
+            self.assertFalse(self.run_op(operation='check', **live)['allowed'])
+        finally:
+            writer.close()
+
+    def test_reply_check_refuses_a_configuration_revision_that_changes_during_the_read(self):
+        live = {'origin': 'live'}
+        self.assertTrue(self.run_op(**live)['allowed'])
+        config, revision = budget._config()
+        with patch.object(budget, '_config', side_effect=[(config, revision), (config, 'changed')]):
+            with self.assertRaisesRegex(budget.BudgetError, 'budget_configuration_changed'):
+                self.run_op(operation='check', **live)
+
     def test_actual_turn_receipt_settles_once_and_conflicting_receipt_refused(self):
         self.run_op()
         receipt = {'budget_contract': budget.CONTRACT, 'api_cost_cny': 0.031, 'start_seq': 100, 'end_seq': 131, 'calls': 2, 'priced': True}
@@ -136,6 +158,20 @@ class BudgetRuntimeTests(unittest.TestCase):
         self.assertFalse(state['can_start_new_turn'])
         self.assertEqual(state['blocked_reason'], 'insufficient_reserve')
         self.assertFalse(self.run_op(turn_key='e' * 64)['allowed'])
+        probe = {'operation': 'autonomy_readiness', 'budget_contract': budget.CONTRACT}
+        self.assertEqual(budget.operate(probe, self.now), {'read_only': True, 'can_start_new_turn': False})
+        self.assertEqual(budget.operate(probe, self.now + 86400000), {'read_only': True, 'can_start_new_turn': True})
+        self.assertEqual(budget.get_snapshot(self.now)['usage']['buckets']['autonomy'], state)
+
+    def test_autonomous_readiness_uses_only_todays_autonomous_bucket_and_creates_no_files(self):
+        probe = {'operation': 'autonomy_readiness', 'budget_contract': budget.CONTRACT}
+        self.assertTrue(budget.operate(probe, self.now)['can_start_new_turn'])
+        self.assertFalse(self.data.exists())
+        self.run_op()
+        with patch.object(budget, '_bucket_summary', wraps=budget._bucket_summary) as summary:
+            self.assertTrue(budget.operate(probe, self.now)['can_start_new_turn'])
+            summary.assert_called_once()
+            self.assertEqual(summary.call_args.args[-1], 'autonomy')
 
     def test_unknown_keeps_reservation_and_restart_does_not_replay(self):
         self.run_op()

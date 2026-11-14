@@ -11,6 +11,9 @@ from pathlib import Path
 from patch_onebot_policy import PatchError, read_regular, ordinary_path, replace_once
 
 MARKER = '// LANYA_CONTEXTUAL_GROUP_V1\n'
+OBSERVER = '            observeInbound: (inbound, address, forwardText) => this.lanyaPolicy.observeInbound(inbound, address, forwardText),\n'
+FORWARD_TEXT = '        let forward = \'\';\n'
+FORWARD_EXPANDED = '            forward = expansion.text;\n'
 
 
 def transform(name, raw):
@@ -21,14 +24,16 @@ def transform(name, raw):
         raise PatchError('Fresh reviewed scoped inbound layer required')
     if name == 'bridge.js':
         anchor = '            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),\n'
-        text = replace_once(text, anchor, anchor.replace('inbound =>', '(inbound, address) =>').replace('observeInbound(inbound)', 'observeInbound(inbound, address)') + '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),\n')
+        text = replace_once(text, anchor, OBSERVER + '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),\n')
     elif name == 'inbound.js':
         if 'LANYA_INBOUND_ADMISSION_V1' not in text:
             raise PatchError('Reviewed admission order required')
         anchor = "        if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {"
         text = replace_once(text, anchor,
             "        if (kind === 'group' && this.ctx.config.requireMention && !mentioned && this.ctx.contextualGroupEnabled?.(chatId) !== true) {")
-        text = replace_once(text, 'await this.ctx.observeInbound(inbound);', 'await this.ctx.observeInbound(inbound, address);')
+        text = replace_once(text, FORWARD_TEXT, FORWARD_TEXT + "        let forwardText = '';\n")
+        text = replace_once(text, FORWARD_EXPANDED, FORWARD_EXPANDED + "            if (kind === 'group') forwardText = forward;\n")
+        text = replace_once(text, 'await this.ctx.observeInbound(inbound);', 'await this.ctx.observeInbound(inbound, address, forwardText);')
     else:
         raise PatchError('Only bridge.js and inbound.js are supported')
     return (MARKER + text).replace('\n', newline).encode('utf-8')

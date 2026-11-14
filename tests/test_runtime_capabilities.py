@@ -110,6 +110,10 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 self.assertIn("preserving the full content", guide["reply_length"])
                 self.assertIn("unverified", guide["registration"])
                 self.assertIn("Selection is not delivery", guide["meme_selection"])
+                self.assertIn("only when you need to verify a specific image or qq_send_meme is not registered", guide["meme_selection"])
+                self.assertIn("limit: 1", guide["meme_selection"])
+                self.assertIn("indexed fast_meme route first", guide["meme_preference"])
+                self.assertIn("no_indexed_tag_match before a decision", guide["fast_meme"])
                 self.assertIn("empty/missing image", guide["meme_selection"])
                 self.assertIn("requires_visual_review", guide["meme_selection"])
                 self.assertIn("read_image({file_path: chosen_path})", guide["meme_selection"])
@@ -218,11 +222,17 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
 
     def test_live_reaction_uses_one_candidate_without_restricting_user_image_understanding(self):
         before = self.snapshot()
-        guide = self.context(context_mode='live_chat')['tools']['qq_expression']['meme_delivery']
+        expression = self.context(context_mode='live_chat')['tools']['qq_expression']
+        guide = expression['meme_delivery']
+        self.assertIn('specific image needs visual verification or qq_send_meme is not registered', guide)
+        self.assertIn('prefer qq_send_meme', expression['fast_meme'])
         for boundary in ('limit: 1', 'one picker call per live turn', 'do not repeat',
                          'requires_visual_review=true', 'use concise text',
                          'necessary inspection of images supplied by the user', 'current reply ticket'):
             self.assertIn(boundary, guide)
+        self.assertIn('图库收集、分类和排查留到自主轮', expression['limits'])
+        self.assertIn('除非对方明确请你处理', expression['limits'])
+        self.assertIn('看懂来图或完成当前请求需要的工具照用', expression['limits'])
         self.assertEqual(self.snapshot(), before)
 
     def test_entertainment_catalog_requires_real_entry_and_never_reads_private_bodies(self):
@@ -402,12 +412,13 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 cadence = context["tools"]["entertainment"]["cadence"]
                 self.assertTrue(cadence["valid"])
                 self.assertEqual(cadence["configured_opportunity_min"], minutes)
-                self.assertIn("new trusted primary", cadence["explicit_review"])
-                self.assertIn("Already persisted decisions are not changed", cadence["explicit_review"])
+                self.assertIn("trusted primary", cadence["explicit_review"])
+                self.assertIn("twice that interval, up to 60 minutes", cadence["explicit_review"])
+                self.assertIn("Existing persisted reviews", cadence["explicit_review"])
                 self.assertIn("not a requirement for a new action", cadence["preference"])
                 self.assertIn("do not lock all future leisure", cadence["preference"])
                 self.assertIn("not evidence", cadence["longer_interval"])
-                self.assertIn("does not extend the next autonomous review", cadence["longer_interval"])
+                self.assertIn("does not change the autonomous review schedule", cadence["longer_interval"])
                 self.assertIn("may remain idle, continue resting or keep watching", cadence["longer_interval"])
                 self.assertIn("no sending authority", cadence["communication"])
                 group = self.module.build_context(str(self.root), "fixture", "group:202",
@@ -436,10 +447,13 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                     self.assertTrue(guide["group_identity_valid"])
                     self.assertIs(guide["group_social"], expected)
                     self.assertEqual(guide["cadence"]["configured_opportunity_min"], 2)
-                    self.assertIn("configured group social", guide["cadence"]["explicit_review"])
-                    self.assertIn("ordinary live turns retain", guide["cadence"]["explicit_review"])
+                    self.assertIn("configured group activity.opportunity", guide["cadence"]["explicit_review"])
+                    self.assertIn("new recent discussion still uses its normal interval", guide["cadence"]["explicit_review"])
+                    self.assertIn("even when an earlier review was requested", guide["cadence"]["explicit_review"])
+                    self.assertIn("genuine incoming replies keep their own timing", guide["cadence"]["explicit_review"])
                     if expected:
                         self.assertIn("need not wait for an @ mention", guide["proactive_sharing"]["primary_choice"])
+                        self.assertIn("start a short fresh topic from a shared group interest", guide["proactive_sharing"]["primary_choice"])
                         self.assertIn("who is speaking to whom", guide["proactive_sharing"]["primary_choice"])
                         self.assertIn("does not require speech", guide["proactive_sharing"]["primary_choice"])
                 self.assertEqual(self.snapshot(), before)
@@ -636,6 +650,61 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             with self.assertRaises(self.module.CapabilityError):
                 self.module.build_context(str(self.root), 'fixture', 'private:101', context_mode=mode)
 
+    def test_group_review_uses_current_scope_and_skips_worker_and_local_game_inventory(self):
+        self.install('browserd.py', 'androidd.py', 'voice_executor.py')
+        self.identity.write_text(json.dumps({'adminQQ': '101', 'fanGroupQQ': '202'}), encoding='utf-8')
+        self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'mind': {'opportunityMin': 4},
+                                           'panelStaticPort': 'unrelated invalid setting'}), encoding='utf-8')
+
+        def forbidden(*_):
+            self.fail('Group-only review must not probe personal activity or enumerate local games')
+
+        def group_context(scope):
+            return self.module.build_context(str(self.root), 'fixture', scope, context_mode='group_review',
+                                             process_probe=forbidden, lock_probe=forbidden)
+
+        with mock.patch.object(Path, 'iterdir', forbidden):
+            value = group_context('group:202')
+            self.assertEqual(set(value['tools']), {'qq_expression', 'entertainment'})
+            self.assertEqual(value['context_mode'], 'group_review')
+            guide = value['tools']['entertainment']
+            self.assertTrue(guide['group_identity_valid'])
+            self.assertTrue(guide['group_social'])
+            self.assertEqual(guide['cadence'], {'valid': True, 'configured_opportunity_min': 4})
+            self.assertEqual(guide['rest_window']['timezone'], 'Asia/Shanghai')
+            self.assertIn('fast_meme', value['tools']['qq_expression'])
+            self.assertFalse(group_context('group:303')['tools']['entertainment']['group_social'])
+            with self.assertRaises(self.module.CapabilityError):
+                group_context('private:101')
+
+    def test_enabled_native_phone_is_discoverable_in_primary_live_and_autonomous_contexts(self):
+        self.install('androidd.py', 'android_executor.py')
+        self.config.write_text(json.dumps({'dataDirName': 'FixtureRole', 'android': {
+            'serial': '127.0.0.1:16384', 'agentTransport': 'desktop_loopback', 'adbServerPort': 15043,
+            'agentEnabled': True, 'agentApps': ['amap', 'unknown']}}), encoding='utf-8')
+        full = self.context(lock_probe=lambda _: True)['tools']
+        self.assertEqual(full['entertainment']['android_game']['name'], '2048')
+        self.assertEqual(full['android']['agent_apps'], ['amap'])
+        self.assertIn('request_login', full['android']['agent_navigation'])
+        self.assertNotIn('android_game', self.context(lock_probe=lambda _: False)['tools']['entertainment'])
+
+        def forbidden(*_):
+            self.fail('Live phone guidance must not probe the worker')
+
+        for scope in ('private:101', 'private:303', 'group:202'):
+            with self.subTest(scope=scope):
+                live = self.module.build_context(str(self.root), 'fixture', scope,
+                    context_mode='live_chat', process_probe=forbidden, lock_probe=forbidden)['tools']
+                self.assertNotIn('android_game', live['entertainment'])
+                if scope == 'private:101':
+                    self.assertEqual(live['android']['agent_tool'], 'android_phone')
+                    self.assertIn('read_image', live['android']['agent_play'])
+                    self.assertEqual(live['android']['agent_apps'], ['amap'])
+                    self.assertEqual(live['android']['worker'], 'unverified')
+                else:
+                    self.assertNotIn('agent_tool', live['android'])
+                    self.assertNotIn('agent_apps', live['android'])
+
     def test_warm_tone_reaches_live_and_full_context_without_widening_autonomy(self):
         before = self.snapshot()
         for scope in ('private:101', 'group:202'):
@@ -644,6 +713,11 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             self.assertEqual(full['tools']['qq_expression']['tone'], live['tools']['qq_expression']['tone'])
             self.assertIn('温和', live['tools']['qq_expression']['tone']['voice'])
             self.assertIn('Expression preference only', live['tools']['qq_expression']['tone']['authority'])
+            for key in ('finish', 'group_pacing'):
+                self.assertEqual(full['tools']['qq_expression'][key], live['tools']['qq_expression'][key])
+            self.assertIn('没有具体对象或下一步', live['tools']['qq_expression']['finish'])
+            self.assertIn('具体且做得到的约定', live['tools']['qq_expression']['finish'])
+            self.assertIn('十分钟', live['tools']['qq_expression']['group_pacing'])
             initiative = full['tools']['entertainment']['self_direction']
             self.assertIn('confirmed progress', initiative['initiative'])
             self.assertIn('one-hour', initiative['boundaries'])

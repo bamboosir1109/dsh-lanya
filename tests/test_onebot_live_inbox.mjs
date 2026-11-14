@@ -10,12 +10,13 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import nativeIdleWake from './fixtures/native_idle_wake/native-methods.mjs'
+import { createDecisionPolicy } from '../plugin/lib/decision-policy.js'
 
 if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
     const child = spawnSync(process.execPath, ['--experimental-vm-modules', '--test', fileURLToPath(import.meta.url)],
-      { encoding: 'utf8', windowsHide: true, timeout: 180000, env })
+      { encoding: 'utf8', windowsHide: true, timeout: 360000, env })
     assert.equal(child.error, undefined, child.error?.message)
     assert.equal(child.status, 0, child.stdout + child.stderr)
   })
@@ -29,7 +30,7 @@ assert.equal(hostSource.split(anchor).length, 2)
 const hostPath = path.join(temporary, 'host.mjs')
 fs.writeFileSync(hostPath, hostSource.replace("{ execFile: deny, spawn: deny }", "{ execFile: deny, spawn: deny, spawnSync: deny }").replace(anchor, `  const hooks = new Map(), guards = []
   agent.ctx = { on(name, fn) { const list = hooks.get(name) || []; list.push(fn); hooks.set(name, list) },
-    get: name => name === 'costMeter' ? deps.testMeter : undefined,
+    get: name => name === 'costMeter' ? deps.testMeter : name === 'attachments' ? deps.testAttachments : undefined,
     tools: { register: tool => { tools.set(tool.name, tool); return noop }, guard: fn => { guards.push(fn); return noop } },
     systemPrompt: { section: value => { (deps.nativePrompts ||= []).push(value); return noop } } }
   bridge.installChannelScope(agent.ctx)
@@ -61,6 +62,8 @@ for name in ['bridge.js','outbound.js','tools.js','prompt.js']:
   raw=bc.transform(name,raw)
  f.write_bytes(raw)
 f=out/'lib/inbound.js';s=f.read_text(encoding='utf-8');a='        const nickname = sanitizeNickname(inbound.nickname);';assert s.count(a)==1
+gate='            if (!dmAllowed(userId, policy)) {';assert s.count(gate)==1
+s=s.replace(gate,gate+"\n                this.ctx.noteInboundDisposition?.(inbound, 'private_policy_denied');")
 raw=q.transform('inbound.js',('// LANYA_POLICY_PATCH_V1\n'+s.replace(a,'        const observed = await this.ctx.observeInbound(inbound);\n        if (!observed.accepted) return;\n'+a)).encode('utf-8'))
 if sys.argv[3]=='1':
  import patch_onebot_inbound_admission as admission
@@ -72,6 +75,9 @@ if sys.argv[3]=='1':
   raw=b.transform('inbound.js',raw)
 raw=bc.transform('inbound.js',raw)
 f.write_bytes(raw)
+if sys.argv[4]=='1':
+ f=out/'lib/registry.js'
+ f.write_bytes(b.transform('registry.js',f.read_bytes()))
 for name,raw in p.module_outputs({'stateFile':str(out.parent/'state.json')}).items():
  if name=='lanya-policy-adapter.js':raw=e.transform('lib/'+name,raw)
  (out/'lib'/name).write_bytes(raw)
@@ -176,6 +182,89 @@ test('periodic reply review queues a bounded one-shot current-model review and r
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
+test('an unanswered direct message defers an autonomous turn without failure backoff', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const scope = h.chat.chatId, owner = await adapter.trustedOwner(scope)
+  const before = await adapter.policy.snapshot(scope)
+  const event = { version: 1, event_id: 'fixture-autonomous-after-reply', scope, kind: 'activity.opportunity',
+    producer: 'mind', created_at: adapter.now(), payload: {}, workspace_key: owner.workspace_key,
+    agent_key: owner.agent_key, origin: 'observation', control_allowed: false }
+  await assert.rejects(adapter.dispatchObservationOnce(event), {
+    name: 'ObservationForegroundBusy', message: /unanswered_live_input/,
+  })
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.snapshot(scope)).revision, before.revision)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+})
+
+test('private replies keep relevant memory and autonomous turns keep their plan', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const prompt = () => h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+  adapter.intentPlanner.context = () => ({ intents: [{ goal: 'unfinished personal activity' }] })
+  adapter.memoryContext = async (_scope, query) => query.includes('what were we discussing')
+    ? { memories: ['matching private topic'] } : null
+  await h.receive('what were we discussing')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(prompt(), /<scoped_memory_context>[\s\S]*matching private topic/)
+  assert.doesNotMatch(prompt(), /scoped_agent_intentions|unfinished personal activity/)
+  assert.equal((await h.decide('reply', { text: 'the private topic' })).sent, true)
+  await h.end()
+  const event = await primaryEvent(h, 'fixture-private-plan')
+  const completion = adapter.dispatchObservation(event)
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(prompt(), /<scoped_agent_intentions>[\s\S]*unfinished personal activity/)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end(); await completion
+})
+
+test('autonomous preparation yields to a private reply that arrived after its observation was pinned', async t => {
+  for (const stage of ['queued', 'answered']) await t.test(stage, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const entered = defer(), release = defer()
+    const event = await primaryEvent(h, 'synthetic-racing-opportunity')
+    adapter.memoryContext = async (_scope, text) => {
+      if (text.includes(event.event_id)) {
+        entered.resolve()
+        await release.promise
+      }
+      return null
+    }
+    const outcome = adapter.dispatchObservation(event).then(
+      value => ({ value }), error => ({ error }))
+    await entered.promise
+    try {
+      await h.receive('new human question during autonomous preparation')
+      assert.equal(h.pending.length, 1)
+      if (stage === 'answered') {
+        h.start(); assert.equal((await h.preStep()).kind, 'enter')
+        assert.equal((await h.decide('reply', { text: 'live answer' })).sent, true)
+        await h.end()
+      }
+    } finally { release.resolve() }
+    const result = await Promise.race([outcome, new Promise(resolve => setTimeout(() => resolve({ waiting: true }), 250))])
+    assert.equal(result.error?.name, 'ObservationForegroundBusy')
+    assert.equal(adapter.observations.size, 0)
+    assert.equal(h.pending.length, stage === 'queued' ? 1 : 0)
+    assert.equal(h.requests.filter(request => request.origin === 'observation').length, 0)
+
+    if (stage === 'queued') {
+      h.start(); assert.equal((await h.preStep()).kind, 'enter')
+      assert.equal((await h.decide('reply', { text: 'live answer' })).sent, true)
+      await h.end()
+    }
+    const next = adapter.dispatchObservation(event)
+    for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('idle')).accepted, true)
+    await h.end()
+    assert.equal((await next).completed, true)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('reply review never interrupts busy work, pending input, disconnect or changed permissions', async t => {
   for (const mode of ['busy', 'pending-step', 'disconnected', 'acl', 'owner', 'stopped']) await t.test(mode, async t => {
     const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy, before = h.followups.length
@@ -206,6 +295,73 @@ test('reply review honors an accepted quiet decision and actual sends rather tha
   })
 })
 
+test('startup recovery reviews only the same unclaimed QQ message alongside native context', async t => {
+  for (const mode of ['startup', 'pinned', 'legacy', 'legacy-outside-tail', 'changed', 'foreign-context']) await t.test(mode, async t => {
+    const h = await nativeDriverFixture(t)
+    const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    const policyFile = path.join(path.dirname(h.plugin), 'restored-policy.json')
+    adapter.policy = createDecisionPolicy({ stateFile: policyFile, now: adapter.now })
+    if (mode !== 'startup') { adapter.startRequested = true; adapter.startEpoch += 1 }
+    const sender = scope.slice('private:'.length), messageId = 'fixture-inbound'
+    const live = await adapter.policy.recordInbound({ scope, sender, messageId, origin: 'live', controlAllowed: true })
+    const text = 'missed private question', message = { id: 'saved-qq-message', role: 'user',
+      source: { kind: 'plugin:dsh-onebot' }, content: [{ type: 'text', text }] }
+    h.agent.inbox.append('next-turn', message)
+    h.agent.inbox.append('next-step', { id: 'saved-context', role: 'user',
+      source: { kind: mode === 'foreign-context' ? 'host:web' : 'agent-instructions' }, content: [] })
+    const legacy = mode.startsWith('legacy')
+    if (legacy) h.nativeEvents[0].time = adapter.now() + 47
+    if (mode === 'legacy-outside-tail') for (let i = 0; i < 128; i++) h.agent.session.append('fixture/event', {})
+    const pin = legacy ? undefined : { session: h.agent.session.id, id: message.id,
+      fingerprint: createHash('sha256').update(JSON.stringify(message)).digest('hex') }
+    await adapter.policy.rememberReplyInput({ scope, messageId, owner: await adapter.trustedOwner(scope),
+      expectedRevision: live.revision, text, nativePending: pin })
+    if (mode === 'changed') h.agent.inbox.replace(message.id, { ...message, content: [{ type: 'text', text: 'changed text' }] })
+    h.advance(61_000)
+    const original = structuredClone(h.nativeEvents)
+    let historyReads = 0
+    if (legacy) {
+      Object.defineProperties(h.agent.session, { seq: { get: () => h.nativeEvents.length + 1 },
+        inheritedEventCount: { value: 1 } })
+      h.agent.session.snapshotEvents = (from, to) => {
+        if (from === undefined && to === undefined) return h.nativeEvents
+        historyReads++
+        assert.equal(to - from, Math.min(128, h.nativeEvents.length))
+        return h.nativeEvents.slice(from - 1, to - 1)
+      }
+    }
+    const step = h.agent.step
+    h.agent.step = async () => {
+      const stepResult = await step()
+      const record = adapter.state(h.chat).active
+      assert.equal(record.binding.recoveryRevision, live.revision + 1)
+      assert.equal(h.chat.activeTurnRole, 'member')
+      assert.equal((await h.decide('tool_action')).accepted, false)
+      assert.equal((await h.decide('reply', { text: 'scoped answer' })).sent, true)
+      return stepResult
+    }
+    if (mode === 'startup') {
+      const blockedHistory = defer()
+      adapter.recoverReconnectHistory = () => blockedHistory.promise
+      t.after(() => blockedHistory.resolve(false))
+      await adapter.start()
+    } else await adapter.reviewUnansweredInputs()
+    if (mode === 'changed' || mode === 'foreign-context' || mode === 'legacy-outside-tail') {
+      assert.deepEqual(h.nativeEvents, original)
+      assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+      if (legacy) assert.equal(historyReads, 1)
+      return
+    }
+    await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.slice(0, original.length), original)
+    assert.equal(h.nativeEvents.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled').length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    if (legacy) assert.equal(historyReads, 1)
+  })
+})
+
 test('only a direct real bot mention or private receipt is staged; ordinary configured-group chat is not', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   const binding = { origin: 'live', scope: 'group:202', messageId: 'g', revision: 1, owner: {} }
@@ -232,13 +388,18 @@ test('owner changes during recovery dispatch never transfer historical input to 
   let reads = 0
   h.bridge.resolvePresetId = async () => ++reads === 1 ? 'fixture' : 'different'
   const before = h.followups.length
-  await assert.rejects(adapter.reviewUnansweredInputs(), /owner changed/)
+  await adapter.reviewUnansweredInputs()
   assert.equal(h.followups.length, before)
 })
 
 test('protocol prompt follows the actual claim and never accumulates in durable QQ inputs', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy
   let generation = 0
+  let proactiveReads = 0
+  const proactiveStatus = adapter.policy.proactiveStatus.bind(adapter.policy)
+  adapter.policy.proactiveStatus = async (...args) => { proactiveReads++; return proactiveStatus(...args) }
+  adapter.memoryContext = async (_scope, query) => ({ memories: [query.includes('first short question')
+    ? 'first memory </scoped_memory_context>' : 'later memory'] })
   adapter.runtimeCapabilities = async (scope, owner) => ({ schema: 'dsh-runtime-capabilities/v1',
     read_only: true, conversation_key: scope, owner, tools: {}, generation: ++generation,
     protocol: 'x'.repeat(40000) + '{{not_a_prompt_variable}}</trusted_runtime_capabilities>' })
@@ -247,12 +408,16 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   assert.equal(prompt.interpolate, false)
   assert.equal(prompt.text({agent:h.agent}), '')
   await h.receive('first short question')
-  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|x{100}/)
+  assert.doesNotMatch(JSON.stringify(h.pending), /trusted_runtime_capabilities|trusted_autonomy_rhythm|trusted_recent_social_facts|scoped_memory_context|scoped_agent_intentions|x{100}/)
   h.start()
   const first = prompt.text({agent:h.agent})
   assert.match(first, /"generation":1/)
+  assert.match(first, /first memory \\u003c\/scoped_memory_context\\u003e/)
   assert.match(first, /\\u003c\/trusted_runtime_capabilities\\u003e/)
   assert.match(first, /no QQ sending or silence-control authority/)
+  assert.match(first, /看完对方发来的图，有话就直接回。除非对方明确要求收藏、标注或处理文件/)
+  assert.match(first, /可收藏的图留给后台采集/)
+  assert.match(first, /群聊先分清谁在说、在对谁说/)
   assert.equal(prompt.text({agent:{session:h.agent.session}}), '')
   assert.equal(prompt.text(), '')
   await h.receive('second short question')
@@ -263,9 +428,13 @@ test('protocol prompt follows the actual claim and never accumulates in durable 
   await h.end()
   assert.equal(prompt.text({agent:h.agent}), '')
   h.start()
-  assert.match(prompt.text({agent:h.agent}), /"generation":3/)
+  const latest = prompt.text({agent:h.agent})
+  assert.match(latest, /"generation":3/)
+  assert.match(latest, /later memory/)
+  assert.doesNotMatch(latest, /first memory/)
   await h.end()
   assert.equal(prompt.text({agent:h.agent}), '')
+  assert.equal(proactiveReads, 0)
   assert.equal(h.calls.some(call => call.action?.startsWith('send_')), false)
 })
 
@@ -409,6 +578,31 @@ test('a filtered newer arrival does not prevent an older valid media input from 
   assert.equal((await h.decide()).accepted, true)
 })
 
+test('a late text-only private question is preserved with the newer reply input', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const entered = defer(), release = defer(), buildBody = h.bridge.inbound.ctx.buildBody
+  h.bridge.inbound.ctx.buildBody = async (body, ...args) => {
+    if (body === 'Where should I start?') { entered.resolve(); await release.promise }
+    return buildBody(body, ...args)
+  }
+  const older = h.receive('Where should I start?')
+  await entered.promise
+  try { await h.receive('Can I use a small example?') }
+  finally { release.resolve(); await older }
+
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const record = adapter.state(h.chat).active
+  assert.match(record.claimedInput.originalText, /Can I use a small example\?/)
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+  assert.match(prompt, /<earlier_private_text>\n\["Where should I start\?"\]/)
+  await h.end()
+  await Promise.all([...adapter.replyReviewWrites])
+  const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+  assert.equal(snapshot.revision, 1)
+  assert.match(snapshot.current.replyReview.text, /Where should I start\?[\s\S]*Can I use a small example\?/)
+})
+
 test('admission commits serialize per scope and a rejected storage call releases its tail', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy, policy = adapter.policy
   const gate = defer(), entered = defer(), original = policy.recordInbound
@@ -440,6 +634,10 @@ test('busy burst collapses pending inputs, preserves canceled originals, reserve
   assert.equal(h.requests.length, 0)
   assert.equal(h.chat.pendingTurnRoles.length, 0)
   const newest = h.pending[0]
+  const queued = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    .trim().split('\n').map(JSON.parse).filter(row => row.phase === 'queued')
+  assert.equal(queued[0].replaced_input, undefined)
+  assert.deepEqual(queued.slice(1).map(row => row.replaced_input), queued.slice(0, -1).map(row => row.input))
   assert.match(newest.content[0].text, /synthetic question 0/)
   assert.match(newest.content[0].text, /synthetic question 9/)
   h.start()
@@ -451,6 +649,192 @@ test('busy burst collapses pending inputs, preserves canceled originals, reserve
   assert.equal((await h.decide()).accepted, true)
   await h.end()
   assert.equal(h.requests.filter(row => row.operation === 'settle').length, 1)
+})
+
+test('member private burst carries an unanswered claimed question into the next turn', async t => {
+  const h = await fixture(t), scope = 'private:202'
+  h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+  h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+  await h.receive('first question from member', { user_id: 202, message_id: 501 })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.receive('newest detail from same member', { user_id: 202, message_id: 502 })
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /first question from member[\s\S]*historical context\.[\s\S]*newest detail from same member/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const rows = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  const handoff = rows.find(row => row.phase === 'reply_handoff')
+  const key = id => createHash('sha256').update(scope + '\0' + id).digest('hex').slice(0, 24)
+  assert.equal(handoff.prior_input, key('501'))
+  assert.equal(handoff.input, key('502'))
+  await h.end()
+})
+
+test('a stale private reply survives an ended turn while the successor is still being prepared', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('unanswered first question')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const entered = defer(), resume = defer(), original = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async (...args) => {
+    entered.resolve()
+    await resume.promise
+    return original(...args)
+  }
+  const incoming = h.receive('later private detail')
+  await entered.promise
+  assert.equal((await h.decide('reply', { text: 'expired answer' })).reason, 'stale_revision')
+  await h.end()
+  resume.resolve()
+  await incoming
+  assert.match(h.pending[0].content[0].text, /unanswered first question[\s\S]*later private detail/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('idle chat flush does not block a private inbound or dispose an active chat', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  const stale = { ...h.chat, agent: { ...h.agent, status: 'idle' },
+    chatId: 'private:202', sessionId: 'old-session', lastActivityAt: 0 }
+  h.bridge.chats.set(stale.chatId, stale)
+  const entered = defer(), resume = defer()
+  h.deps.sessions.flush = async () => { entered.resolve(); await resume.promise }
+  try {
+    await h.receive('reply while another chat flushes')
+    await entered.promise
+    assert.equal(h.pending.length, 1)
+    const running = a.idleSweep
+    await h.receive('another message during the same flush')
+    assert.equal(a.idleSweep, running)
+    stale.agent.status = 'running'
+  } finally { resume.resolve(); await a.idleSweep }
+  assert.equal(h.bridge.chats.get(stale.chatId), stale)
+})
+
+test('private burst carries a partially sent inline reply into the successor context', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('original question with two parts')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const entered = defer(), resume = defer(), original = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async (...args) => {
+    entered.resolve()
+    await resume.promise
+    return original(...args)
+  }
+  let incoming
+  h.deps.onTransmit = async action => {
+    if (!/^send_/.test(action)) return
+    assert.equal(incoming, undefined)
+    incoming = h.receive('later private question')
+    await entered.promise
+  }
+  try {
+    await h.decide('reply', { text: 'first reply bubble\nsecond reply bubble' })
+  } catch (error) {
+    assert.equal(error.reason, 'stale_revision')
+  }
+  assert.ok(incoming)
+  await h.end()
+  resume.resolve()
+  await incoming
+  assert.match(h.pending[0].content[0].text, /only an opening portion[\s\S]*original question with two parts[\s\S]*later private question/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a queued private successor sees a partial reply discovered after its own enqueue', async t => {
+  const h = await fixture(t)
+  await h.receive('older question with two parts')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  h.deps.onTransmit = async action => {
+    if (/^send_/.test(action)) await h.receive('already queued private question')
+  }
+  const result = await h.decide('reply', { text: 'opening bubble\nremaining bubble' }).catch(error => error)
+  assert.equal(result.reason, 'stale_revision')
+  await h.end()
+  assert.equal(h.pending.length, 1)
+  assert.doesNotMatch(h.pending[0].content[0].text, /older question/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime')
+  assert.match(prompt.text({ agent: h.agent }), /opening portion[\s\S]*older question with two parts/)
+  await h.receive('a third private detail')
+  assert.match(h.pending[0].content[0].text, /older question[\s\S]*already queued private question[\s\S]*a third private detail/)
+  await h.end()
+})
+
+test('memory approvals for observations return promptly while live approvals keep their normal handler', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('current live question')
+  h.start()
+  const [approval] = h.deps.nativeHooks.get('approval/request')
+  const request = { agent: h.agent, toolName: 'memory', reason: '[dsh-memento] remove agent/workspace\nfixture' }
+  const normal = async () => 'unavailable'
+  assert.equal(await approval(request, normal), 'unavailable')
+  const turn = adapter.state(h.chat).active
+  turn.binding = { ...turn.binding, origin: 'observation' }
+  assert.equal(await approval(request, () => assert.fail('background memory must not block on manual approval')), 'rejected')
+  assert.equal(await approval({ ...request, toolName: 'other' }, normal), 'unavailable')
+  await h.end()
+})
+
+test('inbox insertion failure retains recovery evidence for an admitted private message', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  h.agent.followup = () => { throw new Error('synthetic inbox write failure') }
+  await h.receive('retained direct question')
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot('private:101')
+  assert.match(state.current.replyReview.text, /retained direct question/)
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('first private message is reviewable after session creation fails before owner enrichment', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const ensure = h.bridge.ensureChat.bind(h.bridge)
+  h.bridge.ensureChat = async () => { throw new Error('synthetic session creation failure') }
+  await h.receive('first question while the session could not open')
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot(h.chat.chatId)
+  assert.match(state.current.replyReview.text, /first question/)
+  assert.equal(h.pending.length, 0)
+  h.bridge.ensureChat = ensure
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /historical_qq_input>[\s\S]*first question/)
+  h.start(); assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('reply', { text: 'a fresh answer' })
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+})
+
+test('late owner resolution for a failed dispatch cannot replace recovery evidence for a newer input', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const ensure = h.bridge.ensureChat.bind(h.bridge), owner = adapter.trustedOwner.bind(adapter)
+  const entered = defer(), release = defer()
+  adapter.trustedOwner = async scope => {
+    entered.resolve()
+    await release.promise
+    return owner(scope)
+  }
+  h.bridge.ensureChat = async () => { throw new Error('synthetic session creation failure') }
+  await h.receive('earlier failed dispatch')
+  await entered.promise
+  const [oldWrite] = adapter.replyReviewWrites
+  h.bridge.ensureChat = ensure
+  adapter.trustedOwner = owner
+  try {
+    await h.receive('newer valid question')
+  } finally { release.resolve(); await oldWrite }
+  await Promise.all([...adapter.replyReviewWrites])
+  const state = await adapter.policy.snapshot(h.chat.chatId)
+  assert.match(state.current.replyReview.text, /newer valid question/)
+  assert.doesNotMatch(state.current.replyReview.text, /earlier failed dispatch/)
+  assert.equal(h.pending.length, 1)
 })
 
 test('group member burst coalesces but a later administrator does not lend control authority', async t => {
@@ -470,6 +854,57 @@ test('group member burst coalesces but a later administrator does not lend contr
   assert.equal(h.bridge.canEditFiles(h.agent.session.id), true)
   assert.equal((await h.decide('silence', { control_update: true, evidenceSource: 'current' })).accepted, true)
   assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 2)
+})
+
+test('temporary private replies use the original group route without granting admin or recovery authority', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  await h.receive('fixture private reply', { sub_type: 'group', sender: { user_id: 101, group_id: 303 } })
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start()
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply')).can_send, true)
+  await h.send('fixture answer')
+  const packets = h.calls.filter(call => /^send_/.test(call.action))
+  assert.equal(packets.length, 1)
+  assert.equal(packets[0].action, 'send_private_msg')
+  assert.equal(packets[0].params.user_id, 101)
+  assert.equal(packets[0].params.group_id, 303)
+  assert.equal((await adapter.policy.snapshot('private:101')).current.replyReview, undefined)
+  await h.end()
+})
+
+test('a temporary private event with conflicting group evidence never falls back to a friend send', async t => {
+  const h = await fixture(t)
+  await h.receive('fixture private reply', { sub_type: 'group', group_id: 404, sender: { user_id: 101, group_id: 303 } })
+  h.start(); await h.preStep(); await h.decide('reply')
+  await assert.rejects(h.send('fixture answer'), /temporary_private_route_unavailable/)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('ordinary member private messages keep the ordinary send route and access policy', async t => {
+  const h = await fixture(t), scope = 'private:202'
+  h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+  h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+  h.deps.policy.allowAllUsers = false
+  await h.receive('blocked fixture', { user_id: 202 })
+  assert.equal(h.pending.length, 0)
+  h.deps.policy.allowAllUsers = true
+  await h.receive('allowed fixture', { user_id: 202, sub_type: 'friend', sender: { group_id: 303 } })
+  h.start(); assert.equal(h.chat.activeTurnRole, 'member')
+  await h.preStep(); await h.decide('reply')
+  const adapter = h.bridge.lanyaPolicy
+  const envelope = adapter.envelope(adapter.state(h.chat).active, 'fixture-member-send')
+  await adapter.runEnvelope(envelope, () => h.bridge.guardedConnectionCall('send_msg',
+    { user_id: 202, message: [{ type: 'text', data: { text: 'fixture answer' } }] }, scope))
+  const packets = h.calls.filter(call => /^send_/.test(call.action))
+  assert.equal(packets.length, 1)
+  assert.equal(packets[0].action, 'send_msg')
+  assert.equal(packets[0].params.group_id, undefined)
+  const log = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+  assert.match(log, /private_policy_denied/)
+  await h.end()
 })
 
 test('turn/start alone, reloaded unknown IDs and modified native content cannot grant authority', async t => {
@@ -507,12 +942,31 @@ test('pending never merges across foreign item or role boundary', async t => {
   assert.equal(h.pending.at(-2).id, h.history.findLast(row => row.inserted?.[0]?.content?.[0]?.text?.includes('admin second')).inserted[0].id)
 })
 
+test('native turn accounting uses the dispatch event sequence without scanning history', async t => {
+  const h = await fixture(t)
+  const meterCalls = []
+  h.deps.testMeter.getTurnCost = async (...args) => {
+    meterCalls.push(args)
+    return { found: true, apiCost: 0.01, calls: [{ priced: true }] }
+  }
+  await h.receive('ordinary message for turn accounting')
+  let historyReads = 0
+  h.agent.session.snapshotEvents = () => { historyReads++; return [] }
+  h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'a useful answer' })).sent, true)
+  await h.end()
+  assert.equal(historyReads, 0)
+  assert.deepEqual(meterCalls, [[h.agent.session.id, 11, 12]])
+  assert.equal(h.requests.filter(row => row.operation === 'settle').length, 1)
+})
+
 test('late enrichment cannot replace a newer revision and no pending budget is leaked', async t => {
   const h = await fixture(t), gate = defer(), entered = defer()
   h.bridge.lanyaPolicy.memoryContext = async (_scope, text) => { if (text.includes('slow older')) { entered.resolve(); await gate.promise } return null }
-  const slow = h.receive('slow older')
+  const slow = h.receive('slow older', { message_id: 601 })
   await entered.promise
-  await h.receive('fast newer')
+  await h.receive('fast newer', { message_id: 602 })
   const latest = h.pending[0].id
   assert.match(h.pending[0].content[0].text,/slow older/,'earlier admitted text survives slow enrichment')
   const freshMetadata={lastFollowup:h.chat.lastFollowup,lastNickname:h.chat.lastNickname}
@@ -523,6 +977,11 @@ test('late enrichment cannot replace a newer revision and no pending budget is l
     'stale completion cannot overwrite retry metadata or reset the current conversation')
   assert.equal(h.requests.length, 0)
   h.start(); await h.preStep()
+  const rows = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  const key = id => createHash('sha256').update(h.chat.chatId + '\0' + id).digest('hex').slice(0, 24)
+  const handoff = rows.filter(row => row.phase === 'reply_handoff')
+  assert.deepEqual(handoff.map(row => [row.prior_input, row.input]), [[key('601'), key('602')]])
+  assert.doesNotMatch(JSON.stringify(handoff), /slow older|fast newer/)
   assert.equal((await h.decide()).accepted, true)
 })
 
@@ -618,6 +1077,133 @@ test('inline text preserves silence stale-budget unknown and no-receipt boundari
   })
 })
 
+test('an inline draft removed by egress can be rewritten without consuming its decision', async t => {
+  const h = await fixture(t)
+  await h.receive('ordinary question'); h.start(); await h.preStep()
+  let concluded = 0
+  const decide = text => h.tools.get('qq_decide').execute({ verdict: 'reply', text },
+    { ...h.exec(), concludeTurn: () => { concluded++ } })
+  assert.equal((await decide('（歪头）[表情: 笑]')).reason, 'empty_content')
+  assert.equal((await decide('我再去看。')).reason, 'empty_content')
+  assert.equal(concluded, 0)
+  assert.equal((await decide('有用的一句')).sent, true)
+  assert.equal(concluded, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  await h.end()
+})
+
+test('a lost budget reservation response can be recovered without losing the live reply', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+  const reservations = []
+  a.budgetProvider = async request => {
+    if (request.operation === 'reserve') {
+      reservations.push(request)
+      if (reservations.length === 1) throw new Error('synthetic lost reservation response')
+    }
+    return provider(request)
+  }
+  await h.receive('question with a transient ledger failure'); h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer without delay from model retries' })).sent, true)
+  await h.end()
+  assert.equal(reservations.length, 2)
+  assert.deepEqual(reservations[0], reservations[1])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a newer private message carries the earlier reply blocked by the budget helper', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+  await h.receive('a question interrupted by the ledger', { message_id: 601 })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  a.budgetProvider = request => {
+    if (request.operation === 'check') throw new Error('synthetic ledger failure')
+    return provider(request)
+  }
+  assert.equal((await h.decide('reply', { text: 'reply awaiting ledger' })).reason, 'budget_unavailable')
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  a.budgetProvider = provider
+  await h.receive('a new detail about the same question', { message_id: 602 })
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /a question interrupted by the ledger[\s\S]*a new detail about the same question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer to the two messages' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('inline replies blocked at the transport budget check preserve only wholly unsent questions', async t => {
+  for (const mode of ['follow-up after end', 'follow-up before end', 'partial delivery', 'periodic review']) await t.test(mode, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy, provider = adapter.budgetProvider
+    const partial = mode === 'partial delivery'
+    let checks = 0
+    adapter.budgetProvider = async request => {
+      if (request.operation === 'check' && ++checks >= (partial ? 3 : 2)) throw new Error('fixture transport budget read failed')
+      return provider(request)
+    }
+    await h.receive('first question before a transport budget outage', { message_id: 620 })
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const reply = partial ? '开头先说明这一点。'.repeat(4) + '\n接下来是另一段。'.repeat(5) : 'fixture text to send'
+    if (partial) await assert.rejects(h.decide('reply', { text: reply }), { reason: 'budget_unavailable', sent_parts: 1 })
+    else assert.equal((await h.decide('reply', { text: reply })).reason, 'budget_unavailable')
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, partial ? 1 : 0)
+    if (mode === 'follow-up before end') await h.receive('a new detail after the refusal', { message_id: 621 })
+    await h.end()
+    adapter.budgetProvider = provider
+    if (mode === 'periodic review') {
+      h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+      await adapter.reviewUnansweredInputs()
+    } else if (mode !== 'follow-up before end') {
+      await h.receive('a new detail after the refusal', { message_id: 621 })
+    }
+    assert.equal(h.pending.length, 1)
+    const prompt = h.pending[0].content[0].text
+    if (partial) assert.doesNotMatch(prompt, /first question before a transport budget outage/)
+    else assert.match(prompt, /first question before a transport budget outage/)
+    assert.doesNotMatch(prompt, /fixture text to send/)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: '这次可以正常回复。' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, partial ? 2 : 1)
+  })
+})
+
+test('a live reply blocked before any send by budget errors gets one recovery after the ledger returns', async t => {
+  for (const operation of ['reserve', 'check']) await t.test(operation, async t => {
+    const h = await fixture(t), a = h.bridge.lanyaPolicy, provider = a.budgetProvider
+    const attempts = []
+    a.budgetProvider = async request => {
+      attempts.push(request.operation)
+      if (request.operation === operation) throw new Error('synthetic temporary budget database failure')
+      return provider(request)
+    }
+    await h.receive('question retained for a later reply'); h.start()
+    assert.equal((await h.preStep()).kind, 'enter')
+    let concluded = 0
+    const result = await h.tools.get('qq_decide').execute({ verdict: 'reply', text: 'cannot send yet' },
+      { ...h.exec(), concludeTurn: () => { concluded++ } })
+    assert.equal(result.reason, 'budget_unavailable')
+    assert.equal(result.sent, false)
+    assert.equal(concluded, 1)
+    await h.end()
+    assert.equal(attempts.filter(item => item === operation).length, operation === 'reserve' ? 2 : 1)
+    if (operation === 'reserve') assert.ok(!attempts.includes('check'))
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    a.budgetProvider = provider
+    h.agent.status = 'idle'
+    a.startRequested = true
+    h.advance(60_000)
+    await a.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /question retained for a later reply/)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'one reply after recovery' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
 test('inline closing group reply returns to listening and blocks a second operation in the same turn',async t=>{
   const h=await listeningGroup(t);await h.mention();h.start();await h.preStep()
   const result=await h.decide('reply',{text:'closing reply',group_conversation:'end'})
@@ -636,10 +1222,629 @@ function backendFixture(h, provider='snowluma') {
   h.deps.connection.call=async(action,params)=>{
     if(action==='get_version_info'){reads.push(action);return {app_name:app}}
     if(action==='get_login_info'){reads.push(action);return {user_id:999}}
+    if(action==='get_friend_list')return []
     return original(action,params)
   }
   return {select,reads,setApp:value=>{app=value}}
 }
+
+test('reconnect stages only unseen recent friend text for one scoped reply review', async t => {
+  for (const scenario of ['new', 'mixed friend history', 'disconnect second', 'busy then idle', 'busy through expiry', 'read retries', 'invalid history retries', 'read fails until expiry',
+    'live arrived', 'later own message', 'same-second own message', 'same-second quoted own message',
+    'same-second quote with another own message', 'same-second quote to wrong peer', 'socket changed']) await t.test(scenario, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const warnings = []
+    adapter.log = (_level, message) => warnings.push(message)
+    backendFixture(h)
+    await h.receive('previously handled message')
+    await Promise.all([...adapter.replyReviewWrites])
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    await h.decide('idle'); await h.end()
+    h.agent.status = 'idle'; adapter.startRequested = true
+    h.advance(scenario === 'disconnect second' ? 1500 : 1000)
+    adapter.noteConnectionStatus(false)
+    const at = Math.floor(adapter.now() / 1000) + (scenario === 'disconnect second' ? 0 : 1)
+    h.advance(90_000)
+    adapter.noteConnectionStatus(true)
+    const row = (time, id, text, extra = {}) => ({ message_type: 'private', sub_type: 'friend', time, message_id: id,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }], ...extra })
+    const call = h.deps.connection.call
+    let historyReads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_friend_msg_history') return call(action, params)
+      historyReads++
+      assert.deepEqual({ ...params }, { user_id: 101, count: 12 })
+      if (scenario === 'read fails until expiry' || scenario === 'read retries' && historyReads === 1) {
+        throw new Error('Temporary history failure')
+      }
+      if (scenario === 'invalid history retries' && historyReads === 1) return {}
+      if (scenario === 'live arrived') await h.receive('a newer actual live message')
+      if (scenario === 'socket changed') h.deps.connection.socket = {}
+      const rows = [row(at - 2, 10, 'before disconnect'), row(at, 11, 'first missed question'),
+        row(at + 1, -12, 'second missed question'), row(at + 2, 13, '/reset'),
+        row(at + 3, 14, 'not a friend', { sub_type: 'group' })]
+      if (scenario === 'mixed friend history') {
+        rows[1].message.unshift({ type: 'reply', data: { id: '10', text: 'unverified preview' } })
+        rows[2].message.push({ type: 'image', data: { url: 'https://example.invalid/private-fixture' } })
+        rows.push(row(at + 4, 15, 'wrong friend route', { target_id: 444 }),
+          row(at + 5, 16, '', { message: [{ type: 'image', data: { file: 'attachment-only' } },
+            { type: 'image', data: { file: 'another-attachment' } }, { type: 'record', data: { file: 'audio-fixture' } }] }),
+          row(at + 6, 17, '', { message: [{ type: 'image', data: {} }] }),
+          row(at + 7, 18, '', { message: [{ type: 'reply', data: { id: 11 } }] }),
+          row(at + 8, 19, '', { target_id: 444, message: [{ type: 'image', data: { file: 'foreign-attachment' } }] }))
+      }
+      if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
+      if (scenario === 'same-second own message') {
+        rows[2].message_seq = 22
+        rows.push(row(at + 1, 15, 'possibly answered', { sender: { user_id: 999 }, message_seq: 21 }))
+      }
+      if (scenario.startsWith('same-second quote')) {
+        rows[2].message.unshift({ type: 'reply', data: { id: '15' } })
+        rows.push(row(at + 1, 15, 'quoted earlier reply', { sender: { user_id: 999 },
+          ...(scenario === 'same-second quote to wrong peer' ? { peer_id: 444 } : {}) }))
+        if (scenario === 'same-second quote with another own message') {
+          rows.push(row(at + 1, 16, 'possibly already answered', { sender: { user_id: 999 } }))
+        }
+      }
+      return { messages: rows }
+    }
+    const expires = scenario === 'busy through expiry'
+    if (scenario === 'busy then idle' || expires) {
+      h.agent.status = 'running'
+      await adapter.recoverReconnectHistory()
+      assert.equal(historyReads, 0, 'a busy conversation is left alone')
+      assert.equal(h.pending.length, 0)
+      h.agent.status = 'idle'
+      h.advance(expires ? 180_001 : 30_000)
+    }
+    const retries = ['read retries', 'invalid history retries'].includes(scenario)
+    if (retries || scenario === 'read fails until expiry') {
+      await adapter.recoverReconnectHistory()
+      assert.equal(historyReads, 1, 'a failed history read is attempted only once per pass')
+      assert.equal(h.pending.length, 0)
+      assert.deepEqual(Array.from(adapter.reconnectReview.scopes), [h.chat.chatId])
+      h.advance(retries ? 30_000 : 180_001)
+    }
+    await adapter.recoverReconnectHistory()
+    const state = await adapter.policy.snapshot(h.chat.chatId)
+    const expectedReads = expires ? 0 : retries ? 2 : 1
+    assert.equal(historyReads, expectedReads)
+    const quotedOwn = scenario === 'same-second quoted own message'
+    if (!retries && !quotedOwn && !['new', 'mixed friend history', 'disconnect second', 'busy then idle'].includes(scenario)) {
+      assert.ok(!state.seen.some(item => item.messageId === '-12'))
+      assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+      return
+    }
+    assert.equal(state.current.controlAllowed, false, warnings.join('\n'))
+    const mixed = scenario === 'mixed friend history'
+    const supplement = mixed ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
+    const media = mixed ? '\n\n[收到图片、语音，内容未加载]' : ''
+    assert.equal(state.current.replyReview.text, quotedOwn
+      ? 'second missed question\n[补查只保留了新写的文字，引用或附件未展开]'
+      : 'first missed question' + supplement + '\n\nsecond missed question' + supplement + media)
+    assert.equal(state.current.messageId, mixed ? '16' : '-12')
+    assert.equal(h.pending.length, 0, 'history is staged without native live dispatch')
+    await h.receive('late event', { message_id: mixed ? 16 : -12 })
+    assert.equal(h.pending.length, 0, 'late duplicate does not enter the native inbox')
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    if (mixed) {
+      assert.match(h.pending[0].content[0].text, /内容未加载/)
+      assert.match(h.pending[0].content[0].text, /never describe the contents/)
+      assert.doesNotMatch(h.pending[0].content[0].text, /example\.invalid|attachment-only|audio-fixture|unverified preview/)
+    }
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a short answer' })).sent, true)
+    await h.end()
+    await adapter.recoverReconnectHistory()
+    await adapter.reviewUnansweredInputs()
+    assert.equal(historyReads, expectedReads)
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('verified reconnect stages a first friend message without creating chats for the friend list', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  backendFixture(h)
+  h.bridge.chats.delete(scope)
+  h.deps.policy.dmPolicy = 'allowlist'
+  h.deps.policy.allowFrom = ['101', '102']
+  h.agent.status = 'idle'
+  let opened = 0
+  const ensure = h.bridge.ensureChat.bind(h.bridge)
+  h.bridge.ensureChat = async requested => {
+    assert.equal(requested, scope)
+    if (h.bridge.chats.has(scope)) return ensure(requested)
+    opened++
+    h.bridge.chats.set(scope, h.chat)
+    return h.chat
+  }
+  const call = h.deps.connection.call
+  const historyPeers = []
+  let friendListReads = 0
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') {
+      if (++friendListReads === 1) throw new Error('Temporary friend list failure')
+      return [101, 102, 103, 999].map(user_id => ({ user_id }))
+    }
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    historyPeers.push(params.user_id)
+    if (params.user_id !== 101) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 411,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'first friend question' } }] }] }
+  }
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(90_000); a.noteConnectionStatus(true)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.equal(friendListReads, 1)
+  assert.deepEqual(historyPeers, [])
+  assert.equal(opened, 0)
+  assert.equal(await a.policy.snapshot(scope), null)
+  h.advance(30_000)
+  await a.recoverReconnectHistory()
+  assert.equal(friendListReads, 2)
+  assert.deepEqual(historyPeers, [101, 102])
+  assert.equal(opened, 0)
+  assert.equal(await a.policy.snapshot('private:102'), null)
+  assert.equal((await a.policy.snapshot(scope)).current.replyReview.text, 'first friend question')
+  await a.reviewUnansweredInputs()
+  assert.equal(opened, 1)
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.decide('reply', { text: 'answer to first question' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 1)
+})
+
+test('reconnect reviews an already-open friend chat with no local policy receipt', async t => {
+  for (const mode of ['verified friend', 'not a friend']) await t.test(mode, async t => {
+    const h = await fixture(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    h.agent.status = 'idle'
+    assert.ok(h.bridge.chats.has(scope))
+    assert.equal(await a.policy.snapshot(scope), null)
+    const call = h.deps.connection.call
+    let lists = 0, reads = 0
+    a.noteConnectionStatus(false)
+    const at = Math.floor(a.now() / 1000) + 1
+    h.advance(90_000); a.noteConnectionStatus(true)
+    h.deps.connection.call = async (action, params) => {
+      if (action === 'get_friend_list') {
+        if (++lists === 1) throw new Error('temporary friend list failure')
+        return mode === 'verified friend' ? [{ user_id: 101 }] : []
+      }
+      if (action !== 'get_friend_msg_history') return call(action, params)
+      reads++
+      assert.equal(params.user_id, 101)
+      return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 419,
+        sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'first question after opening this chat' } }] }] }
+    }
+    a.startRequested = true
+    await a.recoverReconnectHistory()
+    assert.equal(reads, 0)
+    assert.equal(await a.policy.snapshot(scope), null)
+    h.advance(30_000)
+    await a.recoverReconnectHistory()
+    assert.equal(lists, 2)
+    if (mode === 'not a friend') {
+      assert.equal(reads, 0)
+      assert.equal(await a.policy.snapshot(scope), null)
+      return
+    }
+    assert.equal(reads, 1)
+    assert.equal((await a.policy.snapshot(scope)).current.replyReview.text, 'first question after opening this chat')
+    await a.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'recovered answer' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 1)
+  })
+})
+
+test('reconnect queues a confirmed friend reply while a different history read is still waiting', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  const waiting = defer(), release = defer(), queued = defer()
+  const scope = h.chat.chatId
+  h.agent.status = 'idle'
+  const dispatch = h.bridge.dispatchFollowup.bind(h.bridge)
+  h.bridge.dispatchFollowup = async (...args) => {
+    const result = await dispatch(...args)
+    if (args[0] === scope) queued.resolve()
+    return result
+  }
+  h.deps.policy.dmPolicy = 'allowlist'; h.deps.policy.allowFrom = ['101', '102', '103', '104']
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(90_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  const historyPeers = []
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return [101, 102, 103, 104].map(user_id => ({ user_id }))
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    historyPeers.push(params.user_id)
+    if (params.user_id === 102) { waiting.resolve(); await release.promise }
+    if (params.user_id !== 101) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 412,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'independent friend question' } }] }] }
+  }
+  a.startRequested = true
+  const scan = a.checkReconnectHistory()
+  let timeout
+  try {
+    await waiting.promise
+    assert.equal(await Promise.race([queued.promise.then(() => true), new Promise(resolve => { timeout = setTimeout(resolve, 2500) })]), true)
+    assert.ok(historyPeers.includes(102) && historyPeers.includes(101))
+    assert.equal(a.reconnectReviewAttempt !== null, true)
+    assert.match(h.pending[0].content[0].text, /independent friend question/)
+  } finally {
+    clearTimeout(timeout)
+    release.resolve()
+    await scan
+  }
+  assert.deepEqual(historyPeers.sort((a, b) => a - b), [101, 102, 103, 104])
+  assert.equal(h.pending.length, 1)
+})
+
+test('reconnect checks a verified private conversation while friend discovery is pending', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('already handled question')
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  h.deps.policy.dmPolicy = 'allowlist'; h.deps.policy.allowFrom = ['101', '102']
+  h.advance(1000)
+  adapter.noteConnectionStatus(false)
+  const at = Math.floor(adapter.now() / 1000) + 1
+  h.advance(90_000); adapter.noteConnectionStatus(true)
+  const list = defer(), queued = defer(), reads = []
+  const call = h.deps.connection.call, dispatch = h.bridge.dispatchFollowup.bind(h.bridge)
+  h.bridge.dispatchFollowup = async (...args) => {
+    const result = await dispatch(...args)
+    if (args[0] === h.chat.chatId) queued.resolve()
+    return result
+  }
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return list.promise
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads.push(params.user_id)
+    if (params.user_id === 102) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 413,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'verified friend question' } }] }] }
+  }
+  adapter.startRequested = true
+  const scan = adapter.checkReconnectHistory()
+  let timer
+  try {
+    await Promise.race([queued.promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Verified scope waited for friend discovery')), 4000)
+    })])
+    assert.deepEqual(reads, [101])
+    assert.match(h.pending[0].content[0].text, /verified friend question/)
+  } finally {
+    clearTimeout(timer)
+    list.resolve([{ user_id: 101 }, { user_id: 102 }])
+    await scan
+  }
+  assert.deepEqual(reads, [101, 102])
+  assert.equal(h.pending.length, 1)
+})
+
+test('verified reconnect starts friend history review without waiting for the periodic timer', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('previously handled fixture message')
+  await Promise.all([...adapter.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  const mapping = defer()
+  h.bridge.registry.mappingLoaded = mapping.promise
+  const call = h.deps.connection.call
+  let reads = 0
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads++
+    return { messages: [] }
+  }
+  adapter.noteConnectionStatus(false)
+  h.advance(1000)
+  adapter.noteConnectionStatus(true)
+  const scan = adapter.reconnectReviewAttempt
+  assert.ok(scan)
+  assert.equal(adapter.recoveryTimer, null)
+  assert.equal(reads, 0)
+  adapter.noteConnectionStatus(false)
+  h.deps.connection.socket = {}
+  h.advance(1000)
+  adapter.noteConnectionStatus(true)
+  mapping.resolve()
+  await scan
+  await adapter.reconnectReviewAttempt
+  assert.equal(reads, 1)
+  assert.equal(adapter.reconnectReview, null)
+})
+
+test('verified reconnect queues eligible missed input after an overlapping review pass', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('earlier question')
+  await Promise.all([...a.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(90_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_friend_msg_history' ? { messages: [{
+    message_type: 'private', sub_type: 'friend', time: at, message_id: 741,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'missed while disconnected' } }],
+  }] } : call(action, params)
+  a.startRequested = true
+  const readCandidates = a.policy.replyReviewCandidates.bind(a.policy)
+  const entered = defer(), release = defer()
+  a.policy.replyReviewCandidates = async () => {
+    const existing = await readCandidates()
+    entered.resolve()
+    await release.promise
+    return existing
+  }
+  const periodic = a.reviewUnansweredInputs()
+  await entered.promise
+  const reconnect = a.checkReconnectHistory()
+  assert.equal(await a.reconnectReviewAttempt, true)
+  assert.equal(h.pending.length, 0)
+  release.resolve()
+  await periodic; await reconnect
+  assert.equal(a.recoveryTimer, null)
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /missed while disconnected/)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+})
+
+test('reconnect scans the tail of the friend list without waiting for another timer tick', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  const peers = Array.from({ length: 24 }, (_, i) => i + 200)
+  h.deps.policy.dmPolicy = 'allowlist'
+  h.deps.policy.allowFrom = peers.map(String)
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(100_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  const reads = []
+  const tail = peers.at(-1), slow = peers[0]
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return peers.map(user_id => ({ user_id }))
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads.push(params.user_id)
+    if (params.user_id === slow) throw new Error('One unreadable conversation')
+    if (params.user_id !== tail) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 734,
+      sender: { user_id: tail }, message: [{ type: 'text', data: { text: 'Question from the last friend' } }] }] }
+  }
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.deepEqual(reads.sort((a, b) => a - b), peers)
+  assert.deepEqual(Array.from(a.reconnectReview.scopes), ['private:' + slow])
+  assert.equal((await a.policy.snapshot('private:' + tail)).current.replyReview.text, 'Question from the last friend')
+  assert.equal(h.pending.length, 0)
+})
+
+test('reconnect covers the account verification gap and keeps that boundary fixed on retries', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('previous reply context')
+  await Promise.all([...a.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  h.advance(20_000)
+  a.noteConnectionStatus(true)
+  const connected = Math.floor(a.now() / 1000)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  let ready = false, reads = 0
+  a.backendGuard.verify = (...args) => ready ? verify(...args) : Promise.resolve({ allowed: false })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    if (++reads === 1) throw new Error('synthetic history error')
+    const row = (time, message_id, text) => ({ message_type: 'private', sub_type: 'friend', time, message_id,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }] })
+    return { messages: [row(connected + 1, 541, 'question during verification'), row(connected + 61, 542, 'new traffic after verification')] }
+  }
+  await h.receive('question during verification', { message_id: 541 })
+  assert.equal(h.pending.length, 0)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 0)
+  h.advance(30_000)
+  ready = true
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 1)
+  h.advance(60_000)
+  await a.recoverReconnectHistory()
+  const state = await a.policy.snapshot(h.chat.chatId)
+  assert.equal(state.current.replyReview.text, 'question during verification')
+  assert.ok(!state.seen.some(item => item.messageId === '542'))
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer after reconnect' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a verification failure on an already connected socket can recover a missed friend message', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.startRequested = true
+  await h.receive('previous question')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  h.advance(2_000)
+  assert.equal(a.reconnectReview, null)
+  const at = Math.floor(a.now() / 1000)
+  const call = h.deps.connection.call
+  h.deps.connection.call = (action, params) => action === 'get_friend_msg_history' ? Promise.resolve({ messages: [{
+    message_type: 'private', sub_type: 'friend', time: at, message_id: 580,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text: 'unseen during verification' } }],
+  }] }) : call(action, params)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_provider_mismatch' })
+  await h.receive('wrong provider', { message_id: 579 })
+  assert.equal(a.reconnectReview, null)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_verification_unavailable' })
+  await h.receive('unseen during verification', { message_id: 580 })
+  assert.equal(h.pending.length, 0)
+  a.backendGuard.verify = verify
+  h.advance(65_000)
+  await a.checkReconnectHistory()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /unseen during verification/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one recovered answer' })).sent, true)
+  await h.end()
+  await a.checkReconnectHistory()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a second transient backend failure extends an in-progress history recovery', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  h.advance(60_000)
+  a.noteConnectionStatus(true)
+  a.startRequested = true
+  const call = h.deps.connection.call
+  const clock = () => Math.floor(a.now() / 1000)
+  const receipt = (time, message_id, text) => ({ message_type: 'private', sub_type: 'friend', time, message_id,
+    sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }] })
+  const first = receipt(clock() - 10, 571, 'Question during first outage')
+  const rows = [first]
+  let reads = 0
+  h.deps.connection.call = (action, params) => {
+    if (action === 'get_friend_list') return [{ user_id: 101 }]
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    if (++reads === 1) throw new Error('Temporary history failure')
+    return { messages: [...rows] }
+  }
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 1)
+  const original = a.reconnectReview
+  assert.equal(original.verifiedAt, a.now())
+  h.advance(2_000)
+  const second = receipt(clock(), 572, 'Question from a second verification gap')
+  rows.push(second)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  a.backendGuard.verify = async () => ({ allowed: false, reason: 'backend_runtime_unverified' })
+  await h.receive(second.message[0].data.text, { message_id: second.message_id })
+  assert.equal(h.pending.length, 0)
+  assert.notEqual(a.reconnectReview, original)
+  assert.equal(a.reconnectReview.since, original.since)
+  a.backendGuard.verify = verify
+  h.advance(62_000)
+  await a.checkReconnectHistory()
+  assert.equal(reads, 2)
+  assert.equal(h.pending.length, 1)
+  const evidence = h.pending[0].content[0].text
+  assert.match(evidence, /Question during first outage[\s\S]*Question from a second verification gap/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer covering both questions' })).sent, true)
+  await h.end()
+  await a.checkReconnectHistory()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const backend = backendFixture(h)
+  backend.setApp('NapCat.Onebot')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  h.deps.connection.socket = {}
+  backend.setApp('SnowLuma')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  backend.select('napcat', 2)
+  assert.equal((await h.preStep()).reason, 'backend_selection_changed')
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('reply review rechecks access and backend connection after queue preparation', async t => {
+  for (const change of ['access', 'socket']) await t.test(change, async t => {
+    const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+    backendFixture(h)
+    const enrich = adapter.enrichContext.bind(adapter)
+    adapter.enrichContext = async (...args) => {
+      const result = await enrich(...args)
+      if (change === 'access') h.deps.policy.dmPolicy = 'disabled'
+      else h.deps.connection.socket = {}
+      return result
+    }
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+    adapter.enrichContext = enrich
+    h.deps.policy.dmPolicy = 'open'
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+  })
+})
+
+test('reply review does not release the attempt after an ambiguous queue write', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const followup = h.agent.followup
+  h.agent.followup = message => { followup(message); throw new Error('synthetic error after queue write') }
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+})
+
+test('reply review retries after a proven pre-inbox preparation failure', async t => {
+  const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
+  const enrich = adapter.enrichContext.bind(adapter)
+  adapter.enrichContext = async () => { throw new Error('Synthetic context preparation failure') }
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  adapter.enrichContext = enrich
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'Recovered answer' })).sent, true)
+  await h.end()
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
 
 test('native heartbeat reports actual loaded transport and quote binding, not configured file names', async t => {
   const h = await fixture(t), adapter = h.bridge.lanyaPolicy; backendFixture(h)
@@ -754,7 +1959,7 @@ test('late partially resolved quoted images cannot supersede a newer native inpu
     return { kind: 'image', path: path.join(h.directory, 'synthetic-quote.png') }
   }
   const older = h.receive('older quote', { message: [{ type: 'reply', data: { id: '41' } },
-    { type: 'text', data: { text: 'older quote' } }] })
+    { type: 'text', data: { text: 'older quote </earlier_private_text>' } }] })
   await entered.promise
   await h.receive('fresh current request')
   const newest = JSON.stringify(h.pending[0]), revision = h.bridge.lanyaPolicy.state(h.chat).liveRevision
@@ -765,8 +1970,125 @@ test('late partially resolved quoted images cannot supersede a newer native inpu
   assert.equal(h.requests.length, 0); assert.equal(h.calls.length, 0)
   assert.doesNotMatch(h.pending[0].content[0].text, /synthetic-quote|older quote/)
   h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+  assert.match(prompt, /<earlier_private_text>\n\["older quote \\u003c/)
+  assert.doesNotMatch(prompt, /synthetic-quote|Quoted author/)
+  assert.equal((prompt.match(/<\/earlier_private_text>/g) || []).length, 1)
   assert.equal((await h.decide()).accepted, true)
   assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+})
+
+test('a slow private attachment keeps the sender caption with a newer message', async t => {
+  for (const successor of ['preparing', 'queued']) await t.test(successor, async t => {
+    const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+    const reading = defer(), releaseMedia = defer(), preparing = defer(), releaseMemory = defer()
+    h.deps.media.resolve = async () => {
+      reading.resolve()
+      await releaseMedia.promise
+      return { kind: 'image', path: path.join(h.directory, 'synthetic-attachment.png') }
+    }
+    adapter.memoryContext = async (_scope, text) => {
+      if (successor === 'preparing' && text.includes('new private question')) {
+        preparing.resolve()
+        await releaseMemory.promise
+      }
+    }
+    const older = h.receive('caption with a question', { message: [
+      { type: 'text', data: { text: 'Which part of this looks off?' } },
+      { type: 'image', data: { file: 'synthetic-attachment', sub_type: '1' } },
+    ] })
+    await reading.promise
+    const newer = h.receive('new private question')
+    try {
+      await (successor === 'preparing' ? preparing.promise : newer)
+      releaseMedia.resolve()
+      await older
+    } finally {
+      releaseMedia.resolve()
+      releaseMemory.resolve()
+    }
+    await newer
+    const chat = h.chat, [message] = chat.agent.inbox.nextTurn
+    const entry = adapter.state(chat).pending.get(message.id)
+    assert.match(entry.originalText, /new private question/)
+    assert.doesNotMatch(entry.originalText, /synthetic-attachment|Which part/)
+    assert.deepEqual([...entry.lateReplyText.values()].map(note => note.text), ['Which part of this looks off?'])
+    await Promise.all([...adapter.replyReviewWrites])
+    const snapshot = await adapter.policy.snapshot(chat.chatId)
+    assert.equal(snapshot.revision, 1)
+    assert.equal(snapshot.current.messageId, entry.binding.messageId)
+    if (successor === 'preparing') assert.match(snapshot.current.replyReview.text, /Which part of this looks off\?/)
+    assert.equal(chat.agent.inbox.nextTurn.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+    assert.match(prompt, /<earlier_private_text>\n\["Which part of this looks off\?"\]/)
+    assert.doesNotMatch(prompt, /synthetic-attachment/)
+    assert.equal((await h.decide('reply', { text: 'one answer after reading both messages' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('a slow direct image remains available in the next private reply without putting the file in recovery evidence', async t => {
+  for (const scenario of ['unchanged', 'file changed', 'socket changed']) await t.test(scenario, async t => {
+    const h = await fixture(t, { mislabeledImage: true }), a = h.bridge.lanyaPolicy
+    const reading = defer(), release = defer(), resolve = h.deps.media.resolve
+    h.deps.media.resolve = async (...args) => { reading.resolve(); await release.promise; return resolve(...args) }
+    const older = h.receive('', { message: [{ type: 'image', data: { file: 'synthetic-image' } }] })
+    await reading.promise
+    try { await h.receive('What do you think of the picture?') }
+    finally { release.resolve() }
+    await older
+    assert.equal(h.pending.length, 1)
+    const entry = a.state(h.chat).pending.get(h.pending[0].id)
+    const image = [...entry.lateReplyText.values()][0].image
+    assert.match(image.file, /media_format_[a-f0-9]{64}\.gif$/)
+    if (scenario === 'file changed') fs.appendFileSync(image.file, 'changed')
+    if (scenario === 'socket changed') h.deps.connection.socket = {}
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({ agent: h.agent })
+    const block = prompt.match(/<earlier_direct_images>\n([^\n]+)\n<\/earlier_direct_images>/u)
+    if (scenario === 'unchanged') assert.deepEqual(JSON.parse(block[1]), [{ file: image.file }])
+    else assert.equal(block, null)
+    await h.end()
+    await Promise.all([...a.replyReviewWrites])
+    const text = (await a.policy.snapshot(h.chat.chatId)).current.replyReview.text
+    assert.match(text, /较早收到一张图片/)
+    assert.doesNotMatch(text, /media_format_/)
+  })
+})
+
+test('a missed private reply review retains an earlier slow attachment caption', async t => {
+  const h = await fixture(t), adapter = h.bridge.lanyaPolicy
+  const reading = defer(), releaseMedia = defer()
+  h.deps.media.resolve = async () => {
+    reading.resolve()
+    await releaseMedia.promise
+    return undefined
+  }
+  const older = h.receive('caption with a slow attachment', { message: [
+    { type: 'text', data: { text: 'Which of the two colors works?' } },
+    { type: 'image', data: { file: 'synthetic-attachment', sub_type: '1' } },
+  ] })
+  await reading.promise
+  try { await h.receive('I meant the smaller one') }
+  finally { releaseMedia.resolve() }
+  await older
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  await Promise.all([...adapter.replyReviewWrites])
+  const current = (await adapter.policy.snapshot(h.chat.chatId)).current
+  assert.match(current.replyReview.text, /Which of the two colors works\?[\s\S]*I meant the smaller one/)
+  assert.doesNotMatch(current.replyReview.text, /synthetic-attachment/)
+  h.agent.status = 'idle'
+  adapter.startRequested = true
+  h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  const [message] = h.pending
+  assert.match(message.content[0].text, /Which of the two colors works\?[\s\S]*I meant the smaller one/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer after the review' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
 test('quote-only admin input cannot authorize control; fresh current text with quote still can', async t => {
@@ -791,6 +2113,10 @@ test('only a confirmed current-scope send ACK seeds metadata for a bot-authored 
   await h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'synthetic response' } }] })
   assert.equal(h.bridge.inbound.messageScopes.get('41'), 'private:101')
   assert.equal(h.bridge.inbound.messageScopes.has('unknown'), false)
+  const diagnostic = () => fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line)).filter(row => row.phase === 'delivery')
+  const output = createHash('sha256').update(['private:101', '41'].join('\0')).digest('hex').slice(0, 24)
+  assert.deepEqual(diagnostic().map(row => row.output), [output])
   h.deps.connection.call = async action => {
     assert.equal(action, 'get_msg')
     return { message_id: 41, message_type: 'private', sender: { user_id: 999 },
@@ -800,6 +2126,30 @@ test('only a confirmed current-scope send ACK seeds metadata for a bot-authored 
   h.deps.connection.call = async () => { throw new Error('synthetic network failure') }
   await assert.rejects(h.raw('send_private_msg', { user_id: 101, message: [{ type: 'text', data: { text: 'uncertain' } }] }))
   assert.equal(h.bridge.inbound.messageScopes.size, 1)
+  assert.deepEqual(diagnostic().filter(row => row.output).map(row => row.output), [output])
+})
+
+test('unknown QQ sends retain safe outcome while reporting a bounded transport failure category', async t => {
+  for (const [name, message, category] of [
+    ['OneBotActionError', 'OneBot action send_msg timed out after 3000ms', 'ack_timeout'],
+    ['OneBotActionError', 'OneBot action failed (retcode 100): synthetic provider details', 'backend_rejected'],
+    ['OneBotNotConnectedError', 'synthetic private connection details', 'connection_unavailable'],
+    ['Error', 'synthetic transport details', 'unclassified'],
+  ]) await t.test(category, async t => {
+    const h = await fixture(t)
+    h.deps.connection.call = async () => { throw Object.assign(new Error(message), { name }) }
+    await h.receive('fresh transport question'); h.start(); await h.preStep()
+    const result = await h.decide('reply', { text: 'synthetic answer' })
+    assert.equal(result.status, 'unknown')
+    assert.equal(result.reason, 'transport_uncertain')
+    const raw = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    const delivery = raw.trim().split('\n').map(JSON.parse).filter(row => row.phase === 'delivery')
+    assert.equal(delivery.length, 1)
+    assert.equal(delivery[0].transport_failure, category)
+    assert.equal(delivery[0].output, undefined)
+    assert.equal(raw.includes(message), false)
+    await h.end()
+  })
 })
 
 test('active reservation is never borrowed, old reply remains stale, and silence persists', async t => {
@@ -950,7 +2300,7 @@ async function nativeDriverFixture(t, options = {}) {
   }
   h.agent.session.snapshotEvents = () => nativeEvents
   h.agent.session.append = (type, data) => {
-    const event = { type, data: structuredClone(data), seq: nativeEvents.length + 1 }
+    const event = { type, data: structuredClone(data), seq: nativeEvents.length + 1, time: h.bridge.lanyaPolicy.now() }
     nativeEvents.push(event)
     if (type === 'agent/inbox/spliced') nativePending[data.target].splice(data.start, data.removedCount || 0, ...structuredClone(data.inserted))
     h.bridge.onSessionEvent(h.agent.session, event)
@@ -982,12 +2332,139 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   assert.fail('native fixture did not settle')
 }
 
+test('a reply review waits through a failed budget reservation without spending its model attempt', async t => {
+  const h = await nativeDriverFixture(t), a = h.bridge.lanyaPolicy
+  a.startRequested = true
+  const provider = a.budgetProvider
+  let healthy = false, failedReviewReserves = 0
+  a.budgetProvider = async request => {
+    if (!healthy) {
+      if (request.operation === 'reserve') failedReviewReserves++
+      throw new Error('synthetic ledger outage')
+    }
+    return provider(request)
+  }
+  await h.receive('a question that needs a reply')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  await Promise.all([...a.replyReviewWrites])
+  failedReviewReserves = 0
+  h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  await driverSettled(h, () => failedReviewReserves === 2 && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  assert.equal(h.steps.length, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.equal(current.replyReview.attempted, false)
+  healthy = true
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'one answer after ledger recovery' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await a.reviewUnansweredInputs()
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle' && !a.state(h.chat).turns.size)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a QQ reply review survives a disconnect after claim and before its first model step', async t => {
+  let disconnectBeforeReview = false
+  const h = await nativeDriverFixture(t, { assemble: () => {
+    if (disconnectBeforeReview) h.deps.connection.connected = false
+  } })
+  const adapter = h.bridge.lanyaPolicy
+  backendFixture(h)
+  adapter.startRequested = true; adapter.startEpoch += 1
+  await h.receive('a question that still needs a reply')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  await Promise.all([...adapter.replyReviewWrites])
+  const reservesBefore = h.requests.filter(request => request.operation === 'reserve').length
+  h.advance(60_000)
+  disconnectBeforeReview = true
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.deps.connection.connected === false && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  assert.equal(h.steps.length, 1)
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, reservesBefore)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+
+  disconnectBeforeReview = false
+  h.deps.connection.socket = {}
+  h.deps.connection.connected = true
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'one answer after reconnect' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  await adapter.reviewUnansweredInputs()
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a QQ reply review can retry if prompt assembly fails before the first model step', async t => {
+  let failAssembly = false
+  const h = await nativeDriverFixture(t, { assemble: () => {
+    if (failAssembly) throw new Error('synthetic reply review assembly failure')
+  } })
+  const adapter = h.bridge.lanyaPolicy
+  adapter.startRequested = true; adapter.startEpoch += 1
+  await h.receive('a question that still needs a reply')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  await Promise.all([...adapter.replyReviewWrites])
+  const reserves = h.requests.filter(request => request.operation === 'reserve').length
+  h.advance(60_000)
+  failAssembly = true
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.nativeEvents.some(event => event.type === 'turn/end' && event.data.reason.kind === 'error') &&
+    h.agent.status === 'idle' && !adapter.state(h.chat).turns.size)
+  assert.equal(h.steps.length, 1)
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, reserves)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 1)
+  failAssembly = false
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'one answer after recovery' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await adapter.reviewUnansweredInputs()
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+})
+
+test('native QQ timing records only compaction before the first model step', async t => {
+  const h = await nativeDriverFixture(t)
+  const compact = (id, turn, elapsed, error) => {
+    h.agent.session.append('compaction/start', { compactionId: id, turn })
+    h.advance(elapsed)
+    h.agent.session.append('compaction/end', { compactionId: id, turn, error })
+  }
+  h.agent.ctx.on('agent/pre-step', async ({ turn }, next) => {
+    compact('other-turn', turn + 1, 90)
+    compact('foreground', turn, 8250, 'private diagnostic detail')
+    return next()
+  })
+  const step = h.agent.step
+  h.agent.step = () => { compact('after-first-step', h.agent.phase.turn, 900); return step() }
+  await h.receive('slow incoming fixture')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+  const raw = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+  const rows = raw.trim().split('\n').map(JSON.parse)
+  const samples = rows.filter(row => row.phase === 'intake_compaction')
+  assert.equal(samples.length, 1)
+  assert.equal(samples[0].input, rows.find(row => row.phase === 'claimed').input)
+  assert.equal(samples[0].compaction_ms, 8250)
+  assert.equal(samples[0].status, 'failed')
+  assert.doesNotMatch(raw, /private diagnostic detail|after-first-step|slow incoming fixture/)
+})
+
 async function bufferedGroupFixture(t) {
   const h = await nativeDriverFixture(t, { contextualGroupScope: 'group:303' })
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
   h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
   // This fixture models an exchange already opened by a confirmed contribution.
-  h.bridge.lanyaPolicy.groupConversation(h.chat.chatId, await h.bridge.lanyaPolicy.trustedOwner(h.chat.chatId)).engaged = true
+  const adapter = h.bridge.lanyaPolicy
+  adapter.groupConversation(h.chat.chatId, await adapter.trustedOwner(h.chat.chatId)).engagedAt = adapter.now()
   const entered = defer(), release = defer()
   let first = true
   h.bridge.lanyaPolicy.groupBufferPause = async (ms, signal) => {
@@ -1063,7 +2540,7 @@ test('continuous group input is released within the bounded buffer without a mod
 test('native group queue time counts toward the buffer instead of adding a fresh two seconds',async t=>{
   const h=await nativeDriverFixture(t,{contextualGroupScope:'group:303'}),a=h.bridge.lanyaPolicy
   h.bridge.chats.delete(h.chat.chatId);h.chat.chatId='group:303';h.bridge.chats.set(h.chat.chatId,h.chat);h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
-  a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId)).engaged=true
+  a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId)).engagedAt=a.now()
   const entered=defer(),release=defer();let steps=0,pauses=0
   a.groupBufferPause=async ms=>{pauses+=ms;h.advance(ms)}
   h.agent.step=async()=>{if(++steps===1){entered.resolve();await release.promise}else await h.decide('idle');return {kind:'completed'}}
@@ -1112,14 +2589,20 @@ test('native terminal draft without a decision gets one same-turn reminder, neve
   assert.equal(h.calls.filter(x => /^(send_|upload_)/.test(x.action)).length, 0)
 })
 
-test('real decision after a terminal reminder retains the same native claim and may send its fresh final text', async t => {
+test('real decision after a terminal reminder sends fresh inline text without a third model step', async t => {
   const h = await nativeDriverFixture(t)
   let steps = 0
   h.agent.step = async () => {
     const record = h.bridge.lanyaPolicy.state(h.chat).active
-    if (++steps === 2) assert.equal((await h.decide('reply', {expression:'text'})).can_send, true)
+    if (++steps === 2) {
+      const reminder = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
+        .flatMap(e => e.data.inserted).find(m => m.source?.kind === 'plugin:dsh-lanya-decision-reminder')
+      assert.match(reminder.content[0].text, /expression:"text",text:your_complete_reply/)
+      assert.equal((await h.decide('reply', { text: 'fresh final answer' })).sent, true)
+      return { kind: 'completed' }
+    }
     h.agent.session.append('assistant/message', {turn:record.turn,step:steps,
-      message:{id:'answer-'+steps,content:[{type:'text',text:steps===1?'undelivered draft':'fresh final answer'}]}})
+      message:{id:'answer-'+steps,content:[{type:'text',text:'undelivered draft'}]}})
     return {kind:'completed'}
   }
   await h.receive('synthetic question')
@@ -1129,6 +2612,86 @@ test('real decision after a terminal reminder retains the same native claim and 
   assert.equal(h.calls.filter(x=>/send_/.test(x.action)).length,1)
   assert.match(JSON.stringify(h.calls),/fresh final answer/)
   assert.doesNotMatch(JSON.stringify(h.calls),/undelivered draft/)
+})
+
+test('the next private message or group mention retains an unanswered question after a turn without a decision', async t => {
+  for (const mode of ['private draft', 'group mention', 'no draft', 'group no draft', 'token limit no draft', 'group token limit no draft', 'explicit idle', 'expired handoff']) await t.test(mode, async t => {
+    const group = mode.startsWith('group '), retain = !['explicit idle', 'expired handoff'].includes(mode)
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy
+    if (group) {
+      h.deps.config.requireMention = true
+      h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat); h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    const receive = (text, messageId) => h.receive(text, group ? {
+      message_id: messageId, message_type: 'group', group_id: 303, user_id: 202,
+      message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text } }],
+    } : { message_id: messageId })
+    h.agent.step = async () => {
+      const record = adapter.state(h.chat).active
+      if (record.turn === 1) {
+        if (mode === 'explicit idle') assert.equal((await h.decide('idle')).accepted, true)
+        if (!mode.endsWith('no draft')) h.agent.session.append('assistant/message', { turn: record.turn, step: h.agent.phase.step,
+          message: { id: 'fixture-draft', content: [{ type: 'text', text: 'unsent assistant text' }] } })
+        if (mode.includes('token limit')) return { kind: 'max-tokens' }
+      } else {
+        const retained = record.claimedInput.history.join('\n')
+        if (retain) assert.match(retained, /earlier direct question/)
+        else assert.doesNotMatch(retained, /earlier direct question/)
+        assert.doesNotMatch(retained, /unsent assistant text/)
+        assert.equal((await h.decide('reply', { text: 'one current reply' })).sent, true)
+      }
+      return { kind: 'completed' }
+    }
+    await receive('earlier direct question', 611)
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+    if (mode === 'expired handoff') h.advance(60_001)
+    await receive('new follow-up', 612)
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    const log = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    assert.equal(log.split('\n').filter(line => line.includes('"phase":"reply_handoff"')).length, retain ? 1 : 0)
+  })
+})
+
+test('an autonomous draft gets one same-turn decision reminder', async t => {
+  for (const mode of ['group-reply', 'private-idle', 'ignored', 'rest']) await t.test(mode, async t => {
+    const group = mode === 'group-reply'
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const a = h.bridge.lanyaPolicy
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId)
+      h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat)
+      h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    const event = await primaryEvent(h, 'synthetic-autonomous-draft-' + mode)
+    let steps = 0, firstClaim
+    h.agent.step = async () => {
+      const record = a.state(h.chat).active
+      if (++steps === 1) firstClaim = record.claimedId
+      assert.equal(record.claimedId, firstClaim)
+      if (steps === 2 && group) assert.equal((await h.decide('reply', { text: 'fresh group contribution' })).sent, true)
+      else if (steps === 2 && mode === 'private-idle') assert.equal((await h.decide('idle')).accepted, true)
+      else h.agent.session.append('assistant/message', { turn: record.turn, step: steps,
+        message: { id: 'draft-' + steps, content: [{ type: 'text', text: 'unsent autonomous draft' }] } })
+      if (mode === 'rest') h.advance(15 * 60 * 60_000)
+      return { kind: 'completed' }
+    }
+    const outcome = await a.dispatchObservation(event)
+    await driverSettled(h)
+    assert.equal(steps, mode === 'rest' ? 1 : 2)
+    assert.equal(outcome.status, group ? 'sent' : mode === 'private-idle' ? 'decided' : 'no_decision')
+    const reminders = h.nativeEvents.filter(e => e.type === 'agent/inbox/spliced')
+      .flatMap(e => e.data.inserted).filter(message => message.source?.kind === 'plugin:dsh-lanya-decision-reminder')
+    assert.equal(reminders.length, mode === 'rest' ? 0 : 1)
+    assert.equal(h.requests.filter(row => row.operation === 'reserve').length, 1)
+    const sent = h.calls.filter(call => /^send_/.test(call.action))
+    assert.equal(sent.length, group ? 1 : 0)
+    assert.doesNotMatch(JSON.stringify(sent), /unsent autonomous draft/)
+  })
 })
 
 test('terminal reminders cannot override an explicit idle/silence, cancellation or a conflicting claim', async t => {
@@ -1155,27 +2718,34 @@ test('terminal reminders cannot override an explicit idle/silence, cancellation 
   })
 })
 
-async function listeningGroup(t) {
-  const h = await fixture(t, {contextualGroupScope:'group:303'}), a = h.bridge.lanyaPolicy
+async function listeningGroup(t, options = {}) {
+  const h = await fixture(t, {contextualGroupScope:'group:303', ...options}), a = h.bridge.lanyaPolicy
   h.deps.config.requireMention = true
   h.bridge.chats.delete(h.chat.chatId); h.chat.chatId='group:303'
   h.bridge.chats.set(h.chat.chatId,h.chat); h.bridge.bySession.set(h.agent.session.id,h.chat.chatId)
   a.runtimeCapabilities = async () => ({schema:'dsh-runtime-capabilities/v1'})
   const receive = (text, extra={}) => h.receive(text,{message_type:'group',group_id:303,user_id:202,...extra})
   const mention = () => receive('question',{message:[{type:'at',data:{qq:'999'}},{type:'text',data:{text:'question'}}]})
-  const state = async () => a.groupConversation(h.chat.chatId,await a.trustedOwner(h.chat.chatId))
+  const state = async () => {
+    const group = a.groupConversation(h.chat.chatId, await a.trustedOwner(h.chat.chatId))
+    return { ...group, engaged: group.engagedAt !== null }
+  }
+  let generation = 0
   const opportunity = async () => {
-    const observed = await a.policy.recordObservation({scope:h.chat.chatId,eventId:'opportunity-'+serial,
+    const eventId = 'group-op-' + serial + '-' + ++generation
+    const observed = await a.policy.recordObservation({scope:h.chat.chatId,eventId,
       kind:'activity.opportunity',producer:'mind',createdAt:a.now()})
+    assert.equal(observed.accepted, true)
     let text
-    await a.context.run({binding:Object.freeze({...observed,origin:'observation',observationKind:'activity.opportunity',observationCreatedAt:a.now()})},async()=>{
+    await a.context.run({binding:Object.freeze({...observed,origin:'observation',observationKind:'activity.opportunity',observationProducer:'mind',observationCreatedAt:a.now()})},async()=>{
       text=await a.enrichContext(h.chat.chatId,'eligible group opportunity')
-      a.dispatchNative(h.chat,{id:'group-op-'+serial,source:{kind:'plugin:dsh-lanya-observation'},content:[{type:'text',text}]},'member',text)
+      a.dispatchNative(h.chat,{id:eventId,source:{kind:'plugin:dsh-lanya-observation'},content:[{type:'text',text}]},'member',text)
     })
     return text
   }
   const send = text => { const record=a.state(h.chat).active; return a.runEnvelope(a.envelope(record,'group-send-'+serial+'-'+h.calls.length),()=>h.bridge.sendToChat(h.chat.chatId,text)) }
-  return {...h,receive,mention,state,opportunity,send}
+  const prompt = () => h.deps.nativePrompts.find(value => value.name === 'channel:dsh-lanya-runtime').text({agent:h.agent})
+  return {...h,receive,mention,state,opportunity,send,prompt}
 }
 
 test('listening group retains bounded observations without live claims, model admission or reservations', async t => {
@@ -1187,12 +2757,715 @@ test('listening group retains bounded observations without live claims, model ad
   assert.equal(state.engaged,false); assert.equal(state.recent.length,12)
   assert.ok(state.recent.every(row=>row.text.length<=1600)); assert.equal(state.revision,0)
   const text=await h.opportunity()
-  assert.match(text,/ordinary 19/); assert.doesNotMatch(text,/ordinary 0x/)
-  assert.match(text,/historical evidence only/); assert.match(text,/<observed_group_context>/)
+  assert.doesNotMatch(text, /<observed_group_context>/)
   assert.equal(h.pending.length,1); assert.equal(h.requests.length,0)
   h.start(); await h.preStep()
+  assert.match(h.prompt(),/ordinary 19/); assert.doesNotMatch(h.prompt(),/ordinary 0x/)
+  assert.match(h.prompt(),/historical evidence only/)
+  assert.match(h.prompt(), /没人艾特也能接梗/)
+  assert.doesNotMatch(h.prompt(), /玩一小局|用 qq_intent 或日记/)
   assert.equal((await h.decide('resume',{control_update:true})).accepted,false)
   await h.end()
+})
+
+test('a queued group review uses the current social prompt instead of an inherited activity instruction', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  let intentReads = 0
+  a.intentPlanner.context = () => {
+    intentReads++
+    return { intents: [{ goal: 'fixture stale wait for a mention' }] }
+  }
+  const requestedModes = []
+  a.runtimeCapabilities = async (_scope, _owner, mode) => {
+    requestedModes.push(mode)
+    return { schema: 'dsh-runtime-capabilities/v1', conversation_key: scope, owner, read_only: true,
+      generated_at: a.now(), tools: {
+        entertainment: { group_identity_valid: true, group_social: true, rest_window: { timezone: 'Asia/Shanghai' },
+          cadence: { valid: true, configured_opportunity_min: 2 }, local_games: 'fixture game inventory' },
+        qq_expression: { tone: 'fixture group tone', fast_meme: 'fixture real meme', group_pacing: 'fixture group pacing' },
+        android: 'fixture phone protocol', qq_autonomy: 'fixture private friend lookup',
+      } }
+  }
+  await h.receive('an actual shared topic')
+  const event = { version: 1, event_id: 'fixture-group-social-context', scope, kind: 'activity.opportunity',
+    producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
+    workspace_key: owner.workspace_key, agent_key: owner.agent_key,
+    payload: { instruction: 'old diary and maintenance instructions', activity_role: 'conversation_social' } }
+  const completion = a.dispatchObservationOnce(event)
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  assert.deepEqual(requestedModes, ['group_review'])
+  assert.doesNotMatch(h.pending[0].content[0].text, /old diary and maintenance/)
+  assert.match(h.pending[0].content[0].text, /conversation_social/)
+  assert.doesNotMatch(h.pending[0].content[0].text, /trusted_autonomy_rhythm|trusted_recent_social_facts|scoped_agent_intentions/)
+  assert.equal(event.payload.instruction, 'old diary and maintenance instructions')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /an actual shared topic[\s\S]*没人艾特也能接梗/)
+  assert.match(h.prompt(), /"text":"an actual shared topic"[^\n]*"new_shared_remark":true/)
+  assert.match(h.prompt(), /群里安静时[\s\S]*自己真好奇的点[\s\S]*开个简短话头/)
+  assert.match(h.prompt(), /Avoid reopening a finished exchange, repeating a greeting or bringing in private conversation details/)
+  assert.match(h.prompt(), /trusted_autonomy_rhythm/)
+  assert.match(h.prompt(), /trusted_recent_social_facts/)
+  assert.match(h.prompt(), /fixture group tone[\s\S]*fixture real meme/)
+  assert.match(h.prompt(), /configured_opportunity_min":2/)
+  assert.match(h.prompt(), /自己以前定的旁听计划只是当时的想法/)
+  assert.doesNotMatch(h.prompt(), /fixture stale wait for a mention|scoped_agent_intentions/)
+  assert.equal(intentReads, 0)
+  assert.doesNotMatch(h.prompt(), /fixture (game inventory|phone protocol|private friend lookup)|wait_for_live_reply/)
+  assert.doesNotMatch(h.prompt(), /可收藏的图留给后台采集/)
+  const quiet = await h.decide('idle')
+  assert.equal(quiet.accepted, true)
+  assert.equal(quiet.next_review_at, a.now() + 240_000)
+  await h.end(); await completion
+  // A due retry or explicit short review can still see the same recent row.
+  // Once it has already been reviewed, it should not keep the short cadence.
+  h.advance(60_000)
+  const repeated = a.dispatchObservationOnce({ ...event, event_id: 'fixture-repeat-group-topic', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /an actual shared topic/)
+  assert.doesNotMatch(h.prompt(), /"new_shared_remark":true/)
+  assert.equal((await h.decide('idle', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 240_000)
+  await h.end(); await repeated
+  await h.receive('a new contribution on the same topic')
+  const newTopic = a.dispatchObservationOnce({ ...event, event_id: 'fixture-new-group-remark', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /a new contribution on the same topic/)
+  await h.receive('arrived after prompt assembly')
+  assert.equal((await h.decide('defer', { next_review_at: a.now() + 60_000 })).next_review_at, a.now() + 60_000)
+  await h.end(); await newTopic
+  const group = await h.state()
+  const unseen = group.recent.find(row => row.text === 'arrived after prompt assembly')
+  assert.ok(unseen)
+  assert.equal(group.reviewedMessages.has(unseen.messageId), false)
+  h.advance(120_001)
+  const quietOpportunity = a.dispatchObservationOnce({ ...event, event_id: 'fixture-quiet-group-cadence', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  await h.end(); await quietOpportunity
+  await h.receive('Question for another member', { message: [
+    { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'Question for another member' } },
+  ] })
+  await h.receive('Attachment alone', { message: [{ type: 'image', data: { file: 'unavailable-image' } }] })
+  await h.receive('Live reply to a missing message', { message: [
+    { type: 'reply', data: { id: '700' } }, { type: 'text', data: { text: 'Live reply to a missing message' } },
+  ] })
+  const directedElsewhere = a.dispatchObservationOnce({ ...event, event_id: 'fixture-directed-elsewhere', created_at: a.now() })
+  for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const laterContext = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(laterContext.recent.find(row => row.text.includes('Question for another member')).new_shared_remark, undefined)
+  const unresolved = laterContext.recent.find(row => row.text.includes('Live reply to a missing message'))
+  assert.equal(unresolved.unresolved_reply, true)
+  assert.equal(unresolved.new_shared_remark, undefined)
+  assert.equal((await h.decide('idle')).next_review_at, a.now() + 240_000)
+  await h.end(); await directedElsewhere
+  a.memoryContext = async (_scope, query) => ({ current_fact: query.includes('real live question') ? 'relevant recalled fact' : 'unrelated' })
+  await h.receive('real live question', { message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'real live question' } }] })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.doesNotMatch(h.prompt(), /fixture stale wait for a mention|scoped_agent_intentions/)
+  assert.match(h.prompt(), /<scoped_memory_context>[\s\S]*relevant recalled fact/)
+  assert.equal(intentReads, 0)
+  await h.end()
+})
+
+test('a group activity review searches recent group text and falls back to the same chat history', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  const session = h.agent.session
+  const events = [
+    { seq: 0, type: 'user/message', data: { role: 'user', source: { kind: 'plugin:dsh-onebot' },
+      content: [{ type: 'text', text: 'earlier group conversation' }] } },
+    { seq: 1, type: 'assistant/message', data: { message: { role: 'assistant',
+      content: [{ type: 'text', text: 'internal draft' }] } } },
+  ]
+  Object.assign(session, { header: { id: session.id, cwd: owner.cwd, agentPreset: owner.preset },
+    seq: events.length, inheritedEventCount: 0, snapshotEvents: (from, to) => events.slice(from, to) })
+  let request
+  a.readTrustedHelper = async (_script, value) => {
+    request = value
+    return { schema: 'dsh-memento-context/v1', conversation_key: scope, owner, read_only: true }
+  }
+  a.memoryContext = (...args) => a.readMemoryContext(...args)
+  await h.receive('superseded group topic')
+  await h.receive('new group topic')
+  await h.receive('latest group comment')
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  assert.equal(request.limit, 0)
+  assert.deepEqual(Array.from(request.recent_events, row => row.text), ['earlier group conversation'])
+  h.advance(601_000)
+  const group = a.groupConversation(scope, owner)
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  await h.receive('already considered, more recent than the old topic', { message_id: 661 })
+  group.reviewedMessages = new Set(['661'])
+  await h.opportunity()
+  assert.equal(request.query, 'new group topic\nlatest group comment')
+  await h.receive('fresh follow-up to search for', { message_id: 662 })
+  await h.opportunity()
+  assert.equal(request.query, 'fresh follow-up to search for')
+  h.advance(601_000)
+  group.sharedTopics = []
+  group.olderTopics = [{ at: a.now() - 700_000, text: 'same-group hobby question', quoted_text: 'verified hobby detail' }]
+  await h.opportunity()
+  assert.equal(request.query, 'verified hobby detail\nsame-group hobby question')
+  assert.equal(request.limit, 0)
+  h.advance(6 * 60 * 60_000)
+  await h.opportunity()
+  assert.equal(request.query, 'earlier group conversation')
+  Object.assign(session, { seq: 0, snapshotEvents: () => [] })
+  await h.opportunity()
+  assert.equal(request.query, '')
+  assert.equal(request.recent_events.length, 0)
+  await a.readMemoryContext(scope, 'ordinary reply query', owner)
+  assert.equal(request.query, 'ordinary reply query')
+  assert.equal(request.limit, 8)
+})
+
+test('a verified group opportunity refreshes stale listening context without making a live reply', async t => {
+  for (const scenario of ['empty', 'stale context', 'current live context', 'already reviewed', 'addressed elsewhere',
+    'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    const owner = await a.trustedOwner(scope)
+    a.runtimeCapabilities = async () => null
+    if (['current live context', 'already reviewed'].includes(scenario)) {
+      await h.receive('current live group topic', { message_id: 75 })
+      if (scenario === 'already reviewed') a.groupConversation(scope, owner).reviewedMessages = new Set(['75'])
+    }
+    if (scenario === 'addressed elsewhere') await h.receive('side question', { message: [
+      { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'side question' } },
+    ] })
+    if (scenario === 'stale context') {
+      await h.receive('older live group topic', { message_id: 70 })
+      h.advance(121_000)
+    }
+    const call = h.deps.connection.call
+    const time = Math.floor(a.now() / 1000)
+    let historyReads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      historyReads++
+      assert.deepEqual({ ...params }, { group_id: 303, count: 24 })
+      if (scenario === 'live context arrives during lookup') await h.receive('current live group topic', { message_id: 70 })
+      if (scenario === 'changed socket') h.deps.connection.socket = {}
+      if (scenario === 'lookup failure') throw new Error('Synthetic history unavailable')
+      const row = (message_id, text, extra = {}) => ({ message_id, message_type: 'group', group_id: 303,
+        sender: { user_id: 202 }, time: time - 30, message: [{ type: 'text', data: { text } }], ...extra })
+      return { messages: [row(71, 'recent group history topic'), row(72, 'expired group topic', { time: time - 601 }),
+        row(70, 'different duplicate body', { time: time - 121 }),
+        row(73, 'other group topic', { group_id: 404 }), row(74, 'own group output', { sender: { user_id: 999 } }),
+        ...(scenario === 'stale context' ? [row(76, 'second message inside same second')] : [])] }
+    }
+    const event = { version: 1, event_id: 'fixture-group-history-opportunity', scope, kind: 'activity.opportunity',
+      producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
+      workspace_key: owner.workspace_key, agent_key: owner.agent_key, payload: { activity_role: 'conversation_social' } }
+    if (scenario === 'changed socket') {
+      const selected = a.backendGuard.selection()
+      assert.equal((await a.backendGuard.verify(h.deps.connection, selected.stamp)).verified, true)
+      await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
+      assert.equal(historyReads, 1)
+      assert.equal(a.recentGroupContext(scope, owner).length, 0)
+      assert.equal(h.pending.length, 0)
+      return
+    }
+    const completion = a.dispatchObservationOnce(event)
+    for (let i = 0; i < 100 && !h.pending.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(h.pending.length, 1)
+    assert.equal(historyReads, scenario === 'current live context' ? 0 : 1)
+    assert.ok(h.pending[0].source.kind.includes('observation'))
+    assert.doesNotMatch(JSON.stringify(h.pending), /recent group history topic/)
+    if (scenario === 'stale context') await h.receive('newer live group topic', { message_id: 75 })
+    if (scenario === 'stale context') await h.receive('recent group history topic, now with the live payload', { message_id: 71 })
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const prompt = h.prompt()
+    const freshest = ['empty', 'stale context', 'already reviewed', 'addressed elsewhere', 'live context arrives during lookup'].includes(scenario)
+    const expected = freshest ? /recent group history topic/
+      : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
+    assert.match(prompt, expected)
+    assert.doesNotMatch(prompt, /expired group topic|other group topic/)
+    const observed = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+    if (['already reviewed', 'addressed elsewhere'].includes(scenario)) {
+      assert.deepEqual(observed.recent.filter(row => row.new_shared_remark).map(row => row.text), ['different duplicate body', 'recent group history topic'])
+    }
+    assert.equal(observed.own_recent_messages?.[0]?.text, freshest ? 'own group output' : undefined)
+    assert.ok(observed.recent.every(row => row.text !== 'own group output'))
+    if (!freshest) assert.doesNotMatch(prompt, /recent group history topic/)
+    if (scenario === 'live context arrives during lookup') {
+      const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+      assert.deepEqual(context.recent.map(row => row.text), ['recent group history topic', 'current live group topic'])
+    }
+    if (scenario === 'stale context') {
+      const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+      assert.deepEqual(context.recent.map(row => row.text), [
+        'older live group topic', 'recent group history topic, now with the live payload',
+        'second message inside same second', 'newer live group topic',
+      ])
+      assert.ok(context.recent.every(row => !('historyOrder' in row)))
+    }
+    assert.equal((await h.decide('idle')).accepted, true)
+    await h.end(); await completion
+    assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 0)
+  })
+})
+
+test('expired live group discussion remains a shared-interest clue if platform history is empty', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  await h.receive('people discussing pixel art', { message_id: 641, user_id: 204 })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action !== 'get_msg' ? call(action, params) : ({ message_id: 641, group_id: 303, message_type: 'group',
+    sender: { user_id: 204 }, message: [{ type: 'text', data: { text: 'people discussing pixel art' } }] })
+  await h.receive('try a teacup next', { message_id: 642, message: [
+    { type: 'reply', data: { id: '641' } }, { type: 'at', data: { qq: '204' } },
+    { type: 'text', data: { text: 'try a teacup next' } },
+  ] })
+  await h.receive('a question directed to another member', { message: [
+    { type: 'at', data: { qq: '208' } }, { type: 'text', data: { text: 'a question directed to another member' } }] })
+  h.advance(11 * 60_000)
+  const owner = await adapter.trustedOwner(scope)
+  adapter.restoreRecentGroupText(scope, owner, [], adapter.now(), '999', true)
+  await h.opportunity(); h.start(); await h.preStep()
+  const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(observed.recent, [])
+  assert.deepEqual(observed.earlier_topics, [
+    { text: 'people discussing pixel art', age_seconds: 660 },
+    { text: 'try a teacup next', quoted_text: 'people discussing pixel art', age_seconds: 660 },
+  ])
+  assert.doesNotMatch(h.prompt(), /a question directed to another member/)
+  assert.equal((await h.decide('reply', { text: 'A teacup would fit a tiny canvas well' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  h.advance(6 * 60 * 60_000)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
+})
+
+test('a quiet group can find older shared interests while recently reviewed messages are still visible', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  await h.receive('a past conversation about drawing pixel art', { message_id: 651 })
+  h.advance(11 * 60_000)
+  await h.receive('recent topic already considered', { message_id: 652 })
+  await h.opportunity(); h.start(); await h.preStep()
+  const context = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(context().earlier_topics, undefined)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(context().recent[0].new_shared_remark, undefined)
+  assert.deepEqual(context().earlier_topics.map(row => row.text), ['a past conversation about drawing pixel art'])
+  assert.match(h.prompt(), /Bring something of your own to the topic/)
+  await h.receive('a genuinely new shared remark', { message_id: 653 })
+  assert.equal(context().earlier_topics, undefined)
+  assert.ok(context().recent.some(row => row.text === 'a genuinely new shared remark' && row.new_shared_remark))
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('personal asides cannot displace an unreviewed shared group topic from autonomous context', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await adapter.trustedOwner(scope)
+  let query
+  adapter.memoryContext = (...args) => adapter.readMemoryContext(...args)
+  adapter.readTrustedHelper = async (_script, request) => {
+    query = request.query
+    return { schema: 'dsh-memento-context/v1', conversation_key: scope, owner, read_only: true }
+  }
+  await h.receive('pixel art is harder on a tiny canvas', { message_id: 661 })
+  h.advance(3000)
+  for (let index = 0; index < 12; index++) {
+    await h.receive('a private aside to a member', { message_id: 662 + index, message: [
+      { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'a private aside to a member' } },
+    ] })
+  }
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.requests.length, 0)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner), /pixel art/)
+  await h.receive('has anyone tried a limited palette?', { message_id: 674 })
+  const observed = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(query, 'pixel art is harder on a tiny canvas\nhas anyone tried a limited palette?')
+  assert.deepEqual(observed().new_shared_topics, [{ text: 'pixel art is harder on a tiny canvas', age_seconds: 3 }])
+  assert.equal(observed().recent.length, 12)
+  assert.deepEqual(observed().recent.filter(row => row.new_shared_remark).map(row => row.text),
+    ['has anyone tried a limited palette?'])
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(observed().new_shared_topics, undefined)
+  assert.equal(query, 'has anyone tried a limited palette?')
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('restored shared group discussion survives a history batch dominated by personal asides', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await adapter.trustedOwner(scope)
+  const row = (id, text, others = [], groupId = 303) => ({ message_id: id, group_id: groupId, message_type: 'group',
+    sender: { user_id: 202 }, time: Math.floor(adapter.now() / 1000) - 45 + id - 680,
+    message: [...others, { type: 'text', data: { text } }] })
+  const mention = { type: 'at', data: { qq: '204' } }
+  const history = [row(680, 'discussion from a different group', [], 404),
+    row(681, 'would crosshatching work for pixel art?'), row(682, 'can you send the palette privately?', [mention]),
+    row(683, 'please send it just to me', [{ type: 'reply', data: { id: '700' } }]),
+    ...Array.from({ length: 6 }, (_, i) => row(684 + i, 'a personal aside', [mention]))]
+  for (let i = 0; i < 5; i++) {
+    await h.receive('a newer live aside', { message_id: 691 + i, message: [
+      mention, { type: 'text', data: { text: 'a newer live aside' } },
+    ] })
+  }
+  // Reconnect restores the recent passage without loading older topics.
+  adapter.restoreRecentGroupText(scope, owner, history, adapter.now(), '999')
+  await h.opportunity(); h.start(); await h.preStep()
+  const context = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(context.recent.length, 12)
+  assert.ok(context.recent.some(item => item.text === 'please send it just to me' && !item.new_shared_remark))
+  assert.deepEqual(context.new_shared_topics?.map(item => item.text), ['would crosshatching work for pixel art?'])
+  assert.equal((await h.decide('reply', { text: 'Try a two-color pattern on the edges' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  const next = adapter.groupPromptContext(scope, owner, true)
+  assert.doesNotMatch(next, /new_shared_topics|discussion from a different group|can you send the palette privately/)
+})
+
+test('same-group photo captions survive as topic clues with missing media clearly indicated', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const image = { type: 'image', data: { file: 'fixture-unresolved-photo' } }
+  h.deps.media.resolve = async () => undefined
+  await h.receive('', { message_id: 671, message: [{ type: 'text', data: { text: 'I sketched a teacup' } }, image] })
+  await h.receive('', { message_id: 672, message: [image] })
+  const owner = await adapter.trustedOwner(scope)
+  const context = () => JSON.parse(adapter.groupPromptContext(scope, owner, true)
+    .match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(h.pending.length, 0)
+  assert.deepEqual(context().recent[0].media_not_loaded, ['图片'])
+  assert.equal(context().recent[0].image_refs, undefined)
+  assert.equal(context().recent[1].new_shared_remark, undefined)
+  h.advance(11 * 60_000)
+  const photo = (id, text, group_id) => ({ message_id: id, group_id, message_type: 'group',
+    sender: { user_id: 202 }, time: Math.floor(adapter.now() / 1000) - 620,
+    message: [{ type: 'text', data: { text } }, image] })
+  adapter.restoreRecentGroupText(scope, owner, [photo(673, 'The first set of sketches', 303),
+    photo(674, 'different group topic', 404), photo(675, '[表情包]', 303)], adapter.now(), '999', true)
+  assert.deepEqual(context().earlier_topics.map(row => row.text), ['I sketched a teacup', 'The first set of sketches'])
+  assert.equal(h.calls.some(call => /^send_/.test(call.action)), false)
+})
+
+test('autonomous group reviews retain the verified text that a current group remark quotes', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  const time = Math.floor(a.now() / 1000)
+  const row = (message_id, user_id, age, text) => ({ message_id, group_id: 303, message_type: 'group',
+    sender: { user_id }, time: time - age, message: [{ type: 'text', data: { text } }] })
+  const source = row(81, 204, 610, 'the earlier topic is a pixel-art challenge')
+  const reply = row(82, 202, 1, '32 pixels should be enough')
+  reply.message.unshift({ type: 'reply', data: { id: '81', text: 'untrusted preview' } })
+  a.restoreRecentGroupText(scope, owner, [source, reply], a.now(), '999', true)
+  const context = prompt => JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  const restored = context(a.groupPromptContext(scope, owner, true)).recent[0]
+  assert.equal(restored.text, '32 pixels should be enough')
+  assert.equal(restored.quoted_text, 'the earlier topic is a pixel-art challenge')
+  assert.doesNotMatch(JSON.stringify(restored), /untrusted preview/)
+  const foreign = row(80, 204, 610, 'foreign quote body')
+  foreign.group_id = 404
+  const other = row(79, 202, 2, 'standalone remark')
+  other.message.unshift({ type: 'reply', data: { id: '80' } })
+  a.restoreRecentGroupText(scope, owner, [foreign, other], a.now(), '999', true)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /foreign quote body/)
+
+  await h.receive('I chose the teacup theme', { message_id: 83, user_id: 204 })
+  h.deps.connection.call = async () => row(83, 204, 0, 'I chose the teacup theme')
+  await h.receive('that works for a tiny canvas', { message_id: 84, message: [
+    { type: 'reply', data: { id: '83', text: 'untrusted preview' } },
+    { type: 'text', data: { text: 'that works for a tiny canvas' } },
+  ] })
+  assert.equal(h.pending.length, 0)
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const live = context(h.prompt()).recent.at(-1)
+  assert.equal(live.quoted_text, 'I chose the teacup theme')
+  assert.equal(live.quoted_speaker, '204')
+  assert.equal(live.addressed_to_bot, false)
+  assert.doesNotMatch(h.prompt(), /untrusted preview/)
+  assert.ok(context(a.groupPromptContext(scope, owner)).recent.every(item => !('quoted_text' in item)))
+  await h.end()
+})
+
+test('a quiet group gets bounded same-group topic clues only during its autonomous review', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await a.trustedOwner(scope)
+  backendFixture(h)
+  const selected = a.backendGuard.selection()
+  await a.backendGuard.verify(h.deps.connection, selected.stamp)
+  const time = Math.floor(a.now() / 1000)
+  const row = (message_id, age, body, fields = {}) => ({ message_id, message_type: 'group', group_id: 303,
+    sender: { user_id: 202 }, time: time - age, message: [{ type: 'text', data: { text: body } }], ...fields })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_group_msg_history') return call(action, params)
+    assert.equal(params.count, 24)
+    const direct = row(8, 750, 'a stale direct question')
+    direct.message.push({ type: 'at', data: { qq: '999' } })
+    const reply = row(9, 720, 'a stale reply to an unknown message')
+    reply.message.push({ type: 'reply', data: { id: '19' } })
+    const memberReply = row(10, 690, 'verified member exchange', { sender: { user_id: 204 } })
+    memberReply.message.push({ type: 'reply', data: { id: '3' } }, { type: 'at', data: { qq: '202' } })
+    const botReply = row(11, 680, 'a stale reply to the bot')
+    botReply.message.push({ type: 'reply', data: { id: '7' } })
+    const mixedTarget = row(12, 675, 'a stale question with a bot mention')
+    mixedTarget.message.push({ type: 'reply', data: { id: '3' } }, { type: 'at', data: { qq: '999' } })
+    const quoted = row(3, 800, 'group interest two')
+    quoted.message.push({ type: 'reply', data: { id: '20' } }, { type: 'at', data: { qq: '204' } })
+    return { messages: [row(1, 1000, 'outside the three-topic bound'), row(2, 900, 'group interest one'),
+      row(20, 24_000, 'outdated nested quote'), quoted, row(4, 700, 'group interest three'),
+      row(5, 23_000, 'outside the hour bound'), row(6, 766, 'foreign group', { group_id: 404 }),
+      row(7, 755, 'own announcement', { sender: { user_id: 999 } }), direct, reply, memberReply, botReply, mixedTarget,
+      row(13, 180, '', { message: [{ type: 'image', data: { file: 'unloaded-fixture' } }] }),
+      row(14, 179, '', { group_id: 404, message: [{ type: 'record', data: { file: 'foreign-fixture' } }] })] }
+  }
+  await a.refreshGroupOpportunityContext(scope, owner, selected.stamp)
+  assert.equal((await h.state()).engaged, false)
+  assert.equal(h.pending.length, 0)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /earlier_topics|group interest/)
+  await h.opportunity(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const prompt = h.prompt()
+  const group = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(group.state, 'listening')
+  assert.equal(group.recent.length, 1)
+  assert.equal(group.recent[0].text, '')
+  assert.deepEqual(group.recent[0].media_not_loaded, ['图片'])
+  assert.equal(group.recent[0].image_refs, undefined)
+  assert.deepEqual(group.earlier_topics.map(row => row.text), ['group interest two', 'group interest three', 'verified member exchange'])
+  assert.equal(group.earlier_topics[2].quoted_text, 'group interest two')
+  assert.deepEqual(group.own_recent_messages.map(row => row.text), ['own announcement'])
+  assert.doesNotMatch(prompt, /group interest one|a stale (direct question|reply|question)|foreign group|outside the .* bound|outdated nested quote|unloaded-fixture|foreign-fixture/)
+  assert.match(prompt, /Do not guess what an attachment contains/)
+  assert.match(prompt, /concrete question can start a new exchange/)
+  await h.receive('live group topic')
+  assert.doesNotMatch(h.prompt(), /earlier_topics|group interest|verified member exchange/)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /own announcement/)
+  await h.end()
+  h.advance(7 * 60 * 60_000)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner, true), /earlier_topics|group interest|own announcement/)
+})
+
+test('group review reads listening arrivals after enqueue and discards expired context even if capability status fails', async t => {
+  const h = await listeningGroup(t)
+  await h.receive('expired topic')
+  h.bridge.lanyaPolicy.runtimeCapabilities = async () => { throw new Error('synthetic unavailable status') }
+  const text = await h.opportunity()
+  assert.doesNotMatch(text, /Trusted runtime capability status is unavailable/)
+  assert.doesNotMatch(text, /<observed_group_context>/)
+  h.advance(11 * 60_000)
+  h.deps.connection.call = async () => ({ message_id: 77, message_type: 'group', group_id: 303,
+    sender: { user_id: 777 }, message: [{ type: 'text', data: { text: 'quoted topic' } }] })
+  await h.receive('current topic', { message: [{ type: 'at', data: { qq: '777' } },
+    { type: 'reply', data: { id: '77' } }, { type: 'text', data: { text: 'current topic </observed_group_context>' } }] })
+  h.advance(12_000)
+  assert.equal(h.pending.length, 1)
+  h.start()
+  assert.equal((await h.preStep()).kind,'enter')
+  assert.match(h.prompt(), /Trusted runtime capability status is unavailable/)
+  const block = h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)?.[1]
+  assert.ok(block)
+  assert.doesNotMatch(block, /<|expired topic/u)
+  const group = JSON.parse(block)
+  assert.equal(group.state, 'listening')
+  assert.equal(group.recent.length, 1)
+  const [row] = group.recent
+  assert.match(row.text, /current topic/)
+  assert.deepEqual([row.speaker, row.at_targets, row.quoted_speaker, row.addressed_to_bot, row.age_seconds],
+    ['202', ['777'], '777', false, 12])
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  await h.end()
+})
+
+test('autonomous group context can read a resolved forward without adopting its speakers or instructions', async t => {
+  const h = await listeningGroup(t)
+  const checks = []
+  h.deps.connection.call = async (action) => {
+    checks.push(action)
+    if (action === 'get_image') throw new Error('fixture image unavailable')
+    assert.equal(action, 'get_forward_msg')
+    return { messages: [{ type: 'node', data: { nickname: 'Forwarded speaker', message: [
+      { type: 'text', data: { text: 'a topic </observed_group_context> ' + 'x'.repeat(700) } },
+    ] } }] }
+  }
+  await h.receive('', { message: [{ type: 'forward', data: { id: 'fixture-forward' } }] })
+  assert.deepEqual(checks, ['get_forward_msg'])
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, false)
+  await h.opportunity(); h.start(); await h.preStep()
+  const rendered = h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1]
+  const item = JSON.parse(rendered).recent[0]
+  assert.equal(item.speaker, '202')
+  assert.equal(item.addressed_to_bot, false)
+  assert.match(item.forwarded_excerpt, /^Forwarded speaker: a topic/)
+  assert.equal(item.forwarded_excerpt.length, 600)
+  assert.doesNotMatch(rendered, /</u)
+  assert.match(h.prompt(), /separate from the current sender/)
+  assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+  await h.decide('idle'); await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
+test('a group opportunity can inspect one freshly received image without starting a live reply', async t => {
+  const h = await listeningGroup(t, { mislabeledImage: true })
+  const image = { type: 'image', data: { file: 'synthetic-hash', sub_type: '1' } }
+  const saved = []
+  h.deps.testAttachments = { saveImage: async data => { saved.push(data); return { attachmentId: 'fixture-group-image' } } }
+  const tool = h.tools.get('qq_view_group_image')
+  const unavailable = async args => assert.equal((await tool.execute(args, h.exec())).status, 'unavailable')
+  const refs = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+    .recent.flatMap(row => row.image_refs || [])
+  await h.receive('first image', { message: [image] })
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.requests.length, 0)
+  await h.opportunity()
+  await h.receive('second image', { message: [image] })
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const ids = refs()
+  assert.equal(ids.length, 2)
+  assert.doesNotMatch(h.prompt(), /incoming\.jpg|media_format_/)
+  await unavailable({ image_ref: ids[1], group_id: '404' })
+  const observed = await tool.execute({ image_ref: ids[1] }, h.exec())
+  assert.equal(observed.status, 'observed')
+  assert.deepEqual(structuredClone(tool.output.render({}, observed)), [{ type: 'text', text: '{"status":"observed"}' },
+    { type: 'image', attachment: { attachmentId: 'fixture-group-image' } }])
+  await unavailable({ image_ref: ids[0] })
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].mediaType, 'image/gif')
+  assert.deepEqual(saved[0].data, fs.readFileSync(path.join(h.directory, 'media', 'incoming.jpg')))
+  assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  await h.end()
+
+  const media = path.join(h.directory, 'media')
+  const cached = fs.readdirSync(media).find(name => name.startsWith('media_format_'))
+  fs.appendFileSync(path.join(media, cached), 'changed')
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), ids)
+  await unavailable({ image_ref: ids[1] })
+  assert.equal(saved.length, 1)
+  await h.end()
+
+  await h.mention(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), [])
+  await unavailable({ image_ref: ids[1] })
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  h.advance(11 * 60_000)
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.deepEqual(refs(), [])
+  await unavailable({ image_ref: ids[1] })
+  assert.equal(saved.length, 1)
+  await h.end()
+})
+
+test('a slow group image stays in arrival order after newer text is admitted', async t => {
+  const h = await listeningGroup(t, { mislabeledImage: true })
+  const entered = defer(), release = defer(), resolve = h.deps.media.resolve
+  h.deps.media.resolve = async (...args) => {
+    entered.resolve(); await release.promise; return resolve(...args)
+  }
+  await h.mention(); h.start(); await h.preStep()
+  const old = h.receive('earlier image', { message_id: 72001,
+    message: [{ type: 'image', data: { file: 'synthetic-hash', sub_type: '1' } }] })
+  await entered.promise
+  try {
+    await h.receive('later text', { message_id: 72002 })
+    assert.equal(h.pending.length, 1)
+  } finally { release.resolve(); await old }
+  const state = await h.state()
+  assert.deepEqual(Array.from(state.recent, row => row.text), ['@999question', '[图片]', 'later text'])
+  assert.equal(state.recent[1].images.length, 1)
+  assert.equal(h.pending.length, 1)
+  assert.equal(h.bridge.lanyaPolicy.state(h.chat).pending.get(h.pending[0].id).binding.messageId, '72002')
+  const block = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(block.recent.map(row => row.text), ['@999question', '[图片]', 'later text'])
+  assert.ok(block.recent.every(row => !('messageId' in row) && !('arrival' in row)))
+  assert.doesNotMatch(h.prompt(), /<earlier_group_text>/)
+  await h.end()
+})
+
+test('a late group mention or verified quote can still be answered with the newer group passage', async t => {
+  const cases = [['mention with image', 'preparing'], ['verified quote', 'queued'], ['text-only mention', 'queued']]
+  for (const [contact, successor] of cases) await t.test(contact, async t => {
+    const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+    await h.mention(); h.start(); await h.preStep()
+    await h.decide('reply', { text: 'opening answer' }); await h.end()
+    const reading = defer(), releaseMedia = defer(), preparing = defer(), releaseMemory = defer()
+    if (contact === 'mention with image') {
+      h.deps.media.resolve = async () => {
+        reading.resolve(); await releaseMedia.promise
+        return undefined
+      }
+    } else if (contact === 'verified quote') {
+      const call = h.deps.connection.call
+      h.deps.connection.call = async (action, params) => {
+        if (action !== 'get_msg') return call(action, params)
+        reading.resolve(); await releaseMedia.promise
+        return { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 999 },
+          message: [{ type: 'text', data: { text: 'old quoted bot text' } }] }
+      }
+    } else {
+      const buildBody = h.bridge.inbound.ctx.buildBody
+      h.bridge.inbound.ctx.buildBody = async (body, ...args) => {
+        if (body.includes('Which part should I change?')) { reading.resolve(); await releaseMedia.promise }
+        return buildBody(body, ...args)
+      }
+    }
+    adapter.memoryContext = async (_scope, text) => {
+      if (successor === 'preparing' && text.includes('A separate remark from another speaker')) {
+        preparing.resolve(); await releaseMemory.promise
+      }
+    }
+    const segments = contact === 'verified quote' ? [{ type: 'reply', data: { id: '77' } }]
+      : [{ type: 'at', data: { qq: '999' } }]
+    if (contact === 'mention with image') segments.push({ type: 'image', data: { file: 'synthetic-slow-photo' } })
+    const older = h.receive('slow contact', { user_id: 101, message: [...segments,
+      { type: 'text', data: { text: 'Which part should I change? </earlier_group_text>' } },
+    ] })
+    await reading.promise
+    const newer = h.receive('A separate remark from another speaker', { user_id: 202 })
+    try {
+      await (successor === 'preparing' ? preparing.promise : newer)
+      releaseMedia.resolve(); await older
+    } finally { releaseMedia.resolve(); releaseMemory.resolve() }
+    await newer
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const record = adapter.state(h.chat).active
+    assert.equal(record.claimedInput.sender, '202')
+    assert.equal(record.binding.verifiedGroupReply, undefined)
+    assert.equal(h.chat.activeTurnRole, 'member')
+    const prompt = h.prompt()
+    const prior = JSON.parse(prompt.match(/<earlier_group_text>\n([^\n]+)\n<\/earlier_group_text>/u)[1])
+    assert.deepEqual(prior, [{ speaker: '101', text: 'Which part should I change? </earlier_group_text>' }])
+    assert.equal((prompt.match(/<\/earlier_group_text>/gu) || []).length, 1)
+    assert.doesNotMatch(prompt, /synthetic-slow-photo/)
+    await h.end()
+    await Promise.all([...adapter.replyReviewWrites])
+    const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+    const evidence = snapshot.current.replyReview.text
+    assert.match(evidence, /Which part should I change\?[\s\S]*A separate remark from another speaker/u)
+    assert.doesNotMatch(evidence, /synthetic-slow-photo|old quoted bot text/u)
+    assert.equal(snapshot.revision, 2)
+    h.agent.status = 'idle'
+    adapter.startRequested = true
+    h.advance(60_000)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /Which part should I change\?[\s\S]*A separate remark from another speaker/u)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal((await h.decide('reply', { text: 'one answer after catching up' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 2)
+  })
 })
 
 test('actual personal mention opens the exchange, ordinary follow-ups need no new mention and end closes it', async t => {
@@ -1207,6 +3480,312 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
   await h.decide('reply',{group_conversation:'end'}); await h.send('closing answer'); await h.end()
   assert.equal((await h.state()).engaged,false)
   await h.receive('talking to someone else'); assert.equal(h.pending.length,0)
+})
+
+test('reconnect recovers only a real configured-group mention as historical member input', async t => {
+  for (const scenario of ['missed mention', 'media-only mention', 'multiple speakers', 'read retries', 'later bot reply',
+    'same-second bot before quote', 'same-second bot after quote', 'ambiguous same-second bot', 'group disabled']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
+    await Promise.all([...a.replyReviewWrites])
+    h.agent.status = 'idle'
+    h.advance(1000)
+    a.noteConnectionStatus(false)
+    const at = Math.floor(a.now() / 1000) + 1
+    h.advance(90_000)
+    a.noteConnectionStatus(true)
+    const call = h.deps.connection.call
+    const sequenceCases = ['same-second bot before quote', 'same-second bot after quote', 'ambiguous same-second bot']
+    const sameSecond = sequenceCases.includes(scenario)
+    const row = (offset, id, text, target, fields = {}) => ({
+      message_type: 'group', group_id: 303, message_id: id, time: at + offset,
+      sender: { user_id: 202 }, message: [
+        ...(target ? [{ type: 'at', data: { qq: target } }] : []), { type: 'text', data: { text } },
+      ], ...fields,
+    })
+    let reads = 0
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      reads++
+      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      if (scenario === 'read retries' && reads === 1) throw new Error('Temporary history failure')
+      const rows = [row(0, 91, 'missed actual question', '999'), row(1, 92, '@999 only in text'),
+        row(2, 93, 'whole group', 'all'), row(3, 94, 'other recipient', '204'),
+        row(4, 95, 'different group', '999', { group_id: 404 }), row(5, 96, '/reset', '999'),
+        row(5, 98, 'mismatched sender', '999', { user_id: 204 }),
+        row(5, 99, 'anonymous sender', '999', { sub_type: 'anonymous' })]
+      if (scenario === 'multiple speakers') rows.push(row(6, 97, 'different question', '999', { sender: { user_id: 204 } }),
+        row(7, 100, 'one more detail from the first speaker', '999'))
+      if (scenario === 'media-only mention') {
+        rows[0].message[1] = { type: 'image', data: { file: 'group-attachment' } }
+        rows[3].message[1] = { type: 'image', data: { file: 'other-recipient-attachment' } }
+      }
+      if (scenario === 'later bot reply') rows.push(row(6, 97, 'already replied', null, { sender: { user_id: 999 } }))
+      if (sameSecond) {
+        const quote = { type: 'reply', data: { id: '90' } }
+        rows[0].message = [quote, { type: 'text', data: { text: 'missed actual question' } }]
+        rows[0].message_seq = 21
+        rows.unshift(row(0, 90, 'prior bot answer', null, { sender: { user_id: 999 }, message_seq: 20 }))
+        if (scenario === 'same-second bot after quote') {
+          rows.push(row(0, 89, 'later bot answer', null, { sender: { user_id: 999 }, message_seq: 22 }))
+        }
+        if (scenario === 'ambiguous same-second bot') delete rows[0].message_seq
+      }
+      return { messages: rows }
+    }
+    if (scenario === 'group disabled') h.deps.policy.groupPolicy = 'disabled'
+    a.startRequested = true
+    await a.recoverReconnectHistory()
+    if (scenario === 'read retries') {
+      assert.equal(reads, 1)
+      assert.equal(h.pending.length, 0)
+      h.advance(30_000)
+      await a.recoverReconnectHistory()
+    }
+    const state = await a.policy.snapshot(scope)
+    assert.equal(reads, scenario === 'group disabled' ? 0 : scenario === 'read retries' ? 2 : 1)
+    if (['later bot reply', 'same-second bot after quote', 'ambiguous same-second bot', 'group disabled'].includes(scenario)) {
+      assert.ok(!state.seen.some(item => item.messageId === '91'))
+      return
+    }
+    const multiple = scenario === 'multiple speakers'
+    assert.equal(state.current.messageId, multiple ? '100' : '91')
+    assert.equal(state.current.sender, '202')
+    assert.equal(state.current.controlAllowed, false)
+    if (multiple) {
+      assert.deepEqual(JSON.parse(state.current.replyReview.text), [
+        { group_member: 1, text: 'missed actual question' }, { group_member: 2, text: 'different question' },
+        { group_member: 1, text: 'one more detail from the first speaker' },
+      ])
+    } else assert.equal(state.current.replyReview.text, scenario === 'media-only mention'
+      ? '[收到图片，内容未加载]' : 'missed actual question' + (sameSecond ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''))
+    for (const id of multiple ? [91, 97, 100] : [91]) {
+      await h.receive('missed actual question', { message_id: id, user_id: id === 97 ? 204 : 202, message: [
+        { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
+      ] })
+    }
+    assert.equal(h.pending.length, 0)
+    await a.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    if (multiple) {
+      assert.match(JSON.stringify(h.pending), /distinct speakers/)
+      assert.match(JSON.stringify(h.pending), /different question/)
+    }
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a short group answer' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('verified reconnect can recover the first real mention before a group has local reply state', async t => {
+  for (const scenario of ['no chat', 'no policy', 'ordinary only', 'live wins']) await t.test(scenario, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    backendFixture(h)
+    if (scenario === 'no chat' || scenario === 'ordinary only') h.bridge.chats.delete(scope)
+    h.agent.status = 'idle'
+    assert.equal(await a.policy.snapshot(scope), null)
+    const ensure = h.bridge.ensureChat.bind(h.bridge)
+    let opened = 0
+    h.bridge.ensureChat = async requested => {
+      assert.equal(requested, scope)
+      if (!h.bridge.chats.has(scope)) {
+        opened++
+        h.bridge.chats.set(scope, h.chat)
+      }
+      return ensure(requested)
+    }
+    a.noteConnectionStatus(false)
+    const at = Math.floor(a.now() / 1000) + 1
+    h.advance(90_000)
+    a.noteConnectionStatus(true)
+    const call = h.deps.connection.call
+    h.deps.connection.call = async (action, params) => {
+      if (action !== 'get_group_msg_history') return call(action, params)
+      assert.deepEqual({ ...params }, { group_id: 303, count: 12 })
+      if (scenario === 'live wins') await h.mention()
+      const text = { type: 'text', data: { text: 'first group question' } }
+      const mention = { type: 'at', data: { qq: '999' } }
+      return { messages: [{ message_type: 'group', group_id: 303, message_id: 519, time: at,
+        sender: { user_id: 202 }, message: scenario === 'ordinary only' ? [text] : [mention, text] }] }
+    }
+    a.startRequested = true
+    await a.recoverReconnectHistory()
+    assert.equal(opened, 0, 'reading platform history never creates a native chat')
+    const state = await a.policy.snapshot(scope)
+    if (scenario === 'ordinary only') {
+      assert.equal(state, null)
+      assert.equal(h.pending.length, 0)
+      assert.equal((await h.state()).recent[0]?.text, 'first group question')
+      await a.reviewUnansweredInputs()
+      assert.equal(opened, 0)
+      return
+    }
+    if (scenario === 'live wins') {
+      assert.ok(!state.seen.some(item => item.messageId === '519'))
+      assert.equal(h.pending.length, 1)
+      return
+    }
+    assert.equal(state.current.messageId, '519')
+    assert.equal(state.current.controlAllowed, false)
+    assert.equal(state.current.replyReview.text, 'first group question')
+    assert.equal(h.pending.length, 0)
+    await a.reviewUnansweredInputs()
+    assert.equal(opened, scenario === 'no chat' ? 1 : 0)
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('reply', { text: 'answer to the first group question' })).sent, true)
+    await h.end()
+    await a.reviewUnansweredInputs()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('reconnect recovers quote follow-ups only with a real mention or the bot in verified group history', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  backendFixture(h)
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 10
+  h.advance(75_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  const row = (message_id, offset, text, { target, quote, author = 202, group = 303 } = {}) => ({
+    message_id, message_type: 'group', group_id: group, time: at + offset, sender: { user_id: author }, message: [
+      ...(target ? [{ type: 'at', data: { qq: target } }] : []),
+      ...(quote ? [{ type: 'reply', data: { id: quote, text: 'untrusted preview' } }] : []),
+      { type: 'text', data: { text } },
+    ],
+  })
+  h.deps.connection.call = async (action, params) => action === 'get_group_msg_history' ? { messages: [
+    row(901, -30, 'own group result', { author: 999 }),
+    row(902, -29, 'another member original', { author: 204 }),
+    row(903, 0, 'quoted bot follow-up', { quote: '901' }),
+    row(904, 1, 'another member follow-up', { quote: '902' }),
+    row(905, 2, 'mention with quote outside the window', { target: '999', quote: '890' }),
+    row(906, 3, 'unverified quote only', { quote: '890' }),
+    row(907, 4, 'private aside to another member', { target: '204', quote: '901' }),
+    row(908, 5, 'wrong group original', { author: 999, group: 404 }),
+    row(909, 6, 'foreign quote only', { quote: '908' }),
+    row(910, 7, 'group broadcast with a verified bot quote', { target: 'all', quote: '901' }),
+    row(911, 8, 'answer from either member', { target: '999', quote: '902' }),
+  ] } : call(action, params)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  const state = await a.policy.snapshot(scope)
+  assert.deepEqual(Array.from(state.seen, item => item.messageId), ['903', '905', '910', '911'])
+  assert.equal(state.current.controlAllowed, false)
+  assert.match(state.current.replyReview.text, /quoted bot follow-up[\s\S]*mention with quote outside the window/u)
+  assert.match(state.current.replyReview.text, /引用或附件未展开/u)
+  assert.doesNotMatch(state.current.replyReview.text, /untrusted preview|own group result|another member follow-up/u)
+  const owner = await a.trustedOwner(scope)
+  const byId = new Map(a.recentGroupContext(scope, owner).map(item => [item.messageId, item]))
+  assert.equal(byId.get('903').quoted_speaker, '999')
+  assert.equal(byId.get('904').quoted_speaker, '204')
+  assert.equal(byId.get('905').addressed_to_bot, true)
+  assert.equal(byId.get('907').quoted_speaker, '999')
+  assert.equal(byId.get('907').addressed_to_bot, false)
+  assert.equal(byId.get('909').quoted_speaker, null)
+  assert.equal(byId.get('910').addressed_to_bot, true)
+  assert.equal(byId.get('911').addressed_to_bot, true)
+  h.advance(10_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'One answer to the recovered follow-ups' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('verified reconnect restores recent group text as listening context without opening a live turn', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  backendFixture(h)
+  await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
+  await Promise.all([...a.replyReviewWrites])
+  h.agent.status = 'idle'
+  a.groupConversations.clear()
+  h.advance(10_000)
+  const now = Math.floor(a.now() / 1000)
+  a.noteConnectionStatus(true)
+  const row = (id, age, text, fields = {}) => ({ message_type: 'group', group_id: 303, message_id: id,
+    time: now - age, sender: { user_id: 202 }, message: [{ type: 'text', data: { text } }], ...fields })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_group_msg_history' ? { messages: [
+    row(91, 200, 'older topic'), row(92, 60, '</observed_group_context> recent topic'),
+    row(93, 605, 'expired topic'), row(94, 30, 'different group', { group_id: 404 }),
+    row(95, 25, 'bot output', { sender: { user_id: 999 } }), row(96, 25, '/reset'),
+    row(97, 25, 'unknown sender', { user_id: 204 }), row(98, 25, 'anonymous sender', { sub_type: 'anonymous' }),
+    row(99, -5, 'future topic'),
+  ] } : call(action, params)
+  const before = await a.policy.snapshot(scope)
+  await h.receive('new live topic', { message_id: 100 })
+  assert.equal(h.pending.length, 0)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.equal((await a.policy.snapshot(scope)).revision, before.revision)
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  assert.equal((await h.state()).engaged, false)
+  await h.opportunity(); h.start(); await h.preStep()
+  const prompt = h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1]
+  assert.doesNotMatch(prompt, /<\/observed_group_context>/u)
+  const context = JSON.parse(prompt)
+  assert.equal(context.state, 'listening')
+  assert.deepEqual(context.recent.map(row => row.text), ['older topic', '</observed_group_context> recent topic', 'new live topic'])
+  assert.ok(context.recent.every(row => !('image_refs' in row) && !('messageId' in row)))
+  await h.decide('idle'); await h.end()
+})
+
+test('quiet background checks do not keep an abandoned group exchange open', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+  await h.end()
+
+  h.advance(9 * 60_000)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  assert.equal((await h.state()).engaged, true)
+
+  h.advance(60_001)
+  await h.receive('new topic addressed to other group members')
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, false)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.match(h.prompt(), /"state":"listening"/)
+  assert.match(h.prompt(), /new topic addressed to other group members/)
+  await h.decide('idle')
+  await h.end()
+
+  await h.mention()
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+})
+
+test('a live follow-up can retain an existing group exchange beyond the original mention', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+  await h.end()
+  h.advance(9 * 60_000)
+  await h.receive('follow-up without a mention')
+  assert.equal(h.pending.length, 1)
+  h.start(); await h.preStep()
+  assert.equal((await h.decide('idle', { group_conversation: 'continue' })).accepted, true)
+  await h.end()
+  h.advance(2 * 60_000)
+  await h.receive('another follow-up')
+  assert.equal(h.pending.length, 1)
 })
 
 test('only confirmed actual autonomous message delivery opens participation', async t => {
@@ -1225,13 +3804,86 @@ test('only confirmed actual autonomous message delivery opens participation', as
   })
 })
 
-test('idle ends by default, continue can retain an existing exchange but cannot open one', async t => {
-  for(const engaged of [false,true])for(const keep of [false,true])await t.test(`${engaged}/${keep}`,async t=>{
+test('group review sees confirmed recent contributions even while incoming chat skips history refresh', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  h.deps.connection.call = async (action, params) => {
+    h.calls.push({ action, params })
+    return { message_id: -4100 + h.calls.length }
+  }
+  await h.receive('a shared theme')
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal((await h.decide('reply', { text: 'a distinct remark on the theme' })).sent, true)
+  await h.end()
+  const owner = await a.trustedOwner(scope)
+  assert.doesNotMatch(a.groupPromptContext(scope, owner), /a distinct remark/)
+  await h.opportunity(); h.start(); await h.preStep()
+  const observed = JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.deepEqual(observed.own_recent_messages, [{ text: 'a distinct remark on the theme', age_seconds: 0 }])
+  assert.doesNotMatch(h.prompt(), /-4099/)
+  assert.equal(h.calls.some(call => call.action === 'get_group_msg_history'), false)
+  await h.end()
+  a.restoreRecentGroupText(scope, owner, [{ message_id: -4099, message_type: 'group', group_id: 303,
+    sender: { user_id: 999 }, time: Math.floor(a.now() / 1000),
+    message: [{ type: 'text', data: { text: 'a distinct remark on the theme' } }] }], a.now(), '999', true)
+  assert.equal((await h.state()).ownTopics.length, 1)
+})
+
+test('live idle and defer skip a remark without ending or extending the exchange', async t => {
+  for(const verdict of ['idle','defer'])await t.test(verdict,async t=>{
     const h=await listeningGroup(t)
-    if(engaged)await h.mention(); else await h.opportunity()
-    h.start(); await h.preStep(); await h.decide('idle',keep?{group_conversation:'continue'}:{})
-    await h.end(); assert.equal((await h.state()).engaged,engaged&&keep)
-    await h.receive('ordinary'); assert.equal(h.pending.length,engaged&&keep?1:0)
+    await h.mention()
+    h.start(); await h.preStep(); await h.decide('reply',{text:'starting a conversation'})
+    await h.end()
+    h.advance(9*60_000)
+    await h.receive('a brief aside')
+    h.start(); await h.preStep(); await h.decide(verdict)
+    await h.end(); assert.equal((await h.state()).engaged,true)
+    await h.receive('follow-up on the same topic'); assert.equal(h.pending.length,1)
+    h.start(); await h.preStep(); await h.decide(verdict)
+    await h.end()
+    h.advance(60_001)
+    await h.receive('a new conversation'); assert.equal(h.pending.length,0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length,1)
+  })
+})
+
+test('the first confirmed autonomous message can open a group with an empty listener buffer', async t => {
+  const h = await listeningGroup(t)
+  await h.opportunity()
+  h.start(); await h.preStep()
+  assert.equal(h.bridge.lanyaPolicy.groupConversations.size, 0)
+  assert.equal((await h.decide('reply', { text: 'a short original contribution' })).sent, true)
+  await h.end()
+  assert.equal((await h.state()).engaged, true)
+  await h.receive('ordinary follow-up to the contribution')
+  assert.equal(h.pending.length, 1)
+})
+
+test('an autonomous quiet review keeps a joined topic open until the model explicitly ends it', async t => {
+  for (const verdict of ['idle', 'defer']) await t.test(verdict, async t => {
+    const h = await listeningGroup(t)
+    await h.mention()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide('reply', { text: 'answer to the mention' })).sent, true)
+    await h.end()
+    await h.opportunity()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide(verdict)).accepted, true)
+    await h.end()
+    assert.equal((await h.state()).engaged, true)
+    await h.receive('ordinary follow-up without a mention')
+    assert.equal(h.pending.length, 1)
+    h.start(); await h.preStep()
+    assert.equal((await h.decide('idle', { group_conversation: 'continue' })).accepted, true)
+    await h.end()
+    await h.opportunity()
+    h.start(); await h.preStep()
+    assert.equal((await h.decide(verdict, { group_conversation: 'end' })).accepted, true)
+    await h.end()
+    assert.equal((await h.state()).engaged, false)
+    await h.receive('ordinary message after the topic ends')
+    assert.equal(h.pending.length, 0)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
   })
 })
 
@@ -1244,12 +3896,252 @@ test('other targets, at-all, fake quote text and quote of another person never o
   assert.equal(h.pending.length,0);assert.equal((await h.state()).engaged,false)
 })
 
+test('raw OneBot mentions respect the real addressee and retain direct reply evidence', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+  const receiveCq = text => h.receive(text, { message: text, raw_message: text })
+  await receiveCq('[CQ:at,qq=all] shared announcement')
+  await h.receive('literal [CQ:at,qq=999]')
+  assert.equal(h.pending.length, 0)
+  await receiveCq('[CQ:at,qq=999] a real question')
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+  await Promise.all([...a.replyReviewWrites])
+  assert.match((await a.policy.snapshot(h.chat.chatId)).current.replyReview.text, /a real question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer to the real question' })).sent, true)
+  await h.end()
+  await receiveCq('[CQ:at,qq=204] addressed to someone else')
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, true)
+  await receiveCq('plain follow-up without a mention')
+  assert.equal(h.pending.length, 1)
+})
+
+test('a mention or verified quote to another member stays in context without replacing an engaged group reply', async t => {
+  const h = await listeningGroup(t)
+  await h.mention()
+  assert.equal(h.pending.length, 1)
+  const before = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
+  await h.receive('side question', { message: [
+    { type: 'at', data: { qq: '777' } }, { type: 'text', data: { text: 'side question' } },
+  ] })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => action === 'get_msg'
+    ? { message_id: 77, message_type: 'group', group_id: 303, sender: { user_id: 777 },
+      message: [{ type: 'text', data: { text: 'historical message' } }] }
+    : call(action, params)
+  const quote = { type: 'reply', data: { id: '77' } }
+  await h.receive('side reply', { message: [quote, { type: 'text', data: { text: 'side reply' } }] })
+  const after = await h.bridge.lanyaPolicy.policy.snapshot(h.chat.chatId)
+  assert.equal(after.revision, before.revision)
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.match(h.prompt(), /side question/)
+  assert.match(h.prompt(), /side reply/)
+  assert.equal((await h.decide('reply', { text: 'answer to my question' })).sent, true)
+  await h.end()
+  await h.receive('ordinary follow-up')
+  assert.equal(h.pending.length, 1)
+  await h.receive('question for bot about the quoted message', { message: [quote,
+    { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'question for bot about the quoted message' } },
+  ] })
+  assert.ok(h.pending.some(message => JSON.stringify(message).includes('question for bot about the quoted message')))
+})
+
 test('verified same-group reply to bot opens participation without a fabricated mention',async t=>{
   const h=await listeningGroup(t)
   h.deps.connection.call=async()=>({message_id:77,message_type:'group',group_id:303,sender:{user_id:999},message:[{type:'text',data:{text:'prior bot answer'}}]})
   await h.receive('quoted bot',{message:[{type:'reply',data:{id:'77'}},{type:'text',data:{text:'follow up'}}]})
   assert.equal(h.pending.length,1);assert.equal((await h.state()).engaged,true)
   assert.match(JSON.stringify(h.pending),/verified_reply/)
+})
+
+test('a personal mention takes priority over a quote of the bot in live group chat', async t => {
+  const h = await listeningGroup(t)
+  h.deps.connection.call = async () => ({ message_id: 77, message_type: 'group', group_id: 303,
+    sender: { user_id: 999 }, message: [{ type: 'text', data: { text: 'previous bot message' } }] })
+  const quote = { type: 'reply', data: { id: '77' } }
+  const mention = { type: 'at', data: { qq: '204' } }
+  const text = { type: 'text', data: { text: 'Question meant for the other member' } }
+  await h.receive('', { message: [quote, mention, text] })
+  await h.receive('', { message: '[CQ:reply,id=77][CQ:at,qq=204] Follow-up to that member' })
+  assert.equal(h.pending.length, 0)
+  assert.equal((await h.state()).engaged, false)
+  assert.ok((await h.state()).recent.every(row => row.quoted_speaker === '999' && !row.addressed_to_bot))
+  await h.receive('', { message: [quote, mention, { type: 'at', data: { qq: '999' } }, text] })
+  assert.equal(h.pending.length, 1)
+  assert.equal((await h.state()).engaged, true)
+})
+
+test('a real group contact stays eligible for recovery when merged with an ordinary follow-up', async t => {
+  for (const contact of ['mention', 'verified reply']) await t.test(contact, async t => {
+    const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+    if (contact === 'mention') await h.mention()
+    else {
+      const call = h.deps.connection.call
+      h.deps.connection.call = async () => ({ message_id: 77, message_type: 'group', group_id: 303,
+        sender: { user_id: 999 }, message: [{ type: 'text', data: { text: 'prior bot answer' } }] })
+      try {
+        await h.receive('question', { message: [{ type: 'reply', data: { id: '77' } }, { type: 'text', data: { text: 'question' } }] })
+      } finally { h.deps.connection.call = call }
+    }
+    await h.receive('ordinary follow-up')
+    await Promise.all([...adapter.replyReviewWrites])
+    assert.equal(h.pending.length, 1)
+    const scope = h.chat.chatId, current = (await adapter.policy.snapshot(scope)).current
+    assert.match(current.replyReview?.text || '', /question[\s\S]*ordinary follow-up/)
+    assert.equal(adapter.state(h.chat).pending.get(h.pending[0].id).directGroupContact, true)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+    h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+    await adapter.reviewUnansweredInputs()
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
+    assert.equal((await h.decide('reply', { text: 'a single useful answer' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('separate unanswered group mentions stay in a burst after the ordinary context limit', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy
+  for (const [user_id, text] of [[202, 'question about the colors'], [204, 'question about the size']]) {
+    await h.receive(text, { user_id, message: [
+      { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text } },
+    ] })
+  }
+  for (let index = 0; index < 23; index++) {
+    await h.receive('ordinary remark ' + index + ' ' + 'x'.repeat(900))
+  }
+  assert.equal(h.pending.length, 1)
+  const [message] = h.pending
+  const bothQuestions = /question about the colors[\s\S]*question about the size[\s\S]*ordinary remark 22/
+  assert.ok(bothQuestions.test(message.content[0].text))
+  assert.equal(adapter.state(h.chat).pending.get(message.id).directGroupContact, true)
+  await Promise.all([...adapter.replyReviewWrites])
+  const snapshot = await adapter.policy.snapshot(h.chat.chatId)
+  assert.ok(bothQuestions.test(snapshot.current.replyReview.text))
+  assert.equal(snapshot.current.controlAllowed, false)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; adapter.startRequested = true; h.advance(60_000)
+  await adapter.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.ok(bothQuestions.test(h.pending[0].content[0].text))
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'one answer for both questions' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('a verified group contact survives when its own enrichment is slower than an ordinary follow-up', async t => {
+  const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, entered = defer(), resume = defer()
+  a.memoryContext = async (_scope, text) => {
+    if (text.includes('slow original question')) { entered.resolve(); await resume.promise }
+    return null
+  }
+  const slow = h.receive('slow original question', { message: [
+    { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'slow original question' } },
+  ] })
+  await entered.promise
+  try {
+    await h.receive('fast ordinary follow-up', { user_id: 204 })
+    assert.equal(h.pending.length, 1)
+    assert.match(h.pending[0].content[0].text, /slow original question[\s\S]*fast ordinary follow-up/)
+    const entry = a.state(h.chat).pending.get(h.pending[0].id)
+    assert.equal(entry.directGroupContact, true)
+    assert.equal(entry.sender, '204')
+  } finally { resume.resolve(); await slow }
+  await Promise.all([...a.replyReviewWrites])
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.equal(current.controlAllowed, false)
+  assert.match(current.replyReview?.text || '', /slow original question[\s\S]*fast ordinary follow-up/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
+  h.agent.status = 'idle'; a.startRequested = true; h.advance(60_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer both' })).sent, true)
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
+test('an unanswered group mention survives a newer ordinary message before or after enqueue', async t => {
+  for (const timing of ['preparing', 'queued']) await t.test(timing, async t => {
+    const h = await listeningGroup(t), a = h.bridge.lanyaPolicy
+    await h.mention(); h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    const entered = defer(), resume = defer(), enrich = a.enrichContext.bind(a)
+    if (timing === 'preparing') a.enrichContext = async (...args) => {
+      entered.resolve(); await resume.promise; return enrich(...args)
+    }
+    const busy = defer()
+    if (timing === 'queued') a.track(a.state(h.chat).active, busy.promise)
+    const incoming = h.receive('latest remark from another member', { user_id: 204 })
+    if (timing === 'preparing') {
+      await entered.promise
+      assert.equal((await h.decide('reply', { text: 'stale reply' })).reason, 'stale_revision')
+      await h.end(); resume.resolve(); await incoming
+      assert.match(h.pending[0].content[0].text, /question[\s\S]*latest remark/)
+    } else {
+      await incoming
+      assert.doesNotMatch(h.pending[0].content[0].text, /question/)
+      busy.resolve(); await new Promise(resolve => setImmediate(resolve))
+      assert.equal((await h.preStep()).reason, 'superseded_live_input')
+      await h.end()
+    }
+    assert.equal(h.pending.length, 1)
+    h.start(); assert.equal((await h.preStep()).kind, 'enter')
+    assert.equal(h.chat.activeTurnRole, 'member')
+    if (timing === 'queued') assert.match(h.prompt(), /<interrupted_group_context>[\s\S]*question/)
+    const entry = a.state(h.chat).active.claimedInput
+    assert.equal(entry.directGroupContact, true)
+    assert.equal(entry.sender, '204')
+    await Promise.all([...a.replyReviewWrites])
+    const current = (await a.policy.snapshot(h.chat.chatId)).current
+    assert.equal(current.sender, '204')
+    assert.equal(current.controlAllowed, false)
+    assert.match(current.replyReview?.text || '', /question[\s\S]*latest remark/)
+    assert.equal((await h.decide('reply', { text: 'answer both' })).sent, true)
+    await h.end()
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  })
+})
+
+test('a private question carried at claim remains in the unanswered reply evidence', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  await h.receive('first question still needs an answer')
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  const busy = defer()
+  a.track(a.state(h.chat).active, busy.promise)
+  await h.receive('second question')
+  assert.doesNotMatch(h.pending[0].content[0].text, /first question/)
+  await Promise.all([...a.replyReviewWrites])
+  const before = (await a.policy.snapshot(h.chat.chatId)).current.replyReview
+  assert.doesNotMatch(before.text, /first question/)
+  busy.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal((await h.preStep()).reason, 'superseded_live_input')
+  await h.end()
+  h.advance(5_000)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await Promise.all([...a.replyReviewWrites])
+  const current = (await a.policy.snapshot(h.chat.chatId)).current
+  assert.match(current.replyReview.text, /first question still needs an answer[\s\S]*second question/)
+  assert.equal(current.replyReview.at, before.at)
+  await h.end()
+  h.agent.status = 'idle'
+  a.startRequested = true
+  h.advance(55_000)
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  assert.match(h.pending[0].content[0].text, /first question still needs an answer[\s\S]*second question/)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal(h.chat.activeTurnRole, 'member')
+  assert.equal((await h.decide('reply', { text: 'a single answer covering both' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
 test('a delayed old end decision cannot close a newer direct mention',async t=>{
@@ -1325,6 +4217,144 @@ test('native burst stops stale model steps and waits for old accounting before w
   assert.deepEqual(h.requests.map(r=>r.operation),['reserve','settle','reserve','settle'])
   assert.deepEqual(h.nativeEvents.filter(e=>e.type==='turn/end').map(e=>e.data.reason.kind),['blocked','completed'])
   assert.equal(h.agent.inbox.hasPending,false)
+})
+
+test('a superseded native turn wakes queued QQ input with compaction instructions still pending', async t => {
+  for (const kind of ['agent-instructions', 'host:web']) await t.test(kind, async t => {
+    let h, assemblies = 0
+    const firstStep = defer(), release = defer()
+    const context = { id: 'restored-context', source: { kind }, content: [] }
+    h = await nativeDriverFixture(t, { assemble: async () => {
+      if (++assemblies === 2) h.agent.inbox.append('next-step', context)
+    } })
+    const scope = 'group:303'
+    h.bridge.chats.delete(h.chat.chatId); h.chat.chatId = scope
+    h.bridge.chats.set(scope, h.chat); h.bridge.bySession.set(h.agent.session.id, scope)
+    const adapter = h.bridge.lanyaPolicy, step = h.agent.step
+    h.agent.step = async () => {
+      const result = await step()
+      if (h.steps.length !== 1) return result
+      firstStep.resolve()
+      await release.promise
+      return null
+    }
+    const observed = await adapter.policy.recordObservation({ scope, eventId: 'active-autonomy',
+      kind: 'activity.opportunity', producer: 'mind', createdAt: adapter.now() })
+    await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation',
+      observationKind: 'activity.opportunity', observationProducer: 'mind', observationCreatedAt: adapter.now() }) }, async () => {
+      const text = await adapter.enrichContext(scope, 'autonomy fixture')
+      adapter.dispatchNative(h.chat, { id: 'native-observation', source: { kind: 'plugin:dsh-lanya-observation' },
+        content: [{ type: 'text', text }] }, 'member', 'autonomy fixture')
+    })
+    await firstStep.promise
+    await h.receive('group member mentions bot', { message_type: 'group', group_id: 303, user_id: 202 })
+    const [queued] = h.agent.inbox.nextTurn
+    assert.ok(queued)
+    release.resolve()
+    if (kind === 'host:web') {
+      await h.agent.whenIdle()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      assert.deepEqual(h.agent.inbox.nextStep, [context])
+      assert.deepEqual(h.agent.inbox.nextTurn, [queued])
+      assert.equal(h.steps.length, 1)
+      return
+    }
+    await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
+    assert.equal(h.steps[1].claimedId, queued.id)
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.agent.inbox.hasPending, false)
+    assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
+  })
+})
+
+test('a new private input yields autonomous activity before or after the tool decision and is claimed once', async t => {
+  for (const decided of [false, true]) await t.test(decided ? 'decided' : 'undecided', async t => {
+    const h = await nativeDriverFixture(t)
+    const entered = defer(), release = defer()
+    let resolve, reject
+    const result = new Promise((yes, no) => { resolve = yes; reject = no })
+    const adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+    const step = h.agent.step
+    h.agent.step = async () => {
+      const result = await step()
+      if (h.steps.length !== 1) return result
+      if (decided) {
+        const record = adapter.state(h.chat).active
+        const decision = await adapter.policy.decide({ scope, expectedRevision: record.binding.revision,
+          messageId: record.binding.messageId, verdict: 'tool_action' })
+        assert.equal(decision.accepted, true)
+        record.ticket = decision.ticket
+        record.decision = { verdict: 'tool_action' }
+        record.decisionId = decision.decisionId
+      }
+      entered.resolve()
+      await release.promise
+      return null
+    }
+    const event = { scope, eventId: 'phone-opportunity', kind: 'activity.opportunity',
+      producer: 'mind', createdAt: adapter.now() }
+    const observed = await adapter.policy.recordObservation(event)
+    await adapter.context.run({ binding: Object.freeze({ ...observed, origin: 'observation', completion: { resolve, reject },
+      observationKind: event.kind, observationProducer: event.producer, observationCreatedAt: event.createdAt }) }, async () => {
+      const text = await adapter.enrichContext(scope, 'phone fixture')
+      adapter.dispatchNative(h.chat, { id: 'phone-fixture', source: { kind: 'plugin:dsh-lanya-observation' },
+        content: [{ type: 'text', text }] }, 'admin', 'phone fixture')
+    })
+    await entered.promise
+    await h.receive('new live input during phone use')
+    const newest = h.agent.inbox.nextTurn[0]
+    release.resolve()
+    const outcome = await result
+    assert.equal(outcome.status, decided ? 'decided' : 'no_decision')
+    if (!decided) {
+      assert.equal(outcome.reason, 'superseded_live_input')
+      assert.equal(outcome.native_turn_completed, false)
+      const saved = (await adapter.policy.snapshot(scope)).observations.find(item => item.eventId === event.eventId)
+      assert.equal(saved.localOutcome.local_outcome_id, outcome.local_outcome_id)
+    }
+    await driverSettled(h, () => h.steps.length === 2 && h.agent.status === 'idle')
+    assert.deepEqual(h.steps.map(item => item.claimedId), ['phone-fixture', newest.id])
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.agent.inbox.hasPending, false)
+  })
+})
+
+test('live private input arriving during autonomous prompt assembly takes the first model step', async t => {
+  const assembling = defer(), release = defer()
+  let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => {
+    if (++assemblies === 1) {
+      assembling.resolve()
+      await release.promise
+    }
+  } })
+  const adapter = h.bridge.lanyaPolicy, step = h.agent.step
+  h.agent.step = async () => {
+    const result = await step()
+    if (adapter.state(h.chat).active.binding.origin === 'live') {
+      assert.equal((await h.decide('reply', { text: 'one answer to the new message' })).sent, true)
+    }
+    return result
+  }
+  const event = await primaryEvent(h, 'autonomy-before-live')
+  const completion = adapter.dispatchObservation(event)
+  await assembling.promise
+  let newest
+  try {
+    await h.receive('incoming private question while assembling')
+    newest = h.agent.inbox.nextTurn[0]
+    assert.ok(newest)
+  } finally {
+    release.resolve()
+  }
+  const outcome = await completion
+  assert.equal(outcome.status, 'no_decision')
+  assert.equal(outcome.reason, 'superseded_live_input')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.steps.map(item => item.claimedId), [newest.id])
+  assert.deepEqual(h.requests.filter(item => item.operation === 'reserve').map(item => item.origin), ['live'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
 })
 
 test('canceling a superseded native turn does not cause an automatic wake or replay', async t => {
@@ -1448,13 +4478,121 @@ test('other native admission failures reject rather than claim the unresolved-re
     const original = adapter.policy.completeObservationWithoutDecision
     adapter.policy.completeObservationWithoutDecision = (...args) => { lifecycleCalls++; return original(...args) }
     if (mode === 'live-input') await h.receive('synthetic live refusal')
-    else await assert.rejects(adapter.dispatchObservation(event), /before a real decision/)
+    else await assert.rejects(adapter.dispatchObservation(event), mode === 'budget_exhausted'
+      ? { name: 'ObservationBudgetDeferred' } : /before a real decision/)
     await driverSettled(h)
     assert.equal(lifecycleCalls, 0)
     assert.equal(h.steps.length, 0)
     assert.deepEqual(h.requests.map(item => item.operation), ['reserve'])
     assert.equal(h.calls.filter(call => /^(send_|upload_)/.test(call.action)).length, 0)
   })
+})
+
+test('autonomous budget pacing saves headroom for later activity and fresh group discussion', async t => {
+  const cases = [
+    ['primary-ahead', 1.5, 36], ['primary-ahead-short-cadence', 1.5, 24],
+    ['primary-ahead-long-cadence', 1.5, 60], ['primary-slightly-ahead', 0.6, 6],
+    ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
+    ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
+    ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
+    ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 6],
+    ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 36, 20],
+    ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 9, 9],
+    ['group-defer-bound', 0.1, 10, 34], ['group-defer-fresh', 0.1, 3, 34],
+  ]
+  for (const [scenario, spent, reviewMinutes, requestedMinutes = 1] of cases) await t.test(scenario, async t => {
+    const group = scenario.startsWith('group-')
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId)
+      h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat)
+      h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    if (scenario === 'primary-later') h.advance(8 * 3600_000)
+    if (scenario === 'group-already-seen') await h.receive('a shared topic already in the prompt', { message_type: 'group', group_id: 303, user_id: 202 })
+    const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
+    const capabilities = adapter.runtimeCapabilities
+    adapter.runtimeCapabilities = async (...args) => {
+      const value = await capabilities(...args)
+      Object.assign(value.tools.entertainment, { group_identity_valid: group, group_social: group })
+      if (scenario === 'primary-ahead-short-cadence') value.tools.entertainment.cadence.configured_opportunity_min = 2
+      if (scenario === 'primary-ahead-long-cadence') value.tools.entertainment.cadence.configured_opportunity_min = 10
+      return value
+    }
+    const budget = adapter.budgetProvider
+    adapter.budgetProvider = async request => {
+      const result = await budget(request)
+      if (request.operation === 'reserve') {
+        result.state = { spent_cny: spent, reserved_cny: 0.05, remaining_cny: 2.95 - spent }
+      }
+      return result
+    }
+    let decision
+    h.agent.step = async () => {
+      if (group) adapter.nativeCapabilityContext(h.agent)
+      if (scenario.endsWith('-fresh')) await h.receive('a fresh shared topic', { message_type: 'group', group_id: 303, user_id: 202 })
+      const args = { next_review_at: adapter.now() + requestedMinutes * 60_000 }
+      const verdict = scenario.includes('-defer') ? 'defer' : group || scenario === 'primary-idle' ? 'idle' : 'tool_action'
+      decision = await h.decide(verdict, args)
+      return { kind: 'completed' }
+    }
+    const outcome = await adapter.dispatchObservation(event)
+    await driverSettled(h)
+    assert.equal(decision.accepted, true)
+    assert.equal(decision.next_review_at, adapter.now() + reviewMinutes * 60_000)
+    assert.equal(outcome.next_review_at, decision.next_review_at)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  })
+})
+
+test('a verified exhausted autonomous bucket defers more opportunities without blocking live replies', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const budgetProvider = adapter.budgetProvider
+  let ready = false, probes = 0, refusedReserves = 0
+  adapter.budgetProvider = request => {
+    if (request.operation === 'autonomy_readiness') {
+      probes++
+      return Promise.resolve({ read_only: true, can_start_new_turn: ready })
+    }
+    if (!ready && request.origin === 'observation' && request.operation === 'reserve') {
+      refusedReserves++
+      return Promise.resolve({ allowed: false, category: 'autonomy', limited: true, reason: 'budget_exhausted' })
+    }
+    return budgetProvider(request)
+  }
+  const event = await primaryEvent(h, 'fixture-budget-deferred')
+  const reminder = { ...event, event_id: 'fixture-reminder-budget-deferred', kind: 'reminder.due', producer: 'reminder-scheduler' }
+  await assert.rejects(adapter.dispatchObservation(reminder), { name: 'ObservationBudgetDeferred' })
+  await driverSettled(h)
+  const before = (await adapter.policy.snapshot(event.scope)).revision
+  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  await assert.rejects(adapter.dispatchObservation(reminder), { name: 'ObservationBudgetDeferred' })
+  assert.equal((await adapter.policy.snapshot(event.scope)).revision, before)
+  assert.equal(refusedReserves, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+  h.agent.step = async () => {
+    assert.equal((await h.decide('reply', { text: 'a real fixture reply' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('real incoming question')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.ok(h.requests.some(request => request.origin === 'live' && request.operation === 'reserve'))
+  const liveRevision = (await adapter.policy.snapshot(event.scope)).revision
+  h.advance(60_001)
+  await assert.rejects(adapter.dispatchObservation(event), { name: 'ObservationBudgetDeferred' })
+  assert.equal(probes, 1)
+  assert.equal((await adapter.policy.snapshot(event.scope)).revision, liveRevision)
+  ready = true; h.advance(60_001)
+  h.agent.step = async () => {
+    assert.equal((await h.decide('idle')).accepted, true)
+    return { kind: 'completed' }
+  }
+  assert.equal((await adapter.dispatchObservation(event)).completed, true)
+  await driverSettled(h)
+  assert.equal(probes, 2)
+  assert.ok((await adapter.policy.snapshot(event.scope)).revision > liveRevision)
 })
 
 test('reviewed native driver wakes an owned pending live input after its unbound restored turn blocks', async t => {
@@ -1521,6 +4659,201 @@ test('budget refusal cannot mint an internal idle wake for another pending input
   assert.deepEqual(h.agent.inbox.nextTurn, before)
   assert.equal(h.steps.length, 0)
   assert.equal(h.nativeEvents.filter(event => event.type === 'turn/start').length, 1)
+})
+
+test('a model error leaves the newer QQ input runnable and retains the earlier unfinished question', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const entered = defer(), release = defer()
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    if (record.turn === 1) {
+      entered.resolve()
+      await release.promise
+      throw new Error('synthetic model interruption')
+    }
+    assert.match(record.claimedInput.history.join('\n'), /first unfinished question/)
+    assert.match(record.claimedInput.originalText, /second live question/)
+    assert.equal((await h.decide('reply', { text: 'one reply to both questions' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('first unfinished question')
+  await entered.promise
+  try {
+    await h.receive('second live question')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
+test('a model error waits for its open QQ send before waking the queued incoming message', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const sending = defer(), finishSend = defer(), failStep = defer()
+  let firstSend
+  h.deps.onTransmit = async () => {
+    if (h.calls.filter(call => /^send_/.test(call.action)).length === 1) {
+      sending.resolve()
+      await finishSend.promise
+    }
+  }
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    if (record.turn === 1) {
+      assert.equal((await h.decide('reply')).can_send, true)
+      firstSend = h.send('first answer').catch(error => error)
+      await failStep.promise
+      throw new Error('synthetic model interruption during send')
+    }
+    assert.match(record.claimedInput.originalText, /next question/)
+    assert.equal((await h.decide('reply', { text: 'second answer' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('first question')
+  await sending.promise
+  try {
+    await h.receive('next question')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+    failStep.resolve()
+    await driverSettled(h)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  } finally { failStep.resolve(); finishSend.resolve() }
+  await firstSend
+  await driverSettled(h, () => h.agent.status === 'idle' && !adapter.state(h.chat).turns.size && !h.agent.inbox.hasPending)
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 2)
+})
+
+test('a prompt assembly failure does not strand the newer QQ message', async t => {
+  const entered = defer(), release = defer()
+  let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => {
+    if (++assemblies !== 1) return
+    entered.resolve()
+    await release.promise
+    throw new Error('synthetic prompt assembly failure')
+  } })
+  const adapter = h.bridge.lanyaPolicy
+  h.agent.step = async () => {
+    const record = adapter.state(h.chat).active
+    assert.match(record.claimedInput.history.join('\n'), /older question before assembly/)
+    assert.match(record.claimedInput.originalText, /newer question during assembly/)
+    assert.equal((await h.decide('reply', { text: 'answer to both questions' })).sent, true)
+    return { kind: 'completed' }
+  }
+  await h.receive('older question before assembly')
+  await entered.promise
+  try {
+    await h.receive('newer question during assembly')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+  assert.equal(h.requests.filter(request => request.operation === 'reserve').length, 1)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
+test('a background model error wakes a queued live QQ message in the same conversation', async t => {
+  for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
+    const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+    const entered = defer(), release = defer()
+    const event = await primaryEvent(h, 'fixture-foreground-after-background-model-error')
+    if (kind === 'reminder.due') Object.assign(event, { kind, producer: 'reminder-scheduler' })
+    h.agent.step = async () => {
+      const record = adapter.state(h.chat).active
+      if (record.binding.origin === 'observation') {
+        entered.resolve()
+        await release.promise
+        throw new Error('synthetic background model interruption')
+      }
+      assert.match(record.claimedInput.originalText, /incoming live question/)
+      assert.doesNotMatch(record.claimedInput.history.join('\n'), /fixture-foreground-after-background-model-error/)
+      assert.equal((await h.decide('reply', { text: 'answer to the incoming question' })).sent, true)
+      return { kind: 'completed' }
+    }
+    const failed = assert.rejects(adapter.dispatchObservation(event), /ended before a real decision/)
+    await entered.promise
+    try {
+      await h.receive('incoming live question')
+      assert.equal(h.agent.inbox.nextTurn.length, 1)
+    } finally { release.resolve() }
+    await failed
+    await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+  })
+})
+
+test('an autonomous budget refusal wakes the live QQ message that arrived during admission', async t => {
+  const cases = [
+    ['activity.opportunity', 'budget_exhausted'], ['reminder.due', 'budget_exhausted'],
+    ['activity.opportunity', 'previous_turn_unresolved'],
+  ]
+  for (const [kind, reason] of cases) await t.test(`${kind} ${reason}`, async t => {
+    const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+    const reserving = defer(), release = defer(), budgetProvider = adapter.budgetProvider
+    adapter.budgetProvider = async request => {
+      if (request.operation !== 'reserve' || request.origin !== 'observation') return budgetProvider(request)
+      reserving.resolve()
+      await release.promise
+      return { allowed: false, category: 'autonomy', limited: true, reason }
+    }
+    const event = await primaryEvent(h, 'fixture-foreground-after-budget-refusal')
+    if (kind === 'reminder.due') Object.assign(event, { kind, producer: 'reminder-scheduler' })
+    const observation = adapter.dispatchObservation(event)
+    const settled = reason === 'budget_exhausted' ? assert.rejects(observation, { name: 'ObservationBudgetDeferred' })
+      : observation.then(result => assert.equal(result.reason, 'native_admission_refused'))
+    await reserving.promise
+    try {
+      await h.receive('a live question while the activity was waiting')
+      assert.equal(h.agent.inbox.nextTurn.length, 1)
+      const [queued] = h.agent.inbox.nextTurn
+      h.agent.step = async () => {
+        assert.equal(adapter.state(h.chat).active.claimedId, queued.id)
+        assert.equal((await h.decide('reply', { text: 'a timely answer' })).sent, true)
+        return { kind: 'completed' }
+      }
+    } finally { release.resolve() }
+    await settled
+    await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['blocked', 'completed'])
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+    assert.equal(h.requests.filter(request => request.operation === 'reserve' && request.origin === 'live').length, 1)
+  })
+})
+
+test('midnight rest during budget admission lets a queued private reply continue', async t => {
+  const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+  const reserving = defer(), release = defer(), budgetProvider = adapter.budgetProvider
+  const midnight = Date.parse('2026-11-03T16:00:00Z')
+  h.advance(midnight - adapter.now() - 1)
+  adapter.budgetProvider = async request => {
+    if (request.operation === 'reserve' && request.origin === 'observation') {
+      reserving.resolve()
+      await release.promise
+    }
+    return budgetProvider(request)
+  }
+  h.agent.step = async () => {
+    assert.equal(adapter.state(h.chat).active.binding.origin, 'live')
+    assert.equal((await h.decide('reply', { text: 'an answer after midnight' })).sent, true)
+    return { kind: 'completed' }
+  }
+  const event = await primaryEvent(h, 'fixture-midnight-during-budget-admission')
+  const observation = adapter.dispatchObservation(event)
+  await reserving.promise
+  try {
+    h.advance(1)
+    await h.receive('question near midnight')
+    assert.equal(h.agent.inbox.nextTurn.length, 1)
+  } finally { release.resolve() }
+  assert.equal((await observation).reason, 'autonomy_rest')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && !h.agent.inbox.hasPending)
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
 })
 
 test('owned observation input uses the same reviewed wake and native admission', async t => {

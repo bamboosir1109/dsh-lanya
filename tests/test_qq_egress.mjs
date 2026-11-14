@@ -198,6 +198,39 @@ test('prepared code provenance cannot be forged by JSON options or model params'
   assert.equal(planEgress('send_msg', params).length, 0)
 })
 
+test('reply controls stay with leading literal text and never escape cleaned-away content', () => {
+  const reply = { type: 'reply', data: { id: '12' } }
+  const at = { type: 'at', data: { qq: '101' } }
+  const plan = message => planEgress('send_group_msg', { group_id: 202, message }).map(part => part.params.message)
+  for (const literal of ['`node app.js`', 'https://example.invalid/' + 'a'.repeat(60)]) {
+    assert.deepEqual(plan([reply, at, text(literal), text('在这里')]), [
+      [reply, at, text(literal)], [text('在这里')],
+    ])
+  }
+  assert.deepEqual(plan([reply, at, text('[表情: 高兴]')]), [])
+  assert.deepEqual(plan([reply]), [])
+  assert.deepEqual(plan([at]), [[at]])
+})
+
+test('short chat keeps an inline command and its surrounding words in one bubble', async () => {
+  const normal = '试试 `npm test`，先看输出。'
+  const input = '（歪头）' + normal + '[表情: 高兴]'
+  assert.deepEqual(textParts(input), [{ text: normal, verbatim: true }])
+  const sent = []
+  await prepareAndSendReply({ sendToChat: async (_scope, body, options) => {
+    const params = { group_id: 202, message: [text(body)] }
+    rememberParameters(params, options)
+    sent.push(...planEgress('send_group_msg', params).flatMap(part => part.params.message))
+    return ['fixture']
+  } }, 'group:202', input, {})
+  assert.deepEqual(sent, [text(normal)])
+  const long = '先看一下'.repeat(12) + ' `npm test`'
+  assert.ok(textParts(long).length > 1)
+  assert.ok(textParts('先看\n`npm test`').length > 1)
+  const forward = '[[qq_forward]]内容[[/qq_forward]]'
+  assert.equal(textParts('转给你 ' + forward).at(-1).forward, true)
+})
+
 test('empty pseudo image has no zero-content transport; successful aggregate lists all real IDs', async () => {
   let calls = 0
   await assert.rejects(() => dispatchEgress('send_msg', { user_id: 101, message: '![图](x.png)' }, NORMAL_STYLE,

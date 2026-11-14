@@ -200,9 +200,30 @@ def _transaction(write=False):
         connection.close()
 
 
+def _bucket_summary(connection, config, day, owner, category):
+    spent = reserved = unknown = turns = 0
+    if connection is not None:
+        for row in connection.execute('SELECT status,reserve_micros,spent_micros FROM budget_turns WHERE day=? AND category=? AND owner_hash=?', (day, category, owner)):
+            if row['status'] not in ('reserved', 'settled', 'unknown') or type(row['reserve_micros']) is not int or row['reserve_micros'] < 0:
+                raise BudgetError('invalid_budget_database')
+            turns += 1
+            if row['status'] == 'settled':
+                if type(row['spent_micros']) is not int or row['spent_micros'] < 0:
+                    raise BudgetError('invalid_budget_database')
+                spent += row['spent_micros']
+            else:
+                reserved += row['reserve_micros']
+                unknown += 1
+    limit = _micros(config['limits'][category])
+    can_start = not limit or spent + reserved + _micros(config['reserve_cny'], False) <= limit
+    return {'spent_cny': spent / 1e6, 'reserved_cny': reserved / 1e6,
+            'remaining_cny': max(0, limit - spent - reserved) / 1e6 if limit else None,
+            'exhausted': bool(limit and spent + reserved >= limit), 'unknown_count': unknown, 'turn_count': turns,
+            'can_start_new_turn': bool(can_start), 'blocked_reason': None if can_start else 'insufficient_reserve'}
+
+
 def _summary(connection, config, now):
     _, day = _clock(now)
-    buckets = {}
     coverage = None
     owner = _configured_owner_hash()
     if connection is not None:
@@ -215,26 +236,7 @@ def _summary(connection, config, now):
             raise BudgetError('invalid_budget_database')
         else:
             coverage = first_owned
-    for category in BUCKETS:
-        spent = reserved = unknown = turns = 0
-        if connection is not None:
-            for row in connection.execute('SELECT status,reserve_micros,spent_micros FROM budget_turns WHERE day=? AND category=? AND owner_hash=?', (day, category, owner)):
-                if row['status'] not in ('reserved', 'settled', 'unknown') or type(row['reserve_micros']) is not int or row['reserve_micros'] < 0:
-                    raise BudgetError('invalid_budget_database')
-                turns += 1
-                if row['status'] == 'settled':
-                    if type(row['spent_micros']) is not int or row['spent_micros'] < 0:
-                        raise BudgetError('invalid_budget_database')
-                    spent += row['spent_micros']
-                else:
-                    reserved += row['reserve_micros']
-                    unknown += 1
-        limit = _micros(config['limits'][category])
-        can_start = not limit or spent + reserved + _micros(config['reserve_cny'], False) <= limit
-        buckets[category] = {'spent_cny': spent / 1e6, 'reserved_cny': reserved / 1e6,
-                             'remaining_cny': max(0, limit - spent - reserved) / 1e6 if limit else None,
-                             'exhausted': bool(limit and spent + reserved >= limit), 'unknown_count': unknown, 'turn_count': turns,
-                             'can_start_new_turn': bool(can_start), 'blocked_reason': None if can_start else 'insufficient_reserve'}
+    buckets = {category: _bucket_summary(connection, config, day, owner, category) for category in BUCKETS}
     return {'date': day, 'coverage_start': coverage, 'status': 'tracking' if coverage is not None else 'not_started',
             'counts_complete': coverage is not None and all(item['unknown_count'] == 0 for item in buckets.values()), 'historical_backfill': False, 'buckets': buckets}
 
@@ -344,6 +346,20 @@ def operate(request, now=None):
     # the one-time change of this project's nominal amount convention.
     if not isinstance(request, dict) or not _is_contract(request.get('budget_contract')):
         raise BudgetError('budget_currency_contract_required', 409)
+    if request.get('operation') == 'autonomy_readiness':
+        if set(request) != {'operation', 'budget_contract'}:
+            raise BudgetError('invalid_budget_readiness', 400)
+        config, revision = _config()
+        _, day = _clock(now)
+        owner = _configured_owner_hash()
+        if os.path.lexists(_paths()[1]):
+            with _transaction() as connection:
+                bucket = _bucket_summary(connection, config, day, owner, 'autonomy')
+        else:
+            bucket = _bucket_summary(None, config, day, owner, 'autonomy')
+        if _config()[1] != revision:
+            raise BudgetError('budget_configuration_changed', 409)
+        return {'read_only': True, 'can_start_new_turn': bucket['can_start_new_turn']}
     if isinstance(request, dict) and request.get('operation') == 'heartbeat':
         fields = {'operation','instance_id','pid','adapter_source_sha256','budget_contract'}
         backend_fields = {'backend_transport_bound', 'backend_quote_bound'}
@@ -370,8 +386,11 @@ def operate(request, now=None):
     if not all(isinstance(x, str) and re.fullmatch('[a-f0-9]{64}', x) for x in (key, instance)):
         raise BudgetError('invalid_budget_turn_identity', 400)
     now, day = _clock(now)
-    with _transaction(True) as connection:
-        config, _ = _config()
+    operation = request['operation']
+    # A send check observes committed state. Taking the writer slot here
+    # would queue every message part behind unrelated reservations and settlements.
+    with _transaction(write=operation != 'check') as connection:
+        config, revision = _config()
         row = connection.execute('SELECT * FROM budget_turns WHERE turn_key=?', (key,)).fetchone()
         if row and (row['owner_hash'] != owner or row['scope_hash'] != _hash(scope) or row['category'] != category):
             raise BudgetError('budget_turn_owner_conflict', 409)
@@ -381,7 +400,7 @@ def operate(request, now=None):
             if row:
                 allowed = row['status'] == 'reserved' and row['instance_id'] == instance
                 return {'allowed': allowed, 'reason': 'active_reservation' if allowed else 'previous_turn_unresolved', 'category': category, 'limited': bool(limit), 'decision_only': bool(limit and row['reserve_micros'] == 0)}
-            usage = _summary(connection, config, now)['buckets'][category]
+            usage = _bucket_summary(connection, config, day, owner, category)
             if limit and request.get('meter_available') is not True:
                 if request['origin'] == 'observation':
                     return {'allowed': False, 'reason': 'cost_meter_unavailable', 'category': category, 'limited': True}
@@ -396,17 +415,19 @@ def operate(request, now=None):
                                (key, owner, _hash(scope), category, day, instance, 'reserved', reserve, None, now, now))
             connection.execute("INSERT OR IGNORE INTO budget_meta VALUES ('coverage_start',?)", (str(now),))
             return {'allowed': True, 'reason': 'decision_only' if limit and reserve == 0 else 'reserved', 'category': category, 'limited': bool(limit), 'decision_only': bool(limit and reserve == 0),
-                    'state': _summary(connection, config, now)['buckets'][category]}
+                    'state': _bucket_summary(connection, config, day, owner, category)}
         if row is None or row['instance_id'] != instance:
             raise BudgetError('budget_reservation_unavailable', 409)
-        if request['operation'] == 'check':
+        if operation == 'check':
             # A reserved turn may use its own allocation even when it occupies
             # the last daily slot. Other reservations cannot borrow it.
-            used = _summary(connection, config, now)['buckets'][category]
+            used = _bucket_summary(connection, config, day, owner, category)
             allocated = row['reserve_micros'] if row['status'] == 'reserved' else 0
             allowed = (row['status'] in ('reserved', 'settled') and row['day'] == day and
                        (not limit or row['reserve_micros'] > 0 and
                         _micros(used['spent_cny']) + _micros(used['reserved_cny']) - allocated < limit))
+            if _config()[1] != revision:
+                raise BudgetError('budget_configuration_changed', 409)
             return {'allowed': allowed, 'reason': 'within_reservation' if allowed else 'reservation_day_changed' if row['day'] != day else 'budget_exhausted', 'category': category, 'limited': bool(limit)}
         if request['operation'] == 'unknown':
             if row['status'] == 'reserved':

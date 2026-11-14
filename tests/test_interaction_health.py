@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -9,6 +10,46 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class InteractionHealthTests(unittest.TestCase):
+    def test_friend_ingress_comparison_counts_missing_events_and_keeps_bodies_private(self):
+        scope = 'private:101'
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        received = dict(schema='qq-interaction/v1', phase='received', at=6000,
+                        scope=digest(scope)[:16], input=digest(scope+'\0-12')[:24])
+        staged = dict(received, phase='friend_history_staged', input=digest(scope+'\0'+'17')[:24])
+        rows = [dict(time=6, sub_type='friend', sender={'user_id': 101}, message_id=-12),
+                dict(time=7, sub_type='friend', sender={'user_id': 101}, message_id=13,
+                     message='synthetic private body'),
+                dict(time=7, sub_type='friend', sender={'user_id': 999}, message_id=14),
+                dict(time=8, sub_type='group', sender={'user_id': 101}, message_id=15),
+                dict(time=4, sub_type='friend', sender={'user_id': 101}, message_id=16),
+                dict(time=8, sub_type='friend', sender={'user_id': 101}, message_id=17)]
+
+        def history(peer):
+            if peer == '102':
+                raise RuntimeError('synthetic unavailable')
+            self.assertEqual(peer, '101')
+            return [*rows, rows[1]]
+
+        result = module.compare_friend_ingress([scope, 'private:102', 'private:999', 'group:101'],
+            [json.dumps(received).encode(), json.dumps(staged).encode(), b'{'],
+            account='999', since_ms=5000, now_ms=9000, history=history)
+        self.assertEqual(result['status'], 'partial')
+        self.assertTrue(result['partial_log'])
+        self.assertEqual(result['counts'], {'history_checked': 1, 'history_unavailable': 1,
+            'friend_inputs': 3, 'matched_ingress': 1, 'without_ingress_evidence': 1, 'staged_after_reconnect': 1})
+        self.assertNotIn('synthetic private body', json.dumps(result))
+
+    def test_friend_audit_distinguishes_only_allowed_history_rejection_reasons(self):
+        def history(peer):
+            if peer == '101':
+                raise module.FriendHistoryUnavailable('peer_identity_unresolved')
+            raise module.FriendHistoryUnavailable('private upstream details')
+        result = module.compare_friend_ingress(['private:101', 'private:102'], [],
+            account='999', since_ms=5000, now_ms=9000, history=history)
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['counts'], {'history_unavailable': 2, 'history_peer_identity_unresolved': 1})
+        self.assertNotIn('private upstream details', json.dumps(result))
+
     def test_listening_is_terminal_and_buffer_metadata_does_not_hide_real_pending_work(self):
         def row(i,phase):
             return dict(schema='qq-interaction/v1',scope='c'*16,input=f'{i:024x}',phase=phase,at=1000)
@@ -19,16 +60,123 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(value['scopes'][0]['counts'],{'group_listening':1,'pending':1,'active':1})
         self.assertEqual(value['scopes'][0]['long_open_inputs'],2)
 
+    def test_friend_reply_audit_matches_exact_outbound_ids_in_the_same_conversation(self):
+        scope = 'private:101'
+        digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        def key(message_id):
+            return digest(scope + '\0' + str(message_id))[:24]
+        def diagnostic(input_id, output_id, phase='delivery'):
+            return dict(schema='qq-interaction/v1', phase=phase, at=6200, status='sent',
+                        scope=digest(scope)[:16], input=key(input_id), output=key(output_id))
+        def history_row(message_id, sender, target):
+            return dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                        target_id=target, message_id=message_id, message='synthetic body')
+        rows = [history_row(i, 101, 999) for i in (1, 2, 3, 4, 5)] + [history_row(-1, 999, 101),
+            history_row(-2, 999, 303), history_row(-3, 999, 101)]
+        evidence = [diagnostic(1, -1), diagnostic(2, -2), diagnostic(3, -3, 'account_publication')]
+        unreferenced = diagnostic(4, -3)
+        del unreferenced['output']
+        evidence.extend([unreferenced, dict(diagnostic(5, -3), output='invalid-reference')])
+        report = module.compare_friend_ingress([scope], ['\n'.join(map(json.dumps, evidence)).encode()],
+            account='999', since_ms=5000, now_ms=9000, history=lambda peer:rows)
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['counts']['friend_inputs_with_acknowledged_output'], 3)
+        self.assertEqual(report['counts']['friend_inputs_acknowledged_without_output_reference'], 1)
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertNotIn(key(-1), json.dumps(report))
+        self.assertNotIn('synthetic body', json.dumps(report))
+
+    def test_friend_audit_can_link_an_interrupted_question_to_a_confirmed_batch(self):
+        scope = 'private:101'
+        def key(message_id):
+            return hashlib.sha256((scope + '\0' + str(message_id)).encode()).hexdigest()[:24]
+        def diagnostic(phase, message_id, **extra):
+            return dict(schema='qq-interaction/v1', phase=phase, at=6200,
+                        scope=hashlib.sha256(scope.encode()).hexdigest()[:16], input=key(message_id), **extra)
+        rows = [dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                     message_id=message_id, target_id=target)
+                for message_id, sender, target in [(1, 101, 999), (2, 101, 999), (-1, 999, 101)]]
+        events = [diagnostic('received', 1), diagnostic('received', 2), diagnostic('budget_reserve_retry', 2),
+                  diagnostic('reply_review_deferred', 2), diagnostic('reply_handoff', 2, prior_input=key(1))]
+        def audit():
+            return module.compare_friend_ingress([scope], ['\n'.join(map(json.dumps, events)).encode()],
+                account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', audit()['counts'])
+        events.append(diagnostic('delivery', 2, status='sent', output=key(-1)))
+        report = audit()
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertEqual(report['counts']['friend_inputs_in_batch_with_reply_in_history'], 1)
+
+    def test_friend_audit_checks_first_contacts_before_mapped_friends(self):
+        mapped = {str(i) for i in range(101, 133)}
+        checked = set()
+
+        def history(peer):
+            checked.add(peer)
+            return [dict(time=6, sub_type='friend', sender={'user_id': 201}, message_id=42)] if peer == '201' else []
+
+        result = module.compare_friend_ingress(['private:' + peer for peer in mapped] + ['private:777'], [],
+            account='999', since_ms=5000, now_ms=9000, history=history, friend_ids=mapped | {'201', '999'})
+        self.assertIn('201', checked)
+        self.assertNotIn('777', checked)
+        self.assertNotIn('999', checked)
+        self.assertEqual(len(checked), 32)
+        self.assertEqual(result['coverage'], {'friend_list_verified': True, 'without_session': 1, 'without_session_sampled': 1})
+        self.assertEqual(result['counts']['without_ingress_evidence'], 1)
+        self.assertEqual(result['status'], 'partial')
+
+    def test_friend_audit_follows_explicit_replacements_across_log_segments(self):
+        scope = 'private:101'
+        def key(message_id):
+            return hashlib.sha256((scope + '\0' + str(message_id)).encode()).hexdigest()[:24]
+        def log(message_id, phase, **fields):
+            return dict(schema='qq-interaction/v1', scope=hashlib.sha256(scope.encode()).hexdigest()[:16],
+                        input=key(message_id), phase=phase, at=6100, **fields)
+        def encode(rows):
+            return '\n'.join(map(json.dumps, rows)).encode()
+        def history(message_id, sender, target):
+            return dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                        target_id=target, message_id=message_id)
+
+        rows = [history(i, 101, 999) for i in (1, 2, 3, 4)] + [history(-1, 999, 101)]
+        first = [log(i, 'received') for i in (1, 2, 3, 4)]
+        first.extend([log(1, 'queued'), log(4, 'queued'), log(2, 'queued', coalesced=True, replaced_input=key(1))])
+        second = [log(3, 'queued', coalesced=True, replaced_input=key(2)), log(3, 'claimed'),
+                  log(3, 'delivery', status='sent', output=key(-1))]
+        state = module.summarize(encode(first + second), 7000)
+        self.assertEqual(state['scopes'][0]['counts'], {'coalesced':2, 'transport_accepted':1, 'pending':1})
+        report = module.compare_friend_ingress([scope], [encode(first), encode(second)], account='999',
+                                              since_ms=5000, now_ms=9000, history=lambda _:rows)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertEqual(report['counts']['friend_inputs_in_batch_with_reply_in_history'], 2)
+        self.assertNotIn(key(1), json.dumps(report))
+        reversed_report = module.compare_friend_ingress([scope], [encode(second[::-1]), encode(first[::-1])],
+            account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertEqual(reversed_report, report)
+        cyclic = module.compare_friend_ingress([scope], [encode(first + second + [log(1, 'reply_handoff', prior_input=key(3))])],
+            account='999', since_ms=5000, now_ms=9000, history=lambda _: rows)
+        self.assertEqual(cyclic['status'], 'partial')
+        self.assertEqual(cyclic['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', cyclic['counts'])
+        second.insert(1, log(4, 'queued', coalesced=True, replaced_input=key(2)))
+        ambiguous = module.compare_friend_ingress([scope], [encode(first), encode(second)], account='999',
+                                                 since_ms=5000, now_ms=9000, history=lambda _:rows)
+        self.assertEqual(ambiguous['status'], 'partial')
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', ambiguous['counts'])
+
     def test_transport_acceptance_quiet_pending_and_unknown_remain_distinct(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
         rows=[row(1,'received',1000),row(1,'delivery',1300,status='sent'),
               row(2,'received',1100),row(2,'decision',1400,verdict='idle'),row(2,'turn_end',1500),
-              row(3,'received',1200),row(3,'delivery',1600,status='unknown'),row(4,'queued',2000)]
+              row(3,'received',1200),row(3,'delivery',1600,status='unknown',transport_failure='ack_timeout'),row(4,'queued',2000)]
         value=module.summarize('\n'.join(json.dumps(x) for x in rows).encode(),40000)
         group=value['scopes'][0]
         self.assertEqual(group['counts'],{'transport_accepted':1,'decided_quiet':1,'delivery_uncertain':1,'pending':1})
         self.assertEqual(group['accepted_p50_ms'],300)
+        self.assertEqual(group['transport_failures'], {'ack_timeout': 1})
         self.assertEqual(group['long_open_inputs'],1)
         self.assertEqual(value['receipt_boundary'],'transport_acceptance_only')
         self.assertFalse(value['history_replayed'])
@@ -37,6 +185,48 @@ class InteractionHealthTests(unittest.TestCase):
         value=module.summarize(b'{"unfinished":\n',40000)
         self.assertEqual(value['status'],'partial');self.assertEqual(value['invalid_records'],1)
         with self.assertRaises(ValueError):module.summarize(b' '*(module.LIMIT+1),40000)
+
+    def test_account_publication_does_not_count_as_a_chat_reply(self):
+        def row(i, phase, at, **details):
+            return dict(schema='qq-interaction/v1', scope='e'*16, input=f'{i:024x}', phase=phase, at=at, **details)
+
+        records = [row(1, 'received', 1000), row(1, 'account_publication', 1100, status='sent'), row(1, 'turn_end', 1200),
+                   row(2, 'account_publication', 1300, status='unknown'), row(3, 'account_publication', 1400, status='suppressed'),
+                   row(4, 'received', 1500), row(4, 'delivery', 1650, status='sent')]
+        value = module.summarize('\n'.join(json.dumps(record) for record in records).encode(), 2000)
+        self.assertEqual(value['invalid_records'], 0)
+        group = value['scopes'][0]
+        self.assertEqual(group['counts'], {'account_publication_accepted': 1, 'account_publication_uncertain': 1,
+                                          'account_publication_suppressed': 1, 'transport_accepted': 1})
+        self.assertEqual(group['accepted_samples'], 1)
+        self.assertEqual(group['accepted_p50_ms'], 150)
+
+    def test_stale_reply_decision_is_superseded_and_preserves_transport_outcome(self):
+        def row(i, phase, **fields):
+            return dict(schema='qq-interaction/v1', scope='a'*16, input=f'{i:024x}', phase=phase, at=1000, **fields)
+        rows = [row(1, 'decision', verdict='reply', reason='stale_revision'), row(1, 'turn_end'),
+                row(2, 'decision', verdict='reply', reason='stale_revision'), row(2, 'delivery', status='unknown'),
+                row(3, 'decision', verdict='reply', reason='already_decided'), row(3, 'turn_end')]
+        result = module.summarize('\n'.join(json.dumps(item) for item in rows).encode(), 2000)
+        self.assertEqual(result['scopes'][0]['counts'], {'superseded_turn': 1, 'delivery_uncertain': 1,
+                                                       'ended_without_confirmed_transport': 1})
+
+    def test_recent_window_preserves_pending_parent_and_exposes_real_stage_samples(self):
+        def row(i,phase,at,**fields):
+            return dict(schema='qq-interaction/v1',scope='d'*16,input=f'{i:024x}',phase=phase,at=at,**fields)
+        rows = [row(1,'received',900),row(1,'queued',950),row(2,'received',1200),
+                row(2,'admitted',1300,backend_wait_ms=27,inbound_prepare_ms=73),
+                row(2,'queued',1400,coalesced=True),row(2,'claimed',1500),row(2,'delivery',1600,status='sent'),
+                row(3,'received',1700),row(3,'admitted',1730,backend_wait_ms=-1,inbound_prepare_ms=80),
+                row(2,'intake_compaction',1520,compaction_ms=60),row(3,'intake_compaction',1750,compaction_ms=True)]
+        result = module.summarize('\n'.join(json.dumps(x) for x in rows).encode(),2000,since_ms=1100)
+        self.assertEqual(result['input_count'],2)
+        self.assertEqual(result['missing_coalesced_parents'],0)
+        group = result['scopes'][0]
+        self.assertEqual(group['intake_latency']['backend_wait'],dict(samples=1,p50_ms=27,p95_ms=27))
+        self.assertEqual(group['intake_latency']['inbound_prepare'],dict(samples=1,p50_ms=73,p95_ms=73))
+        self.assertEqual(group['intake_latency']['compaction'],dict(samples=1,p50_ms=60,p95_ms=60))
+        self.assertEqual(group['accepted_p50_ms'],400)
 
     def test_merged_input_is_not_a_stuck_queue_and_rejected_silence_is_not_a_quiet_decision(self):
         def row(i,phase,**fields):

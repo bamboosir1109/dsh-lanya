@@ -16,11 +16,17 @@ def transform(name, raw):
         if name == 'bridge.js':
             before = 'observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),'
             after = 'observeInbound: (inbound, address) => this.lanyaPolicy.observeInbound(inbound, address),'
+            forwarded = 'observeInbound: (inbound, address, forwardText) => this.lanyaPolicy.observeInbound(inbound, address, forwardText),'
         else:
             if text.count('const address = addressing(inbound, quoteEvidence, this.ctx.selfId(), this.ctx.config.botQQ);') != 1:
                 raise PatchError('Exact trusted addressing anchor required')
             before = 'await this.ctx.observeInbound(inbound);'
             after = 'await this.ctx.observeInbound(inbound, address);'
+            forwarded = 'await this.ctx.observeInbound(inbound, address, forwardText);'
+        if forwarded in text:
+            if text.count(forwarded) != 1 or before in text or after in text:
+                raise PatchError('Duplicated or mixed admission/schema anchors')
+            return raw
     elif name == 'tools.js':
         if 'LANYA_POLICY_PATCH_V1' not in text:
             raise PatchError('Reviewed policy tools required')

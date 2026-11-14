@@ -132,11 +132,15 @@ def _validated_completion(result, event, raw):
         revision = result.get("observation_revision")
         rest_closure = (result.get("reason") in ("autonomy_rest", "observation_expired") and
                         result.get("native_turn_completed") is False)
+        activity = event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")
+        superseded = (activity and result.get("reason") == "superseded_live_input" and
+                      result.get("native_turn_completed") is False)
         if (set(result) != fields or result.get("status") != "no_decision" or
                 not ((result.get("reason") == "model_completed_without_decision" and result.get("native_turn_completed") is True) or
-                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False) or rest_closure) or
+                     (result.get("reason") == "native_admission_refused" and result.get("native_turn_completed") is False) or
+                     rest_closure or superseded) or
                 type(revision) is not int or not 1 <= revision <= 2**53 - 1 or
-                not (rest_closure or (event["kind"] == "activity.opportunity" and event["producer"] in ("mind", "main-review")) or
+                not (rest_closure or activity or
                      (event["kind"] == "social.opportunity" and event["producer"] == "social-planner"))):
             raise ObservationError("Invalid native no-decision completion")
         identity = "no-decision\0" + event["scope"] + "\0" + event["event_id"] + "\0" + str(revision)

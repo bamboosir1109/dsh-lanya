@@ -28,7 +28,7 @@ guide 提供实际角色目录下 `browser/cmd.json`、`result.json`、`shot.png
 
 ## B站内容与互动
 
-B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗，按时间轴读取有界字幕，再按需要查看同 CID 的 `bili_frames` 故事板图片。无字幕、片段截断与画面未读取分别保留，不宣称完整播放；长视频可在之后机会继续。`bili_social_inbox` 读取回复与提及，`bili_thread` 核对同视频根评论及目标，`bili_reply` 用 `rpid` 指定目标、`root` 指定根评论。新模型调用须明确选择 `mention_admin:true` 或 `false`；视频内容结果的 `social_next` 提供可信互动偏好，由同一主 LLM 判断是否邀请管理员，旧调用省略仍为 false。普通评论、接话及 `mention_admin` 使用可信项目偏好，不借 QQ 票据，也不把发出请求当作已公开或已通知。
+B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗，按时间轴读取有界字幕，再按需要查看同 CID 的 `bili_frames` 故事板图片。字幕截断时 `subtitle.resume` 提供同一分 P 的续读位置，可保存到下次自主活动。`advances:false` 表示应换一段或查看画面。无字幕、片段截断与画面未读取分别保留，不宣称完整播放。`bili_social_inbox` 读取回复与提及，`bili_thread` 核对同视频根评论及目标，`bili_reply` 用 `rpid` 指定目标、`root` 指定根评论。新模型调用须明确选择 `mention_admin:true` 或 `false`；视频内容结果的 `social_next` 提供可信互动偏好，由同一主 LLM 判断是否邀请管理员，旧调用省略仍为 false。普通评论、接话及 `mention_admin` 使用可信项目偏好，不借 QQ 票据，也不把发出请求当作已公开或已通知。
 
 ## 主动联系与关系候选
 
@@ -43,6 +43,10 @@ B站由同一主 agent 使用 `bili_observe_video` 选择实际分P和时间窗�
 后台 `activity.opportunity` 及其 `main-review` 轮只有在可信 owner 匹配、私聊对端精确命中宿主管理员 allowlist、producer 为 `mind` 或 `main-review` 时，才使用该管理员已有的文件编辑权限，供浏览器命令和活动笔记使用。群聊、其它生产者和异常元数据保持成员权限；观察的 `control_allowed=false` 不变，不能改变静默或绕过发送票。历史 autonomy V1 层由 `patch_onebot_autonomy.py` 安装；本次已有该层的升级使用独立 `patch_autonomy_continuity.py`，保留旧层原件，不以重装旧层覆盖未知修改。
 
 ## Android
+
+主私聊和可信自主活动可用 `android_phone` 操作专用模拟器。本机启用并配置执行器后，主 Agent 可以选择玩 2048、打开高德、美团或 QQ，并根据真实画面操作。动作结果直接附带截图，附件服务不可用时可用 `read_image`。后续操作需要本轮新截图的 ID。
+
+应用登录页或登录限制挡住具体任务时，主 Agent 可以核对设备前台，记录应用和目的，并在下次合适的自主轮通过主私聊请用户查看。请求沿用 QQ 静默、休息和主动联系策略。用户处理后，主 Agent 用新截图核对并继续。
 
 guide 提供配置中的固定 serial、实际角色目录的 Android 队列和本机面板 job 地址。优先通过 `/api/android/job` 提交带固定 serial 的 `shot`，由面板分配 seq；文件调用方必须保留已有 `cmd.json` / `cmd.claim-*`，只在空槽原子发布新 seq。
 

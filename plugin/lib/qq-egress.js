@@ -330,6 +330,11 @@ function activityPath(value) {
   return /(?:^|\/)notes\/activity[^/\r\n]*\.md(?::\d+)?(?:#[A-Za-z0-9_-]+)?$/i.test(path)
 }
 
+function workspaceLink(value) {
+  const target = value.trim().replace(/^<([^<>]+)>$/, '$1')
+  return /^(?:[A-Za-z]:[\\/]|file:\/\/)/i.test(target) || activityPath(value)
+}
+
 function localLinkEnd(text, start) {
   let at = start + 1, depth = 1
   for (; at < text.length; at++) {
@@ -380,8 +385,8 @@ function withoutActivityReferences(text, style) {
     for (let at = 0; at < value.length; at++) {
       if (value[at] !== '[' || (at && value[at - 1] === '\\')) continue
       const link = localLinkEnd(value, at)
-      if (!link || !activityPath(link.path)) continue
-      ranges.push({ start: at, end: link.end }); at = link.end - 1
+      if (!link || !workspaceLink(link.path)) continue
+      ranges.push({ start: value[at - 1] === '!' ? at - 1 : at, end: link.end }); at = link.end - 1
     }
     value = dropActivityReferences(value, ranges)
     // Bare internal notes have the same treatment. Other files and URLs are
@@ -392,10 +397,41 @@ function withoutActivityReferences(text, style) {
   }).join('')
 }
 
+function withoutInternalReceipts(text, style) {
+  if (style.technical) return text
+  const receiptOnly = /^(?:\s*[（(]\s*)?\s*(?:\b(?:message_id|ticket_id)\s*[=:：]\s*-?\d+|\bintent\s*(?:已\s*)?CAS\s*(?:到|至|to)?\s*(?:revision\s*)?\d+)(?:\s*[）)])?[。.!！]?\s*$/iu
+  return spans(text).map(part => part.protected
+    ? (part.text.startsWith('`') && !part.text.startsWith('```') && receiptOnly.test(part.text.slice(1, -1)) ? '' : part.text)
+    : part.text
+    .replace(/(?:[（(]\s*)?`?\b(?:message_id|ticket_id)\s*[=:：]\s*-?\d+`?(?:\s*[）)])?/gi, '')
+    .replace(/(?:\bintent\s*(?:已\s*)?CAS\s*(?:到|至|to)?\s*(?:revision\s*)?\d+|\bCAS\s*(?:到|至|to)\s*revision\s*\d+)/gi, '')
+  ).join('').replace(/(?:[，,]\s*)?(?:用的是\s*)?(?:新票根|票根|回执编号)\s*[:：]?\s*`?\d{6,}`?/gu, '')
+    .replace(/(^|[。！？!?\n])[ \t]*(?:图(?:片)?|表情(?:包)?)\s*(?:已(?:经)?|刚刚)?\s*发到\s*QQ\s*(?:了)?\s*(?:[（(][\s\r\n]*[）)])?[。.!！]?(?=$|[\r\n])/giu, '$1')
+    .replace(/^[ \t]*(?:[（(][\s\r\n]*[）)][。.!！]?|[。.!！？，,；;]+)[ \t]*$/gmu, '')
+}
+
+function withoutImageSendConfirmation(text) {
+  // Only used after a real image receipt in this turn. Preserve meaningful
+  // captions, answers to a question, quotations, and explicit tech output.
+  const confirmation = /(?:^|(?<=[。！？!?;\n；]))[ \t]*(?:我[ \t]*)?(?:(?:已经|刚刚|刚|已)[ \t]*发(?:了|过来|过去)?[ \t]*(?:一)?张[ \t]*(?:(?:“[^”\r\n]{1,32}”|「[^」\r\n]{1,32}」)[ \t]*的?[ \t]*)?(?:表情包?|图(?:片)?)|(?:这张[ \t]*)?(?:表情包?|图(?:片)?)[ \t]*(?:已经|刚刚|刚|已)?[ \t]*(?:发出去了|发过去了|发给你了))[ \t]*(?:[。！!～~]+(?![。！!～~？?])|(?=\r?\n|$))/gu
+  return spans(text).map(part => {
+    if (part.protected) return part.text
+    const quoteStarts = literalQuotations(part.text).map(match => [match.index, match.index + match[0].length])
+    return part.text.replace(confirmation, (whole, offset) =>
+      quoteStarts.some(([start, end]) => start <= offset && offset < end) ? whole : '')
+  }).join('')
+}
+
 function cleanProse(text, style) {
   let result = text.replace(/[\[【]\s*表情\s*[:：][^\]】\n]*[\]】]/g, '')
   if (!style.roleplay) {
     result = withoutNarration(result)
+  }
+  if (!style.technical && !style.roleplay) {
+    // Keep the words in model-written prose. The protected spans bypass this
+    // cleanup so real code and URLs still travel intact.
+    result = result.replace(/^[ \t]*[-*][ \t]+/gmu, '')
+      .replace(/\*\*([^*\r\n]+)\*\*|__([^_\r\n]+)__/gu, (_match, bold, underscored) => bold ?? underscored)
   }
   // Recognizable leaked control/reasoning is not normal speech. Literal examples
   // remain protected by code spans; ordinary prose is never shortened for length.
@@ -409,8 +445,30 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
   if (typeof value !== 'string') throw new TypeError('QQ text must be a string')
   if (verbatim || (style.technical && structuredData(value))) return value
   // Mask complete image syntax BEFORE recognizing its URL as a protected token.
-  const withoutImages = withoutActivityReferences(withoutInlineImages(value), style)
-  return spans(withoutImages, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+  const withoutImages = withoutActivityReferences(withoutInlineImages(withoutInternalReceipts(value, style)), style)
+  const prose = style.sentImage === true && !style.technical && !style.roleplay
+    ? withoutImageSendConfirmation(withoutImages) : withoutImages
+  const cleaned = spans(prose, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
+  if (!style.technical && !style.roleplay) {
+    const suffix = /(?:(?:^|[。！？!?\n，,])[ \t\r\n]*(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看一看|看看?|查一查|查查?|确认|核对|核实)(?:一下|一眼)?(?:吧|哈|啊|哦|啦)?[ \t]*){1,8}[。.!！~～]*[ \t]*$/u
+    const match = suffix.exec(cleaned)
+    const quotedTail = match && literalQuotations(cleaned).some(quote => quote.index + quote[0].length > match.index)
+    if (match && !quotedTail && !spans(cleaned).at(-1)?.protected) {
+      if (match.index === 0) return ''
+      const comma = /[，,]/u.test(cleaned[match.index])
+      const prefix = cleaned.slice(0, match.index + (comma ? 0 : 1)).trimEnd()
+      // A comma often introduces a real next action. Trim only when it
+      // follows a separate complete sentence and adds no object or detail.
+      if ((!comma || /[。！？!?]/u.test(prefix)) && /[\p{L}\p{N}]/u.test(prefix)) {
+        return comma ? prefix + '。' : prefix
+      }
+    }
+  }
+  return cleaned
+}
+
+export function hasReplyContent(value, style = NORMAL_STYLE) {
+  return Boolean(cleanText(value, style))
 }
 
 function ordinaryChunks(text) {
@@ -445,7 +503,14 @@ export function textParts(value, style = NORMAL_STYLE, verbatim = false) {
   const text = cleanText(value, style, verbatim)
   if (!text.trim()) return []
   if (verbatim) return [{ text, verbatim: true }]
-  return spans(text, style.technical).flatMap((part) => part.protected
+  const parts = spans(text, style.technical)
+  if (!style.technical && !style.roleplay && !style.localFiles && !/[\r\n]/u.test(text) &&
+      characters(text).length <= 40 &&
+      parts.some(part => part.protected) &&
+      parts.every(part => !part.protected || /^`[^`\r\n]+`$/u.test(part.text))) {
+    return [{ text, verbatim: true }]
+  }
+  return parts.flatMap((part) => part.protected
     ? (part.text.trim() ? [{ text: part.text, verbatim: true, ...(part.forward ? { forward: true } : {}) }] : [])
     : part.text.split(/\r?\n/).flatMap((line) => style.localFiles === true &&
         /(?:[A-Za-z]:[\\/]|file:\/\/|(?:^|\s)\/(?:[\p{L}\p{N}_. -]+\/)+|(?:^|[\s(])(?:\.\.?\/)?notes\/activity)/u.test(line)
@@ -485,26 +550,32 @@ function splitSegments(segments, style, verbatim, isMemeSegment) {
   if (!Array.isArray(segments)) throw new TypeError('OneBot message segments required')
   const packets = []
   let packet = [], length = 0
-  const flush = () => { if (packet.length) packets.push(packet); packet = []; length = 0 }
+  const hasContent = () => packet.some(item => item.type !== 'reply' && item.type !== 'at')
+  const flush = (allowMentionOnly = false) => {
+    if (hasContent() || allowMentionOnly && packet.some(item => item.type === 'at')) packets.push(packet)
+    packet = []
+    length = 0
+  }
+  const explicitMentionOnly = !segments.some(segment => segment?.type !== 'reply' && segment?.type !== 'at')
   for (const segment of segments) {
     if (!plain(segment) || typeof segment.type !== 'string' || !plain(segment.data)) throw new TypeError('Invalid OneBot segment')
     if (segment.type === 'image' && isMemeSegment?.(segment) === true) {
       // Reply/@ controls stay with their adjacent content, never become a
       // detached notification. Necessary caption/prose uses its own packet.
-      if (packet.some(item => !['reply', 'at'].includes(item.type))) flush()
+      if (hasContent()) flush()
       packet.push(structuredClone(segment)); memePackets.add(packet); flush()
       continue
     }
     if (segment.type !== 'text') { packet.push(structuredClone(segment)); continue }
     for (const part of textParts(segment.data.text, style, verbatim)) {
       const size = characters(part.text).length
-      if (packet.length && (part.verbatim || length + size > 40)) flush()
+      if (hasContent() && (part.verbatim || length + size > 40)) flush()
       packet.push({ ...structuredClone(segment), data: { ...structuredClone(segment.data), text: part.text } })
       length += size
       if (part.verbatim || length >= 40) flush()
     }
   }
-  flush()
+  flush(explicitMentionOnly)
   return packets
 }
 

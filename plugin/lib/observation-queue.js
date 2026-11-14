@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
@@ -13,13 +14,33 @@ import { DatabaseSync } from 'node:sqlite'
 export class ObservationQueueError extends Error {
   constructor(message) { super(message); this.name = 'ObservationQueueError' }
 }
+export class ObservationForegroundBusy extends ObservationQueueError {
+  constructor(reason = 'foreground_busy') {
+    super('Observation could not be safely dispatched: ' + reason)
+    this.name = 'ObservationForegroundBusy'
+  }
+}
+export class ObservationBudgetDeferred extends ObservationQueueError {
+  constructor(retryAt) {
+    super('Autonomous budget cannot reserve a turn yet')
+    this.name = 'ObservationBudgetDeferred'
+    this.retryAt = retryAt
+  }
+}
+class MissingLegacyObservation extends ObservationQueueError {}
 const plain = (x) => x !== null && typeof x === 'object' && !Array.isArray(x)
 const hash = (x) => createHash('sha256').update(x).digest('hex')
 const identity = (x) => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x)
 const terminalStatus = (x) => ['decided', 'sent', 'unknown', 'suppressed'].includes(x)
 const decisionIdentity = (x) => identity(x) && x.trim().length > 0
 const MAX_CONCURRENT_SCOPES = 4
+const TERMINAL_ACK_BATCH_SIZE = 64
+const TERMINAL_ACK_BATCH_BYTES = 4 * 1024 * 1024
+const budgetDeferred = Symbol('budgetDeferred')
+const SCANNER_READ_BATCH_SIZE = 8
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
+const reviewTime = (event, completion) => !['unknown', 'no_decision'].includes(completion.status) &&
+  !producerOwnedReview.has(event.kind) ? completion.next_review_at ?? Infinity : Infinity
 export const MAX_OBSERVATION_BYTES = 256 * 1024
 // Sixfold string escaping plus repeated event identities and bounded metadata.
 export const MAX_COMPLETION_BYTES = 8 * MAX_OBSERVATION_BYTES + 16 * 1024
@@ -34,10 +55,12 @@ function validateCompletion(marker, event, sha256, raw) {
     const fields = ['version', 'event_raw', 'event_id', 'scope', 'event_sha256', 'completed_at', 'status',
       'reason', 'local_outcome_id', 'observation_revision', 'native_turn_completed']
     const restClosure = ['autonomy_rest', 'observation_expired'].includes(marker.reason) && marker.native_turn_completed === false
+    const activity = event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)
+    const superseded = activity && marker.reason === 'superseded_live_input' && marker.native_turn_completed === false
     if (Object.keys(marker).sort().join(',') !== fields.sort().join(',') || marker.status !== 'no_decision' ||
         !((marker.reason === 'model_completed_without_decision' && marker.native_turn_completed === true) ||
-          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false) || restClosure) ||
-        !(restClosure || (event.kind === 'activity.opportunity' && ['mind', 'main-review'].includes(event.producer)) ||
+          (marker.reason === 'native_admission_refused' && marker.native_turn_completed === false) || restClosure || superseded) ||
+        !(restClosure || activity ||
           (event.kind === 'social.opportunity' && event.producer === 'social-planner')) ||
         marker.scope !== event.scope || marker.event_id !== event.event_id || marker.event_sha256 !== sha256 ||
         !Number.isSafeInteger(marker.observation_revision) || marker.observation_revision < 1 ||
@@ -113,10 +136,15 @@ function readRegular(file, maxBytes = MAX_COMPLETION_BYTES) {
  * Present corrupt evidence always wins over the backup: never hide tampering.
  */
 export function readObservationEvidence(directory, key) {
-  if (!/^[0-9a-f]{64}$/.test(key)) throw new ObservationQueueError('Invalid evidence filename')
   const base = ordinaryDirectories(directory)
-  const target = path.join(ordinaryDirectories(path.join(base, 'pending')), key + '.json')
-  const markerPath = path.join(ordinaryDirectories(path.join(base, 'done')), key + '.json')
+  return readEvidenceFiles(ordinaryDirectories(path.join(base, 'pending')),
+    ordinaryDirectories(path.join(base, 'done')), key)
+}
+
+function readEvidenceFiles(pending, done, key) {
+  if (!/^[0-9a-f]{64}$/.test(key)) throw new ObservationQueueError('Invalid evidence filename')
+  const target = path.join(pending, key + '.json')
+  const markerPath = path.join(done, key + '.json')
   let read, marker, completionSha256 = null, hasMarker = false
   try { read = readRegular(target, MAX_OBSERVATION_BYTES) } catch (error) {
     if (error.code !== 'ENOENT') throw error
@@ -124,6 +152,9 @@ export function readObservationEvidence(directory, key) {
     marker = markerRead.value
     completionSha256 = markerRead.sha256
     hasMarker = true
+    if (plain(marker) && marker.version === 1 && typeof marker.event_raw !== 'string') {
+      throw new MissingLegacyObservation('Missing original requires an exact terminal original')
+    }
     if (!plain(marker) || ![2, 3].includes(marker.version) || typeof marker.event_raw !== 'string') throw new ObservationQueueError('Missing original requires an exact terminal original')
     const raw = Buffer.from(marker.event_raw, 'utf8')
     if (raw.length > MAX_OBSERVATION_BYTES || raw.toString('utf8') !== marker.event_raw) throw new ObservationQueueError('Invalid UTF8 completion original')
@@ -147,12 +178,12 @@ const queuedReview = event => event.producer === 'main-review' && event.event_id
 function sameReviewOwner(left, right) {
   return ['scope', 'workspace_key', 'agent_key', 'kind'].every(key => left[key] === right[key])
 }
-function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
+function reviewAnchor(readEvidence, event, depth = 0, seen = new Set()) {
   const key = observationKey(event.scope, event.event_id)
   if (depth >= 128 || seen.has(key)) throw new ObservationQueueError('Review freshness ancestry is not bounded and acyclic')
   seen.add(key)
   if (!queuedReview(event)) {
-    const original = readObservationEvidence(directory, key)
+    const original = readEvidence(key)
     if (stable(original.value) !== stable(event)) throw new ObservationQueueError('Review freshness original conflicts')
     return { key, sha256: original.sha256, created_at: event.created_at }
   }
@@ -163,7 +194,7 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
       event.event_id !== 'main-review:' + context.parent_observation_key + ':' + context.scheduled_at) {
     throw new ObservationQueueError('Review freshness requires exact parent metadata')
   }
-  const parent = readObservationEvidence(directory, context.parent_observation_key), completed = parent.completion
+  const parent = readEvidence(context.parent_observation_key), completed = parent.completion
   if (!sameReviewOwner(event, parent.value) || parent.value.event_id !== context.parent_event_id ||
       !completed || ['unknown', 'no_decision'].includes(completed.status) ||
       completed.decision_id !== context.previous_decision_id || completed.next_review_at !== context.scheduled_at) {
@@ -171,20 +202,18 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
   }
   const anchor = context.freshness_anchor
   if (anchor !== undefined) {
-    if (!plain(anchor) || Object.keys(anchor).sort().join(',') !== 'created_at,key,sha256' ||
-        !/^[0-9a-f]{64}$/.test(anchor.key) || !/^[0-9a-f]{64}$/.test(anchor.sha256) ||
-        !Number.isSafeInteger(anchor.created_at) || anchor.created_at < 0 || anchor.created_at > parent.value.created_at) {
+    if (!validFreshnessAnchor(anchor) || anchor.created_at > parent.value.created_at) {
       throw new ObservationQueueError('Review freshness anchor is invalid')
     }
     const inherited = queuedReview(parent.value) ? parent.value.payload.review_context?.freshness_anchor : null
     if (inherited) {
       if (stable(inherited) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor differs from parent')
     } else {
-      const expected = queuedReview(parent.value) ? reviewAnchor(directory, parent.value, depth + 1, seen)
+      const expected = queuedReview(parent.value) ? reviewAnchor(readEvidence, parent.value, depth + 1, seen)
         : { key: context.parent_observation_key, sha256: parent.sha256, created_at: parent.value.created_at }
       if (stable(expected) !== stable(anchor)) throw new ObservationQueueError('Review freshness anchor is not the original')
     }
-    const original = anchor.key === context.parent_observation_key ? parent : readObservationEvidence(directory, anchor.key)
+    const original = anchor.key === context.parent_observation_key ? parent : readEvidence(anchor.key)
     if (original.sha256 !== anchor.sha256 || !sameReviewOwner(event, original.value) ||
         original.value.created_at !== anchor.created_at || queuedReview(original.value)) {
       throw new ObservationQueueError('Review freshness anchor original conflicts')
@@ -192,14 +221,20 @@ function reviewAnchor(directory, event, depth = 0, seen = new Set()) {
     return { ...anchor }
   }
   // Only pre-upgrade unanchored reviews use this bounded migration walk.
-  return reviewAnchor(directory, parent.value, depth + 1, seen)
+  return reviewAnchor(readEvidence, parent.value, depth + 1, seen)
+}
+
+function validFreshnessAnchor(anchor) {
+  return plain(anchor) && Object.keys(anchor).sort().join(',') === 'created_at,key,sha256' &&
+    /^[0-9a-f]{64}$/.test(anchor.key) && /^[0-9a-f]{64}$/.test(anchor.sha256) &&
+    Number.isSafeInteger(anchor.created_at) && anchor.created_at >= 0
 }
 
 /** Queue-generated reviews inherit real source age, not a fresh greeting at
  * each due timestamp. Model payload fields never override the physical root. */
 export function observationFreshness(directory, event) {
   validateObservation(event)
-  return queuedReview(event) ? reviewAnchor(directory, event).created_at : event.created_at
+  return queuedReview(event) ? reviewAnchor(key => readObservationEvidence(directory, key), event).created_at : event.created_at
 }
 
 function publish(file, value) {
@@ -219,10 +254,29 @@ function ownerAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
 }
 
-function buildReviewCandidate(base, event, completed, at) {
+const validProcessBirth = value => typeof value === 'string' && /^\d{17,19}$/.test(value)
+let ownWindowsBirth
+
+async function windowsProcessBirth(pid) {
+  if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 0 ||
+      !path.isAbsolute(process.env.SystemRoot || '')) return null
+  if (pid === process.pid && ownWindowsBirth) return ownWindowsBirth
+  const executable = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const query = new Promise(resolve => {
+    execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`],
+    { encoding: 'utf8', windowsHide: true, timeout: 2500, maxBuffer: 4096 }, (error, stdout) => {
+      const birth = error ? null : stdout.trim()
+      resolve(validProcessBirth(birth) ? birth : null)
+    })
+  }).catch(() => null)
+  if (pid === process.pid) ownWindowsBirth = query
+  return query
+}
+
+function buildReviewCandidate(base, event, completed, at, readEvidence, checkDirectories, eventHash) {
   const pending = path.join(base, 'pending'), done = path.join(base, 'done')
-    if (['unknown', 'no_decision'].includes(completed.status) || producerOwnedReview.has(event.kind) ||
-        !('next_review_at' in completed) || completed.next_review_at > at) return null
+    if (reviewTime(event, completed) > at) return null
     const parentKey = observationKey(event.scope, event.event_id)
     const review = validateObservation({ ...event,
       event_id: 'main-review:' + parentKey + ':' + completed.next_review_at,
@@ -235,21 +289,33 @@ function buildReviewCandidate(base, event, completed, at) {
     })
     const name = observationKey(review.scope, review.event_id) + '.json'
     const target = path.join(pending, name)
-    if (fs.existsSync(path.join(done, name))) {
-      const existing = readObservationEvidence(base, name.slice(0, -5))
-      if (existing.completion && existing.value.payload.review_context?.freshness_anchor === undefined) {
-        if (stable(existing.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
-        // An exact completed legacy child needs no new work or freshness
-        // authority. Revalidate ancestry only at the unfinished frontier.
-        return null
+    const completedChild = fs.existsSync(path.join(done, name)) ? readEvidence(name.slice(0, -5)) : null
+    if (completedChild?.completion && completedChild.value.payload.review_context?.freshness_anchor === undefined) {
+      if (stable(completedChild.value) !== stable(review)) throw new ObservationQueueError('Review identity conflicts with immutable evidence')
+      // An exact completed legacy child needs no new work or freshness
+      // authority. Revalidate ancestry only at the unfinished frontier.
+      return null
+    }
+    if (completedChild?.completion) {
+      // The pair was physically validated and is already terminal. Exact
+      // continuity with its source is enough to skip this edge of the audit.
+      // An unfinished or conflicting edge still traverses the physical anchor.
+      const inherited = queuedReview(event) ? event.payload.review_context?.freshness_anchor
+        : { key: parentKey, sha256: eventHash, created_at: event.created_at }
+      if (validFreshnessAnchor(inherited) && inherited.created_at <= event.created_at) {
+        review.payload.review_context.freshness_anchor = inherited
+        if (stable(completedChild.value) === stable(review)) return null
       }
     }
-    review.payload.review_context.freshness_anchor = reviewAnchor(base, event)
+    review.payload.review_context.freshness_anchor = reviewAnchor(readEvidence, event)
     if (Buffer.byteLength(JSON.stringify(review) + '\n', 'utf8') > MAX_OBSERVATION_BYTES) throw new ObservationQueueError('Review observation exceeds size limit')
-    if (!fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
+    if (!completedChild?.completion && !fs.existsSync(target) && !fs.existsSync(path.join(done, name))) {
+      checkDirectories()
       try { publish(target, review) } catch (error) { if (error.code !== 'EEXIST') throw error }
     }
-    const read = readObservationEvidence(base, name.slice(0, -5))
+    // Reuse only a verified terminal child. An executable child is read
+    // after publication and independently verified again before dispatch.
+    const read = completedChild?.completion ? completedChild : readEvidence(name.slice(0, -5))
     validateObservation(read.value)
     if (stable(read.value) !== stable(review)) {
       const legacy = structuredClone(review)
@@ -265,6 +331,7 @@ function buildReviewCandidate(base, event, completed, at) {
 
 const SCANNER_PROTOCOL = 'dsh-observation-file-scanner/v1'
 const RECONCILE_MS = 30_000
+const MAX_RECONCILE_MS = 10 * 60_000
 const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.test(name)
 
 // This object runs in a worker in production. Its cache is a discovery index:
@@ -272,19 +339,22 @@ const evidenceName = name => typeof name === 'string' && /^[a-f0-9]{64}\.json$/.
 // Every executable candidate and review is read and validated again.
 function fileScanner(directory, incremental = true) {
   const base = path.resolve(directory), pending = path.join(base, 'pending'), done = path.join(base, 'done')
-  const history = new Map(), versions = new Map(), reads = new Map(), watchers = []
-  let generation = 0, fullAt = null, reconcile = true, directories = null
+  const history = new Map(), missingOriginals = new Map(), versions = new Map(), reads = new Map(), watchers = []
+  let generation = 0, fullAt = null, fullStartedAt = null, reconcileAfter = RECONCILE_MS, reconcile = true, directories = null
   const metrics = { reads: 0, skipped: 0, selected: 0, entries: 0, full: true }
   const dirty = filename => {
     if (filename === null || filename === undefined) { reconcile = true; return }
     const name = String(filename)
     if (evidenceName(name)) versions.set(name, ++generation)
   }
-  const directoryIdentity = () => [base, pending, done].map(directory => {
-    ordinaryDirectories(directory)
-    const info = fs.lstatSync(directory, { bigint: true })
-    return [String(info.dev), String(info.ino)]
-  })
+  const directoryIdentity = () => {
+    const root = ordinaryDirectories(base)
+    return [root, pending, done].map(directory => {
+      const info = fs.lstatSync(directory, { bigint: true })
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new ObservationQueueError('Inbox parents must be ordinary directories')
+      return [String(info.dev), String(info.ino)]
+    })
+  }
   return {
     start() {
       ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
@@ -302,57 +372,124 @@ function fileScanner(directory, incremental = true) {
       if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scanner timestamp')
       ordinaryDirectories(pending, true); ordinaryDirectories(done, true)
       const identity = stable(directoryIdentity())
-      if (identity !== directories) { history.clear(); reads.clear(); reconcile = true; directories = identity }
-      const pendingNames = fs.readdirSync(pending), doneNames = new Set(fs.readdirSync(done))
+      if (identity !== directories) { history.clear(); missingOriginals.clear(); reads.clear(); reconcile = true; directories = identity }
+      const pendingNames = new Set(fs.readdirSync(pending)), doneNames = new Set(fs.readdirSync(done))
       const all = [...new Set([...pendingNames, ...doneNames])].filter(evidenceName)
       const names = new Set(all)
       for (const name of history.keys()) if (!names.has(name)) history.delete(name)
+      for (const name of missingOriginals.keys()) if (!doneNames.has(name) || pendingNames.has(name)) missingOriginals.delete(name)
       for (const name of versions.keys()) if (!names.has(name)) versions.delete(name)
       reads.clear()
-      const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= RECONCILE_MS
-      if (audit) { fullAt = at; reconcile = false }
+      const audit = !incremental || full || reconcile || fullAt === null || at < fullAt || at - fullAt >= reconcileAfter
+      if (audit) { reconcile = false; fullStartedAt = at }
       const selected = audit ? all : all.filter(name => {
+        if (missingOriginals.get(name) === (versions.get(name) || 0)) return false
         const entry = history.get(name)
         return !entry || !doneNames.has(name) || entry.version !== (versions.get(name) || 0) || entry.nextAt <= at
       })
       Object.assign(metrics, { skipped: all.length - selected.length, selected: selected.length, entries: all.length, full: audit })
       return selected
     },
-    read({ key }) {
+    finishScan({ at }) {
+      if (!Number.isSafeInteger(at) || at < 0) throw new ObservationQueueError('Invalid scan completion timestamp')
+      if (metrics.full) {
+        fullAt = at
+        reconcileAfter = Math.min(MAX_RECONCILE_MS, Math.max(RECONCILE_MS, (at - fullStartedAt) * 4))
+      }
+    },
+    read({ key }, readEvidence = key => readObservationEvidence(base, key)) {
       const name = key + '.json', version = versions.get(name) || 0
-      const read = readObservationEvidence(base, key); metrics.reads++
+      metrics.reads++
+      let read
+      try { read = readEvidence(key) }
+      catch (error) {
+        // A legacy completion without its original cannot be acknowledged
+        // or used to derive work. Keep reporting it and revisit on change or
+        // full audit without reading it on every poll.
+        if (error instanceof MissingLegacyObservation) missingOriginals.set(name, version)
+        throw error
+      }
+      missingOriginals.delete(name)
       if (!read.completion && history.has(name)) {
         throw new ObservationQueueError('Previously terminal evidence lost its completion; automatic replay refused')
       }
-      if (read.completion) reads.set(key, { read, version })
-      // Only one terminal read is awaiting its parent-side acknowledgement.
-      if (reads.size > 16) throw new ObservationQueueError('Scanner read window exceeded')
+      if (read.completion) reads.set(key, { sha256: read.sha256, completionSha256: read.completionSha256,
+        version, nextAt: reviewTime(read.value, read.completion) })
+      if (reads.size > TERMINAL_ACK_BATCH_SIZE) throw new ObservationQueueError('Scanner read window exceeded')
       return read
     },
-    review({ key, sha256, completionSha256, at, acknowledged }) {
+    readBatch({ keys }) {
+      if (!Array.isArray(keys) || keys.length > SCANNER_READ_BATCH_SIZE) throw new ObservationQueueError('Invalid scanner batch')
+      const before = stable(directoryIdentity())
+      if (before !== directories) throw new ObservationQueueError('Inbox directory changed during scan')
+      const page = keys.map(key => {
+        try { return { read: this.read({ key }, key => readEvidenceFiles(pending, done, key)) } }
+        catch (error) { return { error: error.name } }
+      })
+      if (stable(directoryIdentity()) !== before) {
+        for (const key of keys) reads.delete(key)
+        throw new ObservationQueueError('Inbox directory changed during scan')
+      }
+      return page
+    },
+    rememberTerminals({ records, at }) {
+      const remembered = []
+      for (const { key, sha256, completionSha256 } of records) {
+        const previous = reads.get(key)
+        if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256 || previous.nextAt <= at) continue
+        reads.delete(key)
+        history.set(key + '.json', { version: previous.version, nextAt: previous.nextAt })
+        remembered.push(key)
+      }
+      return remembered
+    },
+    review({ key, sha256, completionSha256, at, acknowledged }, readEvidence, checkDirectories) {
       const previous = reads.get(key)
       reads.delete(key)
-      if (!previous || previous.read.sha256 !== sha256 || previous.read.completionSha256 !== completionSha256) {
+      if (!previous || previous.sha256 !== sha256 || previous.completionSha256 !== completionSha256) {
         throw new ObservationQueueError('Review does not match this scanner read')
       }
-      const current = readObservationEvidence(base, key); metrics.reads++
+      if (previous.nextAt > at) {
+        // No work derives from this read. Track its original watch version so
+        // a change during acknowledgement re-enters discovery on the next poll.
+        if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: previous.nextAt })
+        return null
+      }
+      const current = readEvidence(key); metrics.reads++
       if (current.sha256 !== sha256 || current.completionSha256 !== completionSha256 || !current.completion) {
         throw new ObservationQueueError('Evidence changed during acknowledgement')
       }
       const event = current.value, completion = current.completion
-      const result = buildReviewCandidate(base, event, completion, at)
-      if (acknowledged === true) {
-        const future = !['unknown', 'no_decision'].includes(completion.status) && !producerOwnedReview.has(event.kind)
-          && Number.isSafeInteger(completion.next_review_at) && completion.next_review_at > at
-        history.set(key + '.json', { version: previous.version, nextAt: future ? completion.next_review_at : Infinity })
+      let result
+      try { result = buildReviewCandidate(base, event, completion, at, readEvidence, checkDirectories, current.sha256) }
+      catch (error) {
+        // Recheck failed derivations at the next audit or on file change.
+        // A verified terminal is never treated as executable work.
+        if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
+        throw error
       }
+      if (acknowledged === true) history.set(key + '.json', { version: previous.version, nextAt: Infinity })
+      return result
+    },
+    reviewBatch({ records, at }) {
+      if (!Array.isArray(records) || records.length > SCANNER_READ_BATCH_SIZE) throw new ObservationQueueError('Invalid review batch')
+      const checkDirectories = () => {
+        if (stable(directoryIdentity()) !== directories) throw new ObservationQueueError('Inbox directory changed during scan')
+      }
+      checkDirectories()
+      const readEvidence = key => readEvidenceFiles(pending, done, key)
+      const result = records.map(record => {
+        try { return { review: this.review({ ...record, at }, readEvidence, checkDirectories) } }
+        catch (error) { return { error: error.name } }
+      })
+      checkDirectories()
       return result
     },
     verify({ key, sha256 }) {
       const current = readObservationEvidence(base, key); metrics.reads++
       if (current.completion || current.sha256 !== sha256) throw new ObservationQueueError('Executable evidence changed before dispatch')
       // An unfinished review must still have its real, current parent ancestry.
-      if (queuedReview(current.value)) reviewAnchor(base, current.value)
+      if (queuedReview(current.value)) reviewAnchor(key => readObservationEvidence(base, key), current.value)
       return { verified: true }
     },
     complete({ key, sha256, raw: text, marker }) {
@@ -375,7 +512,7 @@ function fileScanner(directory, incremental = true) {
       return { sha256: hash(JSON.stringify(marker) + '\n') }
     },
     stats() { return { ...metrics, cached: history.size, watchers: watchers.length } },
-    close() { for (const watcher of watchers) watcher.close(); history.clear(); reads.clear(); versions.clear() },
+    close() { for (const watcher of watchers) watcher.close(); history.clear(); missingOriginals.clear(); reads.clear(); versions.clear() },
   }
 }
 
@@ -466,10 +603,11 @@ function backgroundScanner(base) {
 // fallback to the shared chat thread if worker initialization fails.
 export function createInlineObservationPump(options) { return createObservationPump({ ...options, scanMode: 'inline' }) }
 
-export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, log = () => {}, now = Date.now,
-  intervalMs = 2000, isOwnerAlive = ownerAlive, scanMode = 'worker' } = {}) {
+export function createObservationPump({ directory, dispatch, acknowledge = async () => {}, acknowledgeBatch, log = () => {}, now = Date.now,
+  intervalMs = 2000, isOwnerAlive = ownerAlive, processBirth = windowsProcessBirth, scanMode = 'worker' } = {}) {
   if (typeof directory !== 'string' || !directory.trim() || typeof dispatch !== 'function') throw new ObservationQueueError('directory and dispatch are required')
   if (!['worker', 'inline'].includes(scanMode)) throw new ObservationQueueError('Invalid observation scanner mode')
+  if (acknowledgeBatch !== undefined && typeof acknowledgeBatch !== 'function') throw new ObservationQueueError('Invalid acknowledgement batch callback')
   const base = path.resolve(directory)
   const pending = path.join(base, 'pending')
   const done = path.join(base, 'done')
@@ -504,7 +642,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
   async function acknowledgeTerminal(event, marker, name, eventHash, markerHash) {
     const fingerprint = eventHash + ':' + markerHash
     if (acknowledgedTerminals.get(name) === fingerprint) return true
-    const result = await acknowledge(event, marker)
+    return rememberAcknowledgement(name, fingerprint, await acknowledge(event, marker))
+  }
+
+  function rememberAcknowledgement(name, fingerprint, result) {
     // Legacy callbacks resolve void. A missing pin is the idempotent result of
     // an earlier successful ack (including a crash before this cache existed).
     // Other negative outcomes remain retryable and never enter this cache.
@@ -516,7 +657,26 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     return false
   }
 
-  function takeClaim() {
+  async function acknowledgeScanned(records) {
+    const outcomes = new Map()
+    const missing = records.filter(record => {
+      if (acknowledgedTerminals.get(record.name) !== record.fingerprint) return true
+      outcomes.set(record.name, true)
+      return false
+    })
+    if (acknowledgeBatch && missing.length > 1) {
+      try {
+        const results = await acknowledgeBatch(missing.map(({ event, read }) => ({ event, marker: read.completion })))
+        if (!Array.isArray(results) || results.length !== missing.length) throw new ObservationQueueError('Incomplete acknowledgement batch')
+        for (const [index, { name, fingerprint }] of missing.entries()) {
+          outcomes.set(name, rememberAcknowledgement(name, fingerprint, results[index]))
+        }
+      } catch { /* Recheck individual evidence if the bounded transaction failed. */ }
+    }
+    return outcomes
+  }
+
+  async function takeClaim() {
     ordinaryDirectories(pending, true)
     ordinaryDirectories(done, true)
     if (fs.existsSync(leaseFile)) {
@@ -530,18 +690,36 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       const version = db.prepare('PRAGMA user_version').get().user_version
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
       if (version !== 1 && !(version === 0 && tables.length === 0)) throw new ObservationQueueError('Unknown consumer lease schema')
+      // Query process creation time outside the SQLite write transaction.
+      // The nonce and birth must still match after taking the writer slot.
+      const previous = tables.some(table => table.name === 'consumer')
+        ? db.prepare('SELECT * FROM consumer WHERE id=1').get() : null
+      const probedBirth = previous && previous.pid !== process.pid && validProcessBirth(previous.process_birth) &&
+        Number.isSafeInteger(previous.pid) && previous.pid > 0 && identity(previous.nonce) && isOwnerAlive(previous.pid)
+        ? await processBirth(previous.pid) : null
+      const ownBirth = await processBirth(process.pid)
+      if (stopped) { db.close(); return false }
       db.exec('BEGIN IMMEDIATE')
       db.exec('CREATE TABLE IF NOT EXISTS consumer (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, nonce TEXT NOT NULL); CREATE TABLE IF NOT EXISTS retry (event_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_after INTEGER NOT NULL); PRAGMA user_version=1')
       db.exec('CREATE TABLE IF NOT EXISTS scanner_health (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, updated_at INTEGER NOT NULL, status_json TEXT NOT NULL)')
-      const owner = db.prepare('SELECT pid,nonce FROM consumer WHERE id=1').get()
-      if (owner && (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !identity(owner.nonce) || isOwnerAlive(owner.pid))) {
+      if (!db.prepare('PRAGMA table_info(consumer)').all().some(column => column.name === 'process_birth')) {
+        db.exec('ALTER TABLE consumer ADD COLUMN process_birth TEXT')
+      }
+      const owner = db.prepare('SELECT pid,nonce,process_birth FROM consumer WHERE id=1').get()
+      const validOwner = owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && identity(owner.nonce)
+      const reusedPid = validOwner && validProcessBirth(probedBirth) && owner.pid === previous?.pid &&
+        owner.nonce === previous.nonce && owner.process_birth === previous.process_birth &&
+        BigInt(probedBirth) > BigInt(owner.process_birth)
+      const occupied = owner && (!validOwner || !reusedPid && isOwnerAlive(owner.pid))
+      if (occupied) {
         db.exec('ROLLBACK'); db.close()
         log('warn', 'observation_consumer_already_owned')
         return false
       }
       // Atomic SQLite replacement avoids stale-file unlink/ABA races. A long
       // running living owner is never reclaimed merely because time elapsed.
-      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce) VALUES (1,?,?)').run(process.pid, nonce)
+      db.prepare('INSERT OR REPLACE INTO consumer(id,pid,nonce,process_birth) VALUES (1,?,?,?)')
+        .run(process.pid, nonce, validProcessBirth(ownBirth) ? ownBirth : null)
       db.exec('COMMIT')
       leaseDb = db
       release = () => {
@@ -561,18 +739,16 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
     leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, attempts, now() + delay)
   }
 
+  function deferEntry(key, nextAfter) {
+    // A temporary gate does not increase the prior failure count.
+    leaseDb.prepare('INSERT INTO retry(event_key,attempts,next_after) VALUES (?,0,?) '
+      + 'ON CONFLICT(event_key) DO UPDATE SET next_after=excluded.next_after').run(key, nextAfter)
+  }
+
   function parkInvalidTerminal(key) {
     // A claimed terminal result with invalid metadata may already have sent.
     // Keep evidence and durably require repair, never call the model again.
     leaseDb.prepare('INSERT OR REPLACE INTO retry(event_key,attempts,next_after) VALUES (?,?,?)').run(key, 1, Number.MAX_SAFE_INTEGER)
-  }
-
-  async function scheduleReview(event, completed, read, acknowledged) {
-    const review = await scanner.call('review', { key: observationKey(event.scope, event.event_id),
-      sha256: read.sha256, completionSha256: read.completionSha256, at: now(), acknowledged })
-    if (!review) return null
-    if ((leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(review.name)?.next_after || 0) > now()) return null
-    return { ...review, raw: Buffer.from(review.raw) }
   }
 
   async function processEntry({ event, name, sha256, raw }) {
@@ -591,6 +767,15 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       if (stopped) return 0
       outcome = await dispatch(event)
     } catch (error) {
+      if (error instanceof ObservationForegroundBusy) {
+        deferEntry(name, now() + intervalMs)
+        return 0
+      }
+      if (error instanceof ObservationBudgetDeferred && Number.isSafeInteger(error.retryAt)) {
+        const time = now()
+        deferEntry(name, Math.max(time + intervalMs, Math.min(error.retryAt, time + 60_000)))
+        return budgetDeferred
+      }
       failed(name)
       log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
       return 0
@@ -655,6 +840,12 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       inFlightCount = activeScopes.size
       backlog.delete(entry.name)
       const task = processEntry(entry).then(count => {
+        if (count === budgetDeferred) {
+          // Keep the deferred head in order. The stored retry time controls
+          // its next dispatch, so a budget refusal needs no immediate scan.
+          backlog.set(entry.name, entry)
+          return
+        }
         processed += count
         if (count) terminal.add(entry.name)
         else rescanRequested = true
@@ -674,9 +865,58 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
           scanInProgress = true
           reportScanner('scanning')
           try {
+            const terminals = []
+            let terminalBytes = 0
+            const flushTerminals = async () => {
+              if (!terminals.length) return
+              const records = terminals.splice(0)
+              terminalBytes = 0
+              const outcomes = await acknowledgeScanned(records)
+              const acknowledgedReads = records.filter(({ name }) => outcomes.get(name) === true)
+              const remembered = new Set(acknowledgedReads.length ? await scanner.call('rememberTerminals', {
+                at: now(), records: acknowledgedReads.map(({ name, read }) => ({
+                  key: name.slice(0, -5), sha256: read.sha256, completionSha256: read.completionSha256,
+                })),
+              }) : [])
+              const reviewRecords = []
+              for (const { event, name, read } of records) {
+                if (stopped) break
+                try {
+                  const completed = read.completion
+                  const acknowledged = outcomes.has(name) ? outcomes.get(name)
+                    : await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
+                  if (acknowledged) unsettledWrites.delete(name)
+                  const key = name.slice(0, -5)
+                  if (remembered.has(key)) invalidEvidence.delete(name)
+                  else reviewRecords.push({ key, sha256: read.sha256, completionSha256: read.completionSha256, acknowledged })
+                } catch (error) {
+                  if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
+                  invalidEvidence.add(name)
+                }
+              }
+              for (let index = 0; index < reviewRecords.length && !stopped; index += SCANNER_READ_BATCH_SIZE) {
+                const batch = reviewRecords.slice(index, index + SCANNER_READ_BATCH_SIZE)
+                const completed = await scanner.call('reviewBatch', { records: batch, at: now() })
+                for (const [offset, { error, review }] of completed.entries()) {
+                  const name = batch[offset].key + '.json'
+                  if (error) {
+                    if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error)
+                    invalidEvidence.add(name)
+                  } else {
+                    invalidEvidence.delete(name)
+                    if (review && (leaseDb.prepare('SELECT next_after FROM retry WHERE event_key=?').get(review.name)?.next_after || 0) <= now()) {
+                      backlog.set(review.name, { ...review, raw: Buffer.from(review.raw) })
+                    }
+                  }
+                }
+              }
+            }
             const audit = fullRescanRequested
             fullRescanRequested = false
             const names = await scanner.call('list', { full: audit, at: now() })
+            const scanningInFlight = new Set(inFlight.keys())
+            let page = []
+            let pageAt = 0
             for (const [index, name] of names.entries()) {
               if (performance.now() - lastReportAt >= 1000) reportScanner('scanning')
               // Check real monotonic work time: one complete evidence read stays
@@ -686,22 +926,32 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 lastYieldAt = performance.now()
                 if (stopped) break
               }
+              if (scanningInFlight.has(name)) continue
+              // Bound unread terminal snapshots across a worker round trip.
+              // Directory drift or a failed worker RPC invalidates the scan.
+              if (pageAt === page.length) {
+                if (terminals.length > TERMINAL_ACK_BATCH_SIZE - SCANNER_READ_BATCH_SIZE) await flushTerminals()
+                const keys = names.slice(index, index + SCANNER_READ_BATCH_SIZE)
+                  .filter(value => !scanningInFlight.has(value)).map(value => value.slice(0, -5))
+                page = await scanner.call('readBatch', { keys })
+                pageAt = 0
+              }
+              if (stopped) break
               try {
-                if (inFlight.has(name)) continue
-                const read = await scanner.call('read', { key: name.slice(0, -5) })
-                if (stopped) break
+                const result = page[pageAt++]
+                if (result.error) throw Object.assign(new ObservationQueueError('Observation evidence could not be read'), { name: result.error })
+                const read = result.read
                 read.raw = Buffer.from(read.raw)
                 const event = validateObservation(read.value)
                 if (name !== observationKey(event.scope, event.event_id) + '.json') throw new ObservationQueueError('Observation filename/identity mismatch')
                 if (read.completion) {
-                  const completed = read.completion
                   // A crash after durable completion but before core acknowledgement
                   // is recovered here, without running the model or sending again.
-                  const acknowledged = await acknowledgeTerminal(event, completed, name, read.sha256, read.completionSha256)
-                  if (acknowledged) unsettledWrites.delete(name)
-                  const review = await scheduleReview(event, completed, read, acknowledged)
-                  if (review) backlog.set(review.name, review)
-                  invalidEvidence.delete(name)
+                  terminals.push({ event, name, read, fingerprint: read.sha256 + ':' + read.completionSha256 })
+                  terminalBytes += read.raw.length
+                  if (!acknowledgeBatch || terminals.length >= TERMINAL_ACK_BATCH_SIZE || terminalBytes >= TERMINAL_ACK_BATCH_BYTES) {
+                    await flushTerminals()
+                  }
                   continue
                 }
                 // Permanently parked uncertain terminal claims remain evidence, not
@@ -713,6 +963,10 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
                 if (!invalidEvidence.has(name)) log('error', 'observation_invalid:' + name + ':' + error.name)
                 invalidEvidence.add(name)
               }
+            }
+            if (!stopped) {
+              await flushTerminals()
+              await scanner.call('finishScan', { at: now() })
             }
           } finally { scanInProgress = false; reportScanner(inFlight.size ? 'waiting_turns' : 'ready') }
         }
@@ -785,7 +1039,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       try {
         await scanner.start()
         if (stopped) { await scanner.close(); return false }
-        if (!takeClaim()) { stopped = true; await scanner.close(); return false }
+        if (!await takeClaim()) { stopped = true; await scanner.close(); return false }
       } catch (error) {
         const canceled = stopped
         stopped = true; await scanner.close()
@@ -830,7 +1084,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
 
 if (!isMainThread && workerData?.protocol === SCANNER_PROTOCOL) {
   const files = fileScanner(workerData.directory)
-  const methods = new Set(['list', 'read', 'review', 'verify', 'complete'])
+  const methods = new Set(['list', 'readBatch', 'rememberTerminals', 'reviewBatch', 'verify', 'complete', 'finishScan'])
   files.start()
   parentPort.on('message', message => {
     if (!message || !Number.isSafeInteger(message.id) || !methods.has(message.method)) return

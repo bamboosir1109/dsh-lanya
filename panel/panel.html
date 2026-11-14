@@ -2459,9 +2459,19 @@ async function loadLive(){
     const result = await api('/live', null, true);
     if(!result.ok) throw new Error(result.error || '读取失败');
     const live = result.live || {}, autonomy = live.autonomy || {}, observer = autonomy.observer || {};
+    let budget = live.budget;
+    if(budget){
+      try { requireCnyBudget(budget); } catch { budget = null; }
+    }
+    const bucket = (budget?.gate_usage || budget?.usage)?.buckets?.autonomy;
+    const budgetWaiting = autonomy.mode === 'unified' && autonomy.status === 'processing' &&
+      budget?.availability === 'available' && budget.enforcement?.runtime_gate_bound === true &&
+      budget.enforcement?.runtime_owner_verified === true && bucket?.can_start_new_turn === false &&
+      bucket.blocked_reason === 'insufficient_reserve';
+    const status = budgetWaiting ? '自主机会等待额度' : autonomyLabel(autonomy);
     const check = $('liveCheck');
     if(check) check.disabled = componentActionPending || autonomy.mode !== 'unified' || autonomy.can_request_check !== true;
-    setText('liveLast', autonomyLabel(autonomy));
+    setText('liveLast', status);
     setText('liveLastAt', observer.last_completed_at ? '上次观察处理于 ' + new Date(observer.last_completed_at).toLocaleString('zh-CN') : '暂无已完成观察时间');
     const watch = autonomy.watch || {};
     setText('liveWatch', ({healthy:'看护在线', waiting:'看护在线，等待恢复', starting:'正在恢复宿主',
@@ -2470,10 +2480,11 @@ async function loadLive(){
     setText('liveWatchAt', watch.last_seen_at ? '最近检查 ' + new Date(watch.last_seen_at).toLocaleTimeString('zh-CN')
       : watch.status === 'not_configured' ? '尚未启用宿主退出恢复' : '等待有效看护回执');
     const next = observer.next_review_at || observer.next_opportunity_at;
-    setText('activityNext', next ? '下次检查 ' + new Date(next).toLocaleString('zh-CN') : '等待新的自主机会');
+    setText('activityNext', budgetWaiting ? '额度可用后再判断' : next ? '下次检查 ' + new Date(next).toLocaleString('zh-CN') : '等待新的自主机会');
     const schedule = $('activitySchedule');
     if(schedule){
-      schedule.innerHTML = ''; appendPolicyRow(schedule, autonomyLabel(autonomy));
+      schedule.innerHTML = ''; appendPolicyRow(schedule, status);
+      if(budgetWaiting) appendPolicyRow(schedule, '当前自主额度不足以预留新一轮。QQ 来信使用各自的会话预算。');
       if(observer.next_review_at) appendPolicyRow(schedule, '已约复查：' + new Date(observer.next_review_at).toLocaleString('zh-CN'));
       if(observer.next_opportunity_at) appendPolicyRow(schedule, '下次普通机会：' + new Date(observer.next_opportunity_at).toLocaleString('zh-CN'));
       if(observer.error_count) appendPolicyRow(schedule, observer.error_count + ' 个观察范围证据缺失，等待核对。');
@@ -2482,10 +2493,12 @@ async function loadLive(){
     }
     renderActivityHistory(live.recentActivity);
     renderAutonomyPlans(live.plans);
-    await Promise.all([live.budget ? Promise.resolve(renderBudgetSummary(live.budget)) : loadActivityBudget(), loadActivityJournal()]);
+    await Promise.all([budget ? Promise.resolve(renderBudgetSummary(budget)) : loadActivityBudget(), loadActivityJournal()]);
   }catch(error){
     setText('liveLast','刷新失败，状态未确认'); setText('liveLastAt','无法读取最新调度状态，请稍后刷新。');
     setText('liveWatch','看护状态未确认'); setText('liveWatchAt','最新状态读取失败');
+    setText('activityNext','下次检查时间未确认');
+    if($('activitySchedule')) { $('activitySchedule').innerHTML = ''; appendPolicyRow($('activitySchedule'), '调度状态未确认'); }
     setText('activityHistoryNote','刷新失败，保留上次活动记录；不能当作最新状态。');
     renderAutonomyPlans(null);
     if($('liveCheck')) $('liveCheck').disabled = true;

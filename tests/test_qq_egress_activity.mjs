@@ -84,3 +84,62 @@ test('internal-link-only output is suppressed without any transport or fake succ
     (error) => error.status === 'suppressed' && error.reason === 'empty_content')
   assert.equal(calls, 0)
 })
+
+test('a creative update keeps its prose while removing local Markdown and tool receipts', () => {
+  const picture = String.raw`E:\Fixture workspace\character\made\cup.png`
+  const note = String.raw`E:\Fixture workspace\character\notes\checklist.md`
+  const output = cleanText(`画了两版茶杯。用的是新票根\n\n\`123456789\`。\n记在 [检查清单](${note})。\n![成品](${picture})\n热气换手点才像往上飘。intent 已 CAS 到 revision 42。\n（\n\`message_id=-43210\`\n）。`)
+  assert.doesNotMatch(output, /Fixture|checklist|cup\.png|123456789|43210|revision|票根|!\[/u)
+  assert.match(output, /画了两版茶杯。/u)
+  assert.match(output, /热气换手点才像往上飘。/u)
+  assert.equal(cleanText('这是 `draw-cup.py` 里的写法。'), '这是 `draw-cup.py` 里的写法。')
+})
+
+test('ordinary image followups keep the result without report formatting or delivery chatter', () => {
+  const reply = '- 蒸汽手画后才像**在往上冒**。\n图已经发到 QQ 了（\n`message_id=-1234`\n）。'
+  assert.equal(cleanText(reply), '蒸汽手画后才像在往上冒。')
+  assert.equal(cleanText('图已经发到 QQ 了（\n`message_id=-1234`\n）。'), '')
+  assert.equal(cleanText('图发给你之后，我才发现颜色偏灰。'), '图发给你之后，我才发现颜色偏灰。')
+  assert.equal(cleanText('周末有空我再去看那部片。'), '周末有空我再去看那部片。')
+})
+
+test('an acknowledged image makes standalone send confirmations redundant', () => {
+  const confirmed = { ...NORMAL_STYLE, sentImage: true }
+  const report = '已经发了张“开工”的表情。'
+  assert.equal(cleanText(report), report)
+  assert.equal(cleanText(report, confirmed), '')
+  assert.equal(cleanText('图片发出去了。\n热气这次像在往上飘。', confirmed), '热气这次像在往上飘。')
+  assert.equal(cleanText('太好笑了。' + report + '图片发出去了。', confirmed), '太好笑了。')
+  for (const body of ['刚发了一张图，颜色比上版好看。', '他说「等一等。已经发了一张图。」',
+    'QQ 没发出去吗？', '刚发了哪张表情？']) assert.equal(cleanText(body, confirmed), body)
+  assert.equal(cleanText(report, { ...confirmed, technical: true }), report)
+})
+
+test('content-free promises are removed while specific plans and quoted speech stay', () => {
+  assert.equal(cleanText('字幕开头少了一段。我再去看一下。'), '字幕开头少了一段。')
+  assert.equal(cleanText('有两处颜色不一样。\n我回头再核对。'), '有两处颜色不一样。')
+  assert.equal(cleanText('片头没有字幕。最后一句也没标出来，我再去看一下。'), '片头没有字幕。最后一句也没标出来。')
+  assert.equal(cleanText('第二段听着有点闷。我再去看看吧。'), '第二段听着有点闷。')
+  assert.equal(cleanText('链接刚才打不开。等会我再查查哈'), '链接刚才打不开。')
+  assert.equal(cleanText('片头没有字幕。回头我再核对一下啊。'), '片头没有字幕。')
+  assert.equal(cleanText('链接刚才打不开。晚点我再去看一眼。'), '链接刚才打不开。')
+  assert.equal(cleanText('字幕开头少了一段。我再去看一下。回头我再确认。'), '字幕开头少了一段。')
+  assert.equal(cleanText('蓝色那版更好读。晚点我再去看一看哦。'), '蓝色那版更好读。')
+  assert.equal(cleanText('链接打不开。回头我再查一查！\n我再核实一下啦。'), '链接打不开。')
+  assert.equal(cleanText('第一张有点糊。' + '我再去看。'.repeat(5)), '第一张有点糊。')
+  assert.deepEqual(textParts('字幕开头少了一段。\n晚点我再去看看。').map(part => part.text), ['字幕开头少了一段。'])
+  assert.deepEqual(textParts('我再去看。'), [])
+  assert.equal(cleanText('我再去看。晚点我再核对。'), '')
+  assert.equal(cleanText('好。我再去看。晚点我再核对。'), '好。')
+  assert.equal(cleanText('明白了。我再去看看。'), '明白了。')
+  assert.equal(cleanText('好嘞！我再去看一看。'), '好嘞！')
+  for (const text of ['今晚没空，我再去看。', '明早我再去看看。', '你把截图发我，我再去确认。',
+    '字幕少了一段。我再去看第二集。', '链接打不开。八点我再去看看。', '字幕少了一段。我再去看看？', '原话是「我再去看。」',
+    '> 他说链接还没开。我再去看看。', '图片没发过来，我再去核实一下。']) {
+    assert.equal(cleanText(text), text)
+  }
+  const technical = styleFromInbound(live('给我详细的排查步骤'))
+  const reply = '启动日志停在初始化。我再去确认一下。'
+  assert.equal(cleanText(reply, technical), reply)
+  assert.equal(cleanText(reply, styleFromInbound(live('我们来角色扮演，开始吧'))), reply)
+})

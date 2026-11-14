@@ -571,13 +571,28 @@ def _diary_hint(primary):
 
 
 def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None, prior_rest_lifecycle=None):
+    evidence = {
+        **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
+        **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
+    }
+    if not primary:
+        return {"legacy_plan_reference": None, "mood": None, "interrupts": hits,
+                "activity_role": "conversation_social", **evidence,
+                "instruction": (
+                    "Read this group's latest shared topic and decide whether you actually have something to add. "
+                    "A specific thought, short joke, question or fitting meme is enough; you do not need a mention. "
+                    "If the group is quiet, you may start a short fresh topic from a shared group interest. "
+                    "If people are reacting to an available group image, inspect it once if it helps. "
+                    "Use one natural contribution, or choose idle/defer when you have nothing to add. "
+                    "Keep the current group's scope and silence. If a prior result is uncertain, leave that action alone "
+                    "and only consider the current topic. Use the current conversation's decision and ticket. "
+                    "Leisure and private plans belong to the primary session; do not start a second copy here.")}
     diary = _diary_hint(primary)
-    return {"legacy_plan_reference": mind.get("plan") if primary else None,
-            "mood": mind.get("mood") if primary else None, "interrupts": hits,
-            "activity_role": "internal_leisure" if primary else "conversation_social",
+    return {"legacy_plan_reference": mind.get("plan"),
+            "mood": mind.get("mood"), "interrupts": hits,
+            "activity_role": "internal_leisure",
             **({'memory': {'diary': diary}} if diary is not None else {}),
-            **({"prior_admission_refusal": dict(prior_admission_refusal)} if prior_admission_refusal is not None else {}),
-            **({"prior_rest_lifecycle": dict(prior_rest_lifecycle)} if prior_rest_lifecycle is not None else {}),
+            **evidence,
             "instruction": (
                 "If memory.diary.status=due, read qq_diary with that day and finish one grounded write "
                 "using its fact_revision, expected_revision and actual evidence refs before optional leisure. "
@@ -593,8 +608,12 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                 "earlier activity. Its old budget reservation remains unresolved; do not clear it, assume "
                 "the earlier activity did not happen, or repeat an uncertain external action. Read current "
                 "confirmed state before choosing a fresh activity or social response. "
-                + ("This primary private conversation owns internal leisure: actively consider continuing "
-                   "one small real game, browsing Bilibili, or making something you are interested in. "
+                "This primary private conversation owns internal leisure: actively consider continuing "
+                   "one small real game, browsing Bilibili, making something or using a configured Android app "
+                   "for a concrete personal goal. Choose an app when you have something specific to explore "
+                   "or a meaningful next step. Use tools.android.agent_navigation and keep a short visit. "
+                   "When a real login blocks progress, remember the purpose through android_phone request_login "
+                   "and consider ask_owner on a later eligible opportunity. "
                    "Prefer a concrete small activity over repeatedly planning to act later when the tools "
                    "and situation permit it; idle/defer is still valid when there is a real reason. "
                    "The user wants more initiative: having no QQ message to send is not a reason to "
@@ -623,11 +642,7 @@ def _observation_payload(mind, hits, primary=True, prior_admission_refusal=None,
                     "The recipient independently decides with its own context and new ticket, using a user-only "
                     "private route; refusal or unknown delivery stops without retry or group fallback. "
                     "Actual group search and applying to join are unavailable; do not treat handling an inbound "
-                    "join request or opening a share link as applying to a new group. " if primary else
-                   "This group opportunity is for this conversation's social context and interests. Review the actual recent group conversation and choose for yourself whether to join with a relevant thought, a brief joke, a question or one fitting real meme; a personal mention is not required. Do not force participation or interpret every group sentence as directed to you. "
-                   "Only contact this group when there is a reason, or idle/defer. Internal games, Bilibili "
-                   "browsing and creative work are owned by the primary private opportunity; do not start "
-                   "a second copy of that activity here or borrow its private plan or notes. ") +
+                    "join request or opening a share link as applying to a new group. "
                 "Keep scoped plan/progress notes in this same agent session and only the activity-notes "
                 "location supplied by the trusted guide. Do not edit mind.json, decision-inbox, scheduler, "
                 "policy, agent/profile or configuration files to arrange activities or mark completion. "
@@ -822,7 +837,8 @@ def _observe_cycle(mind, dry=False, force=False):
         raise ValueError("invalid autonomous opportunity interval")
     interval = int(value * 60_000)
     now = int(time.time() * 1000)
-    if autonomous_rest_state(now)["resting"]:
+    rest = autonomous_rest_state(now)
+    if rest["resting"]:
         log("Shanghai rest window; no autonomous opportunity or overdue greeting is submitted")
         return 0
     states = _observer_states(mind, scopes, now, interval)
@@ -869,7 +885,8 @@ def _observe_cycle(mind, dry=False, force=False):
                 continue
             state["last_status"] = completed["status"]
             state["last_completed_at"] = completed.get("completed_at", chain["event"]["created_at"])
-            if completed["status"] == "no_decision" and completed.get("reason") in ("autonomy_rest", "observation_expired"):
+            rest_closure = completed["status"] == "no_decision" and completed.get("reason") in ("autonomy_rest", "observation_expired")
+            if rest_closure:
                 state["last_rest_lifecycle"] = {
                     "event_id": chain["event"]["event_id"], "completed_at": completed["completed_at"],
                     "reason": completed["reason"], "previous_activity_status": "unknown",
@@ -890,8 +907,15 @@ def _observe_cycle(mind, dry=False, force=False):
                 # retains its producer clock until its next opportunity.
                 continue
             state["completed_signature"] = _observation_signature(mind, [], primary)
-            state["next_opportunity_at"] = (None if completed["status"] == "unknown" else
-                                              (review if review is not None else state["last_completed_at"] + interval))
+            if completed["status"] == "unknown":
+                state["next_opportunity_at"] = None
+            elif rest_closure and (completed.get("reason") == "observation_expired" or
+                                   chain["event"]["created_at"] < rest["current_day_wake_at"]):
+                # The native expiry uses the verified root age. A queued
+                # descendant can carry today's due time and still be expired.
+                state["next_opportunity_at"] = now
+            else:
+                state["next_opportunity_at"] = review if review is not None else state["last_completed_at"] + interval
             _acknowledge_scope_hits(pending["interrupts"], scope, primary)
             state.pop("pending")
             hits = _read_observer_hits()
@@ -901,7 +925,20 @@ def _observe_cycle(mind, dry=False, force=False):
         changed = signature != state.get("completed_signature")
         due = state.get("next_opportunity_at")
         if state.get("last_status") == "unknown" and not changed:
-            continue
+            from interaction_health import latest_group_activity
+            completed_at = state.get("last_completed_at")
+            new_group_day = not primary and _valid_ms(completed_at) and completed_at < rest["current_day_wake_at"]
+            activity = (latest_group_activity(os.path.join(DATA, "interaction-health.jsonl"), scope,
+                                              after=max(completed_at, now - 60 * 60_000), now=now)
+                        if not primary and not new_group_day and _valid_ms(completed_at) and now >= completed_at + interval else None)
+            if activity is None and not new_group_day:
+                continue
+            if activity is not None:
+                payload["fresh_group_activity_at"] = activity
+            payload["instruction"] += (" This is a fresh group activity opportunity after the daily rest or a later live message. "
+                                       "Read the recent group context, contribute only if there is a new topic you can join, "
+                                       "and never repeat the previous message with an uncertain outcome.")
+            changed = True
         if not changed and not force and (due is None or due > now):
             continue
         if state["generation"] >= 2**53 - 1:

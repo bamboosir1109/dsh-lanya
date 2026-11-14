@@ -271,11 +271,11 @@ def build_context(cwd, agent_preset, query="", recent_events=(), *, conversation
         recent.append(item)
     recent.reverse()
     from memory_index import Index
-    connection = connect_readonly(db_path) if os.path.isfile(db_path or DB) else None
+    connection = connect_readonly(db_path) if limit and os.path.isfile(db_path or DB) else None
     try:
         if connection is not None:
             connection.execute("BEGIN")
-        rows, coverage = _candidates(connection, owner, query) if connection is not None else ([], dict(candidate_limit=CANDIDATE_LIMIT, candidates=0, total_visible=0, truncated=False, coverage='store_unavailable', method='read_only_local_lexical', persistent_index=False))
+        rows, coverage = _candidates(connection, owner, query) if connection is not None else ([], dict(candidate_limit=CANDIDATE_LIMIT, candidates=0, total_visible=0, truncated=False, coverage='store_unavailable' if limit else 'store_not_requested', method='read_only_local_lexical', persistent_index=False))
         index = Index.for_model(cwd, agent_preset, entries=rows)
         hits = index.search(query, limit=limit, recent=not query.strip())
         query_mode = 'current_query' if query.strip() else 'recent_memory'

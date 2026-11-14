@@ -42,6 +42,21 @@ test('accepted quiet, tool actions and persistent silence never become missed re
   })
 })
 
+test('an unqueued claim can be released by exact revision, but a stale release cannot undo the next claim', async t => {
+  const h = await fixture(t)
+  h.advance(60_000)
+  const first = await h.claim()
+  const released = { ...h.source, expectedRevision: first.revision }
+  assert.equal(await h.policy.releaseUnqueuedReplyReview(released), true)
+  const [candidate] = await h.policy.replyReviewCandidates()
+  const second = await h.policy.claimReplyReview({ ...candidate, expectedRevision: candidate.revision, canClaim: () => true })
+  assert.equal(second.accepted, true)
+  assert.equal(await h.policy.releaseUnqueuedReplyReview(released), false)
+  await h.policy.decide({ ...h.source, expectedRevision: second.revision, verdict: 'idle' })
+  assert.equal(await h.policy.releaseUnqueuedReplyReview({ ...released, expectedRevision: second.revision }), false)
+  assert.deepEqual(await h.policy.replyReviewCandidates(), [])
+})
+
 test('reply decision with zero egress can be reconsidered, but every actual egress state bars recovery', async t => {
   for (const delivery of ['none', 'sent', 'unknown', 'reserved', 'suppressed']) await t.test(delivery, async t => {
     const h = await fixture(t), decision = await h.decide('reply')
@@ -88,4 +103,19 @@ test('corrupt review evidence fails closed and staging cannot overwrite current 
   state.scopes[scope].current.replyReview.attempted = 'false'
   fs.writeFileSync(h.options.stateFile, JSON.stringify(state))
   await assert.rejects(h.policy.replyReviewCandidates(), /Corrupt reply review/)
+})
+
+test('handoff evidence can extend only the exact pending receipt before a decision', async t => {
+  const h = await fixture(t)
+  const extend = (previousText, extra = {}) => h.policy.rememberReplyInput({
+    ...h.source, text: 'earlier interrupted question\noriginal question', previousText, ...extra,
+  })
+  assert.equal(await extend('different content'), false)
+  assert.equal(await extend('original question', { owner: { ...owner, agent_key: 'changed' } }), false)
+  const outcomes = await Promise.all([extend('original question'), extend('original question')])
+  assert.equal(outcomes.filter(Boolean).length, 1)
+  await h.decide('reply')
+  assert.equal(await extend('earlier interrupted question\noriginal question'), false)
+  h.advance(60_000)
+  assert.equal((await h.claim()).text, 'earlier interrupted question\noriginal question')
 })
