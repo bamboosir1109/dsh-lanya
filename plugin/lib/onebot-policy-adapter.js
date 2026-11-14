@@ -829,13 +829,16 @@ export class OneBotDecisionAdapter {
           this.log('warn', 'reconnect_history_scope_unavailable:' + error.name)
         }
       }
-      // Distinct scopes use independent history reads. Only the current pass
-      // takes these entries; busy or failed entries wait for the next pass.
-      const batch = window.scopes.splice(0, 8)
+      // Drain the current worklist with bounded concurrent calls. Keep busy
+      // and failed scopes in a separate list for the next recovery tick.
+      const batch = window.scopes
+      window.scopes = []
+      let next = 0
       const reviewNext = async () => {
-        while (batch.length) await reviewScope(batch.shift())
+        while (next < batch.length && ready()) await reviewScope(batch[next++])
       }
       await Promise.all(Array.from({ length: Math.min(3, batch.length) }, reviewNext))
+      if (sameWindow() && next < batch.length) window.scopes = batch.slice(next).concat(window.scopes)
       if (ready() && window.friends && !window.scopes.length) this.reconnectReview = null
     })()
     this.reconnectReviewAttempt = attempt

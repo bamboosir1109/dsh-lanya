@@ -1250,6 +1250,35 @@ test('verified reconnect starts friend history review without waiting for the pe
   assert.equal(adapter.reconnectReview, null)
 })
 
+test('reconnect scans the tail of the friend list without waiting for another timer tick', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  const peers = Array.from({ length: 24 }, (_, i) => i + 200)
+  h.deps.policy.dmPolicy = 'allowlist'
+  h.deps.policy.allowFrom = peers.map(String)
+  a.noteConnectionStatus(false)
+  const at = Math.floor(a.now() / 1000) + 1
+  h.advance(100_000); a.noteConnectionStatus(true)
+  const call = h.deps.connection.call
+  const reads = []
+  const tail = peers.at(-1), slow = peers[0]
+  h.deps.connection.call = async (action, params) => {
+    if (action === 'get_friend_list') return peers.map(user_id => ({ user_id }))
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    reads.push(params.user_id)
+    if (params.user_id === slow) throw new Error('One unreadable conversation')
+    if (params.user_id !== tail) return { messages: [] }
+    return { messages: [{ message_type: 'private', sub_type: 'friend', time: at, message_id: 734,
+      sender: { user_id: tail }, message: [{ type: 'text', data: { text: 'Question from the last friend' } }] }] }
+  }
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.deepEqual(reads.sort((a, b) => a - b), peers)
+  assert.deepEqual(Array.from(a.reconnectReview.scopes), ['private:' + slow])
+  assert.equal((await a.policy.snapshot('private:' + tail)).current.replyReview.text, 'Question from the last friend')
+  assert.equal(h.pending.length, 0)
+})
+
 test('reconnect covers the account verification gap and keeps that boundary fixed on retries', async t => {
   const h = await fixture(t), a = h.bridge.lanyaPolicy
   backendFixture(h)
