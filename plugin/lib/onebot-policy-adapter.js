@@ -651,7 +651,7 @@ export class OneBotDecisionAdapter {
       } catch (error) { if (error.code !== 'ENOENT') return }
       const fields = Object.fromEntries(Object.entries(detail).filter(([key, value]) =>
         ['reason', 'verdict', 'turn', 'step', 'revision', 'coalesced', 'status', 'budget_wait_ms',
-          'backend_wait_ms', 'inbound_prepare_ms'].includes(key) &&
+          'backend_wait_ms', 'inbound_prepare_ms', 'compaction_ms'].includes(key) &&
         (typeof value === 'boolean' || Number.isSafeInteger(value) || typeof value === 'string' && /^[a-z_]{1,64}$/.test(value))))
       if (phase === 'delivery' && fields.status === 'sent' && typeof detail.output === 'string' && /^[a-f0-9]{24}$/.test(detail.output)) {
         fields.output = detail.output
@@ -1931,6 +1931,30 @@ export class OneBotDecisionAdapter {
     state.active = record
     this.installGroupBuffer(chat)
     this.bridge.interim.onTurnStart(shadow)
+  }
+
+  observeCompaction(chat, event) {
+    const record = this.state(chat).active
+    if (event.type === 'step/start') {
+      if (record && record.turn === event.data?.turn) record.firstModelStepStarted = true
+      return
+    }
+    const data = event.data
+    if (!record?.binding || record.ended || record.claimConflict || record.turn !== data?.turn ||
+        record.binding.origin !== 'live' || record.firstModelStepStarted || !Number.isSafeInteger(event.time) ||
+        typeof data.compactionId !== 'string' || !data.compactionId || data.compactionId.length > 128) return
+    if (event.type === 'compaction/start') {
+      record.intakeCompaction = { id: data.compactionId, startedAt: event.time }
+      return
+    }
+    const active = record.intakeCompaction
+    if (active?.id !== data.compactionId) return
+    record.intakeCompaction = null
+    const duration = event.time - active.startedAt
+    if (duration < 0 || duration > 300_000) return
+    this.diagnose(record.binding.scope, record.binding.messageId, 'intake_compaction', {
+      turn: record.turn, compaction_ms: duration, status: data.error == null ? 'completed' : 'failed',
+    })
   }
 
   installGroupBuffer(chat) {

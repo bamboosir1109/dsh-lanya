@@ -264,6 +264,10 @@ def transform(name, raw):
         text = replace_once(text, "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: 'plugin:dsh-onebot' },",
                             "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: this.lanyaPolicy.captureInbound(chatId)?.origin === 'observation' ? 'plugin:dsh-lanya-observation' : 'plugin:dsh-onebot' },")
         text = replace_once(text, "    prefixTurn(chatId, text) {", "    dispatchObservation(event) { return this.lanyaPolicy.dispatchObservation(event); }\n    prefixTurn(chatId, text) {")
+        text = replace_once(text, "        if (event.type === 'turn/start') {",
+                            "        if (event.type === 'step/start' || event.type === 'compaction/start' || event.type === 'compaction/end') {\n"
+                            "            this.lanyaPolicy.observeCompaction(chat, event);\n            return;\n        }\n"
+                            "        if (event.type === 'turn/start') {")
         text = replace_once(text, "            this.interim.onTurnStart(chat);", "            this.lanyaPolicy.onTurnStart(chat, event.data.turn, event.seq);")
         text = replace_once(text, "            this.interim.onAssistantMessage(chatId, chat, event.data.message);", "            this.lanyaPolicy.onAssistantMessage(chatId, chat, event);")
         text = replace_once(text, "            this.interim.onTurnEnd(chatId, chat);", "            this.lanyaPolicy.onTurnEnd(chatId, chat, event);")

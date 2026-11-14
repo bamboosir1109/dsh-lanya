@@ -18,7 +18,7 @@ LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
           'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged',
-          'group_history_staged', 'account_publication'}
+          'group_history_staged', 'account_publication', 'intake_compaction'}
 TRANSPORT_FAILURES = ('backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified')
 
 
@@ -128,7 +128,7 @@ def summarize(raw, now_ms, since_ms=None):
                   'group_history_staged' if 'group_history_staged' in phases else 'preparing')
         group = groups.setdefault(scope, {'counts': collections.Counter(), 'accepted_latency_ms': [],
                                           'backend_wait_ms': [], 'inbound_prepare_ms': [], 'long_open_inputs': 0,
-                                          'transport_failures': collections.Counter()})
+                                          'transport_failures': collections.Counter(), 'compaction_ms': []})
         group['counts'][status] += 1
         for attempt in delivery:
             failure = attempt.get('transport_failure')
@@ -140,6 +140,11 @@ def summarize(raw, now_ms, since_ms=None):
         accepted = [e['at'] for e in delivery if e.get('status') == 'sent']
         if received and accepted and min(accepted) >= min(received):
             group['accepted_latency_ms'].append(min(accepted) - min(received))
+        for event in events:
+            duration = event.get('compaction_ms')
+            if (event['phase'] == 'intake_compaction' and type(duration) is int and 0 <= duration <= 300_000
+                    and (since_ms is None or event['at'] >= since_ms)):
+                group['compaction_ms'].append(duration)
         admitted = next((e for e in events if e['phase'] == 'admitted'), None)
         if admitted and received and (since_ms is None or min(received) >= since_ms):
             for stage in ('backend_wait_ms', 'inbound_prepare_ms'):
@@ -150,6 +155,7 @@ def summarize(raw, now_ms, since_ms=None):
     for scope, group in sorted(groups.items()):
         accepted = _latency_stats(group.pop('accepted_latency_ms'))
         stages = {stage: _latency_stats(group.pop(stage + '_ms')) for stage in ('backend_wait', 'inbound_prepare')}
+        stages['compaction'] = _latency_stats(group.pop('compaction_ms'))
         result.append(dict(scope=scope, **group, accepted_samples=accepted['samples'],
                            accepted_p50_ms=accepted['p50_ms'], accepted_p95_ms=accepted['p95_ms'],
                            intake_latency=stages))

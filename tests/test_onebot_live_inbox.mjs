@@ -1862,7 +1862,7 @@ async function nativeDriverFixture(t, options = {}) {
   }
   h.agent.session.snapshotEvents = () => nativeEvents
   h.agent.session.append = (type, data) => {
-    const event = { type, data: structuredClone(data), seq: nativeEvents.length + 1 }
+    const event = { type, data: structuredClone(data), seq: nativeEvents.length + 1, time: h.bridge.lanyaPolicy.now() }
     nativeEvents.push(event)
     if (type === 'agent/inbox/spliced') nativePending[data.target].splice(data.start, data.removedCount || 0, ...structuredClone(data.inserted))
     h.bridge.onSessionEvent(h.agent.session, event)
@@ -1893,6 +1893,32 @@ async function driverSettled(h, predicate = () => h.agent.status === 'idle') {
   }
   assert.fail('native fixture did not settle')
 }
+
+test('native QQ timing records only compaction before the first model step', async t => {
+  const h = await nativeDriverFixture(t)
+  const compact = (id, turn, elapsed, error) => {
+    h.agent.session.append('compaction/start', { compactionId: id, turn })
+    h.advance(elapsed)
+    h.agent.session.append('compaction/end', { compactionId: id, turn, error })
+  }
+  h.agent.ctx.on('agent/pre-step', async ({ turn }, next) => {
+    compact('other-turn', turn + 1, 90)
+    compact('foreground', turn, 8250, 'private diagnostic detail')
+    return next()
+  })
+  const step = h.agent.step
+  h.agent.step = () => { compact('after-first-step', h.agent.phase.turn, 900); return step() }
+  await h.receive('slow incoming fixture')
+  await driverSettled(h, () => h.steps.length === 1 && h.agent.status === 'idle')
+  const raw = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+  const rows = raw.trim().split('\n').map(JSON.parse)
+  const samples = rows.filter(row => row.phase === 'intake_compaction')
+  assert.equal(samples.length, 1)
+  assert.equal(samples[0].input, rows.find(row => row.phase === 'claimed').input)
+  assert.equal(samples[0].compaction_ms, 8250)
+  assert.equal(samples[0].status, 'failed')
+  assert.doesNotMatch(raw, /private diagnostic detail|after-first-step|slow incoming fixture/)
+})
 
 async function bufferedGroupFixture(t) {
   const h = await nativeDriverFixture(t, { contextualGroupScope: 'group:303' })
