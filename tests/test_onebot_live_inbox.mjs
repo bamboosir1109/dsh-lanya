@@ -152,7 +152,9 @@ async function prepareMissedReply(t) {
   await h.receive('an unanswered question')
   await Promise.all([...adapter.replyReviewWrites])
   h.start(); assert.equal((await h.preStep()).kind, 'enter'); await h.end()
-  h.agent.status = 'idle'; h.advance(60_000)
+  h.agent.status = 'idle'; h.advance(59_999)
+  assert.equal((await adapter.policy.replyReviewCandidates()).length, 0)
+  h.advance(1)
   return h
 }
 
@@ -1561,7 +1563,7 @@ test('reconnect queues a confirmed friend reply while a different history read i
   h.deps.policy.dmPolicy = 'allowlist'; h.deps.policy.allowFrom = ['101', '102', '103', '104']
   a.noteConnectionStatus(false)
   const at = Math.floor(a.now() / 1000) + 1
-  h.advance(90_000); a.noteConnectionStatus(true)
+  h.advance(2_000); a.noteConnectionStatus(true)
   const call = h.deps.connection.call
   const historyPeers = []
   h.deps.connection.call = async (action, params) => {
@@ -1589,6 +1591,14 @@ test('reconnect queues a confirmed friend reply while a different history read i
   }
   assert.deepEqual(historyPeers.sort((a, b) => a - b), [101, 102, 103, 104])
   assert.equal(h.pending.length, 1)
+  await h.receive('late original network event', { message_id: 412 })
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'Here is the answer to your question.' })).sent, true)
+  await h.end()
+  h.agent.status = 'idle'; await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.calls.filter(row => /^send_/.test(row.action)).length, 1)
 })
 
 test('reconnect checks a verified private conversation while friend discovery is pending', async t => {

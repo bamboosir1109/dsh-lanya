@@ -38,6 +38,8 @@ const replyReviewable = (scope, at) => {
     // second external operation. Only turns with NO egress entries qualify.
     !scope.deliveries.some(item => item.revision === scope.revision))
 }
+const replyReviewReady = (scope, at) => replyReviewable(scope, at) &&
+  (scope.current.replyReview.recoveredFromHistory === true || at - scope.current.replyReview.at >= REPLY_REVIEW_AGE)
 
 /** Owner-selected daily rest, independent of the host/browser timezone. */
 export function autonomousRestState(at = Date.now()) {
@@ -150,6 +152,7 @@ function validateState(state) {
           !replyOwnerValid(current.replyReview.owner) || typeof current.replyReview.text !== 'string' ||
           !current.replyReview.text.trim() || current.replyReview.text.length > 32_000 ||
           !Number.isSafeInteger(current.replyReview.at) || current.replyReview.at < 0 ||
+          (current.replyReview.recoveredFromHistory !== undefined && current.replyReview.recoveredFromHistory !== true) ||
           typeof current.replyReview.attempted !== 'boolean' || (current.replyReview.nativePending !== undefined &&
             !replyPendingValid(current.replyReview.nativePending)))) throw new PolicyStateError('Corrupt reply review evidence')
       if (current.ticket !== null && (!plain(current.ticket) || !identifier(current.ticket.id) ||
@@ -600,17 +603,19 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
         current.updatedAt = at
         current.current = { messageId: latest.messageId, sender, origin: 'live',
           controlAllowed: false, quoted: true, decided: false, ticket: null,
-          replyReview: { owner: clone(owner), text, at: latest.at, attempted: false } }
+          replyReview: { owner: clone(owner), text, at: latest.at, attempted: false, recoveredFromHistory: true } }
         return true
       })
     },
 
     async replyReviewCandidates() {
-      return transaction(state => Object.entries(state.scopes).filter(([, value]) =>
-        replyReviewable(value, now()) && now() - value.current.replyReview.at >= REPLY_REVIEW_AGE)
-        .map(([scope, value]) => ({ scope, revision: value.revision, messageId: value.current.messageId,
-          sender: value.current.sender, owner: clone(value.current.replyReview.owner), at: value.current.replyReview.at }))
-        .sort((a, b) => a.at - b.at))
+      return transaction(state => {
+        const at = now()
+        return Object.entries(state.scopes).filter(([, value]) => replyReviewReady(value, at))
+          .map(([scope, value]) => ({ scope, revision: value.revision, messageId: value.current.messageId,
+            sender: value.current.sender, owner: clone(value.current.replyReview.owner), at: value.current.replyReview.at }))
+          .sort((a, b) => a.at - b.at)
+      })
     },
 
     /** One fresh decision about a confirmed unsent receipt. The original live
@@ -622,7 +627,7 @@ export function createDecisionPolicy({ stateFile, storage, now = Date.now, maxIn
       return transaction(state => {
         const current = scopeState(state, scope)
         if (!current || current.revision !== expectedRevision || current.current?.messageId !== messageId ||
-            !replyReviewable(current, now()) || now() - current.current.replyReview.at < REPLY_REVIEW_AGE ||
+            !replyReviewReady(current, now()) ||
             !replyOwnerSame(owner, current.current.replyReview.owner) || canClaim(clone(current.current.replyReview)) !== true) return { accepted: false }
         if (!Number.isSafeInteger(current.revision + 1)) throw new PolicyStateError('Revision exhausted')
         const previous = current.current, evidence = { ...previous.replyReview, attempted: true }
