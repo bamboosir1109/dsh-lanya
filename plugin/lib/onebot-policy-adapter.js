@@ -211,6 +211,20 @@ function groupHistoryQuotedSpeaker(row, rows) {
   const message = groupHistoryQuotedMessage(row, rows)
   return message ? groupHistorySender(message) : null
 }
+function friendHistoryReplyPrecedes(own, incoming, rows, peer) {
+  if (own.time !== incoming.time) return own.time < incoming.time
+  // Private message sequence numbers are not comparable across directions.
+  // An exact quote of this same-peer output establishes which came first.
+  const id = String(own.message_id)
+  if (!/^-?[0-9]{1,16}$/.test(id) || !Number.isSafeInteger(Number(id)) || id === String(incoming.message_id) ||
+      own.message_type !== 'private' || own.sub_type !== 'friend' ||
+      own.user_id != null && String(own.user_id) !== String(own.sender?.user_id) ||
+      own.peer_id != null && String(own.peer_id) !== peer ||
+      own.target_id != null && String(own.target_id) !== peer ||
+      rows.filter(row => String(row.message_id) === id).length !== 1) return false
+  const replies = incoming.message.filter(segment => segment?.type === 'reply')
+  return replies.length === 1 && String(replies[0].data?.id) === id
+}
 const localOpportunity = binding => binding?.observationKind === 'activity.opportunity' && ['mind', 'main-review'].includes(binding.observationProducer) ||
   binding?.observationKind === 'social.opportunity' && binding.observationProducer === 'social-planner' && typeof binding.trustedSocialRequest === 'string'
 function androidCheckoutIntent(text) {
@@ -894,7 +908,6 @@ export class OneBotDecisionAdapter {
             const at = row.time * 1000, messageId = String(row.message_id)
             const sender = String(row.sender?.user_id)
             if (at > window.verifiedAt || at <= lastKnownAt || sender === selected.expectedAccount || !allowed(sender) ||
-                ownRows.some(own => group ? !groupHistoryPrecedes(own, row) : own.time >= row.time) ||
                 (group && !groupHistorySender(row)) ||
                 (!group && (row.message_type !== 'private' || row.sub_type !== 'friend' ||
                   row.user_id != null && String(row.user_id) !== sender ||
@@ -902,6 +915,7 @@ export class OneBotDecisionAdapter {
                   row.target_id != null && String(row.target_id) !== selected.expectedAccount)) ||
                 !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
                 !Array.isArray(row.message) || !row.message.length || row.message.length > 12) continue
+            if (ownRows.some(own => group ? !groupHistoryPrecedes(own, row) : !friendHistoryReplyPrecedes(own, row, recent, peer))) continue
             if (row.message.some(segment => !historyTextSegment(segment) &&
                 !historySupplement.has(segment?.type) && !(group && historyMention(segment)))) continue
             if (group && !groupHistoryAddressed(row.message.filter(historyMention).map(segment => String(segment.data.qq)),
