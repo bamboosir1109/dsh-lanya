@@ -2899,6 +2899,27 @@ test('expired live group discussion remains a shared-interest clue if platform h
   assert.doesNotMatch(adapter.groupPromptContext(scope, owner, true), /people discussing pixel art/)
 })
 
+test('a quiet group can find older shared interests while recently reviewed messages are still visible', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  await h.receive('a past conversation about drawing pixel art', { message_id: 651 })
+  h.advance(11 * 60_000)
+  await h.receive('recent topic already considered', { message_id: 652 })
+  await h.opportunity(); h.start(); await h.preStep()
+  const context = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  assert.equal(context().earlier_topics, undefined)
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(context().recent[0].new_shared_remark, undefined)
+  assert.deepEqual(context().earlier_topics.map(row => row.text), ['a past conversation about drawing pixel art'])
+  assert.match(h.prompt(), /Bring something of your own to the topic/)
+  await h.receive('a genuinely new shared remark', { message_id: 653 })
+  assert.equal(context().earlier_topics, undefined)
+  assert.ok(context().recent.some(row => row.text === 'a genuinely new shared remark' && row.new_shared_remark))
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('autonomous group reviews retain the verified text that a current group remark quotes', async t => {
   const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const owner = await a.trustedOwner(scope)
