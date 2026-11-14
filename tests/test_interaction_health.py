@@ -68,6 +68,21 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(value['status'],'partial');self.assertEqual(value['invalid_records'],1)
         with self.assertRaises(ValueError):module.summarize(b' '*(module.LIMIT+1),40000)
 
+    def test_account_publication_does_not_count_as_a_chat_reply(self):
+        def row(i, phase, at, **details):
+            return dict(schema='qq-interaction/v1', scope='e'*16, input=f'{i:024x}', phase=phase, at=at, **details)
+
+        records = [row(1, 'received', 1000), row(1, 'account_publication', 1100, status='sent'), row(1, 'turn_end', 1200),
+                   row(2, 'account_publication', 1300, status='unknown'), row(3, 'account_publication', 1400, status='suppressed'),
+                   row(4, 'received', 1500), row(4, 'delivery', 1650, status='sent')]
+        value = module.summarize('\n'.join(json.dumps(record) for record in records).encode(), 2000)
+        self.assertEqual(value['invalid_records'], 0)
+        group = value['scopes'][0]
+        self.assertEqual(group['counts'], {'account_publication_accepted': 1, 'account_publication_uncertain': 1,
+                                          'account_publication_suppressed': 1, 'transport_accepted': 1})
+        self.assertEqual(group['accepted_samples'], 1)
+        self.assertEqual(group['accepted_p50_ms'], 150)
+
     def test_stale_reply_decision_is_superseded_and_preserves_transport_outcome(self):
         def row(i, phase, **fields):
             return dict(schema='qq-interaction/v1', scope='a'*16, input=f'{i:024x}', phase=phase, at=1000, **fields)

@@ -170,6 +170,8 @@ async function accountFixture(h, options = {}) {
 
 test('primary account tool makes one bounded friends-visible publication without chat narration', async t => {
   const h = await setup(t), f = await accountFixture(h), chat = await h.receive(), turn = h.start(chat)
+  const diagnostics = []
+  f.a.diagnose = (_scope, _input, phase, detail) => diagnostics.push({ phase, status: detail?.status })
   const result = await f.publish(chat)
   assert.equal(result.accepted, true); assert.equal(result.client_visible_verified, false)
   assert.deepEqual(f.writes().map(call => call.params), [{ content: '今天听到了一首喜欢的歌。', ugc_right: 4 }])
@@ -177,6 +179,8 @@ test('primary account tool makes one bounded friends-visible publication without
   await h.end(chat, turn)
   assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 0)
   assert.equal(f.writes().length, 1)
+  assert.ok(diagnostics.some(row => row.phase === 'account_publication' && row.status === 'sent'))
+  assert.ok(!diagnostics.some(row => row.phase === 'delivery'))
 })
 
 test('account tool supports signature while idle decisions and another conversation remain closed', async t => {

@@ -18,7 +18,7 @@ LIMIT = 8 * 1024 * 1024 + 4096
 PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admission_refused',
           'superseded_preparation', 'queued', 'claimed', 'step_ready', 'decision', 'turn_end', 'delivery', 'delivery_refused', 'blocked',
           'group_listening', 'group_buffer_wait', 'group_buffer_ready', 'reply_review_queued', 'friend_history_staged',
-          'group_history_staged'}
+          'group_history_staged', 'account_publication'}
 
 
 def latest_group_activity(log, scope, *, after, now):
@@ -94,6 +94,7 @@ def summarize(raw, now_ms, since_ms=None):
         if since_ms is not None and last < since_ms:
             continue
         delivery = [e for e in events if e['phase'] == 'delivery']
+        publication = [e for e in events if e['phase'] == 'account_publication']
         decisions = [e for e in events if e['phase'] == 'decision']
         quiet = any(e.get('verdict') in ('idle', 'defer', 'silence') and not e.get('reason')
                     or e.get('verdict') == 'reply' and e.get('reason') == 'silent' for e in decisions)
@@ -104,6 +105,9 @@ def summarize(raw, now_ms, since_ms=None):
                   'partial_transport' if refused and any(e.get('status') == 'sent' for e in delivery) else
                   'transport_accepted' if any(e.get('status') == 'sent' for e in delivery) else
                   'delivery_suppressed' if delivery else
+                  'account_publication_uncertain' if any(e.get('status') == 'unknown' for e in publication) else
+                  'account_publication_accepted' if any(e.get('status') == 'sent' for e in publication) else
+                  'account_publication_suppressed' if publication else
                   'decided_quiet' if quiet else
                   'coalesced' if key in coalesced else
                   'superseded_turn' if superseded else

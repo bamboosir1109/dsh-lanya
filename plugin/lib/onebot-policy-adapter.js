@@ -2829,7 +2829,8 @@ export class OneBotDecisionAdapter {
     if (result.status === 'suppressed' && result.reason === 'stale_revision' && envelope.record?.inlineTextAttempted &&
         envelope.operationId === envelope.record.inlineTextOperationId) envelope.record.inlineTextStale = true
     envelope.record?.outcomes.push(result.status)
-    if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId, 'delivery', { status: result.status, reason: result.reason })
+    if (envelope.record?.binding) this.diagnose(scope, envelope.record.binding.messageId,
+      accountAction ? 'account_publication' : 'delivery', { status: result.status, reason: result.reason })
     if (voiceArtifact && ['sent', 'unknown'].includes(result.status)) voiceArtifact.state = result.status
     if (result.status === 'unknown' && envelope.record?.binding?.observationKind === 'social.opportunity') this.intentPlanner.finish(envelope.record.binding.observationEventId, { status: 'unknown' })
     if (result.status !== 'sent') throw new PolicyDeliveryError(result.status, result.reason || result.previousStatus || 'not_delivered')
