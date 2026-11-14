@@ -3004,6 +3004,40 @@ test('a quiet group can find older shared interests while recently reviewed mess
   assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
 })
 
+test('personal asides cannot displace an unreviewed shared group topic from autonomous context', async t => {
+  const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
+  const owner = await adapter.trustedOwner(scope)
+  let query
+  adapter.memoryContext = (...args) => adapter.readMemoryContext(...args)
+  adapter.readTrustedHelper = async (_script, request) => {
+    query = request.query
+    return { schema: 'dsh-memento-context/v1', conversation_key: scope, owner, read_only: true }
+  }
+  await h.receive('pixel art is harder on a tiny canvas', { message_id: 661 })
+  h.advance(3000)
+  for (let index = 0; index < 12; index++) {
+    await h.receive('a private aside to a member', { message_id: 662 + index, message: [
+      { type: 'at', data: { qq: '204' } }, { type: 'text', data: { text: 'a private aside to a member' } },
+    ] })
+  }
+  assert.equal(h.pending.length, 0)
+  assert.equal(h.requests.length, 0)
+  assert.doesNotMatch(adapter.groupPromptContext(scope, owner), /pixel art/)
+  const observed = () => JSON.parse(h.prompt().match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(query, 'pixel art is harder on a tiny canvas')
+  assert.deepEqual(observed().new_shared_topics, [{ text: 'pixel art is harder on a tiny canvas', age_seconds: 3 }])
+  assert.equal(observed().recent.length, 12)
+  assert.ok(observed().recent.every(row => !row.new_shared_remark))
+  assert.equal((await h.decide('idle')).accepted, true)
+  await h.end()
+  await h.opportunity(); h.start(); await h.preStep()
+  assert.equal(observed().new_shared_topics, undefined)
+  assert.equal(query, '')
+  await h.end()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+})
+
 test('same-group photo captions survive as topic clues with missing media clearly indicated', async t => {
   const h = await listeningGroup(t), adapter = h.bridge.lanyaPolicy, scope = h.chat.chatId
   const image = { type: 'image', data: { file: 'fixture-unresolved-photo' } }
