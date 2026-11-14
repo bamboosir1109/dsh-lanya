@@ -2623,11 +2623,11 @@ export class OneBotDecisionAdapter {
         if ([spent, reserved, remaining].every(value => Number.isFinite(value) && value >= 0)) {
           const { resting, current_day_wake_at: wake } = autonomousRestState(now)
           const dayProgress = (now - wake) / (16 * 3600_000)
-          const budgetUsed = spent / (spent + reserved + remaining)
-          if (!resting && budgetUsed > dayProgress + 0.25) {
+          const aheadOfDay = spent / (spent + reserved + remaining) - dayProgress
+          if (!resting && aheadOfDay > 0.12) {
             const interval = cadence.intervalMs * (personal ? 12 : 4)
             nextReview = Math.max(nextReview, now + Math.min(interval, maxWait))
-          } else if (!resting && personal && budgetUsed > dayProgress + 0.1) {
+          } else if (!resting && personal && aheadOfDay > 0.05) {
             nextReview = Math.max(nextReview, now + Math.min(cadence.intervalMs * 2, maxWait))
           }
         }

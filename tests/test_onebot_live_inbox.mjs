@@ -4731,10 +4731,11 @@ test('other native admission failures reject rather than claim the unresolved-re
 test('autonomous budget pacing saves headroom for later activity and fresh group discussion', async t => {
   const cases = [
     ['primary-ahead', 1.5, 36], ['primary-ahead-short-cadence', 1.5, 24],
-    ['primary-ahead-long-cadence', 1.5, 60], ['primary-slightly-ahead', 0.6, 6],
+    ['primary-ahead-long-cadence', 1.5, 60], ['primary-ahead-midday', 1.65, 36],
     ['primary-on-track', 0.1, 1], ['primary-later', 1.5, 1],
+    ['primary-early-pressure', 0.36, 6], ['primary-strong-pressure', 0.57, 36],
     ['primary-idle', 0.1, 6], ['primary-defer', 0.1, 1],
-    ['group-fresh', 1.5, 1], ['group-already-seen', 1.5, 12],
+    ['group-fresh', 1.5, 1], ['group-early-pressure', 0.48, 10], ['group-strong-pressure', 0.57, 12], ['group-already-seen', 1.5, 12],
     ['group-quiet', 1.5, 12], ['group-quiet-on-track', 0.1, 10],
     ['primary-defer-later', 0.1, 20, 20], ['primary-defer-ahead', 1.5, 36, 20],
     ['primary-defer-bound', 0.1, 60, 90], ['group-defer-quiet', 0.1, 10, 9],
@@ -4751,6 +4752,7 @@ test('autonomous budget pacing saves headroom for later activity and fresh group
       h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
     }
     if (scenario === 'primary-later') h.advance(8 * 3600_000)
+    if (scenario === 'primary-ahead-midday') h.advance(5 * 3600_000)
     if (scenario === 'group-already-seen') await h.receive('a shared topic already in the prompt', { message_type: 'group', group_id: 303, user_id: 202 })
     const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
     const capabilities = adapter.runtimeCapabilities
