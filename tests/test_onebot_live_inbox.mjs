@@ -4582,6 +4582,38 @@ test('a model error leaves the newer QQ input runnable and retains the earlier u
   assert.equal(h.agent.inbox.hasPending, false)
 })
 
+test('a background model error wakes a queued live QQ message in the same conversation', async t => {
+  for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
+    const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
+    const entered = defer(), release = defer()
+    const event = await primaryEvent(h, 'fixture-foreground-after-background-model-error')
+    if (kind === 'reminder.due') Object.assign(event, { kind, producer: 'reminder-scheduler' })
+    h.agent.step = async () => {
+      const record = adapter.state(h.chat).active
+      if (record.binding.origin === 'observation') {
+        entered.resolve()
+        await release.promise
+        throw new Error('synthetic background model interruption')
+      }
+      assert.match(record.claimedInput.originalText, /incoming live question/)
+      assert.doesNotMatch(record.claimedInput.history.join('\n'), /fixture-foreground-after-background-model-error/)
+      assert.equal((await h.decide('reply', { text: 'answer to the incoming question' })).sent, true)
+      return { kind: 'completed' }
+    }
+    const failed = assert.rejects(adapter.dispatchObservation(event), /ended before a real decision/)
+    await entered.promise
+    try {
+      await h.receive('incoming live question')
+      assert.equal(h.agent.inbox.nextTurn.length, 1)
+    } finally { release.resolve() }
+    await failed
+    await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+    assert.deepEqual(h.nativeEvents.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed'])
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    assert.equal(h.agent.inbox.hasPending, false)
+  })
+})
+
 test('an autonomous budget refusal wakes the live QQ message that arrived during admission', async t => {
   for (const kind of ['activity.opportunity', 'reminder.due']) await t.test(kind, async t => {
     const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy

@@ -1893,7 +1893,7 @@ export class OneBotDecisionAdapter {
     return { ok: true, sent: true, messageId: messageId ?? null, expression: record.decision.expression || 'unspecified' }
   }
 
-  supersedingLiveInput(chat, record) {
+  supersedingLiveInput(chat, record, { afterModelError = false } = {}) {
     // The first native step puts a claimed live input into model history for
     // its successor. An autonomous activity opportunity can yield before then.
     const binding = record?.binding
@@ -1901,7 +1901,8 @@ export class OneBotDecisionAdapter {
       (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
     const unstartedActivity = internal && binding.observationKind === 'activity.opportunity'
     const budgetRefusedObservation = binding?.origin === 'observation' && record.nativeAdmissionRefused?.reason === 'budget_exhausted'
-    if (!(binding?.origin === 'live' || internal || budgetRefusedObservation) ||
+    const failedObservation = afterModelError && binding?.origin === 'observation' && record.nativeStepEntered
+    if (!(binding?.origin === 'live' || internal || budgetRefusedObservation || failedObservation) ||
         (!record.nativeStepEntered && !unstartedActivity && !budgetRefusedObservation) ||
         record.claimConflict || record.ended || record.inFlight.size) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
@@ -3033,9 +3034,9 @@ export class OneBotDecisionAdapter {
     if (!record || record.ended) return
     const modelError = event.data.reason?.kind === 'error' && record.firstModelStepStarted
     const phase = chat.agent?.phase
-    if (modelError && this.nativeClaims && record.binding?.origin === 'live' && state.active === record && phase?.kind === 'running' &&
+    if (modelError && this.nativeClaims && state.active === record && phase?.kind === 'running' &&
         phase.turn === record.turn && phase.abort?.signal && !phase.abort.signal.aborted) {
-      const successor = this.supersedingLiveInput(chat, record)
+      const successor = this.supersedingLiveInput(chat, record, { afterModelError: true })
       if (successor) record.supersededIdleWake = Object.freeze({ agent: chat.agent, signal: phase.abort.signal,
         turn: record.turn, epoch: this.startEpoch, binding: record.binding, revision: successor.binding.revision, modelError: true })
     }
