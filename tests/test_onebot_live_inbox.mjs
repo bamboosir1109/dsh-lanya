@@ -609,6 +609,10 @@ test('busy burst collapses pending inputs, preserves canceled originals, reserve
   assert.equal(h.requests.length, 0)
   assert.equal(h.chat.pendingTurnRoles.length, 0)
   const newest = h.pending[0]
+  const queued = fs.readFileSync(path.join(h.directory, 'interaction-health.jsonl'), 'utf8')
+    .trim().split('\n').map(JSON.parse).filter(row => row.phase === 'queued')
+  assert.equal(queued[0].replaced_input, undefined)
+  assert.deepEqual(queued.slice(1).map(row => row.replaced_input), queued.slice(0, -1).map(row => row.input))
   assert.match(newest.content[0].text, /synthetic question 0/)
   assert.match(newest.content[0].text, /synthetic question 9/)
   h.start()

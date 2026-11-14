@@ -99,6 +99,38 @@ class InteractionHealthTests(unittest.TestCase):
         self.assertEqual(result['counts']['without_ingress_evidence'], 1)
         self.assertEqual(result['status'], 'partial')
 
+    def test_friend_audit_follows_explicit_replacements_across_log_segments(self):
+        scope = 'private:101'
+        def key(message_id):
+            return hashlib.sha256((scope + '\0' + str(message_id)).encode()).hexdigest()[:24]
+        def log(message_id, phase, **fields):
+            return dict(schema='qq-interaction/v1', scope=hashlib.sha256(scope.encode()).hexdigest()[:16],
+                        input=key(message_id), phase=phase, at=6100, **fields)
+        def encode(rows):
+            return '\n'.join(map(json.dumps, rows)).encode()
+        def history(message_id, sender, target):
+            return dict(time=6, message_type='private', sub_type='friend', sender={'user_id':sender},
+                        target_id=target, message_id=message_id)
+
+        rows = [history(i, 101, 999) for i in (1, 2, 3, 4)] + [history(-1, 999, 101)]
+        first = [log(i, 'received') for i in (1, 2, 3, 4)]
+        first.extend([log(1, 'queued'), log(4, 'queued'), log(2, 'queued', coalesced=True, replaced_input=key(1))])
+        second = [log(3, 'queued', coalesced=True, replaced_input=key(2)), log(3, 'claimed'),
+                  log(3, 'delivery', status='sent', output=key(-1))]
+        state = module.summarize(encode(first + second), 7000)
+        self.assertEqual(state['scopes'][0]['counts'], {'coalesced':2, 'transport_accepted':1, 'pending':1})
+        report = module.compare_friend_ingress([scope], [encode(first), encode(second)], account='999',
+                                              since_ms=5000, now_ms=9000, history=lambda _:rows)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['counts']['friend_inputs_with_reply_in_history'], 1)
+        self.assertEqual(report['counts']['friend_inputs_in_batch_with_reply_in_history'], 2)
+        self.assertNotIn(key(1), json.dumps(report))
+        second.insert(1, log(4, 'queued', coalesced=True, replaced_input=key(2)))
+        ambiguous = module.compare_friend_ingress([scope], [encode(first), encode(second)], account='999',
+                                                 since_ms=5000, now_ms=9000, history=lambda _:rows)
+        self.assertEqual(ambiguous['status'], 'partial')
+        self.assertNotIn('friend_inputs_in_batch_with_reply_in_history', ambiguous['counts'])
+
     def test_transport_acceptance_quiet_pending_and_unknown_remain_distinct(self):
         def row(i,phase,at,**fields):
             return dict(schema='qq-interaction/v1',scope='a'*16,input=f'{i:024x}',phase=phase,at=at,**fields)

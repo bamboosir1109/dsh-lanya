@@ -656,6 +656,8 @@ export class OneBotDecisionAdapter {
       if (phase === 'delivery' && fields.status === 'sent' && typeof detail.output === 'string' && /^[a-f0-9]{24}$/.test(detail.output)) {
         fields.output = detail.output
       }
+      if (phase === 'queued' && fields.coalesced === true && typeof detail.replaced_input === 'string' &&
+          /^[a-f0-9]{24}$/.test(detail.replaced_input)) fields.replaced_input = detail.replaced_input
       if (phase === 'delivery' && fields.status === 'unknown' &&
           ['backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified'].includes(detail.transport_failure)) {
         fields.transport_failure = detail.transport_failure
@@ -1539,7 +1541,8 @@ export class OneBotDecisionAdapter {
       if (merge && chat.agent.inbox.replace(previousMessage.id, finalMessage)) {
         state.pending.delete(previousMessage.id)
         if (binding.origin === 'live') state.unansweredReply = null
-        this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: true, revision: binding.revision })
+        this.diagnose(binding.scope, binding.messageId, 'queued', { coalesced: true, revision: binding.revision,
+          replaced_input: identity(binding.scope, previous.binding.messageId).slice(0, 24) })
         return { dispatched: true, coalesced: true }
       }
       chat.agent.followup(finalMessage)

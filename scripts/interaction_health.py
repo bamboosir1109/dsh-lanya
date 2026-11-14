@@ -62,6 +62,14 @@ def _latency_stats(values):
                 p95_ms=values[min(len(values)-1, int(len(values)*.95))] if values else None)
 
 
+def _replaced_input(row, key):
+    value = row.get('replaced_input')
+    if (row['phase'] == 'queued' and row.get('coalesced') is True and isinstance(value, str)
+            and value != key[1] and re.fullmatch('[a-f0-9]{24}', value)):
+        return key[0], value
+    return None
+
+
 def summarize(raw, now_ms, since_ms=None):
     if len(raw) > LIMIT:
         raise ValueError('diagnostic_log_too_large')
@@ -80,12 +88,14 @@ def summarize(raw, now_ms, since_ms=None):
                 claimed.add(key); pending.pop(key, None)
             if row['phase'] == 'queued':
                 if row.get('coalesced') is True:
-                    parents = [candidate for candidate in pending if candidate[0] == row['scope'] and candidate != key]
-                    if parents:
-                        # The adapter emits this only after replacing the native
-                        # pending tail. Correlation is diagnostic metadata, never
-                        # authority to restore a message or a ticket.
-                        parent = parents[-1]; coalesced.add(parent); pending.pop(parent)
+                    if 'replaced_input' in row:
+                        parent = _replaced_input(row, key)
+                    else:
+                        # Entries written by adapters before exact references.
+                        parent = next((candidate for candidate in reversed(pending)
+                                       if candidate[0] == key[0] and candidate != key), None)
+                    if parent in pending:
+                        coalesced.add(parent); pending.pop(parent)
                     else:
                         missing_parents += 1
                 if key not in claimed:
@@ -201,6 +211,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
     peers = sorted(mapped) if verified is None else sorted(verified - mapped) + sorted(verified & mapped)
     received, staged = set(), set()
     acknowledged_outputs = collections.defaultdict(set)
+    replacements = []
     partial_log = False
     for segment in raw:
         if len(segment) >= LIMIT:
@@ -222,8 +233,25 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
                     if not isinstance(output, str) or not re.fullmatch(r'[a-f0-9]{24}', output):
                         raise ValueError('invalid_output_reference')
                     acknowledged_outputs[row['scope'], row['input']].add(output)
+                elif 'replaced_input' in row:
+                    child = (row['scope'], row['input'])
+                    parent = _replaced_input(row, child)
+                    if parent is None:
+                        raise ValueError('invalid_replacement_reference')
+                    replacements.append((parent, child))
             except (ValueError, TypeError, KeyError):
                 partial_log = True
+
+    # Walk the durable replacements from newest to oldest. A replaced inbound
+    # only gets batch evidence, since a send receipt proves no specific question was answered.
+    ambiguous = {key for key, count in collections.Counter(parent for parent, _ in replacements).items() if count > 1}
+    batch_outputs = {}
+    for parent, child in reversed(replacements):
+        if parent not in ambiguous:
+            outputs = acknowledged_outputs.get(child) or batch_outputs.get(child)
+            if outputs:
+                batch_outputs[parent] = outputs
+    partial_log |= bool(ambiguous)
 
     def inspect(peer):
         scope = 'private:' + peer
@@ -287,6 +315,8 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
                 summary['friend_inputs_with_acknowledged_output'] += 1
                 if outputs & own_outputs:
                     summary['friend_inputs_with_reply_in_history'] += 1
+            elif key in batch_outputs and batch_outputs[key] & own_outputs:
+                summary['friend_inputs_in_batch_with_reply_in_history'] += 1
         if len(rows) == 50 and oldest >= since_ms:
             summary['history_window_limited'] += 1
         return summary

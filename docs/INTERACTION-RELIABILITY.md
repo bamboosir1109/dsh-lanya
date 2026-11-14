@@ -79,6 +79,8 @@ python -B scripts/interaction_health.py --log ABSOLUTE_PRIVATE_INTERACTION_LOG
 
 合并的入站依据有序阶段元数据关联为 `coalesced`，不会继续冒充积压；缺失父阶段时明确为部分来源。拒绝的静默控制不计作已接受安静，发出部分包后又拒发单列 `partial_transport`，不能冒充完整发送。这些关联仅用于诊断，不重建票或重放权限。
 
+新记录附带被替换输入的哈希。好友历史核对用该关联跨两段日志查找合并轮的实际输出编号。`friend_inputs_in_batch_with_reply_in_history` 只证明合并轮有回复，消息是否逐条得到回答需要结合实际对话核对。
+
 准备前就被权限／过滤拒绝的事件，可能只有 `not_admitted`；精确过滤原因仍需对照原生接收管线。`turn_end` 可能早于异步发送结束，不能立刻把它判为漏回复。没有样本时耗时保持 `null`，不用零冒充正常。
 
 ## 明确边界
