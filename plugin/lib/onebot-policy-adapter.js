@@ -3417,8 +3417,8 @@ export class OneBotDecisionAdapter {
       const shared = rows
         .filter(row => sharedGroupRemark(row) && (row.quoted_text ||
           row.text.trim() && !groupAttachmentPlaceholder.test(row.text.trim())))
-      const fresh = shared.filter(row => !group?.reviewedMessages?.has(row.messageId))
-      if (!fresh.length) fresh.push(...this.unreviewedBufferedTopics(group, rows, now))
+      const fresh = [...this.unreviewedBufferedTopics(group, rows, now),
+        ...shared.filter(row => !group?.reviewedMessages?.has(row.messageId))].sort((a, b) => a.at - b.at)
       const earlier = fresh.length ? [] : this.earlierGroupTopics(scope, owner, now)
       const topics = (fresh.length ? fresh : earlier.length ? earlier : shared.length ? shared : recentEvents)
         .map(row => [row.quoted_text, row.text.trim()].filter(Boolean).join('\n')).filter(Boolean)
@@ -3479,7 +3479,7 @@ export class OneBotDecisionAdapter {
     const rows = this.recentGroupContext(scope, owner, now)
     const shared = groupActivityReview ? new Set(rows.filter(sharedGroupRemark).map(row => row.messageId)) : null
     const fresh = shared && [...shared].some(id => !group?.reviewedMessages?.has(id))
-    const buffered = groupActivityReview && !fresh ? this.unreviewedBufferedTopics(group, rows, now) : []
+    const buffered = groupActivityReview ? this.unreviewedBufferedTopics(group, rows, now) : []
     if (shared && record) record.groupReviewMessageIds = [...shared, ...buffered.map(row => row.messageId)]
     const recent = rows.map(({ images, messageId, arrival, historyOrder, quoted_text, ...row }) => ({
       ...row, age_seconds: Math.floor((now - row.at) / 1000),
