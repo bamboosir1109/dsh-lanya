@@ -1022,7 +1022,11 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
         rows[1].message.unshift({ type: 'reply', data: { id: '10', text: 'unverified preview' } })
         rows[2].message.push({ type: 'image', data: { url: 'https://example.invalid/private-fixture' } })
         rows.push(row(at + 4, 15, 'wrong friend route', { target_id: 444 }),
-          row(at + 5, 16, '', { message: [{ type: 'image', data: { file: 'attachment-only' } }] }))
+          row(at + 5, 16, '', { message: [{ type: 'image', data: { file: 'attachment-only' } },
+            { type: 'image', data: { file: 'another-attachment' } }, { type: 'record', data: { file: 'audio-fixture' } }] }),
+          row(at + 6, 17, '', { message: [{ type: 'image', data: {} }] }),
+          row(at + 7, 18, '', { message: [{ type: 'reply', data: { id: 11 } }] }),
+          row(at + 8, 19, '', { target_id: 444, message: [{ type: 'image', data: { file: 'foreign-attachment' } }] }))
       }
       if (scenario === 'later own message') rows.push(row(at + 4, 15, 'already answered', { sender: { user_id: 999 } }))
       if (scenario === 'same-second own message') rows.push(row(at + 1, 15, 'possibly answered', { sender: { user_id: 999 } }))
@@ -1055,13 +1059,21 @@ test('reconnect stages only unseen recent friend text for one scoped reply revie
       return
     }
     assert.equal(state.current.controlAllowed, false, warnings.join('\n'))
-    const supplement = scenario === 'mixed friend history' ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
-    assert.equal(state.current.replyReview.text, 'first missed question' + supplement + '\n\nsecond missed question' + supplement)
+    const mixed = scenario === 'mixed friend history'
+    const supplement = mixed ? '\n[补查只保留了新写的文字，引用或附件未展开]' : ''
+    const media = mixed ? '\n\n[收到图片、语音，内容未加载]' : ''
+    assert.equal(state.current.replyReview.text, 'first missed question' + supplement + '\n\nsecond missed question' + supplement + media)
+    assert.equal(state.current.messageId, mixed ? '16' : '-12')
     assert.equal(h.pending.length, 0, 'history is staged without native live dispatch')
-    await h.receive('second missed question', { message_id: -12 })
+    await h.receive('late event', { message_id: mixed ? 16 : -12 })
     assert.equal(h.pending.length, 0, 'late duplicate does not enter the native inbox')
     await adapter.reviewUnansweredInputs()
     assert.equal(h.pending.length, 1)
+    if (mixed) {
+      assert.match(h.pending[0].content[0].text, /内容未加载/)
+      assert.match(h.pending[0].content[0].text, /never describe the contents/)
+      assert.doesNotMatch(h.pending[0].content[0].text, /example\.invalid|attachment-only|audio-fixture|unverified preview/)
+    }
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     assert.equal(h.chat.activeTurnRole, 'member')
     assert.equal((await h.decide('resume', { control_update: true })).accepted, false)
@@ -2296,7 +2308,7 @@ test('actual personal mention opens the exchange, ordinary follow-ups need no ne
 })
 
 test('reconnect recovers only a real configured-group mention as historical member input', async t => {
-  for (const scenario of ['missed mention', 'multiple speakers', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
+  for (const scenario of ['missed mention', 'media-only mention', 'multiple speakers', 'read retries', 'later bot reply', 'group disabled']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     await h.mention(); h.start(); await h.preStep(); await h.decide('idle'); await h.end()
@@ -2327,6 +2339,10 @@ test('reconnect recovers only a real configured-group mention as historical memb
         row(5, 99, 'anonymous sender', '999', { sub_type: 'anonymous' })]
       if (scenario === 'multiple speakers') rows.push(row(6, 97, 'different question', '999', { sender: { user_id: 204 } }),
         row(7, 100, 'one more detail from the first speaker', '999'))
+      if (scenario === 'media-only mention') {
+        rows[0].message[1] = { type: 'image', data: { file: 'group-attachment' } }
+        rows[3].message[1] = { type: 'image', data: { file: 'other-recipient-attachment' } }
+      }
       if (scenario === 'later bot reply') rows.push(row(6, 97, 'already replied', null, { sender: { user_id: 999 } }))
       return { messages: rows }
     }
@@ -2354,7 +2370,8 @@ test('reconnect recovers only a real configured-group mention as historical memb
         { group_member: 1, text: 'missed actual question' }, { group_member: 2, text: 'different question' },
         { group_member: 1, text: 'one more detail from the first speaker' },
       ])
-    } else assert.equal(state.current.replyReview.text, 'missed actual question')
+    } else assert.equal(state.current.replyReview.text, scenario === 'media-only mention'
+      ? '[收到图片，内容未加载]' : 'missed actual question')
     for (const id of multiple ? [91, 97, 100] : [91]) {
       await h.receive('missed actual question', { message_id: id, user_id: id === 97 ? 204 : 202, message: [
         { type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'missed actual question' } },
