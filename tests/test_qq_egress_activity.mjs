@@ -122,7 +122,11 @@ test('only a content-free final promise after a real sentence is removed', () =>
   assert.equal(cleanText('第二段听着有点闷。我再去看看吧。'), '第二段听着有点闷。')
   assert.equal(cleanText('链接刚才打不开。等会我再查查哈'), '链接刚才打不开。')
   assert.equal(cleanText('片头没有字幕。回头我再核对一下啊。'), '片头没有字幕。')
+  assert.equal(cleanText('链接刚才打不开。晚点我再去看一眼。'), '链接刚才打不开。')
+  assert.equal(cleanText('字幕开头少了一段。我再去看一下。回头我再确认。'), '字幕开头少了一段。')
+  assert.deepEqual(textParts('字幕开头少了一段。\n晚点我再去看看。').map(part => part.text), ['字幕开头少了一段。'])
   for (const text of ['我再去看。', '好。我再去看。', '明白了。我再去看看。', '今晚没空，我再去看。',
+    '好。我再去看。晚点我再核对。', '明早我再去看看。', '你把截图发我，我再去确认。',
     '字幕少了一段。我再去看第二集。', '链接打不开。八点我再去看看。', '字幕少了一段。我再去看看？', '原话是「我再去看。」']) {
     assert.equal(cleanText(text), text)
   }

@@ -450,10 +450,10 @@ export function cleanText(value, style = NORMAL_STYLE, verbatim = false) {
     ? withoutImageSendConfirmation(withoutImages) : withoutImages
   const cleaned = spans(prose, style.technical).map((part) => part.protected ? part.text : cleanProse(part.text, style)).join('').trim()
   if (!style.technical && !style.roleplay) {
-    const suffix = /([。！？!?\n，,])[ \t]*(?:(?:回头|稍后|等会儿?|待会儿?|等下)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下)?)再(?:去)?(?:看看?|查查?|确认|核对)(?:一下|一眼)?(?:吧|哈|啊)?[。.!！~～]*\s*$/u
+    const suffix = /(?:[。！？!?\n，,][ \t\r\n]*(?:(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)[ \t]*我|我(?:回头|稍后|等会儿?|待会儿?|等下|晚点|一会儿?)?)[ \t]*再(?:去)?(?:看看?|查查?|确认|核对)(?:一下|一眼)?(?:吧|哈|啊)?[ \t]*){1,4}[。.!！~～]*[ \t]*$/u
     const match = suffix.exec(cleaned)
     if (match && !spans(cleaned).at(-1)?.protected) {
-      const comma = /[，,]/u.test(match[1])
+      const comma = /[，,]/u.test(cleaned[match.index])
       const prefix = cleaned.slice(0, match.index + (comma ? 0 : 1)).trimEnd()
       // A comma often introduces a real next action. Trim only when it
       // follows a separate complete sentence and adds no object or detail.
