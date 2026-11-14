@@ -44,6 +44,24 @@ class BudgetRuntimeTests(unittest.TestCase):
         return budget.save_config({'limits': {'autonomy': autonomy, 'private': private, 'group': group}, 'reserve_cny': reserve},
                                   budget.get_snapshot(self.now)['revision'])
 
+    def test_unstarted_autonomy_settles_at_zero_without_holding_the_daily_reserve(self):
+        self.configure(autonomy=0.05)
+        self.assertTrue(self.run_op()['allowed'])
+        self.assertEqual(self.run_op(turn_key='c' * 64)['reason'], 'budget_exhausted')
+        receipt = {'budget_contract': budget.CONTRACT, 'api_cost_cny': 0, 'start_seq': 1, 'end_seq': 2,
+                   'calls': 0, 'priced': True}
+        with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_cost_receipt'):
+            self.run_op(operation='settle', receipt=dict(receipt, api_cost_cny=0.01))
+        self.assertTrue(self.run_op(operation='settle', receipt=receipt)['settled'])
+        self.assertTrue(self.run_op(operation='settle', receipt=receipt)['duplicate'])
+        self.assertTrue(self.run_op(turn_key='c' * 64)['allowed'])
+        self.run_op(turn_key='c' * 64, operation='unknown')
+        with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_cost_receipt'):
+            self.run_op(turn_key='c' * 64, operation='settle', receipt=receipt)
+        self.assertTrue(self.run_op(origin='live', turn_key='d' * 64)['allowed'])
+        with self.assertRaisesRegex(budget.BudgetError, 'invalid_budget_cost_receipt'):
+            self.run_op(origin='live', turn_key='d' * 64, operation='settle', receipt=receipt)
+
     def test_snapshot_missing_is_read_only_and_not_historical_zero(self):
         value = budget.get_snapshot(self.now)
         self.assertEqual(value['schema'], 'unified-budget/v2')

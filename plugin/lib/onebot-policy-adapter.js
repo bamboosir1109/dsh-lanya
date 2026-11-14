@@ -2192,6 +2192,18 @@ export class OneBotDecisionAdapter {
           turn: request.turn, epoch: this.startEpoch, binding: record.binding, revision: successor.binding.revision })
         return { kind: 'reject', reason: afterAdmissionRest }
       }
+      // A live input can enter the durable queue while reserveBudget awaits
+      // the ledger. Yield before the first autonomous model step in that case.
+      const overtaking = budgetWaitMs !== undefined && !record.nativeStepEntered &&
+        record.binding.origin === 'observation' && this.supersedingLiveInput(chat, record)
+      if (overtaking) {
+        record.supersededIdleWake = Object.freeze({ agent: request.agent, signal: request.signal,
+          turn: request.turn, epoch: this.startEpoch, binding: record.binding, revision: overtaking.binding.revision })
+        record.unusedBudget = record.reservation
+        this.diagnose(record.binding.scope, record.binding.messageId, 'blocked', {
+          reason: 'superseded_live_input', turn: request.turn, budget_wait_ms: budgetWaitMs })
+        return { kind: 'reject', reason: 'superseded_live_input' }
+      }
       record.nativeStepEntered = true
       this.diagnose(record.binding.scope, record.binding.messageId, 'step_ready',
         { turn: request.turn, step: request.step, budget_wait_ms: budgetWaitMs })
@@ -2561,6 +2573,15 @@ export class OneBotDecisionAdapter {
     const unknown = () => budget.reserveUnavailable ? undefined : this.budgetProvider({ ...budget.request, operation: 'unknown' })
     const end = event.seq, start = record.budgetStartSeq
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) { await unknown(); return }
+    const settle = (cost, calls) => this.budgetProvider({ ...budget.request, operation: 'settle', receipt: {
+      api_cost_cny: cost, budget_contract: BUDGET_CONTRACT,
+      start_seq: start, end_seq: end, calls, priced: true } })
+    if (record.unusedBudget === budget && event.data.reason?.kind === 'blocked' &&
+        !record.nativeStepEntered && !record.firstModelStepStarted && !record.claimConflict) {
+      try { await settle(0, 0) }
+      catch { await unknown() }
+      return
+    }
     const meter = this.costMeter(chat.agent)
     if (!meter) { await unknown(); return }
     try {
@@ -2571,9 +2592,7 @@ export class OneBotDecisionAdapter {
           !Array.isArray(cost.calls) || !cost.calls.length || cost.calls.some(call => call.priced !== true)) {
         await unknown(); return
       }
-      await this.budgetProvider({ ...budget.request, operation: 'settle', receipt: {
-        api_cost_cny: cost.apiCost, budget_contract: BUDGET_CONTRACT,
-        start_seq: start, end_seq: end, calls: cost.calls.length, priced: true } })
+      await settle(cost.apiCost, cost.calls.length)
     } catch { await unknown() }
   }
 

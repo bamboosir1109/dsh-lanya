@@ -5169,6 +5169,54 @@ test('an autonomous budget refusal wakes the live QQ message that arrived during
   })
 })
 
+test('a reserved activity yields before the model when a private question or group mention arrives during admission', async t => {
+  for (const group of [false, true]) await t.test(group ? 'group mention' : 'private question', async t => {
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy, budgetProvider = adapter.budgetProvider
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId)
+      h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat)
+      h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    const reserving = defer(), release = defer(), origins = []
+    adapter.budgetProvider = async request => {
+      const result = await budgetProvider(request)
+      if (request.operation === 'reserve' && request.origin === 'observation') {
+        reserving.resolve()
+        await release.promise
+      }
+      return result
+    }
+    h.agent.step = async () => {
+      const { origin } = adapter.state(h.chat).active.binding
+      origins.push(origin)
+      if (origin === 'live') await h.decide('reply', { text: 'Here is the answer.' })
+      else await h.decide('idle')
+      return { kind: 'completed' }
+    }
+    const observation = adapter.dispatchObservation(await primaryEvent(h, 'fixture-live-during-successful-reserve'))
+    await reserving.promise
+    try {
+      if (group) await h.receive('a question from the group', {
+        message_type: 'group', group_id: 303, user_id: 202,
+        sender: { nickname: 'fixture', user_id: 202 },
+        message: [{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: 'a question from the group' } }],
+      })
+      else await h.receive('a question from private chat')
+      assert.equal(h.agent.inbox.nextTurn.length, 1)
+    } finally { release.resolve() }
+    assert.equal((await observation).reason, 'superseded_live_input')
+    await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+    assert.deepEqual(origins, ['live'])
+    assert.equal(h.agent.inbox.hasPending, false)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+    const settlements = h.requests.filter(request => request.origin === 'observation' && request.operation === 'settle')
+    assert.deepEqual(settlements.map(({ receipt }) => [receipt.api_cost_cny, receipt.calls]), [[0, 0]])
+    assert.equal(h.requests.some(request => request.origin === 'observation' && request.operation === 'unknown'), false)
+  })
+})
+
 test('midnight rest during budget admission lets a queued private reply continue', async t => {
   const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
   const reserving = defer(), release = defer(), budgetProvider = adapter.budgetProvider

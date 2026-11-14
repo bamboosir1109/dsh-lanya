@@ -434,9 +434,13 @@ def operate(request, now=None):
                 connection.execute("UPDATE budget_turns SET status='unknown',updated_at=? WHERE turn_key=?", (now, key))
             return {'settled': False, 'status': row['status'] if row['status'] == 'settled' else 'unknown'}
         receipt = request.get('receipt')
-        if not isinstance(receipt, dict) or set(receipt) != {'api_cost_cny', 'start_seq', 'end_seq', 'calls', 'priced', 'budget_contract'} or not _is_contract(receipt.get('budget_contract')) or receipt['priced'] is not True or any(type(receipt[k]) is not int or not 0 <= receipt[k] <= 2**53 - 1 for k in ('start_seq','end_seq','calls')) or receipt['end_seq'] <= receipt['start_seq'] or receipt['calls'] < 1:
+        if not isinstance(receipt, dict) or set(receipt) != {'api_cost_cny', 'start_seq', 'end_seq', 'calls', 'priced', 'budget_contract'} or not _is_contract(receipt.get('budget_contract')) or receipt['priced'] is not True or any(type(receipt[k]) is not int or not 0 <= receipt[k] <= 2**53 - 1 for k in ('start_seq','end_seq','calls')) or receipt['end_seq'] <= receipt['start_seq']:
             raise BudgetError('invalid_budget_cost_receipt', 400)
         spent = _micros(receipt['api_cost_cny'])
+        # A trusted, claimed autonomous turn can yield before any model call.
+        # Keep its terminal ledger key without charging or holding a reserve.
+        if receipt['calls'] == 0 and (category != 'autonomy' or spent != 0 or row['status'] == 'unknown'):
+            raise BudgetError('invalid_budget_cost_receipt', 400)
         receipt_hash = _hash(_json(receipt))
         if row['status'] == 'settled':
             if row['receipt_hash'] != receipt_hash:
