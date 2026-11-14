@@ -753,16 +753,28 @@ export class OneBotDecisionAdapter {
   }
 
   checkReconnectHistory() {
-    return this.recoverReconnectHistory().then(async staged => {
-      if (!staged) return
-      // A periodic pass may have read the candidate list before staging.
-      // Wait for it to finish, then re-read the newly durable candidates.
-      if (this.replyReviewAttempt) await this.replyReviewAttempt.catch(() => {})
-      await this.reviewUnansweredInputs()
+    let noticed = false, pending = false, review = null
+    const onStaged = () => {
+      noticed = pending = true
+      if (review) return
+      review = (async () => {
+        // A slow history request for another peer must not hold a durable
+        // receipt. If a review already read its candidates, look again.
+        while (pending) {
+          pending = false
+          if (this.replyReviewAttempt) await this.replyReviewAttempt.catch(() => {})
+          await this.reviewUnansweredInputs()
+        }
+      })().catch(error => this.log('warn', 'reconnect_history_review_failed:' + error.name))
+        .finally(() => { review = null; if (pending) onStaged() })
+    }
+    return this.recoverReconnectHistory(onStaged).then(async staged => {
+      if (staged && !noticed) onStaged()
+      while (review) await review
     }).catch(error => this.log('warn', 'reconnect_history_review_failed:' + error.name))
   }
 
-  async recoverReconnectHistory() {
+  async recoverReconnectHistory(onStaged) {
     const window = this.reconnectReview, connection = this.deps.connection
     if (!this.nativeClaims || !this.startRequested || this.bridge.stopping ||
         window?.connectedAt === undefined || connection?.connected !== true) return
@@ -897,6 +909,7 @@ export class OneBotDecisionAdapter {
             if (staged) {
               stagedInput = true
               for (const { messageId } of batch) this.diagnose(scope, messageId, group ? 'group_history_staged' : 'friend_history_staged')
+              onStaged?.()
             }
             else if (ready() && !canStage(sender)) window.scopes.push(scope)
           }
