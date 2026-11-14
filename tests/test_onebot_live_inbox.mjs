@@ -816,6 +816,25 @@ test('pending never merges across foreign item or role boundary', async t => {
   assert.equal(h.pending.at(-2).id, h.history.findLast(row => row.inserted?.[0]?.content?.[0]?.text?.includes('admin second')).inserted[0].id)
 })
 
+test('native turn accounting uses the dispatch event sequence without scanning history', async t => {
+  const h = await fixture(t)
+  const meterCalls = []
+  h.deps.testMeter.getTurnCost = async (...args) => {
+    meterCalls.push(args)
+    return { found: true, apiCost: 0.01, calls: [{ priced: true }] }
+  }
+  await h.receive('ordinary message for turn accounting')
+  let historyReads = 0
+  h.agent.session.snapshotEvents = () => { historyReads++; return [] }
+  h.start()
+  assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'a useful answer' })).sent, true)
+  await h.end()
+  assert.equal(historyReads, 0)
+  assert.deepEqual(meterCalls, [[h.agent.session.id, 11, 12]])
+  assert.equal(h.requests.filter(row => row.operation === 'settle').length, 1)
+})
+
 test('late enrichment cannot replace a newer revision and no pending budget is leaked', async t => {
   const h = await fixture(t), gate = defer(), entered = defer()
   h.bridge.lanyaPolicy.memoryContext = async (_scope, text) => { if (text.includes('slow older')) { entered.resolve(); await gate.promise } return null }

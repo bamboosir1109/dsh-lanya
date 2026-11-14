@@ -264,7 +264,7 @@ def transform(name, raw):
         text = replace_once(text, "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: 'plugin:dsh-onebot' },",
                             "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: this.lanyaPolicy.captureInbound(chatId)?.origin === 'observation' ? 'plugin:dsh-lanya-observation' : 'plugin:dsh-onebot' },")
         text = replace_once(text, "    prefixTurn(chatId, text) {", "    dispatchObservation(event) { return this.lanyaPolicy.dispatchObservation(event); }\n    prefixTurn(chatId, text) {")
-        text = replace_once(text, "            this.interim.onTurnStart(chat);", "            this.lanyaPolicy.onTurnStart(chat, event.data.turn);")
+        text = replace_once(text, "            this.interim.onTurnStart(chat);", "            this.lanyaPolicy.onTurnStart(chat, event.data.turn, event.seq);")
         text = replace_once(text, "            this.interim.onAssistantMessage(chatId, chat, event.data.message);", "            this.lanyaPolicy.onAssistantMessage(chatId, chat, event);")
         text = replace_once(text, "            this.interim.onTurnEnd(chatId, chat);", "            this.lanyaPolicy.onTurnEnd(chatId, chat, event);")
         text = replace_once(text, "    guardedConnectionCall(action, params, chatId) {", "    guardedConnectionCall(action, params, chatId) {\n        return this.lanyaPolicy.guardConnectionCall(action, params, chatId, () => {")

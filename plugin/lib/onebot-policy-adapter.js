@@ -1688,7 +1688,7 @@ export class OneBotDecisionAdapter {
     this.log('warn', 'native_live_decision_reminder_queued')
   }
 
-  onTurnStart(chat, turn) {
+  onTurnStart(chat, turn, startSeq) {
     const state = this.state(chat)
     state.latestNativeTurn = turn
     const binding = this.nativeClaims ? null : state.queue.shift() || null
@@ -1699,10 +1699,14 @@ export class OneBotDecisionAdapter {
     const record = { binding, turn, shadow, ticket: null, decision: null, inFlight: new Set(), outcomes: [],
       claimCompletions: new Set(), ended: false }
     if (binding?.budget || this.nativeClaims) {
-      try {
-        const starts = chat.agent.session.snapshotEvents().filter(event => event.type === 'turn/start' && event.data?.turn === turn)
-        if (starts.length === 1 && Number.isSafeInteger(starts[0].seq)) record.budgetStartSeq = starts[0].seq
-      } catch { /* Missing native sequence evidence retains the reservation. */ }
+      if (Number.isSafeInteger(startSeq) && startSeq >= 0) record.budgetStartSeq = startSeq
+      else if (startSeq === undefined) {
+        // Older bridge patches do not pass the native event sequence.
+        try {
+          const starts = chat.agent.session.snapshotEvents().filter(event => event.type === 'turn/start' && event.data?.turn === turn)
+          if (starts.length === 1 && Number.isSafeInteger(starts[0].seq) && starts[0].seq >= 0) record.budgetStartSeq = starts[0].seq
+        } catch { /* Missing native sequence evidence retains the reservation. */ }
+      }
     }
     state.turns.set(turn, record)
     state.active = record
