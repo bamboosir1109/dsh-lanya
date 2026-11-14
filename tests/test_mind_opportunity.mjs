@@ -116,15 +116,23 @@ with mock.patch.object(mind.time,'time',return_value=int(sys.argv[2])/1000), moc
     h.mind()
     assert.equal(h.events()[0].kind, 'activity.opportunity')
     assert.equal(await h.pump.start({ poll: false }), true)
-    const review = h.now() + 120000
+    const requestedReview = h.now() + 120000
+    const review = h.now() + 360000
     const permission = () => {
       assert.equal(h.chat.activeTurnRole, 'admin')
       assert.equal(h.bridge.canEditFiles(h.agent.session.id), true)
     }
-    await h.settle({ next_review_at: review }, undefined, { during: permission })
+    const decision = await h.settle({ next_review_at: requestedReview }, undefined, { during: permission })
+    assert.equal(decision.requested_next_review_at, requestedReview)
+    assert.equal(decision.next_review_at, review)
     h.mind(true)
     assert.equal(h.events().length, 1)
     h.advance(120000)
+    h.mind(true)
+    await h.pump.drain()
+    assert.equal(h.followups.length, 1)
+    assert.equal(h.events().length, 1)
+    h.advance(review - h.now())
     h.mind(true)
     assert.equal(h.events().length, 1)
     await h.settle({}, undefined, { during: permission })
