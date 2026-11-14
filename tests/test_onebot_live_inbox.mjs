@@ -3699,6 +3699,50 @@ test('other native admission failures reject rather than claim the unresolved-re
   })
 })
 
+test('autonomous budget pacing slows personal reviews ahead of spend without slowing group reviews', async t => {
+  for (const scenario of ['primary-ahead', 'primary-on-track', 'primary-later', 'group-ahead']) await t.test(scenario, async t => {
+    const group = scenario === 'group-ahead'
+    const h = await nativeDriverFixture(t, group ? { contextualGroupScope: 'group:303' } : {})
+    const adapter = h.bridge.lanyaPolicy
+    if (group) {
+      h.bridge.chats.delete(h.chat.chatId)
+      h.chat.chatId = 'group:303'
+      h.bridge.chats.set(h.chat.chatId, h.chat)
+      h.bridge.bySession.set(h.agent.session.id, h.chat.chatId)
+    }
+    if (scenario === 'primary-later') h.advance(8 * 3600_000)
+    const event = await primaryEvent(h, 'fixture-budget-pace-' + scenario)
+    const capabilities = adapter.runtimeCapabilities
+    adapter.runtimeCapabilities = async (...args) => {
+      const value = await capabilities(...args)
+      Object.assign(value.tools.entertainment, { group_identity_valid: group, group_social: group })
+      return value
+    }
+    const budget = adapter.budgetProvider
+    adapter.budgetProvider = async request => {
+      const result = await budget(request)
+      if (request.operation === 'reserve') {
+        result.state = scenario === 'primary-on-track'
+          ? { spent_cny: 0.1, reserved_cny: 0.05, remaining_cny: 2.85 }
+          : { spent_cny: 1.5, reserved_cny: 0.05, remaining_cny: 1.45 }
+      }
+      return result
+    }
+    let decision
+    h.agent.step = async () => {
+      const args = { next_review_at: adapter.now() + 60_000 }
+      decision = await h.decide(group ? 'idle' : 'tool_action', args)
+      return { kind: 'completed' }
+    }
+    const outcome = await adapter.dispatchObservation(event)
+    await driverSettled(h)
+    assert.equal(decision.accepted, true)
+    assert.equal(decision.next_review_at, adapter.now() + (scenario === 'primary-ahead' ? 360_000 : 60_000))
+    assert.equal(outcome.next_review_at, decision.next_review_at)
+    assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 0)
+  })
+})
+
 test('a verified exhausted autonomous bucket defers more opportunities without blocking live replies', async t => {
   const h = await nativeDriverFixture(t), adapter = h.bridge.lanyaPolicy
   const budgetProvider = adapter.budgetProvider
