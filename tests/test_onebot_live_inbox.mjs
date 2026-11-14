@@ -1864,13 +1864,17 @@ test('a queued group review uses the current social prompt instead of an inherit
   await h.end(); await completion
 })
 
-test('a verified group opportunity fills an empty listener from current history without making a live reply', async t => {
-  for (const scenario of ['empty', 'current live context', 'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
+test('a verified group opportunity refreshes stale listening context without making a live reply', async t => {
+  for (const scenario of ['empty', 'stale context', 'current live context', 'live context arrives during lookup', 'changed socket', 'lookup failure']) await t.test(scenario, async t => {
     const h = await listeningGroup(t), a = h.bridge.lanyaPolicy, scope = h.chat.chatId
     backendFixture(h)
     const owner = await a.trustedOwner(scope)
     a.runtimeCapabilities = async () => null
     if (scenario === 'current live context') await h.receive('current live group topic')
+    if (scenario === 'stale context') {
+      await h.receive('older live group topic', { message_id: 70 })
+      h.advance(121_000)
+    }
     const call = h.deps.connection.call
     const time = Math.floor(a.now() / 1000)
     let historyReads = 0
@@ -1884,7 +1888,9 @@ test('a verified group opportunity fills an empty listener from current history 
       const row = (message_id, text, extra = {}) => ({ message_id, message_type: 'group', group_id: 303,
         sender: { user_id: 202 }, time: time - 30, message: [{ type: 'text', data: { text } }], ...extra })
       return { messages: [row(71, 'recent group history topic'), row(72, 'expired group topic', { time: time - 601 }),
-        row(73, 'other group topic', { group_id: 404 }), row(74, 'own group output', { sender: { user_id: 999 } })] }
+        row(70, 'different duplicate body', { time: time - 121 }),
+        row(73, 'other group topic', { group_id: 404 }), row(74, 'own group output', { sender: { user_id: 999 } }),
+        ...(scenario === 'stale context' ? [row(76, 'second message inside same second')] : [])] }
     }
     const event = { version: 1, event_id: 'fixture-group-history-opportunity', scope, kind: 'activity.opportunity',
       producer: 'mind', created_at: a.now(), origin: 'observation', control_allowed: false,
@@ -1904,13 +1910,24 @@ test('a verified group opportunity fills an empty listener from current history 
     assert.equal(historyReads, scenario === 'current live context' ? 0 : 1)
     assert.ok(h.pending[0].source.kind.includes('observation'))
     assert.doesNotMatch(JSON.stringify(h.pending), /recent group history topic/)
+    if (scenario === 'stale context') await h.receive('newer live group topic', { message_id: 75 })
+    if (scenario === 'stale context') await h.receive('recent group history topic, now with the live payload', { message_id: 71 })
     h.start(); assert.equal((await h.preStep()).kind, 'enter')
     const prompt = h.prompt()
-    const expected = scenario === 'empty' ? /recent group history topic/
+    const freshest = ['empty', 'stale context'].includes(scenario)
+    const expected = freshest ? /recent group history topic/
       : scenario === 'lookup failure' ? /"recent":\[\]/ : /current live group topic/
     assert.match(prompt, expected)
     assert.doesNotMatch(prompt, /expired group topic|other group topic|own group output/)
-    if (scenario !== 'empty') assert.doesNotMatch(prompt, /recent group history topic/)
+    if (!freshest) assert.doesNotMatch(prompt, /recent group history topic/)
+    if (scenario === 'stale context') {
+      const context = JSON.parse(prompt.match(/<observed_group_context>\n([^\n]+)\n<\/observed_group_context>/u)[1])
+      assert.deepEqual(context.recent.map(row => row.text), [
+        'older live group topic', 'recent group history topic, now with the live payload',
+        'second message inside same second', 'newer live group topic',
+      ])
+      assert.ok(context.recent.every(row => !('historyOrder' in row)))
+    }
     assert.equal((await h.decide('idle')).accepted, true)
     await h.end(); await completion
     assert.equal(h.calls.filter(item => /^send_/.test(item.action)).length, 0)

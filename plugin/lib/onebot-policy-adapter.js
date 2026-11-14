@@ -170,6 +170,8 @@ const NATIVE_BUDGET_REFUSALS = new Set(['previous_turn_unresolved', 'budget_exha
 const NATIVE_CONTEXT_KINDS = new Set(['agent-instructions', 'runtime-context',
   'repeat-tool-reminder', 'compact-checkpoint'])
 const GROUP_CONTEXT_MS = 10 * 60_000
+const GROUP_RECENT_CONTEXT_MS = 2 * 60_000
+const orderGroupRows = (a, b) => a.at - b.at || (a.historyOrder ?? a.arrival) - (b.historyOrder ?? b.arrival)
 const groupHistorySender = row => {
   const sender = String(row.sender?.user_id)
   return /^[1-9][0-9]*$/.test(sender) && row.anonymous == null && row.sub_type !== 'anonymous' &&
@@ -1065,15 +1067,17 @@ export class OneBotDecisionAdapter {
   }
 
   restoreRecentGroupText(scope, owner, rows, now, bot) {
-    if (this.recentGroupContext(scope, owner, now).length) return
     const group = this.groupConversation(scope, owner)
     if (!group) return
+    const local = this.recentGroupContext(scope, owner, now)
+    if (local.some(row => row.at >= now - GROUP_RECENT_CONTEXT_MS)) return
+    const localIds = new Set(local.map(row => row.messageId))
     const recent = new Map()
     for (const row of rows) {
       if (!plain(row) || row.message_type !== 'group' || String(row.group_id) !== scope.slice(6) ||
           !Number.isSafeInteger(row.time) || row.time <= 0 || row.time * 1000 > now) continue
       const at = row.time * 1000, speaker = groupHistorySender(row), messageId = String(row.message_id)
-      if (at < now - GROUP_CONTEXT_MS || !speaker || speaker === bot ||
+      if (at < now - GROUP_CONTEXT_MS || !speaker || speaker === bot || localIds.has(messageId) ||
           !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
           !Array.isArray(row.message) || row.message.length > 12) continue
       const text = row.message.filter(segment => segment?.type === 'text' && typeof segment.data?.text === 'string')
@@ -1084,12 +1088,16 @@ export class OneBotDecisionAdapter {
       recent.set(messageId, { messageId, speaker, text: text.slice(0, 1600), at, images: [], at_targets,
         quoted_speaker: null, addressed_to_bot: at_targets.includes(bot) })
     }
-    group.recent = [...recent.values()].sort((a, b) => a.at - b.at).map((row, i) => ({ ...row, arrival: i - recent.size }))
+    const firstOrder = Math.min(0, ...local.map(row => row.historyOrder ?? row.arrival)) - recent.size
+    const restored = [...recent.values()].map((row, i) => ({ ...row, arrival: firstOrder + i }))
+    group.recent = [...local, ...restored].sort(orderGroupRows).slice(-12)
   }
 
   async refreshGroupOpportunityContext(scope, owner, backendStamp) {
+    const now = this.now()
     if (!this.nativeClaims || !this.contextualGroupEnabled(scope) || !this.groupReplyReviewAllowed(scope) ||
-        this.foregroundBusy(scope) || this.recentGroupContext(scope, owner).length) return
+        this.foregroundBusy(scope) ||
+        this.recentGroupContext(scope, owner, now).some(row => row.at >= now - GROUP_RECENT_CONTEXT_MS)) return
     const groupId = Number(scope.slice(6)), connection = this.deps.connection, socket = connection?.socket
     if (!socket || !Number.isSafeInteger(groupId) || this.bridge.stopping) return
     const epoch = this.startEpoch
@@ -1137,14 +1145,23 @@ export class OneBotDecisionAdapter {
     if (this.contextualGroupEnabled(scope)) {
       group = this.groupConversation(scope, await this.trustedOwner(scope))
       addressed = this.groupAddressed(inbound, address)
-      if (!group.recent.some(row => row.messageId === inbound.messageId)) {
-        group.recent.push({ messageId: inbound.messageId, arrival: context.arrival,
+      const seen = group.recent.findIndex(row => row.messageId === inbound.messageId)
+      if (seen === -1 || group.recent[seen].arrival < 0) {
+        const row = { messageId: inbound.messageId, arrival: context.arrival,
           speaker: inbound.userId, text: String(inbound.text || '').slice(0, 1600), at: context.arrivedAt,
           images: (inbound.media || []).map(ref => this.groupInboundImages.get(ref)).filter(Boolean).slice(0, 2),
           at_targets: address?.explicit_at_ids?.slice(0, 8) ?? [],
           quoted_speaker: address?.reply_status === 'available' ? address.quoted_author_id : null,
-          addressed_to_bot: addressed })
-        group.recent.sort((a, b) => a.arrival - b.arrival)
+          addressed_to_bot: addressed }
+        if (seen === -1) group.recent.push(row)
+        else {
+          // Keep platform chronology when the actual event arrives late.
+          const restored = group.recent[seen]
+          row.at = Math.min(row.at, restored.at)
+          row.historyOrder = restored.arrival
+          group.recent[seen] = row
+        }
+        group.recent.sort(orderGroupRows)
         group.recent = group.recent.slice(-12)
       }
       const addressedToOthers = inbound.segments?.some(segment => segment?.type === 'at' &&
@@ -2816,7 +2833,7 @@ export class OneBotDecisionAdapter {
     const group = this.groupConversation(scope, owner, false)
     const now = this.now()
     const recent = this.recentGroupContext(scope, owner, now)
-      .map(({ images, messageId, arrival, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
+      .map(({ images, messageId, arrival, historyOrder, ...row }) => ({ ...row, age_seconds: Math.floor((now - row.at) / 1000),
         ...(canViewImage && images.length ? { image_refs: images.map(image => image.id) } : {}) }))
     return '\n<observed_group_context>\n' + JSON.stringify({
       state: group && group.engagedAt !== null ? 'engaged' : 'listening', recent,
