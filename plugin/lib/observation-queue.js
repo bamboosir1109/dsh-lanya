@@ -36,6 +36,7 @@ const decisionIdentity = (x) => identity(x) && x.trim().length > 0
 const MAX_CONCURRENT_SCOPES = 4
 const TERMINAL_ACK_BATCH_SIZE = 64
 const TERMINAL_ACK_BATCH_BYTES = 4 * 1024 * 1024
+const budgetDeferred = Symbol('budgetDeferred')
 const SCANNER_READ_BATCH_SIZE = 8
 const producerOwnedReview = new Set(['activity_due', 'reminder.due'])
 const reviewTime = (event, completion) => !['unknown', 'no_decision'].includes(completion.status) &&
@@ -773,7 +774,7 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       if (error instanceof ObservationBudgetDeferred && Number.isSafeInteger(error.retryAt)) {
         const time = now()
         deferEntry(name, Math.max(time + intervalMs, Math.min(error.retryAt, time + 60_000)))
-        return 0
+        return budgetDeferred
       }
       failed(name)
       log('warn', 'observation_dispatch_failed:' + name + ':' + error.name)
@@ -839,6 +840,12 @@ export function createObservationPump({ directory, dispatch, acknowledge = async
       inFlightCount = activeScopes.size
       backlog.delete(entry.name)
       const task = processEntry(entry).then(count => {
+        if (count === budgetDeferred) {
+          // Keep the deferred head in order. The stored retry time controls
+          // its next dispatch, so a budget refusal needs no immediate scan.
+          backlog.set(entry.name, entry)
+          return
+        }
         processed += count
         if (count) terminal.add(entry.name)
         else rescanRequested = true

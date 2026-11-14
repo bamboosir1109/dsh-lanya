@@ -84,12 +84,24 @@ test('failed model dispatch is retained with durable backoff and can recover', a
 test('budget deferral persists a retry time without counting a dispatch failure', async t => {
   const root = fixture(t)
   const name = write(root, event('budget-hold'))
-  let now = 100, calls = 0
-  const p = await pump(t, root, async () => {
-    if (++calls === 1) throw new ObservationBudgetDeferred(now + 60_000)
+  write(root, event('later-in-same-scope', { created_at: 2 }))
+  let now = 100
+  const calls = []
+  const p = await pump(t, root, async value => {
+    calls.push(value.event_id)
+    if (calls.length === 1) throw new ObservationBudgetDeferred(now + 60_000)
     return { completed: true, status: 'decided', decision_id: 'ready-later' }
   }, { now: () => now })
-  assert.equal((await p.drain()).processed, 0)
+  const readdir = fs.readdirSync
+  let scans = 0
+  fs.readdirSync = function (directory, ...args) {
+    if (directory === path.join(root, 'pending')) scans++
+    return readdir.call(this, directory, ...args)
+  }
+  try {
+    assert.equal((await p.drain()).processed, 0)
+    assert.equal(scans, 1)
+  } finally { fs.readdirSync = readdir }
   const db = new DatabaseSync(path.join(root, 'consumer.sqlite'), { readOnly: true })
   try {
     const row = db.prepare('SELECT attempts, next_after FROM retry WHERE event_key=?').get(name)
@@ -97,10 +109,10 @@ test('budget deferral persists a retry time without counting a dispatch failure'
   } finally { db.close() }
   now += 59_999
   await p.drain()
-  assert.equal(calls, 1)
+  assert.deepEqual(calls, ['budget-hold'])
   now++
-  assert.equal((await p.drain()).processed, 1)
-  assert.equal(calls, 2)
+  assert.equal((await p.drain()).processed, 2)
+  assert.deepEqual(calls, ['budget-hold', 'budget-hold', 'later-in-same-scope'])
 })
 
 test('unknown sends and restart completion never automatically replay a delivery', async (t) => {
