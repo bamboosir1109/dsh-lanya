@@ -3481,6 +3481,44 @@ test('a new private input yields autonomous activity before or after the tool de
   })
 })
 
+test('live private input arriving during autonomous prompt assembly takes the first model step', async t => {
+  const assembling = defer(), release = defer()
+  let assemblies = 0
+  const h = await nativeDriverFixture(t, { assemble: async () => {
+    if (++assemblies === 1) {
+      assembling.resolve()
+      await release.promise
+    }
+  } })
+  const adapter = h.bridge.lanyaPolicy, step = h.agent.step
+  h.agent.step = async () => {
+    const result = await step()
+    if (adapter.state(h.chat).active.binding.origin === 'live') {
+      assert.equal((await h.decide('reply', { text: 'one answer to the new message' })).sent, true)
+    }
+    return result
+  }
+  const event = await primaryEvent(h, 'autonomy-before-live')
+  const completion = adapter.dispatchObservation(event)
+  await assembling.promise
+  let newest
+  try {
+    await h.receive('incoming private question while assembling')
+    newest = h.agent.inbox.nextTurn[0]
+    assert.ok(newest)
+  } finally {
+    release.resolve()
+  }
+  const outcome = await completion
+  assert.equal(outcome.status, 'no_decision')
+  assert.equal(outcome.reason, 'superseded_live_input')
+  await driverSettled(h, () => h.calls.some(call => /^send_/.test(call.action)) && h.agent.status === 'idle')
+  assert.deepEqual(h.steps.map(item => item.claimedId), [newest.id])
+  assert.deepEqual(h.requests.filter(item => item.operation === 'reserve').map(item => item.origin), ['live'])
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+  assert.equal(h.agent.inbox.hasPending, false)
+})
+
 test('canceling a superseded native turn does not cause an automatic wake or replay', async t => {
   const entered=defer(),gate=defer();let assemblies=0
   const h=await nativeDriverFixture(t,{assemble:async()=>{if(++assemblies===1){entered.resolve();await gate.promise}},

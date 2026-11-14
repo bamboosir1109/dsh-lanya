@@ -1743,14 +1743,14 @@ export class OneBotDecisionAdapter {
   }
 
   supersedingLiveInput(chat, record) {
-    // A claimed input is added to model history only by the first native
-    // step. Let it enter once so its meaning is available to the successor;
-    // keeping its inbox insertion alone would preserve bytes but lose context.
+    // The first native step puts a claimed live input into model history for
+    // its successor. An autonomous activity opportunity can yield before then.
     const binding = record?.binding
     const internal = binding?.origin === 'observation' && localOpportunity(binding) &&
       (binding.observationKind === 'activity.opportunity' || record.decision?.verdict === 'tool_action')
-    if (!(binding?.origin === 'live' || internal) || !record.nativeStepEntered || record.claimConflict || record.ended ||
-        record.inFlight.size) return null
+    const unstartedActivity = internal && binding.observationKind === 'activity.opportunity'
+    if (!(binding?.origin === 'live' || internal) || (!record.nativeStepEntered && !unstartedActivity) ||
+        record.claimConflict || record.ended || record.inFlight.size) return null
     const message = chat.agent?.inbox?.nextTurn?.[0], entry = message && this.state(chat).pending.get(message.id)
     if (!entry || entry.agent !== chat.agent || entry.binding.origin !== 'live' ||
         entry.binding.scope !== record.binding.scope || entry.binding.revision <= record.binding.revision ||
