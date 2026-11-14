@@ -165,6 +165,14 @@ class BackendTests(unittest.TestCase):
             state['body'] = body
             with self.assertRaises(backend.BackendError) as error: backend.call('get_status', connection=connection)
             self.assertNotIn('private diagnostic', str(error.exception))
+        state['body'] = {'status': 'failed', 'retcode': 100, 'wording': 'failed to resolve UID for UIN 101'}
+        with self.assertRaises(backend.BackendActionRejected) as error:
+            backend.call('get_friend_msg_history', {'user_id': 101}, connection=connection)
+        self.assertEqual(error.exception.reason, 'peer_identity_unresolved')
+        self.assertEqual(str(error.exception), 'OneBot action rejected')
+        with self.assertRaises(backend.BackendActionRejected) as error:
+            backend.call('get_status', connection=connection)
+        self.assertEqual(error.exception.reason, 'backend_rejected')
         before = len(requests)
         with self.assertRaises(backend.BackendError): backend.call('../other', connection=connection)
         self.assertEqual(len(requests), before)

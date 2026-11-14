@@ -39,6 +39,17 @@ class InteractionHealthTests(unittest.TestCase):
             'friend_inputs': 3, 'matched_ingress': 1, 'without_ingress_evidence': 1, 'staged_after_reconnect': 1})
         self.assertNotIn('synthetic private body', json.dumps(result))
 
+    def test_friend_audit_distinguishes_only_allowed_history_rejection_reasons(self):
+        def history(peer):
+            if peer == '101':
+                raise module.FriendHistoryUnavailable('peer_identity_unresolved')
+            raise module.FriendHistoryUnavailable('private upstream details')
+        result = module.compare_friend_ingress(['private:101', 'private:102'], [],
+            account='999', since_ms=5000, now_ms=9000, history=history)
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['counts'], {'history_unavailable': 2, 'history_peer_identity_unresolved': 1})
+        self.assertNotIn('private upstream details', json.dumps(result))
+
     def test_listening_is_terminal_and_buffer_metadata_does_not_hide_real_pending_work(self):
         def row(i,phase):
             return dict(schema='qq-interaction/v1',scope='c'*16,input=f'{i:024x}',phase=phase,at=1000)

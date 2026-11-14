@@ -22,6 +22,10 @@ PHASES = {'received', 'not_admitted', 'preparation_failed', 'admitted', 'admissi
 TRANSPORT_FAILURES = ('backend_rejected', 'connection_unavailable', 'ack_timeout', 'unclassified')
 
 
+class FriendHistoryUnavailable(RuntimeError):
+    pass
+
+
 def latest_group_activity(log, scope, *, after, now):
     """Return only a timestamp from the bounded private bridge diagnostics."""
     if not re.fullmatch(r'group:[1-9][0-9]*', scope):
@@ -219,6 +223,10 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
         scope = 'private:' + peer
         try:
             rows = history(peer)
+        except FriendHistoryUnavailable as error:
+            reason = str(error)
+            return {'history_unavailable': 1, **({'history_' + reason: 1}
+                     if reason in ('peer_identity_unresolved', 'backend_rejected') else {})}
         except RuntimeError:
             return {'history_unavailable': 1}
         if not isinstance(rows, list) or len(rows) > 50:
@@ -294,7 +302,7 @@ def compare_friend_ingress(scopes, raw, *, account, since_ms, now_ms, history, f
 
 def audit_friend_ingress(path, mapping_path, since_ms, now_ms):
     from project_conf import data_dir, ConfigError
-    from qq_backend import resolve, health, call, BackendError
+    from qq_backend import resolve, health, call, BackendError, BackendActionRejected
 
     def config_json(file):
         with open_log(file) as stream:
@@ -338,8 +346,11 @@ def audit_friend_ingress(path, mapping_path, since_ms, now_ms):
         pass
 
     def history(peer):
-        value = call('get_friend_msg_history', {'user_id': int(peer), 'count': 50},
-                     connection=connection, timeout=4)['data']
+        try:
+            value = call('get_friend_msg_history', {'user_id': int(peer), 'count': 50},
+                         connection=connection, timeout=4)['data']
+        except BackendActionRejected as error:
+            raise FriendHistoryUnavailable(error.reason) from None
         return value.get('messages') if isinstance(value, dict) else None
 
     result = compare_friend_ingress(mapping, segments, account=account, since_ms=since_ms, now_ms=now_ms,

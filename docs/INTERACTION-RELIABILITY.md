@@ -73,7 +73,7 @@ python -B scripts/interaction_health.py --log ABSOLUTE_PRIVATE_INTERACTION_LOG
 
 脚本只读有界普通文件，按会话哈希汇总阶段、长时间未结束条目和耗时。连接验证、入站准备和接收至传输接受各自提供样本量及分位数。用 `--since-ms` 加 Unix 毫秒时间戳，可查看部署后的输入。更早的记录仍参与关联跨窗口合并的会话。安静决定、未准入、准备失败、排队、已领取、拒发、传输接受和未知分别展示。手机端显示需由客户端确认。
 
-如需核对短暂断线或重载期间的收件，用 `--friend-mapping ABSOLUTE_CHAT_SESSIONS_JSON --since-ms UNIX_MS`，时间窗口为最近 24 小时内。该模式对照选定 QQ 后端的当前好友历史与两段阶段日志，先查未建立会话的好友，合计最多 32 人，每人读最近 50 条。缺接收记录标为 `without_ingress_evidence`，名单或历史读不到以及覆盖受限时报告 `partial`。结果只含汇总数字，供定位收件链路。
+如需核对短暂断线或重载期间的收件，用 `--friend-mapping ABSOLUTE_CHAT_SESSIONS_JSON --since-ms UNIX_MS`，时间窗口为最近 24 小时内。该模式对照选定 QQ 后端的当前好友历史与两段阶段日志，先查未建立会话的好友，合计最多 32 人，每人读最近 50 条。缺接收记录标为 `without_ingress_evidence`，名单或历史读不到以及覆盖受限时报告 `partial`。`history_peer_identity_unresolved` 是 SnowLuma 历史查询的账号标识解析失败。结果只含汇总数字，供定位收件链路。
 
 合并的入站依据有序阶段元数据关联为 `coalesced`，不会继续冒充积压；缺失父阶段时明确为部分来源。拒绝的静默控制不计作已接受安静，发出部分包后又拒发单列 `partial_transport`，不能冒充完整发送。这些关联仅用于诊断，不重建票或重放权限。
 
