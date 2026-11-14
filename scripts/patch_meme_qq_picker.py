@@ -126,13 +126,34 @@ def extend_current_provider(raw):
         raise PatchError('Live selection provider already present without marker')
     return (marker + text.replace(anchor, anchor + addition, 1)).replace('\n', newline).encode('utf-8')
 
+def extend_indexed_label_search(text):
+    text = replace_once(text, '    search(query, n, tag) {', '    search(query, n, tag, indexedLabels) {')
+    text = replace_once(text, 'if (ids.length === 1 && ids[0] === activePackId()) return memes.search(query, n, tag)',
+                        'if (!indexedLabels && ids.length === 1 && ids[0] === activePackId()) return memes.search(query, n, tag)')
+    anchor = '      return { ...searchRows(merged, query, n), tags }'
+    return replace_once(text, anchor, """      if (indexedLabels) {
+        let best = 0
+        const matches = []
+        for (const row of merged) {
+          const hay = [row.tag, row.keywords, row.caption].join(' ').toLowerCase()
+          const score = indexedLabels.filter(label => hay.includes(label)).length
+          if (!score || score < best) continue
+          if (score > best) { matches.length = 0; best = score }
+          matches.push(row)
+        }
+        return { memes: pickShuffled(matches, n), tags }
+      }
+""" + anchor)
 
-def transform(name, raw):
+
+def transform(name, raw, *, indexed_labels=True):
     if sha256(raw) != KNOWN[name]:
         raise PatchError('Unreviewed native program')
     newline = '\r\n' if b'\r\n' in raw else '\n'
     text = raw.decode('utf-8').replace('\r\n', '\n')
     if name == 'index.js':
+        if indexed_labels:
+            text = extend_indexed_label_search(text)
         anchor = '    resolveStored(stored) {\n'
         text = replace_once(text, anchor, RESOLVER + anchor)
         text = replace_once(text,
@@ -282,7 +303,11 @@ def inspect(meme_dir, onebot_dir, manifest=None, *, canonical=True):
             if before[key] is not None:
                 originals[key] = read_regular(private.parent / 'original' / key.replace(':','/'))[0]
                 name = key.split(':')[-1].split('/')[-1]
-                if sha256(originals[key]) != before[key]['sha256'] or transform(name,originals[key]) != generated[key]:
+                if sha256(originals[key]) != before[key]['sha256']:
+                    raise PatchError('Private original changed')
+                expected = transform(name,originals[key])
+                if (generated[key] != expected and
+                        (name != 'index.js' or generated[key] != transform(name, originals[key], indexed_labels=False))):
                     raise PatchError('Private original/transform changed')
             elif canonical and generated[key] != source:
                 raise PatchError('Private helper copy changed')
