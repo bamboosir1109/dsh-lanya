@@ -690,8 +690,8 @@ export class OneBotDecisionAdapter {
     }
     // A new process cannot know when the previous process lost its socket.
     // Use a short lookback; policy and platform history still deduplicate it.
-    const since = this.reconnectReview?.until === undefined ? this.reconnectReview?.since : undefined
-    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, until: at, scopes: null, friends: null }
+    const since = this.reconnectReview?.connectedAt === undefined ? this.reconnectReview?.since : undefined
+    this.reconnectReview = { since: since ?? at - FRIEND_RECONNECT_WINDOW_MS, connectedAt: at, verifiedAt: null, scopes: null, friends: null }
     if (this.startRequested) this.checkReconnectHistory()
   }
 
@@ -702,9 +702,9 @@ export class OneBotDecisionAdapter {
   async recoverReconnectHistory() {
     const window = this.reconnectReview, connection = this.deps.connection
     if (!this.nativeClaims || !this.startRequested || this.bridge.stopping ||
-        !window?.until || connection?.connected !== true) return
+        window?.connectedAt === undefined || connection?.connected !== true) return
     if (this.reconnectReviewAttempt) return this.reconnectReviewAttempt
-    if (this.now() - window.until > FRIEND_RECONNECT_WINDOW_MS) {
+    if (this.now() - window.connectedAt > FRIEND_RECONNECT_WINDOW_MS) {
       this.reconnectReview = null
       return
     }
@@ -716,8 +716,12 @@ export class OneBotDecisionAdapter {
       if (!sameWindow()) return
       const selected = this.backendGuard.selection(), backend = await this.backendGuard.verify(connection, selected.stamp)
       if (!backend.allowed || !backend.verified || !sameWindow()) return
-      const ready = () => sameWindow() && this.now() - window.until <= FRIEND_RECONNECT_WINDOW_MS &&
+      // The socket may report connected before the account guard admits live
+      // events. Include that startup gap once the same account is verified.
+      window.verifiedAt ??= this.now()
+      const ready = () => sameWindow() && this.now() - window.connectedAt <= FRIEND_RECONNECT_WINDOW_MS &&
         this.backendGuard.edge(connection, selected.stamp)
+      if (!ready()) return
       const privateAllowed = scope =>
         /^private:[1-9][0-9]{0,15}$/.test(scope) && Number.isSafeInteger(Number(scope.slice(8))) &&
           this.replyReviewAllowed(scope, scope.slice(8))
@@ -790,7 +794,7 @@ export class OneBotDecisionAdapter {
           for (const row of rows) {
             const at = row.time * 1000, messageId = String(row.message_id)
             const sender = String(row.sender?.user_id)
-            if (at > window.until || at <= Math.max(lastOwnAt, lastKnownAt) || sender === selected.expectedAccount || !allowed(sender) ||
+            if (at > window.verifiedAt || at <= Math.max(lastOwnAt, lastKnownAt) || sender === selected.expectedAccount || !allowed(sender) ||
                 (group && !groupHistorySender(row)) ||
                 (!group && (row.message_type !== 'private' || row.sub_type !== 'friend')) ||
                 !/^-?[0-9]{1,16}$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) ||
@@ -829,7 +833,7 @@ export class OneBotDecisionAdapter {
     finally {
       if (this.reconnectReviewAttempt === attempt) {
         this.reconnectReviewAttempt = null
-        if (this.reconnectReview?.until && this.reconnectReview !== window) this.checkReconnectHistory()
+        if (this.reconnectReview?.connectedAt !== undefined && this.reconnectReview !== window) this.checkReconnectHistory()
       }
     }
   }

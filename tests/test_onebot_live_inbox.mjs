@@ -1203,6 +1203,52 @@ test('verified reconnect starts friend history review without waiting for the pe
   assert.equal(adapter.reconnectReview, null)
 })
 
+test('reconnect covers the account verification gap and keeps that boundary fixed on retries', async t => {
+  const h = await fixture(t), a = h.bridge.lanyaPolicy
+  backendFixture(h)
+  await h.receive('previous reply context')
+  await Promise.all([...a.replyReviewWrites])
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  await h.decide('idle'); await h.end()
+  h.agent.status = 'idle'
+  a.noteConnectionStatus(false)
+  h.advance(20_000)
+  a.noteConnectionStatus(true)
+  const connected = Math.floor(a.now() / 1000)
+  const verify = a.backendGuard.verify.bind(a.backendGuard)
+  let ready = false, reads = 0
+  a.backendGuard.verify = (...args) => ready ? verify(...args) : Promise.resolve({ allowed: false })
+  const call = h.deps.connection.call
+  h.deps.connection.call = async (action, params) => {
+    if (action !== 'get_friend_msg_history') return call(action, params)
+    if (++reads === 1) throw new Error('synthetic history error')
+    const row = (time, message_id, text) => ({ message_type: 'private', sub_type: 'friend', time, message_id,
+      sender: { user_id: 101 }, message: [{ type: 'text', data: { text } }] })
+    return { messages: [row(connected + 1, 541, 'question during verification'), row(connected + 61, 542, 'new traffic after verification')] }
+  }
+  await h.receive('question during verification', { message_id: 541 })
+  assert.equal(h.pending.length, 0)
+  a.startRequested = true
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 0)
+  h.advance(30_000)
+  ready = true
+  await a.recoverReconnectHistory()
+  assert.equal(reads, 1)
+  h.advance(60_000)
+  await a.recoverReconnectHistory()
+  const state = await a.policy.snapshot(h.chat.chatId)
+  assert.equal(state.current.replyReview.text, 'question during verification')
+  assert.ok(!state.seen.some(item => item.messageId === '542'))
+  await a.reviewUnansweredInputs()
+  assert.equal(h.pending.length, 1)
+  h.start(); assert.equal((await h.preStep()).kind, 'enter')
+  assert.equal((await h.decide('reply', { text: 'answer after reconnect' })).sent, true)
+  await h.end()
+  await a.reviewUnansweredInputs()
+  assert.equal(h.calls.filter(call => /^send_/.test(call.action)).length, 1)
+})
+
 test('reply review waits for the verified QQ backend without consuming an attempt', async t => {
   const h = await prepareMissedReply(t), adapter = h.bridge.lanyaPolicy
   const backend = backendFixture(h)
