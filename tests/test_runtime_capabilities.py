@@ -712,7 +712,15 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             live = self.module.build_context(str(self.root), 'fixture', scope, context_mode='live_chat')
             self.assertEqual(full['tools']['qq_expression']['tone'], live['tools']['qq_expression']['tone'])
             self.assertIn('温和', live['tools']['qq_expression']['tone']['voice'])
-            self.assertIn('Expression preference only', live['tools']['qq_expression']['tone']['authority'])
+            tone = live['tools']['qq_expression']['tone']
+            self.assertIn('Expression preference only', tone['authority'])
+            self.assertIn('接对方这句话里的一个具体点', tone['voice'])
+            self.assertIn('不催回', tone['care'])
+            self.assertIn('半句话接得上就够', tone['naturalness'])
+            self.assertIn('对方刚核对是周五', tone['examples']['correction']['context'])
+            if scope.startswith('group:'):
+                review = self.module.build_context(str(self.root), 'fixture', scope, context_mode='group_review')
+                self.assertEqual(tone, review['tools']['qq_expression']['tone'])
             for key in ('finish', 'group_pacing'):
                 self.assertEqual(full['tools']['qq_expression'][key], live['tools']['qq_expression'][key])
             self.assertIn('没有具体对象或下一步', live['tools']['qq_expression']['finish'])
