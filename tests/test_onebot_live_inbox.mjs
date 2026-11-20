@@ -16,7 +16,10 @@ if (!vm.SourceTextModule) {
   test('native inbox cases in isolated VM', () => {
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
     const child = spawnSync(process.execPath, ['--experimental-vm-modules', '--test', fileURLToPath(import.meta.url)],
-      { encoding: 'utf8', windowsHide: true, timeout: 360000, env })
+      // The full matrix patches hundreds of isolated fixtures. Keep the
+      // fallback wrapper long enough for supported Windows Python installs;
+      // individual message deadlines are asserted inside the actual cases.
+      { encoding: 'utf8', windowsHide: true, timeout: 900000, env })
     assert.equal(child.error, undefined, child.error?.message)
     assert.equal(child.status, 0, child.stdout + child.stderr)
   })

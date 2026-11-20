@@ -61,6 +61,19 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.resolve(provider='napcat').provider, 'napcat')
         self.assertEqual(self.project['qqBackend']['provider'], 'snowluma')
 
+    def test_catalog_distinguishes_unavailable_configured_installation_without_disclosing_path(self):
+        root = self.root / 'unavailable-vendor'
+        self.project['qqBackend'] = {'provider': 'snowluma', 'providers': {'snowluma': {'root': str(root)}}}
+        result = backend.catalog(self.project, self.root)
+        selected = next(row for row in result['providers'] if row['selected'])
+        self.assertEqual(selected['installation']['root_source'], 'configured')
+        self.assertFalse(selected['installation']['root_available'])
+        self.assertEqual(selected['installation']['error'], 'FileNotFoundError')
+        self.assertFalse(selected['configured'])
+        self.assertFalse(selected['can_select'])
+        self.assertNotIn(str(root), json.dumps(result))
+        self.assertNotIn('fixture-secret', json.dumps(result))
+
     def test_napcat_public_endpoints_respect_official_flags_and_reject_conflicts(self):
         self.write('napcat/framework/config/onebot11.json', {'network': {
             'httpServers': [{'enable': True, 'port': 8721}],

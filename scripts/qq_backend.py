@@ -333,6 +333,18 @@ def catalog(project=None, workspace=None):
         spec, settings, root, _, _, _ = describe(project, workspace, provider=key)
         row = dict(provider=key, name=spec.name, selected=key == selected.key,
             installed=installed(spec, root), repository=spec.repository, configured=False, can_select=False)
+        # Describe discovery separately from account/transport readiness. This
+        # exposes no private paths or credentials and helps diagnose a service
+        # launched with a different filesystem/configuration context.
+        discovery = dict(root_source='configured' if 'root' in settings else 'workspace',
+            root_available=False, root_fingerprint=hashlib.sha256(str(root).encode('utf-8')).hexdigest())
+        try:
+            discovery['root_available'] = stat.S_ISDIR(root.stat().st_mode)
+        except OSError as error:
+            discovery['error'] = type(error).__name__
+            discovery['errno'] = error.errno
+            discovery['winerror'] = getattr(error, 'winerror', None)
+        row['installation'] = discovery
         try:
             row['webui_url'] = webui_address(spec, settings, root)
             row['connection'] = resolve(project, workspace, provider=key).public()

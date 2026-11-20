@@ -1412,7 +1412,8 @@ async function api(path, opts, live){
     if(location.origin !== API) urls.push(API + APIX + path);
     const read = async url => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
+      const timeout = ['/budget', '/bili', '/live'].includes(path.split('?')[0]) ? 30000 : 15000;
+      const timer = setTimeout(() => controller.abort(), timeout);
       try{
         const response = await fetch(url, { ...opts, method:'GET', cache:'no-store', signal:controller.signal });
         if(!response.ok) throw new Error('HTTP ' + response.status);

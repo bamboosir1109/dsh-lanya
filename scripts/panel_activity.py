@@ -32,7 +32,7 @@ MAX_REPLY_TEXT = 2000
 MAX_CONTENT_EXCERPT = 1800
 MAX_EPISODE_EVIDENCE = 40
 SAFE_INTEGER = 9007199254740991
-_TOOL_CACHE = ReadCache()
+_TOOL_CACHE = ReadCache(ttl=60)
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
     'bili_video_info': 'details', 'bili_subtitle': 'subtitle',

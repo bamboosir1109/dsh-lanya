@@ -96,3 +96,38 @@ test('no-cost cross-midnight turn remains unknown on both days',()=>{
   const report=buildNativeDaily(value,()=>({found:false,calls:[]}));
   for(const row of report.days){assert.equal(row.unknown_count,1);assert.equal(row.total,null);assert.equal(row.autonomy,null);}
 });
+
+test('pricing receives each turn once with the latest preceding request header', () => {
+  const value = fixture();
+  const session = value.sessions[0];
+  session.own_start = 1;
+  session.source_start = now - 20000;
+  session.records = [{seq:0,time:now-20000,type:'request/header',data:{header:{config:{model:'first'}}}}];
+  session.origins = [];
+  const count = 500;
+  for (let turn = 0; turn < count; turn++) {
+    const seq = 1 + turn * 5;
+    const time = now - 18000 + turn * 10;
+    session.records.push(
+      {seq,time,type:'turn/start',data:{turn}},
+      {seq:seq+2,time:time+2,type:'assistant/message',data:{turn}},
+      {seq:seq+3,time:time+3,type:'request/header',data:{header:{config:{model:'next-'+turn}}}},
+      {seq:seq+4,time:time+4,type:'turn/end',data:{turn}},
+    );
+    session.origins.push({seq:seq+1,kind:'plugin:dsh-lanya-observation'});
+  }
+  session.expected_days['2026-11-01'] = 0;
+  session.expected_days['2026-11-02'] = count * 0.01;
+  let inspected = 0;
+  const report = buildNativeDaily(value, (records, _config, start, end) => {
+    const turn = (start - 1) / 5;
+    assert.equal(records.length, 5);
+    assert.equal(records[0].data.header.config.model, turn === 0 ? 'first' : 'next-'+(turn-1));
+    assert.deepEqual(records.slice(1).map(row=>row.seq), [start,start+2,start+3,end]);
+    inspected += records.length;
+    return {found:true,calls:[{atMs:records[2].time,priced:true,apiCost:0.01}]};
+  });
+  assert.equal(inspected, count * 5);
+  assert.equal(report.days[1].autonomy, count * 0.01);
+  assert.equal(report.days[1].unknown_count, 0);
+});

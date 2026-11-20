@@ -30,6 +30,8 @@ class PanelHealthTests(unittest.TestCase):
     def test_state_accepts_the_producers_timezone_aware_iso_timestamp(self):
         value=dict(at='2026-11-04T11:27:43.8352322+08:00',components=[],plugins=[],memory={})
         self.assertEqual(health.validate('/state',value),'healthy')
+        for stamp in ['2026-11-04T11:27:43.8+08:00', '2026-11-04T03:27:43.835232200Z']:
+            self.assertEqual(health.validate('/state',dict(value,at=stamp)),'healthy')
         for stamp in [None,'invalid','2026-11-04T11:27:43']:
             with self.assertRaises(ValueError):health.validate('/state',dict(value,at=stamp))
 

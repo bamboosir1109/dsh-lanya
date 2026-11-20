@@ -34,6 +34,19 @@ function account(provider='snowluma', revision='revision-a') {
     postIntervalHours:6,signatureIntervalHours:4,dailyPosts:2,dailySignatures:2}}
 }
 
+test('an inaccessible configured directory does not instruct reinstalling or enable a backend change',()=>{
+  const h=harness(), value=state('snowluma');
+  const row=value.providers.find(row=>row.provider==='snowluma');
+  Object.assign(row,{installed:false,configured:false,can_select:false,
+    installation:{root_source:'configured',root_available:false}});
+  h.set(value);h.node('qqBackendSelect').value='snowluma';
+  h.context.renderQQBackendChoice();
+  assert.match(h.node('qqBackendChoice').textContent,/无法读取已配置的安装目录/);
+  assert.doesNotMatch(h.node('qqBackendChoice').textContent,/请先安装/);
+  assert.equal(h.node('qqBackendApply').disabled,true);
+  assert.equal(h.run('qqBackendState.selected'),'snowluma');
+});
+
 test('account page distinguishes provider support and escapes real history',async()=>{
   const value=account('napcat'), h=harness(async()=>({ok:true,activity:value}));h.set(state())
   value.recent=[{kind:'post',state:'unknown',text:'<private fixture>',at:1,audience:'friends'}]

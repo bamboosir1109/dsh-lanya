@@ -55,6 +55,8 @@ python -B scripts/panel_health.py --base-url http://127.0.0.1:19389
 
 发现加载慢时区分冷解析与同一来源的缓存命中、预算摘要与完整日报，固定同一端口和实际来源再比较，不把一轮缓存时间宣称为所有页面都达到同样延迟。并发单元测试、自然活动和文件变化均可能影响实测。
 
+费用与活动投影会复用未变化的已核验来源。每次读取仍核对文件身份、归属与可读性，追加或替换后重新解析。费用计价只传入当前回合和最近的前置计价配置，跨日费用及未知项仍按原始回执核对。大记录页面首次读取最多等待三十秒，重新读取可复用成功结果。
+
 当前程序静态检查排除按受控安装器命名的 `.名称-original-<32位标识>`／stage 副本；它们是恢复材料，完整原件与权限仍应另行核对。要检查这些文件本身，使用 `python -B scripts/fullcheck.py --live --root ABSOLUTE_RUNTIME --include-recovery`。不要因恢复副本包含当时的问题就删除它，也不能凭文件名推断实际是否仍有引用。
 
 内部 `agent-instructions`、`runtime-context`、`repeat-tool-reminder`、`compact-checkpoint` 使用原生来源字段识别，不从聊天文字推断。它们不创建或替换入站绑定；已经登记为真实输入的同 ID 消息继续完整验证，未知来源继续拒绝。真实验收须覆盖工具提醒前后和压缩后的下一轮，不只发一句普通问候。
@@ -290,7 +292,7 @@ Windows 工具仅在本次调用内接管配置候选与数据库备份的两次
 ```powershell
 python -B scripts/fullcheck.py --quiet
 python -B -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_*.mjs
+node --experimental-vm-modules --test tests/test_*.mjs
 node --check plugin/lib/index.js
 npm pack --dry-run --ignore-scripts
 python -B scripts/privacy-scan.py
@@ -606,3 +608,9 @@ python -B scripts/privacy-scan.py
 部署记录至少写明源码 commit、更新了哪些运行文件、DSH profile 插件版本、重启对象、验证结果和备份位置。本机备份位置与真实路径留在私有运维记录，不进公开文档。
 
 回退程序用已验证的旧版本重新部署，再重启对应进程。数据回退单独决定；新版程序可能已经写入新的状态，不能只回退代码就假设数据库和配置也自动恢复。
+
+## 安装发现与截图服务
+
+QQ 接入目录发现信息与账号连接结果独立。`installation.root_source` 表示配置指定或工作区约定，`root_available` 表示当前读取进程能否访问；失败时仅给异常类型和系统错误码，目录指纹不含路径明文。独立检查成功而看护进程失败时，核对进程来源和访问环境，不要清空配置或自动换供应商。
+
+Android 状态依据工作进程的操作系统锁和匹配的新截图。重启工作进程前核对唯一实例及待处理请求；已有操作结果不确定时不要重放。恢复后提交新的 `shot` 请求，核对请求序号、截图标识和新鲜度。不要用磁盘上保留的旧 PNG 证明设备在线。

@@ -318,5 +318,46 @@ class NativeDailyReportTests(unittest.TestCase):
             self.report(now=None)
         self.assertEqual(runner.call_count, 2)
 
+    def test_source_cache_reuses_metadata_but_rechecks_owner_and_file_changes(self):
+        path, rows = self.rows['private']
+        original = reports._native_metadata
+        with mock.patch.object(reports, '_native_metadata', wraps=original) as reader:
+            first = reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+            first[0][0]['data']['turn'] = 999
+            second = reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+            self.assertEqual(second[0][0]['data']['turn'], 0)
+            self.assertEqual(reader.call_count, 1)
+            with self.assertRaises(activity.ActivityUnavailable):
+                reports._native_rows(path, 'another-session', str(self.work), 'fixture')
+            rows[0]['agentPreset'] = 'another-owner'
+            self.save('private')
+            with self.assertRaises(activity.ActivityUnavailable):
+                reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+
+    def test_source_cache_checks_read_access_on_every_hit(self):
+        path, _ = self.rows['private']
+        reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+        original = Path.open
+        def deny(current, *args, **kwargs):
+            if current == path:
+                raise PermissionError('synthetic denied read')
+            return original(current, *args, **kwargs)
+        with mock.patch.object(Path, 'open', deny):
+            with self.assertRaises(PermissionError):
+                reports._native_rows(path, 'fixture-private', str(self.work), 'fixture')
+
+    def test_slow_success_remains_cached_for_the_next_read(self):
+        original = reports.subprocess.run
+        stamp = [self.now / 1000]
+        def delayed(*args, **kwargs):
+            response = original(*args, **kwargs)
+            stamp[0] += 10
+            return response
+        with mock.patch.object(reports.time, 'time', side_effect=lambda: stamp[0]), \
+             mock.patch.object(reports.subprocess, 'run', side_effect=delayed) as runner:
+            self.assertEqual(self.report(now=None)['availability'], 'available')
+            self.assertEqual(self.report(now=None)['availability'], 'available')
+        self.assertEqual(runner.call_count, 1)
+
 
 if __name__ == '__main__': unittest.main()

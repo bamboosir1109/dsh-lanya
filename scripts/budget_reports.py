@@ -17,12 +17,14 @@ import threading
 import time
 
 import budget_runtime as budget
+from panel_read_cache import ReadCache
 
 SCHEMA = 'daily-spending/v2'
 TIMEZONE = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
 SAFE_INTEGER = 9007199254740991
 _NATIVE_CACHE = {}
 _NATIVE_LOCK = threading.Lock()
+_NATIVE_SOURCE_CACHE = ReadCache(ttl=60, max_bytes=16 * 1024 * 1024)
 
 
 def _require(value):
@@ -140,10 +142,15 @@ def daily_spending(now=None, days=30):
 
 def _native_rows(path, session, workspace, preset):
     import panel_activity as activity
-    # Share the activity reader's bounded snapshot and streaming decompressor.
-    # Only pricing/routing metadata below survives each decoded source line.
-    with activity._native_lines(path) as lines:
-        return _native_metadata(lines, session, workspace, preset)
+    key = activity.native_source_key(path, session, activity._workspace(workspace), activity._preset(preset))
+    def build():
+        # Keep pricing and routing metadata, with current source access checked
+        # again even when only the price ledger changed since the last request.
+        with activity._native_lines(path) as lines:
+            records, origins, own_start, source_start = _native_metadata(lines, session, workspace, preset)
+        return dict(records=records, origins=origins, own_start=own_start, source_start=source_start)
+    captured = _NATIVE_SOURCE_CACHE.get(key, build)
+    return captured['records'], captured['origins'], captured['own_start'], captured['source_start']
 
 
 def _native_metadata(lines, session, workspace, preset):
@@ -328,7 +335,7 @@ def native_daily_spending(*, workspace, agent_preset, identity_file, dsh_home,
             activity._require(isinstance(latest_ledger, dict) and latest_ledger.get('version') == 1 and
                               latest_ledger.get('config') == configuration, 'source_changing')
             # The bridge's public output is aggregate-only by construction.
-            _NATIVE_CACHE['value'] = (key, sampled, report)
+            _NATIVE_CACHE['value'] = (key, int(time.time() * 1000), report)
             return json.loads(json.dumps(report))
     except subprocess.TimeoutExpired:
         base['coverage']['reasons'] = ['native_projection_timeout']
