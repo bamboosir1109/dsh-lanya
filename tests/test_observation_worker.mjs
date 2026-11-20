@@ -79,6 +79,7 @@ test('incremental discovery skips inert terminals; explicit and periodic audits 
   const f = fixture(t); let clock = 100
   for (let i = 0; i < 24; i++) f.seed('terminal-' + i)
   const p = f.make({ now: () => clock }); await p.start({ poll: false }); await p.drain()
+  assert.equal(p.status().reads, 24, 'terminal records with no review need one verified read per audit')
   // Flush native watch notifications before recording the stable frontier.
   await new Promise(resolve => setTimeout(resolve, 30)); await p.drain(false)
   const reads = p.status().reads
@@ -87,6 +88,139 @@ test('incremental discovery skips inert terminals; explicit and periodic audits 
   clock += 30_001; await p.drain(false)
   assert.equal(p.status().full, true); assert.equal(p.status().selected, 24)
   await p.drain(); assert.equal(p.status().selected, 24)
+})
+
+test('a future review revalidates its completion when due even if it changed during acknowledgement', async t => {
+  const f = fixture(t), calls = []
+  const parent = f.seed('future-parent', true, { kind: 'activity.opportunity', producer: 'mind' })
+  const original = { ...parent.marker, next_review_at: 200 }
+  fs.writeFileSync(parent.done, JSON.stringify(original))
+  let clock = 100, changed = false
+  const p = f.make({ now: () => clock,
+    acknowledge: event => {
+      if (changed || event.event_id !== 'future-parent') return
+      changed = true
+      fs.writeFileSync(parent.done, JSON.stringify({ ...original, status: 'unknown' }))
+    },
+    dispatch: event => { calls.push(event.event_id); return { completed: true, status: 'decided', decision_id: 'fixture' } },
+  })
+  await p.start({ poll: false }); await p.drain()
+  assert.deepEqual(calls, [])
+  clock = 201; await p.drain(false)
+  assert.deepEqual(calls, [], 'a changed completion cannot create a review from the prior snapshot')
+  fs.writeFileSync(parent.done, JSON.stringify(original))
+  await p.drain()
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^main-review:/)
+})
+
+test('a long full audit leaves time for incremental discovery before another full audit', async t => {
+  const f = fixture(t)
+  f.seed('terminal-before-audit')
+  let clock = 100
+  const p = f.make({ now: () => clock, acknowledge: () => { clock += 45_000 } })
+  await p.start({ poll: false })
+  await p.drain()
+  const reads = p.status().reads
+  await p.drain(false)
+  assert.equal(p.status().full, false)
+  assert.equal(p.status().reads, reads)
+  f.seed('live-after-audit', false)
+  assert.equal((await p.drain(false)).processed, 1)
+  assert.equal(p.status().selected, 1)
+  clock += 30_001
+  await p.drain(false)
+  assert.equal(p.status().full, false)
+  clock += 150_000
+  await p.drain(false)
+  assert.equal(p.status().full, true)
+})
+
+test('an invalid derived review is revisited by full audit without recurring incremental reads', async t => {
+  const f = fixture(t)
+  const record = f.seed('main-review:' + 'a'.repeat(64) + ':1', true,
+    { producer: 'main-review', kind: 'activity.opportunity' })
+  fs.writeFileSync(record.done, JSON.stringify({ ...record.marker, next_review_at: 20 }) + '\n')
+  const p = f.make({ now: () => 100, dispatch: () => assert.fail('terminal must never dispatch') })
+  await p.start({ poll: false })
+  await p.drain()
+  assert.equal(p.status().cached, 1)
+  await p.drain(false)
+  assert.equal(p.status().selected, 0)
+  await p.drain()
+  assert.equal(p.status().selected, 1)
+})
+
+test('legacy completion without its original stays reported but waits for a change or audit', async t => {
+  const f = fixture(t), errors = [], acknowledged = []
+  const legacy = f.seed('missing-legacy-original')
+  const original = path.join(f.root, 'pending', legacy.name)
+  const { event_raw, ...marker } = legacy.marker
+  fs.unlinkSync(original)
+  fs.writeFileSync(legacy.done, JSON.stringify({ ...marker, version: 1 }) + '\n')
+  const p = f.make({
+    now: () => 100,
+    log: (level, message) => { if (level === 'error') errors.push(message) },
+    dispatch: () => assert.fail('legacy completion cannot dispatch'),
+    acknowledge: event => { acknowledged.push(event.event_id) },
+  })
+  await p.start({ poll: false })
+  await p.drain()
+  assert.equal(errors.length, 1)
+  assert.deepEqual(acknowledged, [])
+  const reads = p.status().reads
+  await p.drain(false)
+  assert.equal(p.status().selected, 0)
+  assert.equal(p.status().reads, reads)
+  fs.writeFileSync(original, event_raw)
+  await p.drain(false)
+  assert.deepEqual(acknowledged, ['missing-legacy-original'])
+})
+
+test('cold recovery confirms terminal records in bounded batches without replay', async t => {
+  const f = fixture(t)
+  const sizes = [], handled = [], acknowledged = []
+  for (let i = 0; i < 128; i++) f.seed('historical-' + i)
+  f.seed('fresh', false)
+  const p = f.make({
+    acknowledge: event => { acknowledged.push(event.event_id) },
+    acknowledgeBatch: records => {
+      sizes.push(records.length)
+      return records.map(({ event, marker }) => {
+        assert.equal(event.event_id, marker.event_id)
+        acknowledged.push(event.event_id)
+        return { acknowledged: false, reason: 'unknown_observation' }
+      })
+    },
+    dispatch: event => {
+      handled.push(event.event_id)
+      return { completed: true, status: 'decided', decision_id: 'fresh-decision' }
+    },
+  })
+  await p.start({ poll: false })
+  assert.equal((await p.drain()).processed, 1)
+  assert.ok(sizes.length > 0 && sizes.every(size => size >= 2 && size <= 64))
+  assert.deepEqual(acknowledged.slice().sort(), ['fresh', ...Array.from({ length: 128 }, (_, i) => 'historical-' + i)].sort())
+  assert.deepEqual(handled, ['fresh'])
+  await p.drain()
+  assert.equal(acknowledged.length, 129)
+  assert.deepEqual(handled, ['fresh'])
+})
+
+test('large terminal originals flush before the maximum batch count', async t => {
+  const f = fixture(t), sizes = []
+  for (let i = 0; i < 40; i++) f.seed('large-terminal-' + i, true, { payload: { text: 'x'.repeat(128 * 1024) } })
+  const p = f.make({
+    acknowledge: () => assert.fail('large terminal batches should remain valid'),
+    acknowledgeBatch: records => {
+      sizes.push(records.length)
+      return records.map(() => ({ acknowledged: true }))
+    },
+    dispatch: () => assert.fail('terminal records cannot dispatch'),
+  })
+  await p.start({ poll: false })
+  assert.equal((await p.drain()).processed, 0)
+  assert.deepEqual(sizes, [32, 8])
 })
 
 test('cached terminal loss cannot replay; restored evidence is revalidated', async t => {
@@ -99,13 +233,12 @@ test('cached terminal loss cannot replay; restored evidence is revalidated', asy
   assert.equal(calls, 0)
 })
 
-for (const method of ['read', 'complete']) test(`worker crash during ${method} recovers without restarting the parent or repeating a settled turn`, async t => {
+for (const method of ['readBatch', 'complete']) test(`worker crash during ${method} recovers without restarting the parent or repeating a settled turn`, async t => {
   const f = fixture(t), factory = await f.crashFactory(method), value = f.seed('recover', false)
   let calls = 0
   const p = f.make({ dispatch: event => { calls++; return { completed: true, status: 'unknown', decision_id: 'decision-' + event.event_id } } }, factory)
   await p.start({ poll: false }); fs.writeFileSync(path.join(f.root, 'crash-worker'), 'fixture')
-  if (method === 'complete') await assert.rejects(p.drain(), /Scanner worker exited/)
-  else await p.drain()
+  await assert.rejects(p.drain(), /Scanner worker exited/)
   assert.equal(calls, method === 'complete' ? 1 : 0)
   fs.unlinkSync(path.join(f.root, 'crash-worker'))
   await p.drain()

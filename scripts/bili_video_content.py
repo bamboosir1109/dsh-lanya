@@ -160,21 +160,32 @@ async def observe_video(bvid, *, page=1, start_sec=None, end_sec=None,
         matches.sort(key=lambda row: (row["from"], row["to"]))
         subtitle["matching_segment_count"] = len(matches)
         used = 0
+        next_row = None
         for row in matches:
             if len(subtitle["segments"]) >= max_segments or used >= max_chars:
                 subtitle["truncated"] = True
+                next_row = row
                 break
             text = row["text"][:max_chars - used]
             truncated = len(text) < len(row["text"])
             subtitle["segments"].append({**row, "text": text, "text_truncated": truncated})
             used += len(text)
             subtitle["truncated"] |= truncated
+            if truncated:
+                next_row = row
+                break
         if subtitle["segments"]:
             subtitle["status"] = "available"
             subtitle["range"] = {"start_sec": min(row["from"] for row in subtitle["segments"]),
                                  "end_sec": max(row["to"] for row in subtitle["segments"])}
             result["evidence"]["kind"] = "subtitles"
             result["status"] = "partial" if clipped or subtitle["truncated"] or subtitle["skipped_invalid_count"] else "observed"
+            if next_row is not None:
+                # Anchor at the first incomplete caption. Overlapping captions
+                # may repeat and a dense interval can require narrower bounds.
+                resume = max(start, next_row["from"])
+                subtitle["resume"] = {"start_sec": resume, "end_sec": end,
+                                      "advances": resume > start}
         else:
             subtitle["reason_code"] = "no_segments_in_requested_range"
     except Exception:

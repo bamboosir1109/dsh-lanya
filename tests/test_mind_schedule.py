@@ -64,22 +64,24 @@ class MindScheduleTests(unittest.TestCase):
         self.assertIn("do not wait for a major achievement", primary["instruction"])
         self.assertNotIn("natural short private chat", group["instruction"])
         self.assertEqual(group["activity_role"], "conversation_social")
-        self.assertIn("Only contact this group", group["instruction"])
-        for value in (primary, group):
-            self.assertIn("one qq_decide decision", value["instruction"])
-            self.assertIn("reuse an existing valid reply ticket", value["instruction"])
-            self.assertIn("an earlier decision cannot be upgraded", value["instruction"])
-            self.assertIn("Respect persistent silence", value["instruction"])
-            self.assertIn("policy, agent/profile or configuration files", value["instruction"])
+        self.assertIn("Keep the current group's scope and silence", group["instruction"])
+        self.assertIn("current conversation's decision and ticket", group["instruction"])
+        self.assertIn("Leisure and private plans belong to the primary session", group["instruction"])
+        self.assertIn("prior result is uncertain, leave that action alone", group["instruction"])
+        self.assertIn("one qq_decide decision", primary["instruction"])
+        self.assertIn("reuse an existing valid reply ticket", primary["instruction"])
+        self.assertIn("an earlier decision cannot be upgraded", primary["instruction"])
+        self.assertIn("Respect persistent silence", primary["instruction"])
+        self.assertIn("policy, agent/profile or configuration files", primary["instruction"])
         self.ask.assert_not_called()
         self.deliver.assert_not_called()
 
     def test_intentions_and_cross_recipient_proposals_are_explicit_without_reusing_send_authority(self):
         primary = self.mind._observation_payload({}, [], primary=True)["instruction"]
         group = self.mind._observation_payload({}, [], primary=False)["instruction"]
-        for value in (primary, group):
-            for field in ("qq_intent", "action=list", "expected_revision", "agent_summary", "blocked_unknown"):
-                self.assertIn(field, value)
+        for field in ("qq_intent", "action=list", "expected_revision", "agent_summary", "blocked_unknown"):
+            self.assertIn(field, primary)
+        self.assertNotIn("qq_intent", group)
         for boundary in ("qq_social_candidates", "qq_social_propose", "can_propose=true", "live appearance",
                          "recipient's own one-off review", "user-only", "without retry or group fallback"):
             self.assertIn(boundary, primary)

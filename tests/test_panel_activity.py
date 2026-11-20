@@ -578,10 +578,10 @@ class PanelActivityTests(unittest.TestCase):
         self.assertTrue(recent['coverage']['decisions_truncated'])
 
     def test_only_complete_native_single_input_turns_have_a_known_origin(self):
-        cases = [(['plugin:dsh-onebot', 'runtime-context'], 'live'),
-                 (['plugin:dsh-lanya-observation', 'agent-instructions'], 'observation'),
+        cases = [(['plugin:dsh-onebot', 'runtime-context', 'plugin:dsh-lanya-decision-reminder'], 'live'),
+                 (['plugin:dsh-lanya-observation', 'agent-instructions', 'plugin:dsh-lanya-decision-reminder'], 'observation'),
                  (['plugin:dsh-lanya-observation', 'plugin:dsh-onebot'], 'unknown'),
-                 (['runtime-context'], 'unknown'), (['other'], 'unknown')]
+                 (['plugin:dsh-lanya-decision-reminder'], 'unknown'), (['other'], 'unknown')]
         for turn, (kinds, expected) in enumerate(cases, 1):
             self.event('turn/start', {'turn': turn})
             for kind in kinds:

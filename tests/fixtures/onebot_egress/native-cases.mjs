@@ -396,6 +396,8 @@ test('native successful image allows separate text under the same reply ticket',
   const h = await setup(t)
   await h.receive('synthetic ordinary conversation'); h.start(); await h.decide()
   await h.tools.get('qq_send_image').execute({ sources: ['https://example.invalid/synthetic.png'] }, h.exec())
+  assert.equal((await h.send('已经发了张“开工”的表情。')).length, 0)
+  await assert.rejects(() => h.raw('send_msg', { user_id: 101, message: '图片发出去了。' }), /empty_content/)
   await h.send('A natural separate message.')
   assert.equal(h.calls.filter(item => item.action.startsWith('send_')).length, 2)
   const delivered = (await h.bridge.lanyaPolicy.policy.snapshot('private:101')).deliveries

@@ -32,7 +32,7 @@ MAX_REPLY_TEXT = 2000
 MAX_CONTENT_EXCERPT = 1800
 MAX_EPISODE_EVIDENCE = 40
 SAFE_INTEGER = 9007199254740991
-_TOOL_CACHE = ReadCache()
+_TOOL_CACHE = ReadCache(ttl=60)
 BILI_TOOLS = {
     'bili_recommend': 'recommendation', 'bili_run': 'recommendation',
     'bili_video_info': 'details', 'bili_subtitle': 'subtitle',
@@ -59,7 +59,8 @@ NAMED_TOOL_LABELS = {
     'android_screenshot': '获取手机截图', 'android_tap': '点击手机界面',
 }
 DECISION_VERDICTS = {'reply', 'idle', 'defer', 'tool_action'}
-HOST_CONTEXT_KINDS = {'agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint'}
+HOST_CONTEXT_KINDS = {'agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint',
+                      'plugin:dsh-lanya-decision-reminder'}
 CHINA = dt.timezone(dt.timedelta(hours=8))
 
 

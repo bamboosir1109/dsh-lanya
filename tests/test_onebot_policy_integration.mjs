@@ -104,7 +104,8 @@ async function setup(t, stagedEgress = false) {
   // Most transport tests isolate this independent enrichment; dedicated cases
   // below execute the real capability helper against an empty temporary workspace.
   bridge.lanyaPolicy.runtimeCapabilities = async () => null
-  const ctx = { tools: { register: definition => { tools.set(definition.name, definition); return () => {} } },
+  const ctx = { get: name => name === 'attachments' ? deps.attachments : undefined,
+    tools: { register: definition => { tools.set(definition.name, definition); return () => {} } },
     systemPrompt: { section: value => prompts.push(value.text) }, waitMedia: () => deps.waitMedia?.() }
   bridge.installChannelScope(ctx)
   t.after(async () => { await bridge.stop() })
@@ -169,6 +170,8 @@ async function accountFixture(h, options = {}) {
 
 test('primary account tool makes one bounded friends-visible publication without chat narration', async t => {
   const h = await setup(t), f = await accountFixture(h), chat = await h.receive(), turn = h.start(chat)
+  const diagnostics = []
+  f.a.diagnose = (_scope, _input, phase, detail) => diagnostics.push({ phase, status: detail?.status })
   const result = await f.publish(chat)
   assert.equal(result.accepted, true); assert.equal(result.client_visible_verified, false)
   assert.deepEqual(f.writes().map(call => call.params), [{ content: '今天听到了一首喜欢的歌。', ugc_right: 4 }])
@@ -176,6 +179,8 @@ test('primary account tool makes one bounded friends-visible publication without
   await h.end(chat, turn)
   assert.equal(h.calls.filter(call => call.action === 'send_msg').length, 0)
   assert.equal(f.writes().length, 1)
+  assert.ok(diagnostics.some(row => row.phase === 'account_publication' && row.status === 'sent'))
+  assert.ok(!diagnostics.some(row => row.phase === 'delivery'))
 })
 
 test('account tool supports signature while idle decisions and another conversation remain closed', async t => {
@@ -249,17 +254,39 @@ async function opportunity(h, change = {}) {
     control_allowed: false, payload: {}, ...change })
   await waitUntil(() => (h.bridge.chats.get(scope)?.messages.length || 0) === before + 1, 'cadence-bound observation')
   const chat = h.bridge.chats.get(scope), turn = h.start(chat)
-  return { chat, completion, end: () => h.end(chat, turn) }
+  return { chat, turn, completion, end: () => h.end(chat, turn) }
 }
 
-test('primary autonomous reviews cap eight hours and fill omission using one trusted bound cadence', async t => {
+test('an internal activity keeps its summary in the session and completes without attempting QQ delivery', async t => {
+  const h = await setup(t)
+  await cadenceFixture(h)
+  const activity = await opportunity(h)
+  const adapter = h.bridge.lanyaPolicy
+  const record = adapter.state(activity.chat).active
+  const decision = await h.decide(activity.chat, 'tool_action')
+  assert.equal(decision.accepted, true)
+  const attempted = []
+  h.bridge.interim.onAssistantMessage = () => { attempted.push('assistant') }
+  h.bridge.interim.onTurnEnd = () => { attempted.push('flush') }
+  record.shadow.loopPending = 'draft from before the action'
+  h.assistant(activity.chat, activity.turn, 'internal activity summary')
+  assert.equal(record.shadow.loopPending, null)
+  record.shadow.loopPending = 'pending flush'
+  await activity.end()
+  assert.equal(record.shadow.loopPending, null)
+  assert.equal((await activity.completion).status, 'decided')
+  assert.deepEqual(attempted, [])
+  assert.deepEqual(h.calls, [])
+})
+
+test('an idle primary review uses the quiet interval of its trusted cadence', async t => {
   const h = await setup(t), clock = await cadenceFixture(h)
   // Primary identity comes from the helper, not the allowlist's first element.
   h.deps.policy.adminUsers = ['303', '101']
   for (const requested of [clock.now() + 8 * 3600_000, undefined, clock.now() + 60_000]) {
     const current = await opportunity(h, { payload: { opportunityMin: 60, primary_internal_leisure: false } })
     const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
-    const accepted = requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000)
+    const accepted = clock.now() + 360_000
     assert.equal(result.accepted, true)
     assert.equal(result.next_review_at, accepted)
     assert.equal(result.requested_next_review_at, requested ?? null)
@@ -291,22 +318,30 @@ test('ordinary live group other-kind producer and nonprimary admin retain their 
 
 test('autonomous cadence belongs to the queued turn while later configurations and scopes change', async t => {
   const h = await setup(t), clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy, original = adapter.runtimeCapabilities
+  const reads = []
+  adapter.runtimeCapabilities = async (...args) => { reads.push(args[0]); return original(...args) }
   const first = await opportunity(h)
+  assert.deepEqual(reads, ['private:101'])
   clock.minutes(5); clock.advance(20_000)
   const result = await h.decide(first.chat, 'idle')
-  assert.equal(result.next_review_at, clock.now() + 180_000)
+  assert.equal(result.next_review_at, clock.now() + 360_000)
   assert.equal(result.autonomous_cadence_min, 3)
   await first.end(); await first.completion
   const second = await opportunity(h, { producer: 'main-review' })
+  assert.deepEqual(reads, ['private:101', 'private:101'])
   const next = await h.decide(second.chat, 'idle')
-  assert.equal(next.next_review_at, clock.now() + 300_000)
+  assert.equal(next.next_review_at, clock.now() + 600_000)
+  assert.equal(next.autonomous_cadence_min, 5)
   await second.end(); await second.completion
   assert.equal(h.calls.length, 0)
 })
 
-test('configured group opportunity uses its trusted cadence independently of primary identity', async t => {
+test('group opportunity uses its trusted cadence independently of primary identity', async t => {
   const h = await setup(t), clock = await cadenceFixture(h), original = h.bridge.lanyaPolicy.runtimeCapabilities
+  let reads = 0
   h.bridge.lanyaPolicy.runtimeCapabilities = async (...args) => {
+    reads++
     const value = await original(...args)
     value.tools.entertainment.primary_identity_valid = false
     value.tools.entertainment.group_identity_valid = true
@@ -314,10 +349,12 @@ test('configured group opportunity uses its trusted cadence independently of pri
     return value
   }
   for (const requested of [undefined, clock.now() + 60_000, clock.now() + 30 * 60_000]) {
+    const before = reads
     const current = await opportunity(h, { scope: 'group:202', producer: 'main-review' })
+    assert.equal(reads - before, 1)
     assert.equal(current.chat.activeTurnRole, 'member')
     const result = await h.decide(current.chat, 'idle', requested === undefined ? {} : { next_review_at: requested })
-    assert.equal(result.next_review_at, requested === undefined ? clock.now() + 180_000 : Math.min(requested, clock.now() + 180_000))
+    assert.equal(result.next_review_at, requested === undefined ? clock.now() + 360_000 : Math.min(requested, clock.now() + 360_000))
     assert.equal(result.autonomous_cadence_min, 3)
     await current.end(); await current.completion
   }
@@ -883,6 +920,201 @@ test('capability helper wrong owner/scope fails closed without disabling scoped 
   assert.doesNotMatch(chat.messages[0].content[0].text, /must not inject this|foreign-fixture/)
   assert.ok(h.logs.some(item => item.message === 'runtime_capabilities_unavailable:Error'))
   assert.equal(h.calls.length, 0)
+})
+
+test('native Android tool requires the current action ticket and deduplicates input within that turn', async t => {
+  const h = await setup(t), jobs = []
+  const policy = h.bridge.lanyaPolicy
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jgfgAAAAASUVORK5CYII=', 'base64')
+  policy.readTrustedHelper = async (_script, request) => {
+    jobs.push(request.job)
+    const owner = await policy.trustedOwner(request.conversation_key)
+    const shot_id = jobs.length.toString(16).padStart(32, '0')
+    const file = path.join(h.dir, shot_id + '.png')
+    fs.writeFileSync(file, png, { flag: 'wx' })
+    return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+      status: 'observed', file, shot_id, serial: 'emulator-5556', width: 1, height: 1,
+      captured_at: Date.now() / 1000, bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') }
+  }
+  const chat = await h.receive()
+  const turn = h.start(chat)
+  const tool = h.tools.get('android_phone')
+  await assert.rejects(() => tool.execute({ action: 'shot' }, h.exec(chat)), { reason: 'decision_required' })
+  await h.decide(chat, 'tool_action')
+  await assert.rejects(() => tool.execute({ action: 'open_game', expected_shot_id: '0'.repeat(32) }, h.exec(chat)),
+    { reason: 'android_current_turn_view_required' })
+  const shot = await tool.execute({ action: 'shot' }, h.exec(chat))
+  assert.equal(shot.status, 'observed')
+  assert.deepEqual(shot.inspect, { tool: 'read_image', file_path: shot.file })
+  const open = { action: 'open_game', expected_shot_id: shot.shot_id }
+  const call = h.exec(chat)
+  const [game, duplicate] = await Promise.all([tool.execute(open, call), tool.execute(open, call)])
+  assert.deepEqual(duplicate, game)
+  assert.notEqual(game.shot_id, shot.shot_id)
+  assert.deepEqual(jobs, [{ action: 'shot' }, open])
+  await assert.rejects(() => tool.execute(open, h.exec(chat)), { reason: 'android_current_turn_view_required' })
+  const app = { action: 'open_app', app: 'amap', expected_shot_id: game.shot_id }
+  await assert.rejects(() => tool.execute({ ...app, app: 'com.autonavi.minimap' }, h.exec(chat)), /Invalid Android phone action/)
+  const opened = await tool.execute(app, h.exec(chat))
+  assert.equal(opened.status, 'observed')
+  assert.deepEqual(jobs.at(-1), app)
+  const text = { action: 'type_text', text: 'Forbidden City', expected_shot_id: opened.shot_id }
+  await assert.rejects(() => tool.execute({ ...text, action: 'tap' }, h.exec(chat)), /Invalid Android phone action/)
+  assert.equal((await tool.execute(text, h.exec(chat))).status, 'observed')
+  assert.deepEqual(jobs.at(-1), text)
+  assert.equal(h.calls.length, 0)
+  await h.end(chat, turn)
+})
+
+test('Meituan checkout is a private administrator handoff and pauses model screenshots', async t => {
+  const h = await setup(t)
+  const clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy
+  const readGuide = adapter.runtimeCapabilities
+  adapter.runtimeCapabilities = async (scope, owner) => {
+    const guide = await readGuide(scope, owner)
+    guide.tools.android = { agent_tool: 'android_phone', agent_apps: ['meituan'] }
+    return guide
+  }
+  const order = h.tools.get('android_order_review'), phone = h.tools.get('android_phone')
+  const begin = { action: 'begin' }
+  const member = await h.receive({ scope: 'private:102', sender: '102' })
+  let turn = h.start(member)
+  await assert.rejects(() => order.execute(begin, h.exec(member)), { reason: 'android_order_admin_required' })
+  await h.end(member, turn)
+  const background = await opportunity(h)
+  await assert.rejects(() => order.execute(begin, h.exec(background.chat)), { reason: 'android_order_admin_required' })
+  await h.decide(background.chat, 'idle')
+  await background.end()
+  await background.completion
+  clock.advance(180000)
+
+  const admin = await h.receive()
+  turn = h.start(admin)
+  await assert.rejects(() => order.execute(begin, h.exec(admin)), { reason: 'android_order_direct_instruction_required' })
+  await h.end(admin, turn)
+  await h.receive({ text: '美团结算 20元' })
+  turn = h.start(admin)
+  await assert.rejects(() => order.execute({ ...begin, address: 'fixture address' }, h.exec(admin)), /Invalid Android checkout handoff/)
+  const receipt = await order.execute(begin, h.exec(admin))
+  assert.deepEqual(receipt, { status: 'admin_handoff', app: 'meituan', max_total_fen: 2000, order_placed: false })
+  await h.decide(admin, 'tool_action')
+  adapter.readTrustedHelper = async () => assert.fail('A private checkout must not read the device')
+  assert.deepEqual(await phone.execute({ action: 'shot' }, h.exec(admin)), { status: 'unavailable', code: 'android_checkout_private' })
+  await h.end(admin, turn)
+  const next = await h.receive({ text: '已退出美团结算' })
+  turn = h.start(next)
+  assert.equal((await order.execute({ action: 'end' }, h.exec(next))).status, 'closed')
+  await h.end(next, turn)
+
+  const otherDelivery = await h.receive({ text: '外卖结算 18.50元' })
+  turn = h.start(otherDelivery)
+  assert.deepEqual(await order.execute(begin, h.exec(otherDelivery)), {
+    status: 'admin_handoff', app: 'delivery', max_total_fen: 1850, order_placed: false,
+  })
+  await h.decide(otherDelivery, 'tool_action')
+  assert.deepEqual(await phone.execute({ action: 'shot' }, h.exec(otherDelivery)), { status: 'unavailable', code: 'android_checkout_private' })
+  await h.end(otherDelivery, turn)
+  const done = await h.receive({ text: '已退出外卖结算' })
+  turn = h.start(done)
+  assert.deepEqual(await order.execute({ action: 'end' }, h.exec(done)), { status: 'closed', app: 'delivery' })
+  await h.end(done, turn)
+  assert.equal(h.calls.length, 0)
+})
+
+test('a primary opportunity can browse Android, request manual login once, and resume with fresh evidence', async t => {
+  const h = await setup(t)
+  const clock = await cadenceFixture(h)
+  const adapter = h.bridge.lanyaPolicy
+  const jobs = []
+  const png = Buffer.from('89504e470d0a1a0a', 'hex')
+  const attachment = { attachmentId: 'fixture-frame', mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }
+  h.deps.attachments = { saveImage: async input => {
+    assert.deepEqual(input.data, png)
+    assert.equal(input.mediaType, 'image/png')
+    return attachment
+  } }
+  adapter.readTrustedHelper = async (_script, request) => {
+    jobs.push(request.job)
+    const owner = await adapter.trustedOwner(request.conversation_key)
+    if (request.job.action === 'foreground') {
+      return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+        status: 'foreground', app: 'meituan', shot_id: request.job.expected_shot_id, serial: 'emulator-5556' }
+    }
+    const shot_id = jobs.length.toString(16).padStart(32, '0')
+    const file = path.join(h.dir, shot_id + '.png')
+    fs.writeFileSync(file, png, { flag: 'wx' })
+    return { schema: 'dsh-android-result/v1', owner, conversation_key: request.conversation_key,
+      status: 'observed', file, shot_id, serial: 'emulator-5556', width: 1, height: 1,
+      captured_at: clock.now() / 1000, bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') }
+  }
+  const visit = await opportunity(h)
+  const phone = (action, fields = {}) => h.tools.get('android_phone').execute({ action, ...fields }, h.exec(visit.chat))
+  await h.decide(visit.chat, 'tool_action')
+  const shot = await phone('shot')
+  assert.equal(shot.image_attached, true)
+  assert.equal(shot.inspect, undefined)
+  const [text, image] = h.tools.get('android_phone').output.render({}, shot)
+  assert.equal(JSON.parse(text.text).attachment, undefined)
+  assert.deepEqual(image, { type: 'image', attachment })
+  const page = await phone('tap', { x: 1, y: 1, expected_shot_id: shot.shot_id })
+  const login = { app: 'meituan', purpose: '看看附近的咖啡店', expected_shot_id: page.shot_id }
+  await assert.rejects(() => phone('request_login', { ...login, app: 'qq' }), { reason: 'android_current_app_view_required' })
+  await assert.rejects(() => phone('request_login', { ...login, purpose: '发送验证码' }), /Invalid Android login assistance request/)
+  assert.equal((await phone('request_login', login)).status, 'pending')
+  assert.deepEqual(jobs.at(-1), { action: 'foreground', expected_shot_id: page.shot_id })
+  await assert.rejects(() => phone('ask_owner', { app: 'meituan' }), { reason: 'android_login_followup_required' })
+  assert.equal(h.calls.length, 0)
+  await visit.end()
+  await visit.completion
+  clock.advance(180000)
+
+  const interrupted = await opportunity(h, { producer: 'main-review' })
+  const checkBudget = adapter.checkBudget
+  adapter.checkBudget = async () => { throw new Error('fixture interrupted before sending') }
+  try {
+    await assert.rejects(() => phone('ask_owner', { app: 'meituan' }), /interrupted before sending/)
+    const owner = await adapter.trustedOwner(interrupted.chat.chatId)
+    assert.deepEqual(adapter.intentPlanner.store.loginHelp(owner, interrupted.chat.chatId).map(row => ({ ...row })),
+      [{ app: 'meituan', purpose: login.purpose, state: 'pending' }])
+    assert.equal(h.calls.length, 0)
+  } finally { adapter.checkBudget = checkBudget }
+  await h.decide(interrupted.chat, 'idle')
+  await interrupted.end()
+  await interrupted.completion
+  clock.advance(180000)
+
+  const review = await opportunity(h, { producer: 'main-review' })
+  assert.match(review.chat.messages.at(-1).content[0].text, /<android_login_help>/)
+  const owner = await adapter.trustedOwner(review.chat.chatId)
+  const transmit = h.deps.connection.call
+  let sendingState
+  h.deps.connection.call = (action, params) => {
+    if (/^send_/.test(action)) sendingState = adapter.intentPlanner.store.loginHelp(owner, review.chat.chatId)[0]?.state
+    return transmit(action, params)
+  }
+  try {
+    assert.equal((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  } finally { h.deps.connection.call = transmit }
+  assert.equal(sendingState, 'attempting')
+  assert.equal(adapter.intentPlanner.store.loginHelp(owner, review.chat.chatId)[0]?.state, 'sent')
+  assert.equal(h.calls.length, 1)
+  assert.match(JSON.stringify(h.calls[0].params.message), /美团看看附近的咖啡店/)
+  await review.end()
+  await review.completion
+  clock.advance(180000)
+
+  const resume = await opportunity(h)
+  assert.notEqual((await phone('ask_owner', { app: 'meituan' })).status, 'sent')
+  await h.decide(resume.chat, 'tool_action')
+  const reopened = await phone('open_app', { app: 'meituan' })
+  assert.deepEqual(jobs.at(-1), { action: 'open_app', app: 'meituan' })
+  await assert.rejects(() => phone('open_app', { app: 'meituan' }), { reason: 'android_current_turn_view_required' })
+  assert.equal((await phone('login_resolved', { app: 'meituan', expected_shot_id: reopened.shot_id })).status, 'resolved')
+  assert.equal((await phone('type_text', { text: 'coffee', expected_shot_id: reopened.shot_id })).status, 'observed')
+  assert.equal(h.calls.length, 1)
+  await resume.end()
+  await resume.completion
 })
 
 function voiceFixture(h, mode = 'ready', receiptOverrides = {}) {

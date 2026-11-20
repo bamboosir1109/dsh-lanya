@@ -21,6 +21,11 @@ class GroupEngagementPatchTests(unittest.TestCase):
                 self.assertEqual(patch.transform(name, result), result)
                 for bad in [raw + before.encode(), result + before.encode(), raw.replace(b'LANYA_CONTEXTUAL_GROUP_V1', b'UNKNOWN')]:
                     with self.assertRaises(PatchError): patch.transform(name, bad)
+                if name == 'inbound.js':
+                    current = raw.replace(before.encode(), patch.OBSERVED_ADDRESS.encode())
+                    self.assertEqual(patch.transform(name, current), current)
+                    with self.assertRaises(PatchError):
+                        patch.transform(name, current + b'\nawait this.ctx.observeInbound(inbound, address, forwardText);')
 
     def test_tools_upgrade_schema_once_and_refuse_unknown_or_duplicated_fields(self):
         field = next(line for line in DECIDE_TOOL.splitlines(True) if 'group_conversation: {' in line)

@@ -19,6 +19,12 @@
   },
   "ttsPort": 9880,
   "panelFile": "panel.html",
+  "android": {
+    "agentEnabled": false,
+    "serial": "emulator-5556",
+    "adbServerPort": 5037,
+    "maxShotAgeSeconds": 30
+  },
   "dataDirName": "大肥鱼",
   "daemon": {
     "pollSeconds": 60,

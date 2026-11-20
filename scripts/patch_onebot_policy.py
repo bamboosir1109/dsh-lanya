@@ -201,7 +201,7 @@ DECIDE_TOOL = """    register(defineTool({
             verdict: { type: 'string', required: true, enum: ['reply', 'idle', 'defer', 'silence', 'resume', 'tool_action'] },
             text: { type: 'string', description: 'The complete natural text reply, only for verdict=reply with expression=text or omitted. This first decision also sends and ends the turn; do not send or write the same answer again. For image/voice or an existing reply ticket, use the existing media/final-text path instead.' },
             expression: { type: 'string', enum: ['text', 'meme', 'text_meme', 'publication'], description: 'Optional expression plan, only with verdict reply. publication is exclusively for the registered primary account-activity tool and cannot send chat text/media. For ordinary chat choose text, meme or text_meme. This plan grants no account authority, selects no image and sends nothing.' },
-            group_conversation: { type: 'string', enum: ['continue', 'end'], description: 'For the configured group exchange: end returns to listening, including after a closing reply. idle/defer/silence end by default. continue may retain an already engaged topic while skipping an aside; it never opens participation or grants sending permission.' },
+            group_conversation: { type: 'string', enum: ['continue', 'end'], description: 'For the configured group exchange: idle/defer skips the present remark. Choose end when the exchange has ended, including after a closing reply. Silence closes participation. Live continue extends an engaged exchange only; it grants no sending permission.' },
             control_update: { type: 'boolean', description: 'True only for an explicit control request in the current real user message.' },
             evidenceSource: { type: 'string', enum: ['current', 'quote'] },
             next_review_at: { type: 'number', description: 'Optional epoch milliseconds, one minute to seven days ahead. Omit when no timed review is needed.' },
@@ -245,13 +245,17 @@ def transform(name, raw):
         text = replace_once(text, "import { healthReport, exportDiagnostics } from './health.js';",
                             "import { healthReport, exportDiagnostics } from './health.js';\nimport { OneBotDecisionAdapter } from './lanya-policy-adapter.js';")
         text = replace_once(text, "        this.deps = deps;", "        this.deps = deps;\n        this.lanyaPolicy = new OneBotDecisionAdapter(this, deps, { configFile: new URL('./lanya-policy.config.json', import.meta.url) });")
-        text = replace_once(text, "        this.inbound = new InboundPipeline({", "        this.inbound = new InboundPipeline({\n            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),")
+        text = replace_once(text, "        this.inbound = new InboundPipeline({", "        this.inbound = new InboundPipeline({\n            noteInboundDisposition: (inbound, reason) => this.lanyaPolicy.noteInboundDisposition(inbound, reason),\n            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),")
         text = replace_once(text, "    }\n    /** Start listening: wire connection handlers and the session event feed. */",
                             "        this.lanyaPolicy.attachOutbound(this.outbound);\n    }\n    /** Start listening: wire connection handlers and the session event feed. */")
         text = replace_once(text, "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');",
                             "            this.deps.log('info', 'bridge ready (' + this.registry.chats.size + ' resumed chat(s))');\n            void this.lanyaPolicy.start().catch(error => this.deps.log('error', 'observation_pump_start_failed:' + error.name));")
         text = replace_once(text, "        this.stopping = true;", "        this.stopping = true;\n        await this.lanyaPolicy.stop();")
-        text = replace_once(text, "                await this.processInbound(inbound);", "                inbound.lanyaInjected = injected;\n                await this.processInbound(inbound);")
+        status_hook = "        connection.onStatus = (connected) => {"
+        if status_hook in text:
+            text = replace_once(text, status_hook,
+                                status_hook + "\n            this.lanyaPolicy.noteConnectionStatus(connected);")
+        text = replace_once(text, "                await this.processInbound(inbound);", "                inbound.lanyaInjected = injected;\n                this.lanyaPolicy.bindPrivateInbound(inbound, event);\n                await this.processInbound(inbound);")
         text = replace_once(text, "        await this.inbound.processInbound(inbound);", "        await this.lanyaPolicy.processInbound(inbound, () => this.inbound.processInbound(inbound));")
         text = replace_once(text, "        const final = this.prefixTurn(chatId, text);", "        let final = this.prefixTurn(chatId, text);")
         text = replace_once(text, "        const chat = await this.ensureChat(chatId, nickname ?? fallback);",
@@ -260,7 +264,11 @@ def transform(name, raw):
         text = replace_once(text, "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: 'plugin:dsh-onebot' },",
                             "        chat.agent.followup(createUserMessage({\n            content: [{ type: 'text', text: final }],\n            source: { kind: this.lanyaPolicy.captureInbound(chatId)?.origin === 'observation' ? 'plugin:dsh-lanya-observation' : 'plugin:dsh-onebot' },")
         text = replace_once(text, "    prefixTurn(chatId, text) {", "    dispatchObservation(event) { return this.lanyaPolicy.dispatchObservation(event); }\n    prefixTurn(chatId, text) {")
-        text = replace_once(text, "            this.interim.onTurnStart(chat);", "            this.lanyaPolicy.onTurnStart(chat, event.data.turn);")
+        text = replace_once(text, "        if (event.type === 'turn/start') {",
+                            "        if (event.type === 'step/start' || event.type === 'compaction/start' || event.type === 'compaction/end') {\n"
+                            "            this.lanyaPolicy.observeCompaction(chat, event);\n            return;\n        }\n"
+                            "        if (event.type === 'turn/start') {")
+        text = replace_once(text, "            this.interim.onTurnStart(chat);", "            this.lanyaPolicy.onTurnStart(chat, event.data.turn, event.seq);")
         text = replace_once(text, "            this.interim.onAssistantMessage(chatId, chat, event.data.message);", "            this.lanyaPolicy.onAssistantMessage(chatId, chat, event);")
         text = replace_once(text, "            this.interim.onTurnEnd(chatId, chat);", "            this.lanyaPolicy.onTurnEnd(chatId, chat, event);")
         text = replace_once(text, "    guardedConnectionCall(action, params, chatId) {", "    guardedConnectionCall(action, params, chatId) {\n        return this.lanyaPolicy.guardConnectionCall(action, params, chatId, () => {")
@@ -268,6 +276,16 @@ def transform(name, raw):
                             "        return this.deps.connection.call(action, params);\n        });\n    }\n    // ------------------------------------------------------------ health (W1/T5)")
         text = replace_once(text, "        registerTools(agentCtx, this, this.deps.connection, {", "        registerTools(agentCtx, this, this.lanyaPolicy.connectionFacade(), {")
     elif name == "inbound.js":
+        for anchor, reason in [
+            ("            if (!dmAllowed(userId, policy)) {", "private_policy_denied"),
+            ("        if (content.trim() === '') {", "empty_inbound_content"),
+        ]:
+            if anchor in text:
+                indent = anchor[:len(anchor) - len(anchor.lstrip())] + '    '
+                text = replace_once(text, anchor, anchor + "\n" + indent + "this.ctx.noteInboundDisposition?.(inbound, '" + reason + "');")
+        command = '        if (await this.ctx.tryHandleCommand(chatId, inbound.text, userId)) {'
+        if command in text:
+            text = replace_once(text, command, command.replace('if (await', 'if (!inbound.lanyaTemporaryPrivate && await'))
         text = replace_once(text, "        const nickname = sanitizeNickname(inbound.nickname);",
                             "        const lanyaObserved = await this.ctx.observeInbound(inbound);\n        if (!lanyaObserved.accepted) return;\n        const nickname = sanitizeNickname(inbound.nickname);")
         start = "        // PATCHED (local): cross-chat awareness."

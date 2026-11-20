@@ -146,7 +146,7 @@ export function registerTaggedMemeTool(ctx, memes, defineTool) {
           args.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 80 || /[\x00-\x1f]/.test(tag)) ||
           args.text_follows !== undefined && typeof args.text_follows !== 'boolean') throw new Error('Use one or two meme tags')
       const tags = args.tags.map(tag => tag.trim().toLowerCase())
-      const result = selectQqCandidates(memes, { query: tags.join(' '), limit: 1 }, exec, cap)
+      const result = selectQqCandidates(memes, { query: tags.join(' '), limit: 1 }, exec, cap, tags)
       const chosen = result.candidates[0]
       if (!chosen || ![chosen.tag, chosen.keywords, chosen.caption].some(Boolean))
         return { ok: false, sent: false, reason: 'no_indexed_tag_match', automatic_text: false }
@@ -159,7 +159,7 @@ export function registerTaggedMemeTool(ctx, memes, defineTool) {
     } }))
 }
 
-export function selectQqCandidates(memes, args, exec, cap) {
+export function selectQqCandidates(memes, args, exec, cap, indexedLabels) {
   validCap(cap)
   if (!args || typeof args !== 'object' || Array.isArray(args) ||
       (args.action !== undefined && args.action !== 'search') || args.path !== undefined) fail()
@@ -181,8 +181,8 @@ export function selectQqCandidates(memes, args, exec, cap) {
   }
   const effectiveLimit = live ? Math.min(limit, policy.maxCandidates) : limit
   let rows = []
-  if (query) rows = memes.search(query, effectiveLimit, tag).memes
-  if (!rows.length) rows = memes.sampleMood(tag, query, effectiveLimit).memes
+  if (query) rows = memes.search(query, effectiveLimit, tag, indexedLabels).memes
+  if (!rows.length && !indexedLabels) rows = memes.sampleMood(tag, query, effectiveLimit).memes
   if (!Array.isArray(rows)) fail()
   const candidates = []
   const seen = new Set()

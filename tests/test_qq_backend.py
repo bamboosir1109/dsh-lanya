@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -60,6 +61,52 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(snow.token, 'fixture-snow'); self.assertEqual(snow.webui_url, 'http://127.0.0.1:5099')
         self.assertEqual(self.resolve(provider='napcat').provider, 'napcat')
         self.assertEqual(self.project['qqBackend']['provider'], 'snowluma')
+
+    def test_catalog_distinguishes_unavailable_configured_installation_without_disclosing_path(self):
+        root = self.root / 'unavailable-vendor'
+        self.project['qqBackend'] = {'provider': 'snowluma', 'providers': {'snowluma': {'root': str(root)}}}
+        result = backend.catalog(self.project, self.root)
+        selected = next(row for row in result['providers'] if row['selected'])
+        self.assertEqual(selected['installation']['root_source'], 'configured')
+        self.assertFalse(selected['installation']['root_available'])
+        self.assertEqual(selected['installation']['error'], 'FileNotFoundError')
+        self.assertFalse(selected['configured'])
+        self.assertFalse(selected['can_select'])
+        self.assertNotIn(str(root), json.dumps(result))
+        self.assertNotIn('fixture-secret', json.dumps(result))
+
+    def test_discovery_does_not_change_the_authoritative_backend_when_a_path_view_is_redirected(self):
+        logical = self.root / 'snowluma'
+        alternate = self.root / 'another-installation'
+        alternate.mkdir()
+        original = Path.resolve
+        def redirected(path, *args, **kwargs):
+            return alternate if path == logical else original(path, *args, **kwargs)
+        self.project['qqBackend'] = {'provider': 'snowluma', 'providers': {'snowluma': {'root': str(logical)}}}
+        with mock.patch.object(Path, 'resolve', autospec=True, side_effect=redirected):
+            catalog = backend.catalog(self.project, self.root)
+            connection = self.resolve()
+        selected = next(row for row in catalog['providers'] if row['selected'])
+        self.assertTrue(selected['installation']['root_path_redirected'])
+        self.assertEqual(connection.base_url, 'http://127.0.0.1:8730')
+        self.assertEqual(connection.token, 'fixture-snow')
+        self.assertEqual(self.project['qqBackend']['providers']['snowluma']['root'], str(logical))
+        self.assertNotIn(str(alternate), json.dumps(catalog))
+
+    def test_unreadable_ancestor_diagnostics_remain_bounded_and_do_not_expose_errors(self):
+        root = self.root / 'missing-installation'
+        original = Path.stat
+        def restricted(path, *args, **kwargs):
+            if path in (root, self.root):
+                raise PermissionError(13, 'private fixture detail')
+            return original(path, *args, **kwargs)
+        with mock.patch.object(Path, 'stat', autospec=True, side_effect=restricted):
+            result = backend.installation_discovery(root, {'root':str(root)})
+        self.assertFalse(result['root_available'])
+        self.assertEqual(len(result['ancestors_available']), len(result['ancestor_fingerprints']))
+        self.assertEqual(len(result['ancestors_available']), len(result['resolved_ancestor_fingerprints']))
+        self.assertLessEqual(len(result['ancestors_available']), 12)
+        self.assertNotIn('private fixture detail', json.dumps(result))
 
     def test_napcat_public_endpoints_respect_official_flags_and_reject_conflicts(self):
         self.write('napcat/framework/config/onebot11.json', {'network': {
@@ -165,6 +212,14 @@ class BackendTests(unittest.TestCase):
             state['body'] = body
             with self.assertRaises(backend.BackendError) as error: backend.call('get_status', connection=connection)
             self.assertNotIn('private diagnostic', str(error.exception))
+        state['body'] = {'status': 'failed', 'retcode': 100, 'wording': 'failed to resolve UID for UIN 101'}
+        with self.assertRaises(backend.BackendActionRejected) as error:
+            backend.call('get_friend_msg_history', {'user_id': 101}, connection=connection)
+        self.assertEqual(error.exception.reason, 'peer_identity_unresolved')
+        self.assertEqual(str(error.exception), 'OneBot action rejected')
+        with self.assertRaises(backend.BackendActionRejected) as error:
+            backend.call('get_status', connection=connection)
+        self.assertEqual(error.exception.reason, 'backend_rejected')
         before = len(requests)
         with self.assertRaises(backend.BackendError): backend.call('../other', connection=connection)
         self.assertEqual(len(requests), before)

@@ -38,10 +38,12 @@ function renderQQBackendChoice(){
   button.disabled = !qqBackendTrusted || qqBackendSaving || !(row?.can_select || row?.configured) || !qqBackendState?.runtime_guard?.ready || row.provider === qqBackendState.selected;
   if(!qqBackendTrusted){ detail.textContent = '接入配置未确认，请重新读取。'; return; }
   if(!row){ detail.textContent = '接入配置未确认，请重新读取。'; return; }
-  let text = row.configured ? '连接配置已就绪。' : '请先安装并配置 ' + row.name + '，启用 HTTP 和发往 DSH 的反向 WebSocket。';
+  const directoryUnavailable = row.installation?.root_source === 'configured' && row.installation.root_available === false;
+  let text = directoryUnavailable ? '当前面板无法读取已配置的安装目录，请核对服务的访问环境。账号连接状态仍需单独核验。'
+    : row.configured ? '连接配置已就绪。' : '请先安装并配置 ' + row.name + '，启用 HTTP 和发往 DSH 的反向 WebSocket。';
   if(!qqBackendState.runtime_guard?.ready) text += '当前 QQ 程序还未加载切换保护，暂不能应用。';
   if(row.provider !== qqBackendState.selected) text += '应用后原接入停止代发；请确认其已退出，再启动所选后端。';
-  if(row.installed && !row.configured) text += '已检测到程序，首次启动后在接入页打开它的管理页完成配置。';
+  if(row.installed && !row.configured && !directoryUnavailable) text += '已检测到程序，首次启动后在接入页打开它的管理页完成配置。';
   detail.textContent = text;
   setText('qqBackendConfigured', '已选择：' + (qqBackendSelected()?.name || '未确认'));
 }

@@ -63,6 +63,17 @@ def transform(raw):
     text = replace_once(text,
         "            chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member';",
         "            chat.activeTurnRole = this.lanyaPolicy.nativeClaims ? 'member' : chat.pendingTurnRoles.shift() ?? 'member';")
+    text = replace_once(text,
+        '        const chat = await this.ensureChat(chatId, nickname ?? fallback);\n'
+        '        final = await this.lanyaPolicy.enrichContext(chatId, final);',
+        '        let chat;\n'
+        '        try {\n'
+        '            chat = await this.ensureChat(chatId, nickname ?? fallback);\n'
+        '            final = await this.lanyaPolicy.enrichContext(chatId, final);\n'
+        '        } catch (error) {\n'
+        '            this.lanyaPolicy.rememberFailedDispatch(chatId, text);\n'
+        '            throw error;\n'
+        '        }')
     return (MARKER + text).replace('\n', newline).encode('utf-8')
 
 

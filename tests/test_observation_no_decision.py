@@ -116,6 +116,15 @@ class NoDecisionEvidenceTests(unittest.TestCase):
                 with self.assertRaises(events.ObservationError):
                     self.completion()
 
+    def test_foreground_interruption_requires_a_trusted_activity_and_unfinished_native_turn(self):
+        _, _, marker, raw = self.write()
+        marker.update(reason="superseded_live_input", native_turn_completed=False)
+        self.assertEqual(events._validated_completion(marker, self.event, raw), marker)
+        with self.assertRaises(events.ObservationError):
+            events._validated_completion({**marker, "native_turn_completed": True}, self.event, raw)
+        with self.assertRaises(events.ObservationError):
+            events._validated_completion(marker, {**self.event, "producer": "fixture"}, raw)
+
     def test_present_corrupt_pending_cannot_be_hidden_by_completed_original(self):
         pending, _, _, _ = self.write()
         for raw in (b"{", b"null", b"\xff"):

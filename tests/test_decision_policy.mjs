@@ -283,6 +283,9 @@ test('observations have no user/control authority and a separate pinned dedup na
   const event = { scope, eventId: 'obs:one', kind: 'quiet', producer: 'fixture', createdAt: 100 }
   const observed = await policy.recordObservation(event)
   assert.equal(observed.accepted, true)
+  await assert.rejects(() => policy.completeObservationWithoutDecision({ scope, eventId: event.eventId,
+    expectedRevision: observed.revision, nativeTurnCompleted: false, nativeSupersedingRevision: observed.revision + 1 }),
+  /exact undecided no-delivery turn/)
   assert.equal((await policy.decide({ scope, messageId: event.eventId, expectedRevision: observed.revision,
     verdict: 'resume', controlUpdate: true })).reason, 'unauthorized_control')
   const decided = await policy.decide({ scope, messageId: event.eventId, expectedRevision: observed.revision, verdict: 'idle' })
@@ -294,8 +297,24 @@ test('observations have no user/control authority and a separate pinned dedup na
   await assert.rejects(() => policy.recordObservation({ ...event, eventId: 'obs:two' }), /Pinned observation capacity/)
   const badAck = await policy.ackObservation({ scope, eventId: event.eventId, decisionId: 'not-the-decision' })
   assert.equal(badAck.acknowledged, false)
-  const ack = await policy.ackObservation({ scope, eventId: event.eventId, decisionId: duplicate.decision.decisionId })
-  assert.equal(ack.acknowledged, true)
+  const batch = await policy.ackObservations([
+    { scope, eventId: 'obs:missing', decisionId: 'unknown' },
+    { scope, eventId: event.eventId, decisionId: 'not-the-decision' },
+    { scope, eventId: event.eventId, decisionId: duplicate.decision.decisionId },
+  ])
+  assert.deepEqual(batch, [{ acknowledged: false, reason: 'unknown_observation' },
+    { acknowledged: false, reason: 'decision_mismatch' }, { acknowledged: true }])
+  const history = Array.from({ length: 64 }, (_, i) => ({ scope, eventId: 'obs:history-' + i, decisionId: 'missing' }))
+  const settled = fs.readFileSync(stateFile)
+  const before = fs.statSync(stateFile, { bigint: true })
+  const empty = await policy.ackObservations(history)
+  assert.equal(empty.length, 64)
+  assert.ok(empty.every(result => result.reason === 'unknown_observation'))
+  assert.deepEqual(fs.readFileSync(stateFile), settled)
+  const after = fs.statSync(stateFile, { bigint: true })
+  assert.equal(after.ino, before.ino)
+  assert.equal(after.mtimeNs, before.mtimeNs)
+  await assert.rejects(() => policy.ackObservations([...history, history[0]]), /bounded/)
   assert.equal((await policy.recordObservation({ ...event, eventId: 'obs:two' })).accepted, true)
 })
 

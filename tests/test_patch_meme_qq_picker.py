@@ -169,6 +169,17 @@ class MemePickerPatchTests(unittest.TestCase):
         self.assertEqual(identity(self.onebot/'lib/bridge.js'),self.before_bridge)
         self.assertEqual(continuity.inspect(self.onebot)[0]['fingerprint'],self.parent_fp)
 
+    def test_restore_accepts_pre_indexed_label_picker(self):
+        current_transform=picker.transform
+        def previous_transform(name, raw):
+            return current_transform(name,raw,indexed_labels=False)
+        with mock.patch.object(picker,'transform',side_effect=previous_transform):
+            result=self.apply()
+        native_index=(self.meme/'index.js').read_bytes()
+        self.assertNotIn(b'indexedLabels',native_index)
+        self.assertEqual(self.restore(result['manifest'])['status'],'restored')
+        self.assertEqual((self.meme/'index.js').read_bytes(),(NATIVE/'index.js').read_bytes())
+
     def test_before_bridge_bytes_on_new_inode_refuse_entire_restore_before_writes(self):
         result=self.apply();manifest=Path(result['manifest'])
         bridge=self.onebot/'lib/bridge.js'

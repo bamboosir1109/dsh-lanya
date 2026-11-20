@@ -31,6 +31,14 @@ class BackendConfigurationMissing(BackendError):
     """The vendor has not generated its first configuration yet."""
 
 
+class BackendActionRejected(BackendError):
+    """A negative OneBot response with a fixed, public classification."""
+
+    def __init__(self, reason):
+        super().__init__('OneBot action rejected')
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class BackendSpec:
     key: str
@@ -316,6 +324,39 @@ def webui_address(spec, settings, root):
     return local_url('http://127.0.0.1:' + str(_port(port)))
 
 
+def installation_discovery(root, settings):
+    """Bounded directory metadata only; never return names or vendor secrets."""
+    result = dict(root_source='configured' if 'root' in settings else 'workspace',
+        root_available=False, root_fingerprint=hashlib.sha256(str(root).encode('utf-8')).hexdigest())
+    try:
+        result['root_available'] = stat.S_ISDIR(root.stat().st_mode)
+    except OSError as error:
+        result.update(error=type(error).__name__, errno=error.errno, winerror=getattr(error, 'winerror', None))
+        available, identities, resolved = [], [], []
+        for path in list(root.parents)[:12]:
+            try:
+                info = path.stat()
+            except OSError:
+                available.append(False); identities.append(None); resolved.append(None)
+                continue
+            available.append(stat.S_ISDIR(info.st_mode))
+            identities.append(hashlib.sha256(str((info.st_dev, info.st_ino)).encode()).hexdigest())
+            try:
+                resolved.append(hashlib.sha256(str(path.resolve(strict=True)).encode()).hexdigest())
+            except (OSError, RuntimeError):
+                resolved.append(None)
+        result.update(ancestors_available=available, ancestor_fingerprints=identities,
+                      resolved_ancestor_fingerprints=resolved)
+    if result['root_available']:
+        try:
+            physical = root.resolve(strict=True)
+            result['physical_root_fingerprint'] = hashlib.sha256(str(physical).encode()).hexdigest()
+            result['root_path_redirected'] = physical != root
+        except (OSError, RuntimeError):
+            result['root_path_redirected'] = None
+    return result
+
+
 def catalog(project=None, workspace=None):
     """Local installation/configuration facts, without starting or contacting QQ."""
     project = project if project is not None else _conf().load(reload=True)
@@ -325,6 +366,10 @@ def catalog(project=None, workspace=None):
         spec, settings, root, _, _, _ = describe(project, workspace, provider=key)
         row = dict(provider=key, name=spec.name, selected=key == selected.key,
             installed=installed(spec, root), repository=spec.repository, configured=False, can_select=False)
+        # Describe discovery separately from account/transport readiness. This
+        # exposes no private paths or credentials and helps diagnose a service
+        # launched with a different filesystem/configuration context.
+        row['installation'] = installation_discovery(root, settings)
         try:
             row['webui_url'] = webui_address(spec, settings, root)
             row['connection'] = resolve(project, workspace, provider=key).public()
@@ -359,7 +404,12 @@ def call(action, payload=None, *, connection=None, timeout=10, max_bytes=4 * 102
             raise BackendError('OneBot response exceeds limit')
         result = _object(json.loads(raw.decode('utf-8')))
         if result.get('status') != 'ok' or type(result.get('retcode')) is not int or result['retcode'] != 0:
-            raise BackendError('OneBot action rejected')
+            identity_failed = (connection.provider == 'snowluma' and action == 'get_friend_msg_history' and
+                               result.get('retcode') == 100 and
+                               any(isinstance(result.get(key), str) and
+                                   re.fullmatch(r'failed to resolve UID for UIN [1-9][0-9]{0,19}', result[key], re.I)
+                                   for key in ('message', 'wording')))
+            raise BackendActionRejected('peer_identity_unresolved' if identity_failed else 'backend_rejected')
         return result
     except (OSError, ValueError, UnicodeError, urllib.error.URLError):
         raise BackendError('OneBot request failed; delivery is not confirmed') from None

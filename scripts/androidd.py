@@ -24,6 +24,9 @@ from project_conf import data_dir, get, work_dir
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PNG_BYTES = 64 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+AGENT_JOB_SECONDS = 45
+OPERATOR_ONLY_APPS = frozenset({"com.sankuai.meituan.takeoutnew", "com.yek.android.kfc.activitys"})
+FOCUSED_PACKAGE = re.compile(r"(?m)^\s*m(?:CurrentFocus|FocusedApp)=[^\r\n]*?\s([A-Za-z][\w.]*)/")
 
 
 class AndroidError(RuntimeError):
@@ -145,6 +148,33 @@ def worker_lock(path):
         stream.close()
 
 
+def agent_emulator_target(options, serial):
+    if not isinstance(options, dict) or options.get("agentEnabled") is not True or not isinstance(serial, str):
+        return False
+    emulator = re.fullmatch(r"emulator-([0-9]{4,5})", serial)
+    if emulator:
+        port = int(emulator[1])
+        return 5554 <= port <= 65534 and port % 2 == 0
+    return (options.get("agentTransport") in ("qemu_loopback", "desktop_loopback")
+            and isolated_loopback_target(serial, options.get("adbServerPort")))
+
+
+def isolated_loopback_target(serial, server):
+    loopback = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{3,4})", serial)
+    if not loopback or type(server) is not int:
+        return False
+    port = int(loopback[1])
+    return 1024 <= port <= 65535 and 1024 <= server <= 65535 and server not in (5037, port)
+
+
+def agent_apps(options):
+    packages = {"amap": "com.autonavi.minimap", "meituan": "com.sankuai.meituan", "qq": "com.tencent.mobileqq"}
+    enabled = options.get("agentApps", [])
+    if not isinstance(enabled, list):
+        return {}
+    return {alias: package for alias, package in packages.items() if alias in enabled}
+
+
 class AndroidWorker:
     def __init__(self, *, run=subprocess.run, now=time.time):
         self.serial = str(get("android.serial", "emulator-5556")).strip()
@@ -166,10 +196,27 @@ class AndroidWorker:
         self.temp = Path(work_dir()) / "android" / "temp"
         self.temp.mkdir(parents=True, exist_ok=True)
         self.env = {**os.environ, "TEMP": str(self.temp), "TMP": str(self.temp)}
+        server_port = get("android.adbServerPort", 5037)
+        if type(server_port) is not int or not 1 <= server_port <= 65535:
+            raise AndroidError("configuration", "Invalid Android ADB server port")
+        # An isolated emulator can have its own local ADB server. Never inherit
+        # a remote/default server that could point this serial at another host.
+        self.env.update(ADB_SERVER_SOCKET=f"tcp:{server_port}",
+                        ANDROID_ADB_SERVER_PORT=str(server_port))
         self.run, self.now, self.current_shot = run, now, None
+        self.agent_deadline = None
+        self.desktop_loopback = (get("android.agentTransport", "") == "desktop_loopback"
+                                 and isolated_loopback_target(self.serial, server_port))
+        self.next_reconnect = 0
 
-    def adb(self, *args, timeout=30):
-        command = [self.adb_exe, "-s", self.serial, *args]
+    def adb(self, *args, timeout=30, device=True):
+        if self.agent_deadline is not None:
+            remaining = self.agent_deadline - time.monotonic()
+            if remaining <= 0:
+                raise AndroidError("request_expired", "Android agent request expired")
+            timeout = min(timeout, remaining)
+        target = ("-s", self.serial) if device else ()
+        command = [self.adb_exe, *target, *args]
         options = {"capture_output": True, "timeout": timeout, "env": self.env}
         if os.name == "nt":
             options["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -181,22 +228,46 @@ class AndroidWorker:
             raise AndroidError("offline", "ADB command failed for the configured serial")
         return response.stdout
 
-    def shell(self, *words):
+    def shell(self, *words, timeout=30):
         # ADB's remote shell needs its own quoting even though shell=False here.
-        return self.adb("shell", shlex.join(str(word) for word in words)).decode("utf-8", "replace").strip()
+        return self.adb("shell", shlex.join(str(word) for word in words), timeout=timeout).decode("utf-8", "replace").strip()
 
     def online(self):
-        if self.adb("get-state").strip() != b"device":
+        if self.adb("get-state", timeout=5).strip() != b"device":
             raise AndroidError("offline", "Configured Android serial is not online")
 
-    def capture(self):
+    def require_agent_visible_screen(self):
+        if self.agent_deadline is None:
+            return
+        packages = set(FOCUSED_PACKAGE.findall(self.shell("dumpsys", "window", timeout=4)))
+        if packages & OPERATOR_ONLY_APPS:
+            raise AndroidError("android_operator_private_screen", "This app is for the local operator")
+        if not packages:
+            raise AndroidError("android_foreground_required", "Cannot verify the Android foreground")
+
+    def capture(self, *, reconnect=False):
         self.current_shot = None
-        self.online()
+        try:
+            self.online()
+        except AndroidError as error:
+            if error.code != "offline" or not reconnect or not self.desktop_loopback:
+                raise
+            now = time.monotonic()
+            if now < self.next_reconnect:
+                raise
+            self.next_reconnect = now + 10
+            # Reconnect just this device and only for a fresh observation. A
+            # capture after input cannot establish what happened across a drop.
+            self.adb("disconnect", self.serial, timeout=3, device=False)
+            self.adb("connect", self.serial, timeout=5, device=False)
+            self.online()
         sizes = re.findall(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", self.shell("wm", "size"))
         if not sizes:
             raise AndroidError("bad_dimensions", "Cannot verify Android display dimensions")
         expected = tuple(map(int, sizes[-1]))
+        self.require_agent_visible_screen()
         raw = self.adb("exec-out", "screencap", "-p", timeout=45)
+        self.require_agent_visible_screen()
         width, height = verify_png(raw)
         if sorted((width, height)) != sorted(expected):
             raise AndroidError("bad_dimensions", "Screenshot dimensions differ from the configured display")
@@ -233,6 +304,7 @@ class AndroidWorker:
         action = str(job.get("action", "")).lower()
         view = self.require_view(job)
         self.online()
+        self.require_agent_visible_screen()
         width, height = view["width"], view["height"]
         xy = lambda x, y: (self.coordinate(job.get(x), width), self.coordinate(job.get(y), height))
         if action == "tap":
@@ -258,6 +330,20 @@ class AndroidWorker:
             package = job.get("pkg", "")
             if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
                 raise AndroidError("bad_job", "Invalid Android package")
+            if self.desktop_loopback:
+                intent = ("-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER")
+                resolved = self.shell("cmd", "package", "resolve-activity", "--brief", *intent, "-p", package, timeout=5)
+                component = re.escape(package) + r"/[A-Za-z0-9_.$]+"
+                targets = [line for line in resolved.splitlines() if re.fullmatch(component, line)]
+                if len(targets) != 1:
+                    raise AndroidError("action_failed", "No launcher activity found in the selected package")
+                # Monkey returns after sending input, before the first app frame.
+                # Activity Manager's wait also reports the foreground activity on a warm launch.
+                output = self.shell("am", "start", "-W", *intent, "-n", targets[0], timeout=12)
+                lines = output.splitlines()
+                if "Status: ok" not in lines or not any(re.fullmatch("Activity: " + component, line) for line in lines):
+                    raise AndroidError("launch_unconfirmed", "Android did not confirm the app's first display")
+                return output
             output = self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
             if "no activities found" in output.lower():
                 raise AndroidError("action_failed", "No launcher activity found")
@@ -283,29 +369,51 @@ class AndroidWorker:
         try:
             if not isinstance(job, dict) or job.get("serial", self.serial) != self.serial:
                 raise AndroidError("bad_job", "Job serial does not match the configured target")
-            if str(job.get("action", "")).lower() != "shot":
+            if "agent_deadline" in job:
+                deadline = job["agent_deadline"]
+                now = time.monotonic()
+                if type(deadline) not in (int, float) or not now < deadline <= now + AGENT_JOB_SECONDS:
+                    raise AndroidError("request_expired", "Android agent request expired")
+                self.agent_deadline = deadline
+            observation = str(job.get("action", "")).lower() == "shot"
+            if not observation:
                 detail = self.action(job)
                 # The old view must never authorize a second action, even on failure.
                 self.current_shot = None
             else:
                 detail = ""
-            shot = self.capture()
+            shot = self.capture(reconnect=observation)
             result.update(ok=True, status="ok", note=detail[:400], shot=str(self.shot), **shot)
         except (AndroidError, KeyError, TypeError, ValueError, OSError) as error:
             self.current_shot = None
             code = error.code if isinstance(error, AndroidError) else "bad_job"
             result.update(status="offline" if code == "offline" else "error", code=code, note=str(error))
+        finally:
+            self.agent_deadline = None
         result["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return result
 
 
 def consume(worker, args):
-    initial = worker.handle({"seq": 0, "action": "shot"})
-    atomic_json(worker.result, initial)
     if args.setup:
+        initial = worker.handle({"seq": 0, "action": "shot"})
+        atomic_json(worker.result, initial)
         print(json.dumps(initial, ensure_ascii=True))
         return 0 if initial["ok"] else 1
-    last_seq = 0
+
+    # An unsolicited startup capture can keep a real request waiting behind
+    # several slow ADB operations. Retire the old view without using ADB,
+    # keeping the last completed sequence so an old job cannot replay.
+    try:
+        previous = json.loads(worker.result.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        previous = {}
+    sequence = previous.get("seq", 0) if isinstance(previous, dict) else 0
+    last_seq = sequence if type(sequence) is int and sequence >= 0 else 0
+    worker.current_shot = None
+    atomic_json(worker.result, {"seq": last_seq, "serial": worker.serial, "ok": False,
+        "status": "error", "code": "capture_required", "note": "Capture a new screenshot to begin",
+        "shot": "", "shot_id": ""})
     while True:
         if worker.cmd.exists():
             claimed = worker.cmd.with_name("cmd.claim-" + uuid.uuid4().hex + ".json")
@@ -329,7 +437,7 @@ def consume(worker, args):
             atomic_json(worker.result, result)
         if args.once:
             return 0
-        time.sleep(1.5)
+        time.sleep(0.25)
 
 
 def main(argv=None):

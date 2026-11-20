@@ -35,7 +35,10 @@ def _timestamp(value):
     if not isinstance(value, str):
         return False
     try:
-        return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).utcoffset() is not None
+        normalized = value.replace('Z', '+00:00')
+        normalized = re.sub(r'\.(\d+)(?=[+-]\d{2}:\d{2}$)',
+                            lambda match: '.' + (match[1] + '000000')[:6], normalized)
+        return dt.datetime.fromisoformat(normalized).utcoffset() is not None
     except ValueError:
         return False
 

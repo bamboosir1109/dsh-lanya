@@ -97,6 +97,10 @@ foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $Repo 'panel') -File)) 
 foreach ($name in 'index.html', 'game.js', 'app.js') {
     $map += @{ From = (Join-Path $Repo ('games\2048\' + $name)); To = (Join-Path $data ('made\2048\' + $name)); Protected = $false }
 }
+foreach ($name in 'SKILL.md', 'references\qq.md', 'references\meituan.md') {
+    $map += @{ From = (Join-Path $Repo ('skills\lanya-mobile-gui\' + $name));
+        To = (Join-Path $Target ('.dsh\skills\lanya-mobile-gui\' + $name)); Protected = $false }
+}
 $map += @(
     @{ From = (Join-Path $Repo 'config\project.json'); To = $projectTarget; Protected = $true; Project = $true },
     @{ From = (Join-Path $Repo 'docs\persona.example.md'); To = $personaTarget; Protected = $true },

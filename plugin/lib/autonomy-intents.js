@@ -86,6 +86,10 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
           CREATE TABLE IF NOT EXISTS social_sightings (owner_scope_key TEXT NOT NULL, member_id TEXT NOT NULL,
             nickname TEXT NOT NULL, last_seen_at INTEGER NOT NULL, seen_count INTEGER NOT NULL,
             last_message_key TEXT NOT NULL, PRIMARY KEY(owner_scope_key,member_id));
+          CREATE TABLE IF NOT EXISTS android_login_help (owner_scope_key TEXT NOT NULL, app TEXT NOT NULL,
+            purpose TEXT NOT NULL, state TEXT NOT NULL, request_id TEXT NOT NULL,
+            PRIMARY KEY(owner_scope_key,app));
+          CREATE TABLE IF NOT EXISTS android_checkout_guard (owner_scope_key TEXT PRIMARY KEY);
           PRAGMA user_version=1`)
         db.prepare("INSERT OR IGNORE INTO intent_meta(key,value) VALUES('bot_binding',?)").run(binding)
       }
@@ -108,6 +112,57 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
     try { const row = db.prepare('SELECT record_json FROM intent_heads WHERE owner_scope_key=? AND intent_id=?').get(key, intentId)
       return row ? parseRecord(row.record_json, owner, scope) : null
     } finally { db.close() }
+  }
+  function loginHelp(owner, scope) {
+    const key = intentOwnerScopeKey(owner, scope), db = open()
+    if (!db) return []
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_login_help'").get()) return []
+      return db.prepare('SELECT app,purpose,state FROM android_login_help WHERE owner_scope_key=? ORDER BY app').all(key)
+    } finally { db.close() }
+  }
+  function checkoutActive(owner, scope) {
+    const key = intentOwnerScopeKey(owner, scope), db = open()
+    if (!db) return false
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_checkout_guard'").get()) return false
+      return Boolean(db.prepare('SELECT 1 FROM android_checkout_guard WHERE owner_scope_key=?').get(key))
+    } finally { db.close() }
+  }
+  function setCheckout(owner, scope, active) {
+    const key = intentOwnerScopeKey(owner, scope)
+    return transaction(db => {
+      if (active) db.prepare('INSERT OR IGNORE INTO android_checkout_guard VALUES(?)').run(key)
+      else db.prepare('DELETE FROM android_checkout_guard WHERE owner_scope_key=?').run(key)
+      return active
+    })
+  }
+  function updateLoginHelp({ owner, scope, app, action, purpose, requestId, outcome }) {
+    const key = intentOwnerScopeKey(owner, scope)
+    return transaction(db => {
+      const row = db.prepare('SELECT purpose,state,request_id FROM android_login_help WHERE owner_scope_key=? AND app=?').get(key, app)
+      if (action === 'record') {
+        if (row) return { status: row.state }
+        db.prepare('INSERT INTO android_login_help VALUES(?,?,?,?,?)').run(key, app, purpose, 'pending', requestId)
+        return { status: 'pending' }
+      }
+      if (action === 'resolve') {
+        db.prepare('DELETE FROM android_login_help WHERE owner_scope_key=? AND app=?').run(key, app)
+        return { status: 'resolved' }
+      }
+      if (action === 'preview' && row?.state === 'pending') {
+        return { status: 'pending', purpose: row.purpose, requestId: row.request_id }
+      }
+      if (action === 'claim' && row?.state === 'pending' && row.request_id === requestId) {
+        db.prepare("UPDATE android_login_help SET state='attempting' WHERE owner_scope_key=? AND app=?").run(key, app)
+        return { status: 'claimed', purpose: row.purpose, requestId: row.request_id }
+      }
+      if (action === 'settle' && row?.state === 'attempting' && row.request_id === requestId) {
+        db.prepare('UPDATE android_login_help SET state=? WHERE owner_scope_key=? AND app=?').run(outcome, key, app)
+        return { status: outcome }
+      }
+      return { status: row?.state || 'missing' }
+    })
   }
   function list(owner, scope) {
     const key = intentOwnerScopeKey(owner, scope), db = open()
@@ -231,7 +286,8 @@ export function createIntentStore({ file, botBinding, now = Date.now }) {
       .all(key, now() - 7 * 86400_000)
     } finally { db.close() }
   }
-  return { file, get, list, update, prepareSocial, socialForEvent, finishSocial, rememberSighting, sighting, sightings }
+  return { file, get, list, update, prepareSocial, socialForEvent, finishSocial, rememberSighting, sighting, sightings,
+    loginHelp, updateLoginHelp, checkoutActive, setCheckout }
 }
 
 /** Publish exactly one full observation. Existing bytes must match; an older

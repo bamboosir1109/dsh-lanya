@@ -40,6 +40,8 @@ test('native shaped accepted decisions, picker selection and image receipts rema
   assert.equal(facts.trailing_tool_action_decisions.count, 2)
   assert.equal(facts.turns[0].origin, 'observation')
   h.start(3, 'plugin:dsh-onebot')
+  h.append('user/message', { source: { kind: 'plugin:dsh-lanya-decision-reminder' },
+    get content() { throw new Error('reminder content accessed') } })
   h.tool(3, 'qq_decide', { verdict: 'reply', expression: 'meme' },
     { accepted: true, can_send: true, expression_plan: { choice: 'meme' } })
   h.tool(3, 'send_meme', { query: 'PRIVATE_QUERY', path: 'PRIVATE_PATH' },
@@ -123,6 +125,7 @@ test('partial histories, unknown endings, mixed origins and preset boundaries re
 async function context(session, scope = 'private:101') {
   let snapshots = 0
   const adapter = Object.create(OneBotDecisionAdapter.prototype)
+  adapter.config = {}
   const agent = { session }
   adapter.bridge = { chats: new Map([[scope, { agent }], ['group:202', { get agent() { throw new Error('foreign scope read') } }]]),
     effectiveCwd: value => { assert.equal(value, scope); return process.cwd() },

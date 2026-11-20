@@ -597,6 +597,42 @@ test('activity keeps actual scheduler offline distinct from a living background 
   await h.context.loadLive()
   assert.equal(h.node('liveWatch').textContent, '看护状态未确认')
 })
+test('activity shows a verified autonomous budget wait and clears it on recovery or a failed refresh', async () => {
+  const budget = budgetData({ enforcement: { runtime_gate_bound: true, runtime_owner_verified: true } })
+  Object.assign(budget.usage.buckets.autonomy, { can_start_new_turn: false, blocked_reason: 'insufficient_reserve', remaining_cny: 0.03 })
+  let fail = false, status = 'processing'
+  const h = harness({ functions: ['autonomyLabel', 'appendPolicyRow', 'requireCnyBudget', 'budgetAmount', 'renderBudgetSummary', ...ACTIVITY_RENDERERS, 'loadLive'], extra: {
+    componentActionPending: false, loadActivityBudget: async () => {}, loadActivityJournal: async () => {},
+    api: async () => {
+      if (fail) throw new Error('fixture unavailable')
+      return { ok: true, live: { autonomy: { mode: 'unified', status, can_request_check: status === 'processing' }, budget,
+        recentActivity: { status: 'ok', records: [] } } }
+    }
+  } })
+  await h.context.loadLive()
+  assert.equal(h.node('liveLast').textContent, '自主机会等待额度')
+  assert.equal(h.node('activityNext').textContent, '额度可用后再判断')
+  assert.match(treeText(h.node('activitySchedule')), /QQ 来信使用各自的会话预算/)
+  assert.equal(h.node('liveCheck').disabled, false)
+  budget.usage.buckets.autonomy.can_start_new_turn = true
+  await h.context.loadLive()
+  assert.match(h.node('liveLast').textContent, /观察待处理/)
+  budget.usage.buckets.autonomy.can_start_new_turn = false
+  budget.enforcement.runtime_owner_verified = false
+  await h.context.loadLive()
+  assert.match(h.node('liveLast').textContent, /观察待处理/)
+  budget.enforcement.runtime_owner_verified = true
+  status = 'offline'
+  await h.context.loadLive()
+  assert.match(h.node('liveLast').textContent, /调度离线/)
+  status = 'processing'
+  await h.context.loadLive()
+  fail = true
+  await h.context.loadLive()
+  assert.equal(h.node('activityNext').textContent, '下次检查时间未确认')
+  assert.doesNotMatch(treeText(h.node('activitySchedule')), /等待额度/)
+})
+
 const activityEpisode = (id, overrides = {}) => ({ id, day: '2026-11-01', started_at: Date.UTC(2026, 10, 1, 10),
   updated_at: Date.UTC(2026, 10, 1, 10, 1), title: '读取一段视频字幕', status: 'observed', summary: '字幕读取 1 次',
   trigger_origin: 'observation', conversation_role: 'primary',

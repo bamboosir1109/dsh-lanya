@@ -7,7 +7,8 @@ const categories = ['autonomy', 'private', 'group'];
 const amountConvention = Object.freeze({currency:'CNY', basis:'owner_confirmed_numeric_cny_estimate',
   source_estimate_currency:'USD', source_estimate_basis:'cost_meter_default_price_estimate', numeric_scale:1});
 // Native host context projections are not additional user/observation inputs.
-const hostContextKinds = new Set(['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint']);
+const hostContextKinds = new Set(['agent-instructions', 'runtime-context', 'repeat-tool-reminder', 'compact-checkpoint',
+  'plugin:dsh-lanya-decision-reminder']);
 const safeInteger = n => Number.isSafeInteger(n) && n >= 0;
 const amount = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const dayOf = stamp => new Date(stamp + 8 * 3600_000).toISOString().slice(0, 10);
@@ -44,10 +45,14 @@ export function buildNativeDaily(payload, turnCost) {
       requireValue(origin && safeInteger(origin.seq) && origin.seq > priorOrigin && typeof origin.kind === 'string');
       priorOrigin = origin.seq;
     }
-    const measured = new Map(); let active = null, lastSeq = -1;
+    const measured = new Map();
+    let active = null, lastSeq = -1, originIndex = 0, lastHeader = null, turnRecords = [];
     const categoryFor = (start, end) => {
-      const inputs = session.origins.filter(row => row.seq >= start && row.seq <= end &&
-        !hostContextKinds.has(row.kind));
+      const inputs = [];
+      while (originIndex < session.origins.length && session.origins[originIndex].seq <= end) {
+        const row = session.origins[originIndex++];
+        if (row.seq >= start && !hostContextKinds.has(row.kind)) inputs.push(row);
+      }
       return inputs.length === 1 && ['plugin:dsh-lanya-observation', 'plugin:dsh-onebot'].includes(inputs[0].kind)
         ? (inputs[0].kind === 'plugin:dsh-lanya-observation' ? 'autonomy' : session.role) : null;
     };
@@ -80,7 +85,7 @@ export function buildNativeDaily(payload, turnCost) {
         for (const date of spanDays()) mark(date, 'pending_count');
         reasons.add('native_turn_pending'); return;
       }
-      const cost = turnCost(session.records, payload.config, start.seq, end.seq);
+      const cost = turnCost(turnRecords, payload.config, start.seq, end.seq);
       requireValue(cost && typeof cost.found === 'boolean' && Array.isArray(cost.calls));
       if (!cost.found || cost.calls.length === 0) {
         noCostTurns++; reasons.add('native_turn_cost_unconfirmed');
@@ -104,6 +109,7 @@ export function buildNativeDaily(payload, turnCost) {
       requireValue(event && safeInteger(event.seq) && event.seq > lastSeq && safeInteger(event.time) &&
         event.time <= payload.now + 30000 && typeof event.type === 'string' && event.data && typeof event.data === 'object');
       lastSeq = event.seq;
+      if (event.type === 'request/header') lastHeader = event;
       if (event.seq < session.own_start) continue;
       if (event.type === 'turn/start') {
         requireValue(safeInteger(event.data.turn));
@@ -112,9 +118,13 @@ export function buildNativeDaily(payload, turnCost) {
           markTurn(active, null, false, event);
         }
         active = event;
-      } else if (event.type === 'turn/end') {
-        requireValue(active && event.data.turn === active.data.turn && event.time >= active.time);
-        markTurn(active, event); active = null;
+        turnRecords = lastHeader ? [lastHeader, event] : [event];
+      } else {
+        if (active) turnRecords.push(event);
+        if (event.type === 'turn/end') {
+          requireValue(active && event.data.turn === active.data.turn && event.time >= active.time);
+          markTurn(active, event); active = null; turnRecords = [];
+        }
       }
     }
     if (active) markTurn(active, null, true);

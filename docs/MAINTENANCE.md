@@ -24,7 +24,9 @@
 
 每次按输入分别核对接收、准入、准备、原生入队、领取、决定、发送与客户端，不以在线状态代替回复成功。启用 native claim 时可用 `scripts/interaction_health.py --log ABSOLUTE_PRIVATE_INTERACTION_LOG` 只读汇总本机阶段日志；没有正文、不触发模型或发送，不自动重放。安静决定、拒发、未知回执与真正等待分别展示，来源达到容量或截断时保留部分状态。
 
-当前原生队列可在条件允许时接收并合并连发；非原生／诊断或拥挤边界继续按既有接收限制。独立 `patch_onebot_burst_intake.py` 只编译已审的 contextual group 层后 bridge／inbound，输出须精确输入 SHA 且独占创建，不自动安装。须与成对 adapter 受控部署，保留全部之前的准入、引用、权限和出口修改。详见 [交互可靠性检查](INTERACTION-RELIABILITY.md)。
+当前原生队列可在条件允许时接收并合并连发，非原生、诊断或拥挤边界继续按既有接收限制。独立 `patch_onebot_burst_intake.py` 编译已审的 contextual group 层后 bridge／inbound 和配套 registry。输出须精确输入 SHA 且独占创建。与 adapter 一起部署，保留既有准入、引用、权限和出口修改。详见 [交互可靠性检查](INTERACTION-RELIABILITY.md)。
+
+使用完整编译链生成 OneBot 适配器时，按生成结果核对运行副本。若当前环境还有本地兼容层，核对实际替换的方法全文。重新加载后，可用隔离队列替身调用已安装模块的原生分派入口，分别验证真人来信和自主观察能入队。语法检查无法捕获执行到该分支才出现的未定义变量。
 
 ## 人设语气与自主提示
 
@@ -52,6 +54,8 @@ python -B scripts/panel_health.py --base-url http://127.0.0.1:19389
 检查实际嵌套的 B站、活动、每日花销、记忆和日记来源，不能只看 HTTP 200、顶层 `ok` 或进程在线。输出只有路由、状态和耗时；`degraded` 表示部分结果仍未知，`unavailable` 才使整体检查失败。已核验空列表、尚未写日记与读取失败分别处理。它不验证真实 QQ 收件端或平台公开可见性，也不触发模型、发送或生成日记。
 
 发现加载慢时区分冷解析与同一来源的缓存命中、预算摘要与完整日报，固定同一端口和实际来源再比较，不把一轮缓存时间宣称为所有页面都达到同样延迟。并发单元测试、自然活动和文件变化均可能影响实测。
+
+费用与活动投影会复用未变化的已核验来源。每次读取仍核对文件身份、归属与可读性，追加或替换后重新解析。费用计价只传入当前回合和最近的前置计价配置，跨日费用及未知项仍按原始回执核对。大记录页面首次读取最多等待三十秒，重新读取可复用成功结果。
 
 当前程序静态检查排除按受控安装器命名的 `.名称-original-<32位标识>`／stage 副本；它们是恢复材料，完整原件与权限仍应另行核对。要检查这些文件本身，使用 `python -B scripts/fullcheck.py --live --root ABSOLUTE_RUNTIME --include-recovery`。不要因恢复副本包含当时的问题就删除它，也不能凭文件名推断实际是否仍有引用。
 
@@ -288,7 +292,7 @@ Windows 工具仅在本次调用内接管配置候选与数据库备份的两次
 ```powershell
 python -B scripts/fullcheck.py --quiet
 python -B -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_*.mjs
+node --experimental-vm-modules --test tests/test_*.mjs
 node --check plugin/lib/index.js
 npm pack --dry-run --ignore-scripts
 python -B scripts/privacy-scan.py
@@ -604,3 +608,11 @@ python -B scripts/privacy-scan.py
 部署记录至少写明源码 commit、更新了哪些运行文件、DSH profile 插件版本、重启对象、验证结果和备份位置。本机备份位置与真实路径留在私有运维记录，不进公开文档。
 
 回退程序用已验证的旧版本重新部署，再重启对应进程。数据回退单独决定；新版程序可能已经写入新的状态，不能只回退代码就假设数据库和配置也自动恢复。
+
+## 安装发现与截图服务
+
+同进程的配置重读和来源路径读取等待同一重读完成，错误仍清除可用授权。事实日记读锁只对短暂竞争做最多 350 毫秒等待，取得锁后重新核对锁文件身份；较长的写入或异常不显示成空日记。
+
+QQ 接入目录发现信息与账号连接结果独立。`installation.root_source` 表示配置指定或工作区约定，`root_available` 表示当前读取进程能否访问；失败时仅给异常类型和系统错误码，目录指纹不含路径明文。独立检查成功而看护进程失败时，核对进程来源和访问环境，不要清空配置或自动换供应商。
+
+Android 状态依据工作进程的操作系统锁和匹配的新截图。重启工作进程前核对唯一实例及待处理请求；已有操作结果不确定时不要重放。恢复后提交新的 `shot` 请求，核对请求序号、截图标识和新鲜度。不要用磁盘上保留的旧 PNG 证明设备在线。

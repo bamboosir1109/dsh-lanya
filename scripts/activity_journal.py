@@ -6,6 +6,7 @@ Existing notes/diaries and foreign files are never adopted or overwritten.
 from contextlib import contextmanager
 import ctypes
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -155,19 +156,26 @@ def _lock(root, create=False):
     acquired = False
     try:
         _need((os.fstat(fd).st_dev, os.fstat(fd).st_ino) == (before.st_dev, before.st_ino))
-        if os.name == 'nt':
-            import msvcrt
+        deadline = time.monotonic() + (0 if create else .35)
+        while True:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1); acquired = True
-            except OSError:
-                pass
-        else:
-            import fcntl
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); acquired = True
-            except OSError:
-                pass
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as error:
+                remaining = deadline - time.monotonic()
+                if create or error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or remaining <= 0:
+                    break
+                time.sleep(min(.01, remaining))
         _need(acquired)
+        actual = _ordinary(path).lstat()
+        _need((actual.st_dev, actual.st_ino) == (before.st_dev, before.st_ino) and
+              stat.S_ISREG(actual.st_mode) and actual.st_nlink == 1 and actual.st_size == 1)
         yield
     finally:
         if acquired:
@@ -231,6 +239,20 @@ def _validate_coverage(value):
 
 def _current(path):
     return _record(path)[0] if os.path.lexists(path) else None
+
+
+def _same_indexed_markdown(actual, indexed):
+    if actual == indexed:
+        return True
+    if os.name != 'nt' or actual is None or indexed is None:
+        return False
+    # Older Windows Python stat returns the low 32 bits of the volume serial.
+    # Compare the remaining file identity, content and ACL exactly. Pending
+    # transaction manifests still require byte-for-byte record equality.
+    left, right = actual['signature'], indexed['signature']
+    low, full = sorted((left[0], right[0]))
+    return (full > 0xffffffff and low == (full & 0xffffffff) and left[1:] == right[1:] and
+            actual['sha256'] == indexed['sha256'] and actual['security_sha256'] == indexed['security_sha256'])
 
 
 def _new(path, raw):
@@ -381,7 +403,7 @@ def _commit(root, owner, index, index_before, fact, now, fault=None):
     previous = index['days'].get(day)
     target = root / (day + '.md')
     before = _current(target)
-    _need(before == (previous['record'] if previous else None))
+    _need(_same_indexed_markdown(before, previous['record'] if previous else None))
     if previous is not None:
         old_coverage = previous['coverage']
         # The UI shows only 30 decision details, while counts and all daily
@@ -520,12 +542,12 @@ def journal_snapshot(*, workspace, agent_preset, data_directory, day=None, limit
             result['freshness'] = {key: health[key] for key in ('status', 'blocked_dates', 'reasons')}
             for selected_day in sorted(index['days'], reverse=True)[:limit]:
                 item = index['days'][selected_day]
-                _need(_current(root / (selected_day + '.md')) == item['record'])
+                _need(_same_indexed_markdown(_current(root / (selected_day + '.md')), item['record']))
                 result['days'].append(dict(date=selected_day, **{key: item[key] for key in ('status', 'updated_at', 'entries', 'coverage')}))
             if day in index['days']:
                 item = index['days'][day]
                 actual, raw = _record(root / (day + '.md'), MAX_MARKDOWN)
-                _need(actual == item['record'])
+                _need(_same_indexed_markdown(actual, item['record']))
                 result['selected'] = dict(date=day, markdown=raw.decode('utf-8'),
                                           **{key: item[key] for key in ('status', 'updated_at', 'entries', 'coverage')})
                 if health['status'] == 'degraded':
@@ -557,7 +579,7 @@ def diary_facts(*, workspace, agent_preset, data_directory, day, now=None):
         _need(not os.path.lexists(root / 'pending.json'))
         index, before = _read_index(root, owner)
         item = index['days'].get(day)
-        _need(item is not None and _current(root / (day + '.md')) == item['record'])
+        _need(item is not None and _same_indexed_markdown(_current(root / (day + '.md')), item['record']))
         _need(_record(root / (day + '.md'))[1].decode('utf-8') == selected['markdown'])
         journal_revision = item['input_digest']
         chunks = selected['markdown'].split('\n### ')[1:]

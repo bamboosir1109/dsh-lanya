@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -71,6 +72,60 @@ class RuntimeConfigTests(unittest.TestCase):
                                  capture_output=True, text=True, encoding="utf-8", timeout=20, check=True)
         self.assertEqual(process.stderr, "")
         return json.loads(process.stdout)
+
+    def concurrent_reload(self, *, reader='value', invalid=False):
+        file = self.config(self.live, {'dataDirName': 'fixture-role'})
+        conf = self.python_config(live=True)
+        self.assertEqual(conf.get('dataDirName'), 'fixture-role')
+        if invalid:
+            file.write_text('{', encoding='utf-8')
+        started, release, completed = threading.Event(), threading.Event(), threading.Event()
+        results = {}
+        original = conf.json.load
+        def read(stream):
+            if threading.current_thread().name == 'fixture-reload':
+                started.set()
+                if not release.wait(3):
+                    raise AssertionError('Fixture reload was not released')
+            return original(stream)
+        def run(name, action):
+            try:
+                results[name] = action()
+            except Exception as error:
+                results[name] = type(error)
+            finally:
+                if name == 'reader': completed.set()
+        writer = threading.Thread(name='fixture-reload', target=run, args=('writer', lambda: conf.load(reload=True)))
+        getter = conf.config_path if reader == 'path' else lambda: conf.get('dataDirName')
+        follower = threading.Thread(name='fixture-reader', target=run, args=('reader', getter))
+        with patch.object(conf.json, 'load', side_effect=read):
+            writer.start()
+            try:
+                self.assertTrue(started.wait(1))
+                follower.start()
+                escaped = completed.wait(.05)
+            finally:
+                release.set(); writer.join(3)
+                if follower.ident is not None: follower.join(3)
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(follower.is_alive())
+        self.assertFalse(escaped, 'Reader observed configuration during an unfinished reload')
+        if invalid:
+            self.assertIs(results['writer'], conf.ConfigError)
+            self.assertIs(results['reader'], conf.ConfigError)
+            self.assertIsNone(conf._CACHE)
+        else:
+            self.assertEqual(results['writer']['dataDirName'], 'fixture-role')
+            self.assertEqual(results['reader'], str(file) if reader == 'path' else 'fixture-role')
+
+    def test_concurrent_get_waits_for_one_completed_reload(self):
+        self.concurrent_reload()
+
+    def test_concurrent_config_path_waits_for_one_completed_reload(self):
+        self.concurrent_reload(reader='path')
+
+    def test_concurrent_failed_reload_cannot_expose_previous_cached_authority(self):
+        self.concurrent_reload(invalid=True)
 
     def test_source_does_not_load_adjacent_private_install(self):
         expected = self.config(self.repo, {"dataDirName": "public-role"})

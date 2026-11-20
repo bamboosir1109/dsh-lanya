@@ -152,6 +152,29 @@ test('one or two indexed labels send one blank-caption reaction without a vision
   assert.equal(sent.length,1)
 })
 
+test('quick meme labels rank semantic matches ahead of filename hits before staging', async t => {
+  const p = pack(t, 'semantic-labels'), scope = bound(t, 'semantic-labels-media', { live: true })
+  const db = new DatabaseSync(join(p.directory, 'index.db'))
+  db.prepare('INSERT INTO memes VALUES (?,?,?,?,?,?,?)')
+    .run('stolen/decoy.png', 'daily', 'happy-开心.png', '', '', 1, null)
+  db.close()
+  writeFileSync(join(p.directory, 'stolen/decoy.png'), png)
+  const service = scope.services.get('lanyaQqMemeMedia')
+  const sent = []
+  scope.services.set('lanyaQqMemeMedia', { forExecution(exec) {
+    return { ...service.forExecution(exec), async sendCandidate(candidate) {
+      sent.push(candidate.tag)
+      return { sent: true }
+    } }
+  } })
+  const memes = sampler(p.store, { packId: '_custom', enabledPacks: ['_custom'] }, [{ id: '_custom', path: p.directory }])
+  const ranked = memes.search('happy 开心', 3, '', ['happy', '开心'])
+  assert.deepEqual(ranked.memes.map(row => row.path), ['stolen/real.png'])
+  assert.equal((await fastTool(memes).execute({ tags: ['happy', '开心'] }, scope.exec)).sent, true)
+  assert.deepEqual(sent, ['happy'])
+  assert.equal(readdirSync(scope.mediaDir).length, 1)
+})
+
 test('tag tool refuses missing semantic metadata, invented subjects, foreign scope and arbitrary path',async t=>{
   const p=pack(t,'fast-tag-refuse'),scope=bound(t,'fast-tag-refuse-media'),sent=[]
   const old=scope.services.get('lanyaQqMemeMedia')

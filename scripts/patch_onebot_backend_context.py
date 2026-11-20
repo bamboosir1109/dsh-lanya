@@ -14,6 +14,7 @@ from patch_onebot_policy import PatchError, ordinary_path, read_regular, replace
 MARKER = '// LANYA_BACKEND_QUOTE_CONTEXT_V1\n'
 SIMPLE_OBSERVER = '            observeInbound: inbound => this.lanyaPolicy.observeInbound(inbound),'
 ADDRESSED_OBSERVER = '            observeInbound: (inbound, address) => this.lanyaPolicy.observeInbound(inbound, address),'
+FORWARD_OBSERVER = '            observeInbound: (inbound, address, forwardText) => this.lanyaPolicy.observeInbound(inbound, address, forwardText),'
 GROUP_MARKER = '// LANYA_CONTEXTUAL_GROUP_V1\n'
 GROUP_HOOK = '            contextualGroupEnabled: scope => this.lanyaPolicy.contextualGroupEnabled(scope),'
 HISTORY = """                const history = await wait(() => this.ctx.call(group ? 'get_group_msg_history' : 'get_friend_msg_history', {
@@ -38,7 +39,7 @@ def transform(name, raw):
         # Existing installations already carry the group-addressing layer.
         # Preserve its second argument; never replace it with an early parent.
         addressed = GROUP_MARKER in text
-        anchor = ADDRESSED_OBSERVER if addressed else SIMPLE_OBSERVER
+        anchor = (FORWARD_OBSERVER if FORWARD_OBSERVER in text else ADDRESSED_OBSERVER) if addressed else SIMPLE_OBSERVER
         if (text.count('            observeInbound:') != 1 or 'historyAnchor:' in text or
                 addressed and text.count(GROUP_HOOK) != 1 or not addressed and GROUP_HOOK in text):
             raise PatchError('One reviewed observer and its matching group context are required')

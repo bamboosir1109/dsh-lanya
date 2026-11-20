@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -75,6 +76,25 @@ class JournalTests(unittest.TestCase):
 
     def read(self, day=TODAY):
         return journal.journal_snapshot(workspace=str(self.work), agent_preset='Fixture', data_directory=str(self.data), day=day, now=NOW)
+
+    def test_reader_waits_for_brief_real_lock_contention_then_reads_confirmed_diary(self):
+        self.update()
+        started, done = threading.Event(), threading.Event()
+        result = []
+        def read():
+            started.set()
+            result.append(self.read())
+            done.set()
+        reader = threading.Thread(target=read)
+        with journal._lock(self.root, True):
+            reader.start()
+            self.assertTrue(started.wait(1))
+            early = done.wait(.04)
+        reader.join(2)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(early, 'Brief contention was returned as a permanent unavailable diary')
+        self.assertEqual(result[0]['status'], 'ok')
+        self.assertEqual(result[0]['selected']['date'], TODAY)
 
     def test_today_backfill_past_seven_days_and_idempotent_owned_updates(self):
         legacy = self.data / 'diary'; legacy.mkdir()
@@ -146,6 +166,24 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(journal.JournalError): self.update()
         self.assertEqual(journal._record(path), before)
         self.assertEqual(self.read()['status'], 'error')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows volume serial')
+    def test_legacy_volume_serial_reads_the_same_facts_and_keeps_strict_file_identity(self):
+        self.update()
+        index_path = self.root / 'index.json'
+        index, _ = journal._read_index(self.root, self.owner)
+        record = index['days'][TODAY]['record']
+        serial = record['signature'][0]
+        record['signature'][0] = (serial & 0xffffffff) if serial > 0xffffffff else serial | (1 << 32)
+        index_path.write_bytes(journal._encoded(index))
+        self.assertEqual(self.read()['selected_status'], 'available')
+        result = journal.diary_facts(workspace=str(self.work), agent_preset='Fixture', data_directory=str(self.data),
+                                     day=TODAY, now=NOW)
+        self.assertEqual(result['status'], 'available')
+        self.assertEqual(self.update()['written_count'], 0)
+        self.current = catalog(facts(episodes=2))
+        self.assertEqual(self.update()['written_count'], 1)
+        self.assertEqual(self.read()['selected']['entries'], 2)
 
     def test_interruption_retains_original_backup_and_next_cycle_finishes_only_known_commit(self):
         self.update()
