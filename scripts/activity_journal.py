@@ -6,6 +6,7 @@ Existing notes/diaries and foreign files are never adopted or overwritten.
 from contextlib import contextmanager
 import ctypes
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -155,19 +156,26 @@ def _lock(root, create=False):
     acquired = False
     try:
         _need((os.fstat(fd).st_dev, os.fstat(fd).st_ino) == (before.st_dev, before.st_ino))
-        if os.name == 'nt':
-            import msvcrt
+        deadline = time.monotonic() + (0 if create else .35)
+        while True:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1); acquired = True
-            except OSError:
-                pass
-        else:
-            import fcntl
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); acquired = True
-            except OSError:
-                pass
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as error:
+                remaining = deadline - time.monotonic()
+                if create or error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or remaining <= 0:
+                    break
+                time.sleep(min(.01, remaining))
         _need(acquired)
+        actual = _ordinary(path).lstat()
+        _need((actual.st_dev, actual.st_ino) == (before.st_dev, before.st_ino) and
+              stat.S_ISREG(actual.st_mode) and actual.st_nlink == 1 and actual.st_size == 1)
         yield
     finally:
         if acquired:

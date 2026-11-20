@@ -324,6 +324,39 @@ def webui_address(spec, settings, root):
     return local_url('http://127.0.0.1:' + str(_port(port)))
 
 
+def installation_discovery(root, settings):
+    """Bounded directory metadata only; never return names or vendor secrets."""
+    result = dict(root_source='configured' if 'root' in settings else 'workspace',
+        root_available=False, root_fingerprint=hashlib.sha256(str(root).encode('utf-8')).hexdigest())
+    try:
+        result['root_available'] = stat.S_ISDIR(root.stat().st_mode)
+    except OSError as error:
+        result.update(error=type(error).__name__, errno=error.errno, winerror=getattr(error, 'winerror', None))
+        available, identities, resolved = [], [], []
+        for path in list(root.parents)[:12]:
+            try:
+                info = path.stat()
+            except OSError:
+                available.append(False); identities.append(None); resolved.append(None)
+                continue
+            available.append(stat.S_ISDIR(info.st_mode))
+            identities.append(hashlib.sha256(str((info.st_dev, info.st_ino)).encode()).hexdigest())
+            try:
+                resolved.append(hashlib.sha256(str(path.resolve(strict=True)).encode()).hexdigest())
+            except (OSError, RuntimeError):
+                resolved.append(None)
+        result.update(ancestors_available=available, ancestor_fingerprints=identities,
+                      resolved_ancestor_fingerprints=resolved)
+    if result['root_available']:
+        try:
+            physical = root.resolve(strict=True)
+            result['physical_root_fingerprint'] = hashlib.sha256(str(physical).encode()).hexdigest()
+            result['root_path_redirected'] = physical != root
+        except (OSError, RuntimeError):
+            result['root_path_redirected'] = None
+    return result
+
+
 def catalog(project=None, workspace=None):
     """Local installation/configuration facts, without starting or contacting QQ."""
     project = project if project is not None else _conf().load(reload=True)
@@ -336,15 +369,7 @@ def catalog(project=None, workspace=None):
         # Describe discovery separately from account/transport readiness. This
         # exposes no private paths or credentials and helps diagnose a service
         # launched with a different filesystem/configuration context.
-        discovery = dict(root_source='configured' if 'root' in settings else 'workspace',
-            root_available=False, root_fingerprint=hashlib.sha256(str(root).encode('utf-8')).hexdigest())
-        try:
-            discovery['root_available'] = stat.S_ISDIR(root.stat().st_mode)
-        except OSError as error:
-            discovery['error'] = type(error).__name__
-            discovery['errno'] = error.errno
-            discovery['winerror'] = getattr(error, 'winerror', None)
-        row['installation'] = discovery
+        row['installation'] = installation_discovery(root, settings)
         try:
             row['webui_url'] = webui_address(spec, settings, root)
             row['connection'] = resolve(project, workspace, provider=key).public()

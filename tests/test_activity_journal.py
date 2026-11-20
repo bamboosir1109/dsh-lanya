@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -75,6 +76,25 @@ class JournalTests(unittest.TestCase):
 
     def read(self, day=TODAY):
         return journal.journal_snapshot(workspace=str(self.work), agent_preset='Fixture', data_directory=str(self.data), day=day, now=NOW)
+
+    def test_reader_waits_for_brief_real_lock_contention_then_reads_confirmed_diary(self):
+        self.update()
+        started, done = threading.Event(), threading.Event()
+        result = []
+        def read():
+            started.set()
+            result.append(self.read())
+            done.set()
+        reader = threading.Thread(target=read)
+        with journal._lock(self.root, True):
+            reader.start()
+            self.assertTrue(started.wait(1))
+            early = done.wait(.04)
+        reader.join(2)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(early, 'Brief contention was returned as a permanent unavailable diary')
+        self.assertEqual(result[0]['status'], 'ok')
+        self.assertEqual(result[0]['selected']['date'], TODAY)
 
     def test_today_backfill_past_seven_days_and_idempotent_owned_updates(self):
         legacy = self.data / 'diary'; legacy.mkdir()

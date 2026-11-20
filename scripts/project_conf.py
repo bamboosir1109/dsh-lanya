@@ -19,6 +19,7 @@
 import json
 import os
 import sys
+import threading
 
 
 class ConfigError(RuntimeError):
@@ -53,6 +54,7 @@ DEFAULTS = {
 
 _CACHE = None
 _CONFIG_PATH = None
+_LOAD_LOCK = threading.RLock()
 
 
 def _layout():
@@ -105,8 +107,9 @@ def _candidates():
 
 def config_path():
     """Path of the valid dictionary actually loaded, or None for defaults."""
-    load()
-    return _CONFIG_PATH
+    with _LOAD_LOCK:
+        load()
+        return _CONFIG_PATH
 
 
 def _merge(base, extra):
@@ -124,6 +127,13 @@ def _merge(base, extra):
 
 def load(reload=False):
     """读配置，返回 dict。带缓存 —— 一个进程只读一次磁盘。"""
+    with _LOAD_LOCK:
+        return _load_locked(reload)
+
+
+def _load_locked(reload):
+    # Readers cannot observe the deliberately cleared authority or a path
+    # belonging to another unfinished reload. Invalid reloads still fail closed.
     global _CACHE, _CONFIG_PATH
     if _CACHE is not None and not reload:
         return _CACHE
